@@ -38,7 +38,8 @@
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
-static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t, RemasterDebugMode);
+static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t,
+	const uint8_t *, size_t, RemasterDebugMode);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -114,10 +115,11 @@ void DeinitGraphics (void)
 void DrawFreezeDefrostScreen (uint8 *draw)
 {
 	const int w = SNES_WIDTH << 1, h = SNES_HEIGHT << 1;
-	S9xPutImageMetal(w, h, (uint16 *)draw, w, nullptr, 0, RemasterDebugMode::Original);
+	S9xPutImageMetal(w, h, (uint16 *)draw, w, nullptr, 0, nullptr, 0, RemasterDebugMode::Original);
 }
 
-bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode)
+bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
+	const RemasterTileContentId *selectedTile)
 {
 	if (frame.width > INT_MAX || frame.height > INT_MAX)
 		return false;
@@ -125,8 +127,16 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode)
 	owners.reserve(frame.mainPixels.size());
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
 		owners.push_back(pixel.owner);
+	std::vector<uint8_t> highlights;
+	if (selectedTile)
+	{
+		highlights.assign(frame.mainPixels.size(), 0);
+		for (uint32_t offset : S9xRemasterFrameOccurrences(frame, *selectedTile))
+			highlights[offset] = 1;
+	}
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
-		frame.originalRgb555.data(), frame.width, owners.data(), frame.width, debugMode);
+		frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
+		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode);
 }
 
 static void S9xInitMetal (void)
@@ -301,12 +311,13 @@ void S9xPutImage (int width, int height)
     }
 	
 	S9xPutImageMetal(width, height, GFX.Screen, GFX.RealPPL, S9xRemasterMainOwners(), GFX.RealPPL,
-		S9xRemasterGetDebugMode());
+		nullptr, 0, S9xRemasterGetDebugMode());
 }
 
 
 static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, size_t pitch,
-	const uint32_t *owners, size_t ownerPitch, RemasterDebugMode debugMode)
+	const uint32_t *owners, size_t ownerPitch, const uint8_t *highlights, size_t highlightPitch,
+	RemasterDebugMode debugMode)
 {
 	static std::mutex renderMutex;
 	std::lock_guard<std::mutex> lock(renderMutex);
@@ -375,6 +386,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					green = debugGreen;
 					blue = debugBlue;
 				}
+			}
+			if (highlights && highlightPitch >= static_cast<size_t>(width) && highlights[y * highlightPitch + x])
+			{
+				red = (red + 255) >> 1;
+				green = (green + 255) >> 1;
+				blue >>= 1;
 			}
 
 			int offset = (y * width + x) * 4;

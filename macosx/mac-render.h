@@ -27,7 +27,7 @@
 void InitGraphics (void);
 void DeinitGraphics (void);
 void DrawFreezeDefrostScreen (uint8 *);
-bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode);
+bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode, const RemasterTileContentId * = nullptr);
 void GetGameDisplay (int *, int *);
 
 #endif

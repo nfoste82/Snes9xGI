@@ -294,6 +294,10 @@ static int				frameCount      = 0;
 static bool8			frzselecting    = false;
 static bool8			remasterFramePresenting = false;
 static RemasterFrame	remasterReplayFrame;
+static bool			remasterSelectionValid = false;
+static RemasterTileContentId remasterSelectedTile;
+static NSPanel			*remasterInspectorPanel;
+static NSTextView		*remasterInspectorText;
 
 static uint16			changeAuto[2] = { 0x0000, 0x0000 };
 
@@ -2914,6 +2918,9 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)mouseDown:(NSEvent *)event
 {
+	if ([self.emulationDelegate respondsToSelector:@selector(selectRemasterPixelAtViewPoint:)] &&
+		[self.emulationDelegate selectRemasterPixelAtViewPoint:[self convertPoint:event.locationInWindow fromView:nil]])
+		return;
 	if ( useMouse )
 	{
 		switch (deviceSetting)
@@ -3218,7 +3225,9 @@ void QuitWithFatalError ( NSString *message)
 - (void)resume
 {
 	remasterFramePresenting = false;
+	remasterSelectionValid = false;
 	remasterReplayFrame = RemasterFrame();
+	[remasterInspectorPanel orderOut:nil];
 	pauseEmulation = false;
 	[self.emulationDelegate emulationResumed];
 	[s9xView updatePauseOverlay];
@@ -3409,7 +3418,8 @@ void QuitWithFatalError ( NSString *message)
 {
 	const RemasterDebugMode mode = S9xRemasterCycleDebugMode();
 	if (remasterFramePresenting)
-		DrawRemasterFrame(remasterReplayFrame, mode);
+		DrawRemasterFrame(remasterReplayFrame, mode,
+			remasterSelectionValid ? &remasterSelectedTile : nullptr);
 	switch (mode)
 	{
 		case RemasterDebugMode::Overlay:
@@ -3479,8 +3489,90 @@ void QuitWithFatalError ( NSString *message)
 
 	remasterReplayFrame = std::move(frame);
 	remasterFramePresenting = true;
+	remasterSelectionValid = false;
+	[remasterInspectorPanel orderOut:nil];
 	[s9xView updatePauseOverlay];
 	return nil;
+}
+
+- (BOOL)selectRemasterPixelAtViewPoint:(NSPoint)point
+{
+	if (!remasterFramePresenting || remasterReplayFrame.width == 0 || remasterReplayFrame.height == 0)
+		return NO;
+	const NSRect bounds = s9xView.bounds;
+	if (NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0 || !NSPointInRect(point, bounds))
+		return YES;
+	const CGFloat normalizedX = (point.x - NSMinX(bounds)) / NSWidth(bounds);
+	const CGFloat normalizedY = (NSMaxY(bounds) - point.y) / NSHeight(bounds);
+	if (normalizedX < 0 || normalizedX >= 1 || normalizedY < 0 || normalizedY >= 1)
+		return YES;
+	const uint32_t x = static_cast<uint32_t>(normalizedX * remasterReplayFrame.width);
+	const uint32_t y = static_cast<uint32_t>(normalizedY * remasterReplayFrame.height);
+	const size_t offset = static_cast<size_t>(y) * remasterReplayFrame.width + x;
+	const RemasterFramePixel &pixel = remasterReplayFrame.mainPixels[offset];
+	const RemasterFrameTileInstance *instance = S9xRemasterFrameInstanceAt(remasterReplayFrame, x, y);
+
+	remasterSelectionValid = instance != nullptr;
+	if (instance)
+		remasterSelectedTile = instance->tileId;
+	DrawRemasterFrame(remasterReplayFrame, S9xRemasterGetDebugMode(),
+		remasterSelectionValid ? &remasterSelectedTile : nullptr);
+
+	if (!remasterInspectorPanel)
+	{
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 480, 300)
+			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
+			backing:NSBackingStoreBuffered defer:NO];
+		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
+		remasterInspectorPanel.floatingPanel = YES;
+		NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:remasterInspectorPanel.contentView.bounds];
+		scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+		scrollView.hasVerticalScroller = YES;
+		remasterInspectorText = [[NSTextView alloc] initWithFrame:scrollView.contentView.bounds];
+		remasterInspectorText.editable = NO;
+		remasterInspectorText.selectable = YES;
+		remasterInspectorText.font = [NSFont userFixedPitchFontOfSize:12];
+		remasterInspectorText.textContainerInset = NSMakeSize(10, 10);
+		scrollView.documentView = remasterInspectorText;
+		remasterInspectorPanel.contentView = scrollView;
+		[remasterInspectorPanel center];
+	}
+
+	std::ostringstream text;
+	const uint16_t color = remasterReplayFrame.originalRgb555[offset];
+	text << "Pixel       (" << x << ", " << y << ")\n";
+	text << "RGB555      $" << std::hex << std::setfill('0') << std::setw(4) << color
+		<< "  (" << std::dec << ((color >> 10) & 31) << ", " << ((color >> 5) & 31) << ", " << (color & 31) << ")\n";
+	text << "Owner       $" << std::hex << std::setw(8) << pixel.owner << std::dec
+		<< "  instance " << pixel.instanceId << "\n";
+	if (instance)
+	{
+		const char *source = instance->source == RemasterSourceType::Background ? "Background" :
+			instance->source == RemasterSourceType::Object ? "Object" : "Backdrop";
+		const char *match = instance->matchStatus == RemasterProfileMatchStatus::Matched ? "Matched" :
+			instance->matchStatus == RemasterProfileMatchStatus::Ambiguous ? "Ambiguous" : "No match";
+		const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(remasterReplayFrame, instance->tileId);
+		std::set<uint32_t> occurrenceInstances;
+		for (uint32_t occurrence : occurrences)
+			occurrenceInstances.insert(remasterReplayFrame.mainPixels[occurrence].instanceId);
+		text << "Tile hash   v" << unsigned(instance->tileId.hashVersion) << ':' << unsigned(instance->tileId.bitDepth)
+			<< "bpp:" << std::hex << std::setw(16) << instance->tileId.hash << std::dec << "\n";
+		text << "Source      " << source << " / " << unsigned(instance->sourceIndex) << "\n";
+		text << "Tile        $" << std::hex << std::setw(4) << instance->tileNumber
+			<< "  palette " << std::dec << unsigned(instance->palette) << "  VRAM $" << std::hex
+			<< std::setw(4) << instance->vramAddress << std::dec << "\n";
+		text << "Match       " << match << "  rule line " << instance->ruleLine << "\n";
+		text << "Asset group " << (instance->assetGroup.empty() ? "-" : instance->assetGroup) << "\n";
+		text << "Material    " << (instance->material.empty() ? "-" : instance->material) << "\n";
+		text << "Occurrences " << occurrenceInstances.size() << " instances, " << occurrences.size() << " visible pixels\n";
+	}
+	else
+	{
+		text << "Tile        No captured tile instance\n";
+	}
+	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
+	[remasterInspectorPanel orderFront:nil];
+	return YES;
 }
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL
