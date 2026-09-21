@@ -11,6 +11,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <iomanip>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
 #include <vector>
 
 enum class RemasterDebugMode : uint8_t
@@ -35,10 +41,36 @@ extern uint32_t S9xRemasterCurrentOwner;
 
 struct RemasterState
 {
+	struct ObservedTile
+	{
+		uint64_t hash = 0;
+		uint64_t observations = 0;
+		uint32_t sourceMask = 0;
+		uint16_t tileNumber = 0;
+		uint16_t vramAddress = 0;
+		uint8_t bitDepth = 0;
+		uint8_t sourceIndex = 0;
+		uint8_t palette = 0;
+		RemasterSourceType source = RemasterSourceType::Backdrop;
+		uint8_t indices[64] = {};
+	};
+
 	std::atomic<RemasterDebugMode> requestedDebugMode { RemasterDebugMode::Original };
 	RemasterDebugMode activeDebugMode = RemasterDebugMode::Original;
 	std::vector<uint32_t> mainOwners;
 	std::vector<uint32_t> subOwners;
+	std::mutex inventoryMutex;
+	std::string requestedInventoryPath;
+	std::string activeInventoryPath;
+	std::map<uint64_t, ObservedTile> observedTiles;
+	uint32_t hashCollisions = 0;
+	uint64_t drawContexts = 0;
+	uint64_t tileCacheVisits = 0;
+	RemasterSourceType currentSource = RemasterSourceType::Backdrop;
+	uint16_t currentTile = 0;
+	uint8_t currentSourceIndex = 0;
+	bool inventoryActive = false;
+	bool currentDrawSupported = false;
 	bool currentSubscreen = false;
 };
 
@@ -51,6 +83,12 @@ inline RemasterState &S9xRemasterState (void)
 inline bool S9xRemasterEnabled (void)
 {
 	return S9xRemasterState().activeDebugMode != RemasterDebugMode::Original;
+}
+
+inline bool S9xRemasterObserving (void)
+{
+	const RemasterState &state = S9xRemasterState();
+	return S9xRemasterEnabled() || state.inventoryActive;
 }
 
 inline RemasterDebugMode S9xRemasterGetDebugMode (void)
@@ -71,6 +109,18 @@ inline void S9xRemasterBeginFrame (size_t pixelCount)
 {
 	RemasterState &state = S9xRemasterState();
 	state.activeDebugMode = state.requestedDebugMode.load(std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(state.inventoryMutex);
+		if (!state.requestedInventoryPath.empty())
+		{
+			state.activeInventoryPath.swap(state.requestedInventoryPath);
+			state.observedTiles.clear();
+			state.hashCollisions = 0;
+			state.drawContexts = 0;
+			state.tileCacheVisits = 0;
+			state.inventoryActive = true;
+		}
+	}
 	if (!S9xRemasterEnabled())
 	{
 		S9xRemasterCurrentOwners = nullptr;
@@ -112,14 +162,153 @@ inline uint32_t S9xRemasterOwner (RemasterSourceType source, uint8_t index, uint
 
 inline void S9xRemasterSetDraw (RemasterSourceType source, uint8_t index, uint16_t tile)
 {
-	if (S9xRemasterEnabled())
+	if (S9xRemasterObserving())
+	{
+		RemasterState &state = S9xRemasterState();
+		state.currentSource = source;
+		state.currentSourceIndex = index;
+		state.currentTile = tile;
+		state.currentDrawSupported = true;
+		if (state.inventoryActive)
+			state.drawContexts++;
 		S9xRemasterCurrentOwner = S9xRemasterOwner(source, index, tile);
+	}
+}
+
+inline void S9xRemasterSetInventorySource (RemasterSourceType source, uint8_t index)
+{
+	RemasterState &state = S9xRemasterState();
+	if (state.inventoryActive)
+	{
+		state.currentSource = source;
+		state.currentSourceIndex = index;
+		state.currentDrawSupported = true;
+	}
 }
 
 inline void S9xRemasterSetUnsupportedDraw (void)
 {
-	if (S9xRemasterEnabled())
+	if (S9xRemasterObserving())
+	{
+		S9xRemasterState().currentDrawSupported = false;
 		S9xRemasterCurrentOwner = REMASTER_OWNER_UNSUPPORTED;
+	}
+}
+
+inline uint64_t S9xRemasterHashTile (uint8_t bitDepth, const uint8_t *indices)
+{
+	// FNV-1a over an explicitly versioned payload: version, kind, depth, width, height, indices.
+	const uint8_t header[] = { 1, 1, bitDepth, 8, 8 };
+	uint64_t hash = UINT64_C(14695981039346656037);
+	for (uint8_t value : header)
+	{
+		hash ^= value;
+		hash *= UINT64_C(1099511628211);
+	}
+	for (size_t i = 0; i < 64; i++)
+	{
+		hash ^= indices[i];
+		hash *= UINT64_C(1099511628211);
+	}
+	return hash;
+}
+
+inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, uint16_t vramAddress, uint16_t tileWord)
+{
+	RemasterState &state = S9xRemasterState();
+	if (state.inventoryActive)
+		state.tileCacheVisits++;
+	if (!state.inventoryActive || !state.currentDrawSupported ||
+		(state.currentSource != RemasterSourceType::Background && state.currentSource != RemasterSourceType::Object))
+		return;
+
+	uint64_t hash = S9xRemasterHashTile(bitDepth, indices);
+	auto found = state.observedTiles.find(hash);
+	if (found != state.observedTiles.end())
+	{
+		if (found->second.bitDepth != bitDepth || !std::equal(indices, indices + 64, found->second.indices))
+		{
+			state.hashCollisions++;
+			return;
+		}
+		found->second.observations++;
+		found->second.sourceMask |= 1u << static_cast<uint8_t>(state.currentSource);
+		return;
+	}
+
+	RemasterState::ObservedTile observed;
+	observed.hash = hash;
+	observed.observations = 1;
+	observed.sourceMask = 1u << static_cast<uint8_t>(state.currentSource);
+	observed.tileNumber = tileWord & 0x3ff;
+	observed.vramAddress = vramAddress;
+	observed.bitDepth = bitDepth;
+	observed.sourceIndex = state.currentSourceIndex;
+	observed.palette = (tileWord >> 10) & 7;
+	observed.source = state.currentSource;
+	std::copy(indices, indices + 64, observed.indices);
+	state.observedTiles.emplace(hash, observed);
+}
+
+inline void S9xRemasterRequestTileInventory (const std::string &path)
+{
+	RemasterState &state = S9xRemasterState();
+	std::lock_guard<std::mutex> lock(state.inventoryMutex);
+	state.requestedInventoryPath = path;
+}
+
+inline bool S9xRemasterEndFrame (void)
+{
+	RemasterState &state = S9xRemasterState();
+	if (!state.inventoryActive)
+		return false;
+
+	std::ofstream output(state.activeInventoryPath, std::ios::out | std::ios::trunc);
+	if (!output)
+	{
+		state.inventoryActive = false;
+		return false;
+	}
+
+	output << "{\n  \"schema_version\": 1,\n  \"hash_version\": 1,\n"
+		<< "  \"hash_algorithm\": \"fnv1a64\",\n  \"hash_collisions\": " << state.hashCollisions
+		<< ",\n  \"draw_contexts\": " << state.drawContexts
+		<< ",\n  \"tile_cache_visits\": " << state.tileCacheVisits
+		<< ",\n  \"assets\": [\n";
+	bool firstAsset = true;
+	for (const auto &entry : state.observedTiles)
+	{
+		const RemasterState::ObservedTile &tile = entry.second;
+		if (!firstAsset)
+			output << ",\n";
+		firstAsset = false;
+		output << "    {\n      \"id\": \"v1:" << static_cast<unsigned>(tile.bitDepth) << "bpp:"
+			<< std::hex << std::setfill('0') << std::setw(16) << tile.hash << std::dec << "\",\n"
+			<< "      \"observations\": " << tile.observations << ",\n"
+			<< "      \"source_mask\": " << tile.sourceMask << ",\n"
+			<< "      \"example\": { \"source\": \""
+			<< (tile.source == RemasterSourceType::Background ? "background" : "object")
+			<< "\", \"source_index\": " << static_cast<unsigned>(tile.sourceIndex)
+			<< ", \"tile_number\": " << tile.tileNumber
+			<< ", \"palette\": " << static_cast<unsigned>(tile.palette)
+			<< ", \"vram_address\": " << tile.vramAddress << " },\n"
+			<< "      \"indices\": [\n";
+		for (size_t y = 0; y < 8; y++)
+		{
+			output << "        [";
+			for (size_t x = 0; x < 8; x++)
+			{
+				if (x)
+					output << ", ";
+				output << static_cast<unsigned>(tile.indices[y * 8 + x]);
+			}
+			output << "]" << (y == 7 ? "\n" : ",\n");
+		}
+		output << "      ]\n    }";
+	}
+	output << "\n  ]\n}\n";
+	state.inventoryActive = false;
+	return output.good();
 }
 
 inline void S9xRemasterWriteOwner (size_t offset)

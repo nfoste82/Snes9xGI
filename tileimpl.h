@@ -10,6 +10,7 @@
 #include "snes9x.h"
 #include "ppu.h"
 #include "tile.h"
+#include "remaster/remaster.h"
 
 extern struct SLineMatrixData	LineMatrixData[240];
 
@@ -113,6 +114,12 @@ namespace TileImpl {
 		alwaysinline bool IsBlankTile() const
 		{
 			return ((Tile & H_FLIP) ? BG.BufferedFlip[TileNumber] : BG.Buffered[TileNumber]) == BLANK_TILE;
+		}
+
+		alwaysinline void Observe() const
+		{
+			if (BG.HashableTileContent)
+				S9xRemasterObserveTile(pCache, BG.BitDepth, TileAddr, Tile);
 		}
 
 		alwaysinline void SelectPalette() const
@@ -248,6 +255,7 @@ namespace TileImpl {
 			cache.GetCachedTile();
 			if (cache.IsBlankTile())
 				return;
+			cache.Observe();
 			cache.SelectPalette();
 
 			if (!(Tile & (V_FLIP | H_FLIP)))
@@ -324,6 +332,7 @@ namespace TileImpl {
 			cache.GetCachedTile();
 			if (cache.IsBlankTile())
 				return;
+			cache.Observe();
 			cache.SelectPalette();
 
 			if (!(Tile & (V_FLIP | H_FLIP)))
@@ -436,6 +445,7 @@ namespace TileImpl {
 			cache.GetCachedTile();
 			if (cache.IsBlankTile())
 				return;
+			cache.Observe();
 			cache.SelectPalette();
 
 			if (Tile & H_FLIP)

@@ -3407,6 +3407,26 @@ void QuitWithFatalError ( NSString *message)
 	}
 }
 
+- (NSString *)captureRemasterTileInventory
+{
+	NSURL *applicationSupport = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
+	                                                                    inDomain:NSUserDomainMask
+	                                                           appropriateForURL:nil
+	                                                                      create:YES
+	                                                                       error:nil];
+	NSURL *directory = [[applicationSupport URLByAppendingPathComponent:@"Snes9x" isDirectory:YES]
+		URLByAppendingPathComponent:@"Remaster" isDirectory:YES];
+	if (![[NSFileManager defaultManager] createDirectoryAtURL:directory
+	                             withIntermediateDirectories:YES
+	                                              attributes:nil
+	                                                   error:nil])
+		return nil;
+
+	NSURL *file = [directory URLByAppendingPathComponent:@"tile-inventory.json"];
+	S9xRemasterRequestTileInventory(file.path.UTF8String);
+	return file.path;
+}
+
 - (void)setVideoMode:(int)mode
 {
     videoMode = mode;

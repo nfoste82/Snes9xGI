@@ -661,6 +661,11 @@ void S9xEndScreenRefresh (void)
 				S9xDisplayMessages(GFX.Screen, GFX.RealPPL, IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, 1);
 
 			S9xDeinitUpdate(IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
+			if (S9xRemasterEndFrame())
+			{
+				GFX.InfoString = "Remaster tile inventory written";
+				GFX.InfoStringTimeout = 180;
+			}
 		}
 	}
 	else
@@ -803,6 +808,7 @@ static inline void RenderScreen (bool8 sub)
 		if (BGActive & (1 << n)) \
 		{ \
 			S9xRemasterSetUnsupportedDraw(); \
+			S9xRemasterSetInventorySource(RemasterSourceType::Background, n); \
 			BG.StartPalette = pal; \
 			BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & (1 << n)); \
 			BG.TileSizeH = (!hires && PPU.BG[n].BGSize) ? 16 : 8; \

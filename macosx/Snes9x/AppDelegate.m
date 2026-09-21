@@ -45,6 +45,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	debugItem.target = self;
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
+	NSMenuItem *inventoryItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Tile Inventory", nil)
+	                                                       action:@selector(captureRemasterTileInventory:)
+	                                                keyEquivalent:@"i"];
+	inventoryItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	inventoryItem.target = self;
+	[viewMenuItem.submenu addItem:inventoryItem];
     [self importRecentItems];
 
     NSWindow *gameWindow = [[NSWindow alloc] initWithContentRect:s9xView.frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -537,7 +543,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
-	else if (action == @selector(cycleRemasterDebugMode:)) {
+	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(captureRemasterTileInventory:)) {
 		return [self.s9xEngine isRunning];
 	}
 	else if (action == @selector(updateDeviceSetting:)) {
@@ -622,6 +628,13 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 {
 	NSString *mode = [self.s9xEngine cycleRemasterDebugMode];
 	sender.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
+}
+
+- (IBAction)captureRemasterTileInventory:(id)sender
+{
+	NSString *path = [self.s9xEngine captureRemasterTileInventory];
+	if (path)
+		NSLog(@"Remaster tile inventory requested: %@", path);
 }
 
 - (IBAction)resume:(id)sender

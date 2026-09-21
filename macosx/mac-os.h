@@ -234,6 +234,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)setMacFrameSkip:(int)_macFrameSkip;
 - (void)setShowFPS:(BOOL)showFPS;
 - (NSString *)cycleRemasterDebugMode;
+- (NSString *)captureRemasterTileInventory;
 
 - (void)setDeviceSetting:(S9xDeviceSetting)_deviceSetting;
 

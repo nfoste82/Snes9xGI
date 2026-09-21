@@ -443,6 +443,8 @@ void S9xSelectTileRenderers (int BGMode, bool8 sub, bool8 obj)
 
 void S9xSelectTileConverter (int depth, bool8 hires, bool8 sub, bool8 mosaic)
 {
+	BG.BitDepth = depth;
+	BG.HashableTileContent = !hires;
 	switch (depth)
 	{
 		case 8:

@@ -88,6 +88,8 @@ struct SBG
 	uint32	PaletteMask;
 	uint8	EnableMath;
 	uint8	InterlaceLine;
+	uint8	BitDepth;
+	bool8	HashableTileContent;
 
 	uint8	*Buffer;
 	uint8	*BufferFlip;
