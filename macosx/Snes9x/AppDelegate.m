@@ -51,6 +51,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	inventoryItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	inventoryItem.target = self;
 	[viewMenuItem.submenu addItem:inventoryItem];
+	NSMenuItem *frameItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Frame", nil)
+	                                                   action:@selector(captureRemasterFrame:)
+	                                            keyEquivalent:@"f"];
+	frameItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	frameItem.target = self;
+	[viewMenuItem.submenu addItem:frameItem];
 	NSMenuItem *profileItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Load Remaster Profile...", nil)
 	                                                     action:@selector(loadRemasterProfile:)
 	                                              keyEquivalent:@""];
@@ -549,6 +555,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
 	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(captureRemasterTileInventory:) ||
+		action == @selector(captureRemasterFrame:) ||
 		action == @selector(loadRemasterProfile:)) {
 		return [self.s9xEngine isRunning];
 	}
@@ -641,6 +648,13 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSString *path = [self.s9xEngine captureRemasterTileInventory];
 	if (path)
 		NSLog(@"Remaster tile inventory requested: %@", path);
+}
+
+- (IBAction)captureRemasterFrame:(id)sender
+{
+	NSString *path = [self.s9xEngine captureRemasterFrame];
+	if (path)
+		NSLog(@"Remaster frame capture requested: %@", path);
 }
 
 - (IBAction)loadRemasterProfile:(id)sender

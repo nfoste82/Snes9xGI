@@ -235,6 +235,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)setShowFPS:(BOOL)showFPS;
 - (NSString *)cycleRemasterDebugMode;
 - (NSString *)captureRemasterTileInventory;
+- (NSString *)captureRemasterFrame;
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL;
 
 - (void)setDeviceSetting:(S9xDeviceSetting)_deviceSetting;

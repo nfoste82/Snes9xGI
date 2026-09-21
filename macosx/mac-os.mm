@@ -1708,6 +1708,7 @@ int PromptFreezeDefrost (Boolean freezing)
     int                 result, newestIndex, current_selection, oldInactiveMode;
     char                dateC[256];
     uint8               *back, *draw;
+	const bool8         wasPaused = pauseEmulation;
 
     const UInt32        repeatDelay = 200000;
     const int           w = SNES_WIDTH << 1, h = SNES_HEIGHT << 1;
@@ -2055,7 +2056,9 @@ int PromptFreezeDefrost (Boolean freezing)
 
     inactiveMode = oldInactiveMode;
     frzselecting = false;
-	pauseEmulation = false;
+	pauseEmulation = wasPaused;
+	if (!freezing && result >= 0 && wasPaused)
+		frameAdvance = true;
 
 	[s9xView updatePauseOverlay];
 
@@ -3424,6 +3427,26 @@ void QuitWithFatalError ( NSString *message)
 
 	NSURL *file = [directory URLByAppendingPathComponent:@"tile-inventory.json"];
 	S9xRemasterRequestTileInventory(file.path.UTF8String);
+	return file.path;
+}
+
+- (NSString *)captureRemasterFrame
+{
+	NSURL *applicationSupport = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
+	                                                                    inDomain:NSUserDomainMask
+	                                                           appropriateForURL:nil
+	                                                                      create:YES
+	                                                                       error:nil];
+	NSURL *directory = [[applicationSupport URLByAppendingPathComponent:@"Snes9x" isDirectory:YES]
+		URLByAppendingPathComponent:@"Remaster" isDirectory:YES];
+	if (![[NSFileManager defaultManager] createDirectoryAtURL:directory
+	                             withIntermediateDirectories:YES
+	                                              attributes:nil
+	                                                   error:nil])
+		return nil;
+
+	NSURL *file = [directory URLByAppendingPathComponent:@"frame.s9xrmf"];
+	S9xRemasterRequestFrameCapture(file.path.UTF8String);
 	return file.path;
 }
 

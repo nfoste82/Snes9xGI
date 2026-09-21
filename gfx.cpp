@@ -646,6 +646,9 @@ void S9xEndScreenRefresh (void)
 		}
 		else
 		{
+			const uint8_t remasterCapture = S9xRemasterEndFrame(
+				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
+				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];
@@ -662,7 +665,12 @@ void S9xEndScreenRefresh (void)
 				S9xDisplayMessages(GFX.Screen, GFX.RealPPL, IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, 1);
 
 			S9xDeinitUpdate(IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
-			if (S9xRemasterEndFrame())
+			if (remasterCapture & RemasterCaptureFrame)
+			{
+				GFX.InfoString = "Remaster frame capture written";
+				GFX.InfoStringTimeout = 180;
+			}
+			else if (remasterCapture & RemasterCaptureInventory)
 			{
 				GFX.InfoString = "Remaster tile inventory written";
 				GFX.InfoStringTimeout = 180;

@@ -26,6 +26,51 @@ int main ()
 	assert(hash == UINT64_C(0xf99d5746200467e1));
 	assert(hash != S9xRemasterHashTile(2, indices));
 
+	RemasterFrame frame;
+	frame.width = 2;
+	frame.height = 1;
+	frame.profileRomSha256 = "0123456789abcdef";
+	frame.originalRgb555 = { 0x001f, 0x03e0 };
+	frame.mainPixels.resize(2);
+	frame.subPixels.resize(2);
+	frame.mainPixels[0].owner = 0x02010002;
+	frame.mainPixels[0].instanceId = 1;
+	RemasterFrameAsset frameAsset;
+	frameAsset.tileId = { hash, 1, 4 };
+	std::copy(indices, indices + 64, frameAsset.indices);
+	frame.assets.push_back(frameAsset);
+	RemasterFrameMaterial frameMaterial;
+	frameMaterial.name = "stone";
+	frameMaterial.surfaceClass = RemasterSurfaceClass::Floor;
+	frame.materials.push_back(frameMaterial);
+	RemasterFrameTileInstance frameInstance;
+	frameInstance.tileId = frameAsset.tileId;
+	frameInstance.source = RemasterSourceType::Background;
+	frameInstance.sourceIndex = 1;
+	frameInstance.tileNumber = 2;
+	frameInstance.material = "stone";
+	frame.tileInstances.push_back(frameInstance);
+	std::vector<uint8_t> firstFrameBytes;
+	std::vector<uint8_t> secondFrameBytes;
+	assert(S9xSerializeRemasterFrame(frame, firstFrameBytes));
+	assert(S9xSerializeRemasterFrame(frame, secondFrameBytes));
+	assert(firstFrameBytes == secondFrameBytes);
+	assert(firstFrameBytes.size() > 8);
+	assert(std::string(firstFrameBytes.begin(), firstFrameBytes.begin() + 6) == "S9XRMF");
+	RemasterFrame decodedFrame;
+	assert(S9xDeserializeRemasterFrame(firstFrameBytes, decodedFrame));
+	assert(decodedFrame.width == 2 && decodedFrame.height == 1);
+	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
+	assert(decodedFrame.tileInstances.size() == 1);
+	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0));
+	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0)->material == "stone");
+	assert(S9xRemasterFrameOccurrences(decodedFrame, frameAsset.tileId).size() == 1);
+	std::vector<uint8_t> truncatedFrameBytes = firstFrameBytes;
+	truncatedFrameBytes.pop_back();
+	assert(!S9xDeserializeRemasterFrame(truncatedFrameBytes, decodedFrame));
+	frame.mainPixels.pop_back();
+	assert(!S9xSerializeRemasterFrame(frame, secondFrameBytes));
+
 	const std::string path = "/tmp/snes9x-remaster-inventory-test.json";
 	S9xRemasterRequestTileInventory(path);
 	S9xRemasterBeginFrame(1, 1, 1, 1);
@@ -115,6 +160,22 @@ material = "wet_stone"
 	assert(json.find("\"profile_unmatched_observations\": 0") != std::string::npos);
 	assert(json.find("\"profile_loaded\": true") != std::string::npos);
 	std::remove(profiledPath.c_str());
+
+	const std::string framePath = "/tmp/snes9x-remaster-frame-test.s9xrmf";
+	S9xRemasterRequestFrameCapture(framePath);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	S9xRemasterSetSubscreen(false);
+	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
+	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterWriteOwner(0);
+	const uint16_t screen[] = { 0x001f, 0x03e0 };
+	assert(S9xRemasterEndFrame(screen, 2, 2, 1) & RemasterCaptureFrame);
+	std::ifstream frameInput(framePath, std::ios::binary);
+	std::vector<uint8_t> capturedFrameBytes((std::istreambuf_iterator<char>(frameInput)),
+		std::istreambuf_iterator<char>());
+	assert(capturedFrameBytes.size() > 8);
+	assert(std::string(capturedFrameBytes.begin(), capturedFrameBytes.begin() + 6) == "S9XRMF");
+	std::remove(framePath.c_str());
 
 	const char *ambiguousProfile = R"PROFILE(
 schema_version = 1
