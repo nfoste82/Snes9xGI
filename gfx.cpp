@@ -13,6 +13,7 @@
 #include "movie.h"
 #include "screenshot.h"
 #include "display.h"
+#include "remaster/remaster.h"
 
 extern struct SCheatData		Cheat;
 extern struct SLineData			LineData[240];
@@ -315,6 +316,8 @@ static void rerender_line_span (int line, int x0, int x1)
 	uint32	zrow = line * GFX.PPL + ((GFX.DoInterlace && S9xInterlaceField()) ? GFX.RealPPL : 0);
 	memset(GFX.ZBuffer + zrow, 0, IPPU.RenderedScreenWidth);
 	memset(GFX.SubZBuffer + zrow, 0, IPPU.RenderedScreenWidth);
+	const int xscale = IPPU.DoubleWidthPixels ? 2 : 1;
+	S9xRemasterClearSpan(zrow + x0 * xscale, (x1 - x0) * xscale);
 
 	IPPU.PreviousLine = line;
 	IPPU.CurrentLine  = line + 1;
@@ -610,6 +613,7 @@ void S9xStartScreenRefresh (void)
 
 		memset(GFX.ZBuffer, 0, GFX.ScreenSize);
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
+		S9xRemasterBeginFrame(GFX.ScreenSize);
 	}
 
 	if (++IPPU.FrameCount == (uint32)Memory.ROMFramesPerSecond)
@@ -759,6 +763,8 @@ static inline void RenderScreen (bool8 sub)
 {
 	uint8	BGActive;
 	int		D;
+	S9xRemasterSetSubscreen(sub);
+	S9xRemasterSetUnsupportedDraw();
 
 	if (!sub)
 	{
@@ -796,6 +802,7 @@ static inline void RenderScreen (bool8 sub)
 	#define DO_BG(n, pal, depth, hires, offset, Zh, Zl, voffoff) \
 		if (BGActive & (1 << n)) \
 		{ \
+			S9xRemasterSetUnsupportedDraw(); \
 			BG.StartPalette = pal; \
 			BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & (1 << n)); \
 			BG.TileSizeH = (!hires && PPU.BG[n].BGSize) ? 16 : 8; \
@@ -861,6 +868,7 @@ static inline void RenderScreen (bool8 sub)
 			break;
 
 		case 7:
+			S9xRemasterSetUnsupportedDraw();
 			if (BGActive & 0x01)
 			{
 				BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & 1);
@@ -952,12 +960,19 @@ void S9xUpdateScreen (void)
 		const uint16	black = BUILD_PIXEL(0, 0, 0);
 
 		GFX.S = GFX.Screen + GFX.StartY * GFX.PPL;
+		uint32 ownerOffset = GFX.StartY * GFX.PPL;
 		if (GFX.DoInterlace && S9xInterlaceField())
+		{
 			GFX.S += GFX.RealPPL;
+			ownerOffset += GFX.RealPPL;
+		}
 
-		for (uint32 l = GFX.StartY; l <= GFX.EndY; l++, GFX.S += GFX.PPL)
+		for (uint32 l = GFX.StartY; l <= GFX.EndY; l++, GFX.S += GFX.PPL, ownerOffset += GFX.PPL)
+		{
+			S9xRemasterClearSpan(ownerOffset, IPPU.RenderedScreenWidth, REMASTER_OWNER_FORCED_BLANK);
 			for (int x = 0; x < IPPU.RenderedScreenWidth; x++)
 				GFX.S[x] = black;
+		}
 	}
 
 	IPPU.PreviousLine = IPPU.CurrentLine;
@@ -1280,14 +1295,20 @@ static void DrawOBJS (int D)
 					if (x == X && x + 8 < next_clip)
 					{
 						if (DrawMode)
+						{
+							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX);
 							DrawTile(BaseTile | TileX, O, TileLine, 1);
+						}
 						x += 8;
 					}
 					else
 					{
 						int	w = (next_clip <= X + 8) ? next_clip - x : X + 8 - x;
 						if (DrawMode)
+						{
+							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX);
 							DrawClippedTile(BaseTile | TileX, O, x - X, w, TileLine, 1);
+						}
 						x += w;
 					}
 				}
@@ -1430,6 +1451,7 @@ static void DrawBackground (int bg, uint8 Zh, uint8 Zl)
 
 				if (BG.TileSizeH == 8)
 				{
+					S9xRemasterSetDraw(RemasterSourceType::Background, bg, Tile);
 					DrawClippedTile(Tile, Offset, l, w, VirtAlign, Lines);
 					t++;
 					if (HTile == 31)
@@ -1441,9 +1463,15 @@ static void DrawBackground (int bg, uint8 Zh, uint8 Zl)
 				else
 				{
 					if (!(Tile & H_FLIP))
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, (HTile & 1)));
 						DrawClippedTile(TILE_PLUS(Tile, (HTile & 1)), Offset, l, w, VirtAlign, Lines);
+					}
 					else
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, 1 - (HTile & 1)));
 						DrawClippedTile(TILE_PLUS(Tile, 1 - (HTile & 1)), Offset, l, w, VirtAlign, Lines);
+					}
 					t += HTile & 1;
 					if (HTile == 63)
 						t = b2;
@@ -1467,6 +1495,7 @@ static void DrawBackground (int bg, uint8 Zh, uint8 Zl)
 
 				if (BG.TileSizeH == 8)
 				{
+					S9xRemasterSetDraw(RemasterSourceType::Background, bg, Tile);
 					DrawTile(Tile, Offset, VirtAlign, Lines);
 					t++;
 					if (HTile == 31)
@@ -1478,9 +1507,15 @@ static void DrawBackground (int bg, uint8 Zh, uint8 Zl)
 				else
 				{
 					if (!(Tile & H_FLIP))
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, (HTile & 1)));
 						DrawTile(TILE_PLUS(Tile, (HTile & 1)), Offset, VirtAlign, Lines);
+					}
 					else
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, 1 - (HTile & 1)));
 						DrawTile(TILE_PLUS(Tile, 1 - (HTile & 1)), Offset, VirtAlign, Lines);
+					}
 					t += HTile & 1;
 					if (HTile == 63)
 						t = b2;
@@ -1503,13 +1538,22 @@ static void DrawBackground (int bg, uint8 Zh, uint8 Zl)
 					Tile = TILE_PLUS(Tile, ((Tile & V_FLIP) ? t2 : t1));
 
 				if (BG.TileSizeH == 8)
+				{
+					S9xRemasterSetDraw(RemasterSourceType::Background, bg, Tile);
 					DrawClippedTile(Tile, Offset, 0, Width, VirtAlign, Lines);
+				}
 				else
 				{
 					if (!(Tile & H_FLIP))
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, (HTile & 1)));
 						DrawClippedTile(TILE_PLUS(Tile, (HTile & 1)), Offset, 0, Width, VirtAlign, Lines);
+					}
 					else
+					{
+						S9xRemasterSetDraw(RemasterSourceType::Background, bg, TILE_PLUS(Tile, 1 - (HTile & 1)));
 						DrawClippedTile(TILE_PLUS(Tile, 1 - (HTile & 1)), Offset, 0, Width, VirtAlign, Lines);
+					}
 				}
 			}
 		}
@@ -2154,6 +2198,7 @@ static inline void DrawBackgroundMode7 (int bg, void (*DrawMath) (uint32, uint32
 static inline void DrawBackdrop (void)
 {
 	uint32	Offset = GFX.StartY * GFX.PPL;
+	S9xRemasterSetDraw(RemasterSourceType::Backdrop, 0, 0);
 
 	for (int clip = 0; clip < GFX.Clip[5].Count; clip++)
 	{
@@ -2637,4 +2682,3 @@ void S9xDrawCrosshair (const char *crosshair, uint8 fgcolor, uint8 bgcolor, int1
 		}
 	}
 }
-

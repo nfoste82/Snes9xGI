@@ -26,6 +26,7 @@
 #include "apu.h"
 #include "display.h"
 #include "blit.h"
+#include "remaster/remaster.h"
 
 #include <sys/time.h>
 
@@ -36,7 +37,7 @@
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
-static void S9xPutImageMetal (int, int, uint16 *);
+static void S9xPutImageMetal (int, int, uint16 *, bool = true);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -112,7 +113,7 @@ void DeinitGraphics (void)
 void DrawFreezeDefrostScreen (uint8 *draw)
 {
 	const int w = SNES_WIDTH << 1, h = SNES_HEIGHT << 1;
-	S9xPutImageMetal(w, h, (uint16 *)draw);
+	S9xPutImageMetal(w, h, (uint16 *)draw, false);
 }
 
 static void S9xInitMetal (void)
@@ -290,7 +291,7 @@ void S9xPutImage (int width, int height)
 }
 
 
-static void S9xPutImageMetal (int width, int height, uint16 *buffer16)
+static void S9xPutImageMetal (int width, int height, uint16 *buffer16, bool showRemasterDebug)
 {
 	static uint8 *buffer = nil;
 	static int buffer_size = 0;
@@ -300,6 +301,9 @@ static void S9xPutImageMetal (int width, int height, uint16 *buffer16)
 		buffer = (uint8 *)realloc(buffer, width * height * 4);
 		buffer_size = width * height * 4;
 	}
+
+	const RemasterDebugMode debugMode = showRemasterDebug ? S9xRemasterGetDebugMode() : RemasterDebugMode::Original;
+	const uint32_t *owners = S9xRemasterMainOwners();
 
 	for (int y = 0; y < height; y++)
 	{
@@ -313,6 +317,43 @@ static void S9xPutImageMetal (int width, int height, uint16 *buffer16)
 			red = ( red * 527 + 23 ) >> 6;
 			green = ( green * 527 + 23 ) >> 6;
 			blue = ( blue * 527 + 23 ) >> 6;
+
+			if (debugMode != RemasterDebugMode::Original)
+			{
+				uint32 owner = owners ? owners[y * GFX.RealPPL + x] : REMASTER_OWNER_UNSUPPORTED;
+				unsigned int debugRed, debugGreen, debugBlue;
+				if (owner == REMASTER_OWNER_UNSUPPORTED)
+				{
+					debugRed = 255;
+					debugGreen = 0;
+					debugBlue = 255;
+				}
+				else if (owner == REMASTER_OWNER_FORCED_BLANK)
+				{
+					debugRed = debugGreen = debugBlue = 32;
+				}
+				else
+				{
+					uint32 hash = owner * 0x9e3779b1u;
+					hash ^= hash >> 16;
+					debugRed = 48 + (hash & 0xcf);
+					debugGreen = 48 + ((hash >> 8) & 0xcf);
+					debugBlue = 48 + ((hash >> 16) & 0xcf);
+				}
+
+				if (debugMode == RemasterDebugMode::Overlay)
+				{
+					red = (red + debugRed) >> 1;
+					green = (green + debugGreen) >> 1;
+					blue = (blue + debugBlue) >> 1;
+				}
+				else
+				{
+					red = debugRed;
+					green = debugGreen;
+					blue = debugBlue;
+				}
+			}
 
 			int offset = (y * width + x) * 4;
 			buffer[offset++] = (uint8)red;

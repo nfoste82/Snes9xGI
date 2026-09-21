@@ -37,6 +37,14 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     self.s9xEngine = [S9xEngine new];
     self.s9xEngine.inputDelegate = self;
     [self setupDefaults];
+	NSMenuItem *viewMenuItem = [NSApp.mainMenu itemWithTitle:NSLocalizedString(@"View", nil)];
+	NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Debug: Original", nil)
+	                                                   action:@selector(cycleRemasterDebugMode:)
+	                                            keyEquivalent:@"d"];
+	debugItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	debugItem.target = self;
+	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
+	[viewMenuItem.submenu addItem:debugItem];
     [self importRecentItems];
 
     NSWindow *gameWindow = [[NSWindow alloc] initWithContentRect:s9xView.frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -529,6 +537,9 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
+	else if (action == @selector(cycleRemasterDebugMode:)) {
+		return [self.s9xEngine isRunning];
+	}
 	else if (action == @selector(updateDeviceSetting:)) {
 		menuItem.state = (self.deviceSetting == (S9xDeviceSetting)menuItem.tag) ? NSOnState : NSOffState;
 	}
@@ -605,6 +616,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     [engine setAllowInvalidVRAMAccess:[defaults boolForKey:kAllowInvalidVRAMAccessPref]];
     [engine setSeparateEchoBufferFromRAM:[defaults boolForKey:kSeparateEchoBufferFromRAMPref]];
     [engine setDisableSpriteLimit:[defaults boolForKey:kDisableSpriteLimitPref]];
+}
+
+- (IBAction)cycleRemasterDebugMode:(NSMenuItem *)sender
+{
+	NSString *mode = [self.s9xEngine cycleRemasterDebugMode];
+	sender.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
 }
 
 - (IBAction)resume:(id)sender

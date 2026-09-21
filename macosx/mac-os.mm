@@ -37,6 +37,7 @@
 #import "snapshot.h"
 #import "display.h"
 #import "blit.h"
+#import "remaster/remaster.h"
 
 #ifdef DEBUGGER
 #import "debug.h"
@@ -3390,6 +3391,20 @@ void QuitWithFatalError ( NSString *message)
 - (void)setShowFPS:(BOOL)showFPS
 {
     Settings.DisplayFrameRate = showFPS;
+}
+
+- (NSString *)cycleRemasterDebugMode
+{
+	switch (S9xRemasterCycleDebugMode())
+	{
+		case RemasterDebugMode::Overlay:
+			return @"Surface Overlay";
+		case RemasterDebugMode::SurfaceIds:
+			return @"Surface IDs";
+		case RemasterDebugMode::Original:
+		default:
+			return @"Original";
+	}
 }
 
 - (void)setVideoMode:(int)mode

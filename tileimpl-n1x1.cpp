@@ -6,6 +6,7 @@
 
 #define _TILEIMPL_CPP_
 #include "tileimpl.h"
+#include "remaster/remaster.h"
 
 namespace TileImpl {
 
@@ -17,6 +18,7 @@ namespace TileImpl {
 		{
 			GFX.S[Offset + N] = MATH::Calc(GFX.ScreenColors[Pix], GFX.SubScreen[Offset + N], GFX.SubZBuffer[Offset + N]);
 			GFX.DB[Offset + N] = Z2;
+			S9xRemasterWriteOwner(Offset + N);
 		}
 	}
 

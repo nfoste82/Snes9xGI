@@ -12,6 +12,7 @@
 #include "fxemu.h"
 #include "srtc.h"
 #include "cheats.h"
+#include "remaster/remaster.h"
 #ifdef NETPLAY_SUPPORT
 #include "netplay.h"
 #endif
@@ -67,6 +68,8 @@ uint8	OpenBus = 0;
 uint8	*HDMAMemPointers[8];
 uint16	BlackColourMap[256];
 uint16	DirectColourMaps[8][256];
+uint32	*S9xRemasterCurrentOwners = nullptr;
+uint32	S9xRemasterCurrentOwner = REMASTER_OWNER_UNSUPPORTED;
 
 SnesModel	M1SNES = { 1, 3, 2 };
 SnesModel	M2SNES = { 2, 4, 3 };
