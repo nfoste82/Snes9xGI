@@ -51,6 +51,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	inventoryItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	inventoryItem.target = self;
 	[viewMenuItem.submenu addItem:inventoryItem];
+	NSMenuItem *profileItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Load Remaster Profile...", nil)
+	                                                     action:@selector(loadRemasterProfile:)
+	                                              keyEquivalent:@""];
+	profileItem.target = self;
+	[viewMenuItem.submenu addItem:profileItem];
     [self importRecentItems];
 
     NSWindow *gameWindow = [[NSWindow alloc] initWithContentRect:s9xView.frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -543,7 +548,8 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
-	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(captureRemasterTileInventory:)) {
+	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(captureRemasterTileInventory:) ||
+		action == @selector(loadRemasterProfile:)) {
 		return [self.s9xEngine isRunning];
 	}
 	else if (action == @selector(updateDeviceSetting:)) {
@@ -635,6 +641,28 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSString *path = [self.s9xEngine captureRemasterTileInventory];
 	if (path)
 		NSLog(@"Remaster tile inventory requested: %@", path);
+}
+
+- (IBAction)loadRemasterProfile:(id)sender
+{
+	NSOpenPanel *panel = [NSOpenPanel openPanel];
+	panel.allowsMultipleSelection = NO;
+	panel.canChooseDirectories = NO;
+	panel.allowedFileTypes = @[@"toml"];
+	if ([panel runModal] != NSModalResponseOK)
+		return;
+
+	NSString *error = [self.s9xEngine loadRemasterProfile:panel.URL];
+	if (!error)
+	{
+		NSLog(@"Remaster profile loaded: %@", panel.URL.path);
+		return;
+	}
+
+	NSAlert *alert = [NSAlert new];
+	alert.messageText = @"Unable to Load Remaster Profile";
+	alert.informativeText = error;
+	[alert runModal];
 }
 
 - (IBAction)resume:(id)sender

@@ -3427,6 +3427,38 @@ void QuitWithFatalError ( NSString *message)
 	return file.path;
 }
 
+- (NSString *)loadRemasterProfile:(NSURL *)fileURL
+{
+	RemasterProfile profile;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterLoadProfile(fileURL.path.UTF8String, profile, diagnostics))
+	{
+		std::ostringstream message;
+		for (size_t i = 0; i < diagnostics.size(); i++)
+		{
+			if (i)
+				message << '\n';
+			if (diagnostics[i].line)
+				message << "Line " << diagnostics[i].line << ": ";
+			message << diagnostics[i].message;
+		}
+		return [NSString stringWithUTF8String:message.str().c_str()];
+	}
+
+	static const char hex[] = "0123456789abcdef";
+	std::string romHash(64, '0');
+	for (size_t i = 0; i < 32; i++)
+	{
+		romHash[i * 2] = hex[Memory.ROMSHA256[i] >> 4];
+		romHash[i * 2 + 1] = hex[Memory.ROMSHA256[i] & 15];
+	}
+	if (profile.romSha256 != romHash)
+		return @"Profile ROM SHA-256 does not match the running game.";
+
+	S9xRemasterSetProfile(std::move(profile));
+	return nil;
+}
+
 - (void)setVideoMode:(int)mode
 {
     videoMode = mode;

@@ -26,6 +26,7 @@
 #include "cheats.h"
 #include "movie.h"
 #include "display.h"
+#include "remaster/remaster.h"
 
 #include <wchar.h>
 
@@ -94,6 +95,7 @@ bool8 SNES9X_OpenCart (NSURL *inRef)
 
 	SNES9X_InitSound();
 
+	S9xRemasterClearProfile();
 	if (Memory.LoadROM(filename))
 	{
 		cartOpen = true;

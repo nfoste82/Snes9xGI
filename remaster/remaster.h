@@ -7,6 +7,8 @@
 #ifndef _REMASTER_H_
 #define _REMASTER_H_
 
+#include "profile.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -19,20 +21,6 @@
 #include <string>
 #include <vector>
 
-enum class RemasterDebugMode : uint8_t
-{
-	Original,
-	Overlay,
-	SurfaceIds
-};
-
-enum class RemasterSourceType : uint8_t
-{
-	Backdrop = 1,
-	Background = 2,
-	Object = 3
-};
-
 static const uint32_t REMASTER_OWNER_UNSUPPORTED = 0xffffffffu;
 static const uint32_t REMASTER_OWNER_FORCED_BLANK = 0xfffffffeu;
 
@@ -43,8 +31,18 @@ struct RemasterState
 {
 	struct ObservedTile
 	{
+		struct ProfileOutcome
+		{
+			std::string assetGroup;
+			std::string material;
+			uint64_t observations = 0;
+		};
+
 		uint64_t hash = 0;
 		uint64_t observations = 0;
+		uint64_t unmatchedProfileObservations = 0;
+		uint64_t ambiguousProfileObservations = 0;
+		std::set<size_t> conflictingRuleLines;
 		uint32_t sourceMask = 0;
 		uint16_t tileNumber = 0;
 		uint16_t vramAddress = 0;
@@ -52,6 +50,7 @@ struct RemasterState
 		uint8_t sourceIndex = 0;
 		uint8_t palette = 0;
 		RemasterSourceType source = RemasterSourceType::Backdrop;
+		std::map<std::string, ProfileOutcome> profileOutcomes;
 		uint8_t indices[64] = {};
 	};
 
@@ -60,6 +59,10 @@ struct RemasterState
 	std::vector<uint32_t> mainOwners;
 	std::vector<uint32_t> subOwners;
 	std::mutex inventoryMutex;
+	RemasterProfile requestedProfile;
+	RemasterProfile activeProfile;
+	bool profilePending = false;
+	bool captureHasProfile = false;
 	std::string requestedInventoryPath;
 	std::string activeInventoryPath;
 	std::map<uint64_t, ObservedTile> observedTiles;
@@ -111,6 +114,11 @@ inline void S9xRemasterBeginFrame (size_t pixelCount)
 	state.activeDebugMode = state.requestedDebugMode.load(std::memory_order_relaxed);
 	{
 		std::lock_guard<std::mutex> lock(state.inventoryMutex);
+		if (state.profilePending)
+		{
+			state.activeProfile = std::move(state.requestedProfile);
+			state.profilePending = false;
+		}
 		if (!state.requestedInventoryPath.empty())
 		{
 			state.activeInventoryPath.swap(state.requestedInventoryPath);
@@ -118,6 +126,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount)
 			state.hashCollisions = 0;
 			state.drawContexts = 0;
 			state.tileCacheVisits = 0;
+			state.captureHasProfile = !state.activeProfile.rules.empty();
 			state.inventoryActive = true;
 		}
 	}
@@ -223,6 +232,37 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 		return;
 
 	uint64_t hash = S9xRemasterHashTile(bitDepth, indices);
+	RemasterProfileMatch profileMatch;
+	if (!state.activeProfile.rules.empty())
+	{
+		RemasterProfileMatchContext context;
+		context.tileId = { hash, 1, bitDepth };
+		context.source = state.currentSource;
+		context.sourceIndex = state.currentSourceIndex;
+		context.palette = (tileWord >> 10) & 7;
+		profileMatch = S9xRemasterMatchProfile(state.activeProfile, context);
+	}
+	auto recordProfileMatch = [&profileMatch] (RemasterState::ObservedTile &observed) {
+		if (profileMatch.status == RemasterProfileMatchStatus::Ambiguous)
+		{
+			observed.ambiguousProfileObservations++;
+			observed.conflictingRuleLines.insert(profileMatch.conflictingRuleLines.begin(),
+				profileMatch.conflictingRuleLines.end());
+			return;
+		}
+		if (profileMatch.status != RemasterProfileMatchStatus::Matched || !profileMatch.material)
+		{
+			if (S9xRemasterState().captureHasProfile)
+				observed.unmatchedProfileObservations++;
+			return;
+		}
+		std::string group = profileMatch.assetGroup ? profileMatch.assetGroup->name : std::string();
+		std::string key = profileMatch.material->name + "\n" + group;
+		RemasterState::ObservedTile::ProfileOutcome &outcome = observed.profileOutcomes[key];
+		outcome.material = profileMatch.material->name;
+		outcome.assetGroup = group;
+		outcome.observations++;
+	};
 	auto found = state.observedTiles.find(hash);
 	if (found != state.observedTiles.end())
 	{
@@ -233,6 +273,7 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 		}
 		found->second.observations++;
 		found->second.sourceMask |= 1u << static_cast<uint8_t>(state.currentSource);
+		recordProfileMatch(found->second);
 		return;
 	}
 
@@ -246,6 +287,7 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 	observed.sourceIndex = state.currentSourceIndex;
 	observed.palette = (tileWord >> 10) & 7;
 	observed.source = state.currentSource;
+	recordProfileMatch(observed);
 	std::copy(indices, indices + 64, observed.indices);
 	state.observedTiles.emplace(hash, observed);
 }
@@ -255,6 +297,19 @@ inline void S9xRemasterRequestTileInventory (const std::string &path)
 	RemasterState &state = S9xRemasterState();
 	std::lock_guard<std::mutex> lock(state.inventoryMutex);
 	state.requestedInventoryPath = path;
+}
+
+inline void S9xRemasterSetProfile (RemasterProfile profile)
+{
+	RemasterState &state = S9xRemasterState();
+	std::lock_guard<std::mutex> lock(state.inventoryMutex);
+	state.requestedProfile = std::move(profile);
+	state.profilePending = true;
+}
+
+inline void S9xRemasterClearProfile (void)
+{
+	S9xRemasterSetProfile(RemasterProfile());
 }
 
 inline bool S9xRemasterEndFrame (void)
@@ -274,6 +329,7 @@ inline bool S9xRemasterEndFrame (void)
 		<< "  \"hash_algorithm\": \"fnv1a64\",\n  \"hash_collisions\": " << state.hashCollisions
 		<< ",\n  \"draw_contexts\": " << state.drawContexts
 		<< ",\n  \"tile_cache_visits\": " << state.tileCacheVisits
+		<< ",\n  \"profile_loaded\": " << (state.captureHasProfile ? "true" : "false")
 		<< ",\n  \"assets\": [\n";
 	bool firstAsset = true;
 	for (const auto &entry : state.observedTiles)
@@ -292,6 +348,32 @@ inline bool S9xRemasterEndFrame (void)
 			<< ", \"tile_number\": " << tile.tileNumber
 			<< ", \"palette\": " << static_cast<unsigned>(tile.palette)
 			<< ", \"vram_address\": " << tile.vramAddress << " },\n"
+			<< "      \"profile_matches\": [";
+		bool firstMatch = true;
+		for (const auto &matchEntry : tile.profileOutcomes)
+		{
+			const RemasterState::ObservedTile::ProfileOutcome &match = matchEntry.second;
+			if (!firstMatch)
+				output << ", ";
+			firstMatch = false;
+			output << "{ \"material\": \"" << match.material << "\"";
+			if (!match.assetGroup.empty())
+				output << ", \"asset_group\": \"" << match.assetGroup << "\"";
+			output << ", \"observations\": " << match.observations << " }";
+		}
+		output << "],\n"
+			<< "      \"profile_unmatched_observations\": " << tile.unmatchedProfileObservations << ",\n"
+			<< "      \"profile_ambiguous_observations\": " << tile.ambiguousProfileObservations << ",\n"
+			<< "      \"profile_conflicting_rule_lines\": [";
+		bool firstLine = true;
+		for (size_t line : tile.conflictingRuleLines)
+		{
+			if (!firstLine)
+				output << ", ";
+			firstLine = false;
+			output << line;
+		}
+		output << "],\n"
 			<< "      \"indices\": [\n";
 		for (size_t y = 0; y < 8; y++)
 		{
