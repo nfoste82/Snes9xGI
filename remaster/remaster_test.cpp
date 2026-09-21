@@ -176,6 +176,10 @@ material = "wet_stone"
 	assert(capturedFrameBytes.size() > 8);
 	assert(std::string(capturedFrameBytes.begin(), capturedFrameBytes.begin() + 6) == "S9XRMF");
 	std::remove(framePath.c_str());
+	S9xRemasterRequestFrameCapture(framePath);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	assert(!(S9xRemasterEndFrame(screen, 1, 2, 1) & RemasterCaptureFrame));
+	std::remove(framePath.c_str());
 
 	const char *ambiguousProfile = R"PROFILE(
 schema_version = 1

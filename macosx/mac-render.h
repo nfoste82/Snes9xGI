@@ -22,9 +22,12 @@
 #ifndef _mac_render_h_
 #define _mac_render_h_
 
+#include "remaster/frame.h"
+
 void InitGraphics (void);
 void DeinitGraphics (void);
 void DrawFreezeDefrostScreen (uint8 *);
+bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode);
 void GetGameDisplay (int *, int *);
 
 #endif

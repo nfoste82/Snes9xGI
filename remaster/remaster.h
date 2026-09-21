@@ -599,7 +599,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		state.inventoryActive = false;
 	}
 
-	if (state.frameCaptureActive && screen && screenWidth && screenHeight &&
+	if (state.frameCaptureActive && screen && screenWidth && screenHeight && screenPitch >= screenWidth &&
 		screenWidth <= state.capturePitch && screenWidth <= UINT32_MAX && screenHeight <= UINT32_MAX)
 	{
 		RemasterFrame frame;

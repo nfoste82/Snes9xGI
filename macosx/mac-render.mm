@@ -28,6 +28,7 @@
 #include "blit.h"
 #include "remaster/remaster.h"
 
+#include <mutex>
 #include <sys/time.h>
 
 #include "mac-prefix.h"
@@ -37,7 +38,7 @@
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
-static void S9xPutImageMetal (int, int, uint16 *, bool = true);
+static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t, RemasterDebugMode);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -113,7 +114,19 @@ void DeinitGraphics (void)
 void DrawFreezeDefrostScreen (uint8 *draw)
 {
 	const int w = SNES_WIDTH << 1, h = SNES_HEIGHT << 1;
-	S9xPutImageMetal(w, h, (uint16 *)draw, false);
+	S9xPutImageMetal(w, h, (uint16 *)draw, w, nullptr, 0, RemasterDebugMode::Original);
+}
+
+bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode)
+{
+	if (frame.width > INT_MAX || frame.height > INT_MAX)
+		return false;
+	std::vector<uint32_t> owners;
+	owners.reserve(frame.mainPixels.size());
+	for (const RemasterFramePixel &pixel : frame.mainPixels)
+		owners.push_back(pixel.owner);
+	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
+		frame.originalRgb555.data(), frame.width, owners.data(), frame.width, debugMode);
 }
 
 static void S9xInitMetal (void)
@@ -287,29 +300,37 @@ void S9xPutImage (int width, int height)
         IPPU.DisplayedRenderedFrameCount = (Memory.ROMFramesPerSecond * 60) / frameCalc;
     }
 	
-	S9xPutImageMetal(width, height, GFX.Screen);
+	S9xPutImageMetal(width, height, GFX.Screen, GFX.RealPPL, S9xRemasterMainOwners(), GFX.RealPPL,
+		S9xRemasterGetDebugMode());
 }
 
 
-static void S9xPutImageMetal (int width, int height, uint16 *buffer16, bool showRemasterDebug)
+static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, size_t pitch,
+	const uint32_t *owners, size_t ownerPitch, RemasterDebugMode debugMode)
 {
+	static std::mutex renderMutex;
+	std::lock_guard<std::mutex> lock(renderMutex);
 	static uint8 *buffer = nil;
-	static int buffer_size = 0;
+	static size_t buffer_size = 0;
+	if (width <= 0 || height <= 0 || !buffer16 || pitch < static_cast<size_t>(width) ||
+		!metalLayer || !metalDevice || !metalCommandQueue || !metalPipelineState)
+		return false;
+	const size_t requiredSize = static_cast<size_t>(width) * height * 4;
 
-	if (buffer_size != width * height * 4)
+	if (buffer_size != requiredSize)
 	{
-		buffer = (uint8 *)realloc(buffer, width * height * 4);
-		buffer_size = width * height * 4;
+		uint8 *newBuffer = (uint8 *)realloc(buffer, requiredSize);
+		if (!newBuffer)
+			return false;
+		buffer = newBuffer;
+		buffer_size = requiredSize;
 	}
-
-	const RemasterDebugMode debugMode = showRemasterDebug ? S9xRemasterGetDebugMode() : RemasterDebugMode::Original;
-	const uint32_t *owners = S9xRemasterMainOwners();
 
 	for (int y = 0; y < height; y++)
 	{
 		for (int x = 0; x < width; x++)
 		{
-			uint16 pixel = buffer16[y * GFX.RealPPL + x];
+			uint16 pixel = buffer16[y * pitch + x];
 			unsigned int red = (pixel & FIRST_COLOR_MASK_RGB555) >> 10;
 			unsigned int green = (pixel & SECOND_COLOR_MASK_RGB555) >> 5;
 			unsigned int blue = (pixel & THIRD_COLOR_MASK_RGB555);
@@ -320,7 +341,8 @@ static void S9xPutImageMetal (int width, int height, uint16 *buffer16, bool show
 
 			if (debugMode != RemasterDebugMode::Original)
 			{
-				uint32 owner = owners ? owners[y * GFX.RealPPL + x] : REMASTER_OWNER_UNSUPPORTED;
+				uint32 owner = owners && ownerPitch >= static_cast<size_t>(width) ?
+					owners[y * ownerPitch + x] : REMASTER_OWNER_UNSUPPORTED;
 				unsigned int debugRed, debugGreen, debugBlue;
 				if (owner == REMASTER_OWNER_UNSUPPORTED)
 				{
@@ -397,6 +419,8 @@ static void S9xPutImageMetal (int width, int height, uint16 *buffer16, bool show
 		commandBuffer.label = @"Snes9x command buffer";
 		
 		id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
+		if (!drawable)
+			return false;
 		
 		MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
 		
@@ -431,14 +455,14 @@ static void S9xPutImageMetal (int width, int height, uint16 *buffer16, bool show
 			[renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 			
 			[renderEncoder endEncoding];
-			
+
+			[commandBuffer presentDrawable:drawable];
 			[commandBuffer commit];
 			
 			[commandBuffer waitUntilCompleted];
-			
-			[drawable present];
 		}
 	}
+	return true;
 }
 
 void S9xTextMode (void)

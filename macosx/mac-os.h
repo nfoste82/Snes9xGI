@@ -211,6 +211,7 @@ extern id<S9xInputDelegate> inputDelegate;
 
 - (BOOL)isRunning;
 - (BOOL)isPaused;
+- (BOOL)isPresentingRemasterFrame;
 - (void)pause;
 - (void)quit;
 - (void)resume;
@@ -236,6 +237,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (NSString *)cycleRemasterDebugMode;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
+- (NSString *)openRemasterFrame:(NSURL *)fileURL;
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL;
 
 - (void)setDeviceSetting:(S9xDeviceSetting)_deviceSetting;

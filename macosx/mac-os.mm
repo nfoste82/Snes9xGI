@@ -292,6 +292,8 @@ static bool8			pauseEmulation  = false,
 static int				frameCount      = 0;
 
 static bool8			frzselecting    = false;
+static bool8			remasterFramePresenting = false;
+static RemasterFrame	remasterReplayFrame;
 
 static uint16			changeAuto[2] = { 0x0000, 0x0000 };
 
@@ -3058,7 +3060,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)updatePauseOverlay
 {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		self.subviews[0].hidden = (frzselecting || !pauseEmulation);
+		self.subviews[0].hidden = (frzselecting || remasterFramePresenting || !pauseEmulation);
 		CGFloat scaleFactor = MAX(self.window.backingScaleFactor, 1.0);
 		glScreenW = self.frame.size.width * scaleFactor;
 		glScreenH = self.frame.size.height * scaleFactor;
@@ -3195,6 +3197,11 @@ void QuitWithFatalError ( NSString *message)
     return running && pauseEmulation;
 }
 
+- (BOOL)isPresentingRemasterFrame
+{
+	return remasterFramePresenting;
+}
+
 - (void)pause
 {
     pauseEmulation = true;
@@ -3210,7 +3217,9 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resume
 {
-    pauseEmulation = false;
+	remasterFramePresenting = false;
+	remasterReplayFrame = RemasterFrame();
+	pauseEmulation = false;
 	[self.emulationDelegate emulationResumed];
 	[s9xView updatePauseOverlay];
 }
@@ -3398,7 +3407,10 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSString *)cycleRemasterDebugMode
 {
-	switch (S9xRemasterCycleDebugMode())
+	const RemasterDebugMode mode = S9xRemasterCycleDebugMode();
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, mode);
+	switch (mode)
 	{
 		case RemasterDebugMode::Overlay:
 			return @"Surface Overlay";
@@ -3448,6 +3460,27 @@ void QuitWithFatalError ( NSString *message)
 	NSURL *file = [directory URLByAppendingPathComponent:@"frame.s9xrmf"];
 	S9xRemasterRequestFrameCapture(file.path.UTF8String);
 	return file.path;
+}
+
+- (NSString *)openRemasterFrame:(NSURL *)fileURL
+{
+	if (running && !pauseEmulation)
+		return @"Pause emulation before opening a remaster frame.";
+	if (!running && s9xthreadrunning)
+		return @"Wait for emulation to stop before opening a remaster frame.";
+
+	RemasterFrame frame;
+	if (!S9xReadRemasterFrame(fileURL.path.UTF8String, frame))
+		return @"The file is not a valid supported remaster frame capture.";
+	if (frame.width > MAX_SNES_WIDTH || frame.height > MAX_SNES_HEIGHT)
+		return @"The captured frame dimensions are not supported by this renderer.";
+	if (!DrawRemasterFrame(frame, RemasterDebugMode::Original))
+		return @"The captured frame could not be presented.";
+
+	remasterReplayFrame = std::move(frame);
+	remasterFramePresenting = true;
+	[s9xView updatePauseOverlay];
+	return nil;
 }
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL

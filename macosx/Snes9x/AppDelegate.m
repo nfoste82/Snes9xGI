@@ -57,6 +57,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	frameItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	frameItem.target = self;
 	[viewMenuItem.submenu addItem:frameItem];
+	NSMenuItem *openFrameItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Open Remaster Frame...", nil)
+	                                                       action:@selector(openRemasterFrame:)
+	                                                keyEquivalent:@""];
+	openFrameItem.target = self;
+	[viewMenuItem.submenu addItem:openFrameItem];
 	NSMenuItem *profileItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Load Remaster Profile...", nil)
 	                                                     action:@selector(loadRemasterProfile:)
 	                                              keyEquivalent:@""];
@@ -554,10 +559,15 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
-	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(captureRemasterTileInventory:) ||
-		action == @selector(captureRemasterFrame:) ||
+	else if (action == @selector(cycleRemasterDebugMode:)) {
+		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
+	}
+	else if (action == @selector(captureRemasterTileInventory:) || action == @selector(captureRemasterFrame:) ||
 		action == @selector(loadRemasterProfile:)) {
 		return [self.s9xEngine isRunning];
+	}
+	else if (action == @selector(openRemasterFrame:)) {
+		return ![self.s9xEngine isRunning] || [self.s9xEngine isPaused];
 	}
 	else if (action == @selector(updateDeviceSetting:)) {
 		menuItem.state = (self.deviceSetting == (S9xDeviceSetting)menuItem.tag) ? NSOnState : NSOffState;
@@ -675,6 +685,35 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 	NSAlert *alert = [NSAlert new];
 	alert.messageText = @"Unable to Load Remaster Profile";
+	alert.informativeText = error;
+	[alert runModal];
+}
+
+- (IBAction)openRemasterFrame:(id)sender
+{
+	NSOpenPanel *panel = [NSOpenPanel openPanel];
+	panel.allowsMultipleSelection = NO;
+	panel.canChooseDirectories = NO;
+	panel.allowedFileTypes = @[@"s9xrmf"];
+	NSURL *applicationSupport = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
+	                                                                    inDomain:NSUserDomainMask
+	                                                           appropriateForURL:nil
+	                                                                      create:NO
+	                                                                       error:nil];
+	panel.directoryURL = [[applicationSupport URLByAppendingPathComponent:@"Snes9x" isDirectory:YES]
+		URLByAppendingPathComponent:@"Remaster" isDirectory:YES];
+	if ([panel runModal] != NSModalResponseOK)
+		return;
+
+	NSString *error = [self.s9xEngine openRemasterFrame:panel.URL];
+	if (!error)
+	{
+		NSLog(@"Remaster frame opened: %@", panel.URL.path);
+		return;
+	}
+
+	NSAlert *alert = [NSAlert new];
+	alert.messageText = @"Unable to Open Remaster Frame";
 	alert.informativeText = error;
 	[alert runModal];
 }
