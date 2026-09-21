@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 1;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 4;
 
 struct RemasterFramePixel
 {
@@ -29,6 +29,24 @@ struct RemasterFrameAsset
 {
 	RemasterTileContentId tileId;
 	uint8_t indices[64] = {};
+};
+
+struct RemasterFrameAssetGroup
+{
+	std::string name;
+	std::vector<RemasterTileContentId> tileIds;
+};
+
+struct RemasterFrameAssetMetadata
+{
+	RemasterTileContentId tileId;
+	std::array<std::string, 64> materialSelectors;
+	std::array<uint8_t, 64> occlusion = {};
+	std::array<uint8_t, 64> height = {};
+	bool hasMaterialSelectors = false;
+	bool hasOcclusion = false;
+	bool hasHeight = false;
+	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
 
 struct RemasterFrameMaterial
@@ -80,6 +98,8 @@ struct RemasterFrame
 	std::vector<RemasterFramePixel> mainPixels;
 	std::vector<RemasterFramePixel> subPixels;
 	std::vector<RemasterFrameAsset> assets;
+	std::vector<RemasterFrameAssetGroup> assetGroups;
+	std::vector<RemasterFrameAssetMetadata> assetMetadata;
 	std::vector<RemasterFrameMaterial> materials;
 	std::vector<RemasterFrameTileInstance> tileInstances;
 	std::vector<RemasterFrameLight> lights;
@@ -87,6 +107,12 @@ struct RemasterFrame
 
 namespace RemasterFrameSerialization
 {
+	inline bool ValidTileId (const RemasterTileContentId &tileId)
+	{
+		return tileId.hashVersion == 1 &&
+			(tileId.bitDepth == 2 || tileId.bitDepth == 4 || tileId.bitDepth == 8);
+	}
+
 	struct Reader
 	{
 		const std::vector<uint8_t> &bytes;
@@ -228,17 +254,23 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	input.offset = sizeof(magic);
 	RemasterFrame result;
 	uint32_t assetCount = 0;
+	uint32_t groupCount = 0;
+	uint32_t metadataCount = 0;
 	uint32_t materialCount = 0;
 	uint32_t instanceCount = 0;
 	uint32_t lightCount = 0;
-	if (!input.ReadU32(result.schemaVersion) || result.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION ||
+	if (!input.ReadU32(result.schemaVersion) || result.schemaVersion < 1 ||
+		result.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION ||
 		!input.ReadU32(result.width) || !input.ReadU32(result.height) || !result.width || !result.height ||
 		result.width > UINT32_MAX / result.height || !input.ReadString(result.profileRomSha256) ||
-		!input.ReadU32(assetCount) || !input.ReadU32(materialCount) ||
+		!input.ReadU32(assetCount) ||
+		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
+		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
 		return false;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
-	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 ||
+	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 || groupCount > bytes.size() / 4 ||
+		metadataCount > bytes.size() / 12 || metadataCount > 16384 ||
 		materialCount > bytes.size() || instanceCount > bytes.size() / 25 || lightCount > bytes.size() / 32)
 		return false;
 
@@ -258,10 +290,63 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	result.assets.resize(assetCount);
 	for (RemasterFrameAsset &asset : result.assets)
 	{
-		if (!input.ReadTileId(asset.tileId) || input.offset + 64 > bytes.size())
+		if (!input.ReadTileId(asset.tileId) || !RemasterFrameSerialization::ValidTileId(asset.tileId) ||
+			input.offset + 64 > bytes.size())
 			return false;
 		std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + 64, asset.indices);
 		input.offset += 64;
+	}
+	result.assetGroups.resize(groupCount);
+	for (RemasterFrameAssetGroup &group : result.assetGroups)
+	{
+		uint32_t tileCount = 0;
+		if (!input.ReadString(group.name) || !input.ReadU32(tileCount) || tileCount > bytes.size() / 10)
+			return false;
+		group.tileIds.resize(tileCount);
+		for (RemasterTileContentId &tileId : group.tileIds)
+			if (!input.ReadTileId(tileId) || !RemasterFrameSerialization::ValidTileId(tileId))
+				return false;
+	}
+	result.assetMetadata.resize(metadataCount);
+	std::set<RemasterTileContentId> metadataIds;
+	for (RemasterFrameAssetMetadata &metadata : result.assetMetadata)
+	{
+		uint8_t hasMaterials = 0;
+		uint8_t hasOcclusion = 0;
+		uint8_t hasHeight = 0;
+		uint8_t heightSampling = 0;
+		if (!input.ReadTileId(metadata.tileId) || !RemasterFrameSerialization::ValidTileId(metadata.tileId) ||
+			!input.ReadU8(hasMaterials) || !input.ReadU8(hasOcclusion) ||
+			hasMaterials > 1 || hasOcclusion > 1 ||
+			(result.schemaVersion >= 4 && (!input.ReadU8(hasHeight) || !input.ReadU8(heightSampling) ||
+				hasHeight > 1 || heightSampling > static_cast<uint8_t>(RemasterHeightSampling::Linear))))
+			return false;
+		if (!metadataIds.insert(metadata.tileId).second)
+			return false;
+		metadata.hasMaterialSelectors = hasMaterials != 0;
+		metadata.hasOcclusion = hasOcclusion != 0;
+		metadata.hasHeight = hasHeight != 0;
+		metadata.heightSampling = static_cast<RemasterHeightSampling>(heightSampling);
+		if (metadata.hasMaterialSelectors)
+			for (std::string &name : metadata.materialSelectors)
+				if (!input.ReadString(name))
+					return false;
+		if (metadata.hasOcclusion)
+		{
+			if (input.offset + metadata.occlusion.size() > bytes.size())
+				return false;
+			std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + metadata.occlusion.size(),
+				metadata.occlusion.begin());
+			input.offset += metadata.occlusion.size();
+		}
+		if (metadata.hasHeight)
+		{
+			if (input.offset + metadata.height.size() > bytes.size())
+				return false;
+			std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + metadata.height.size(),
+				metadata.height.begin());
+			input.offset += metadata.height.size();
+		}
 	}
 	result.materials.resize(materialCount);
 	for (RemasterFrameMaterial &material : result.materials)
@@ -285,7 +370,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	{
 		uint8_t source = 0;
 		uint8_t matchStatus = 0;
-		if (!input.ReadTileId(instance.tileId) || !input.ReadU8(source) ||
+		if (!input.ReadTileId(instance.tileId) || !RemasterFrameSerialization::ValidTileId(instance.tileId) ||
+			!input.ReadU8(source) ||
 			source < static_cast<uint8_t>(RemasterSourceType::Backdrop) ||
 			source > static_cast<uint8_t>(RemasterSourceType::Object) ||
 			!input.ReadU8(instance.sourceIndex) || !input.ReadU16(instance.tileNumber) ||
@@ -353,6 +439,44 @@ inline std::vector<uint32_t> S9xRemasterFrameOccurrences (
 	return occurrences;
 }
 
+inline const RemasterFrameAsset *S9xRemasterFrameAssetForTile (
+	const RemasterFrame &frame, const RemasterTileContentId &tileId)
+{
+	for (const RemasterFrameAsset &asset : frame.assets)
+		if (asset.tileId == tileId)
+			return &asset;
+	return nullptr;
+}
+
+inline const RemasterFrameAssetMetadata *S9xRemasterFrameMetadataForTile (
+	const RemasterFrame &frame, const RemasterTileContentId &tileId)
+{
+	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+		if (metadata.tileId == tileId)
+			return &metadata;
+	return nullptr;
+}
+
+inline std::vector<RemasterTileContentId> S9xRemasterFrameAssetGroupVariants (
+	const RemasterFrame &frame, const std::string &groupName)
+{
+	if (groupName.empty())
+		return {};
+	for (const RemasterFrameAssetGroup &group : frame.assetGroups)
+		if (group.name == groupName)
+			return group.tileIds;
+
+	std::vector<RemasterTileContentId> variants;
+	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
+	{
+		if (instance.assetGroup != groupName ||
+			std::find(variants.begin(), variants.end(), instance.tileId) != variants.end())
+			continue;
+		variants.push_back(instance.tileId);
+	}
+	return variants;
+}
+
 inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<uint8_t> &bytes)
 {
 	if (frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION ||
@@ -363,6 +487,26 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	if (frame.originalRgb555.size() != pixelCount || frame.mainPixels.size() != pixelCount ||
 		frame.subPixels.size() != pixelCount)
 		return false;
+	for (const RemasterFrameAsset &asset : frame.assets)
+		if (!RemasterFrameSerialization::ValidTileId(asset.tileId))
+			return false;
+	for (const RemasterFrameAssetGroup &group : frame.assetGroups)
+		for (const RemasterTileContentId &tileId : group.tileIds)
+			if (!RemasterFrameSerialization::ValidTileId(tileId))
+				return false;
+	if (frame.assetMetadata.size() > 16384)
+		return false;
+	std::set<RemasterTileContentId> metadataIds;
+	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+	{
+		if (!RemasterFrameSerialization::ValidTileId(metadata.tileId))
+			return false;
+		if (!metadataIds.insert(metadata.tileId).second)
+			return false;
+	}
+	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
+		if (!RemasterFrameSerialization::ValidTileId(instance.tileId))
+			return false;
 
 	bytes.clear();
 	const uint8_t magic[] = { 'S', '9', 'X', 'R', 'M', 'F', 0, 1 };
@@ -372,6 +516,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	RemasterFrameSerialization::U32(bytes, frame.height);
 	if (!RemasterFrameSerialization::String(bytes, frame.profileRomSha256) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
+		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||
+		!RemasterFrameSerialization::Size(bytes, frame.assetMetadata.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.materials.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.tileInstances.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.lights.size()))
@@ -393,6 +539,30 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	{
 		RemasterFrameSerialization::TileId(bytes, asset.tileId);
 		bytes.insert(bytes.end(), asset.indices, asset.indices + 64);
+	}
+	for (const RemasterFrameAssetGroup &group : frame.assetGroups)
+	{
+		if (!RemasterFrameSerialization::String(bytes, group.name) ||
+			!RemasterFrameSerialization::Size(bytes, group.tileIds.size()))
+			return false;
+		for (const RemasterTileContentId &tileId : group.tileIds)
+			RemasterFrameSerialization::TileId(bytes, tileId);
+	}
+	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+	{
+		RemasterFrameSerialization::TileId(bytes, metadata.tileId);
+		RemasterFrameSerialization::U8(bytes, metadata.hasMaterialSelectors ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, metadata.hasOcclusion ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, metadata.hasHeight ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(metadata.heightSampling));
+		if (metadata.hasMaterialSelectors)
+			for (const std::string &name : metadata.materialSelectors)
+				if (!RemasterFrameSerialization::String(bytes, name))
+					return false;
+		if (metadata.hasOcclusion)
+			bytes.insert(bytes.end(), metadata.occlusion.begin(), metadata.occlusion.end());
+		if (metadata.hasHeight)
+			bytes.insert(bytes.end(), metadata.height.begin(), metadata.height.end());
 	}
 	for (const RemasterFrameMaterial &material : frame.materials)
 	{

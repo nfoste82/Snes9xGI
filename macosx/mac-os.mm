@@ -298,6 +298,24 @@ static bool			remasterSelectionValid = false;
 static RemasterTileContentId remasterSelectedTile;
 static NSPanel			*remasterInspectorPanel;
 static NSTextView		*remasterInspectorText;
+static NSImageView		*remasterTilePreview;
+static NSTextField		*remasterVariantLabel;
+static NSButton			*remasterPreviousVariantButton;
+static NSButton			*remasterNextVariantButton;
+static NSPopUpButton	*remasterLayerSelector;
+static NSPopUpButton	*remasterMaterialBrush;
+static NSSlider			*remasterValueBrush;
+static NSTextField		*remasterValueLabel;
+static NSPopUpButton	*remasterHeightSamplingSelector;
+static NSButton			*remasterSaveProfileButton;
+static std::vector<RemasterTileContentId> remasterVariants;
+static size_t			remasterVariantIndex;
+static RemasterProfile	remasterEditingProfile;
+static NSURL			*remasterEditingProfileURL;
+static bool			remasterEditingProfileLoaded = false;
+static bool			remasterEditingProfileDirty = false;
+static bool			remasterTilePixelSelected = false;
+static size_t		remasterSelectedTilePixel = 0;
 
 static uint16			changeAuto[2] = { 0x0000, 0x0000 };
 
@@ -3117,6 +3135,18 @@ void QuitWithFatalError ( NSString *message)
 
 @end
 
+@interface S9xEngine ()
+- (void)showRemasterVariantAtIndex:(size_t)index;
+- (void)previousRemasterVariant:(id)sender;
+- (void)nextRemasterVariant:(id)sender;
+- (void)changeRemasterLayer:(id)sender;
+- (void)paintRemasterTilePixel:(NSClickGestureRecognizer *)sender;
+- (void)changeRemasterPixelValue:(id)sender;
+- (void)changeRemasterHeightSampling:(id)sender;
+- (void)saveRemasterProfile:(id)sender;
+- (void)refreshRemasterEditingControls;
+@end
+
 @implementation S9xEngine
 
 - (instancetype)init
@@ -3226,6 +3256,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	remasterFramePresenting = false;
 	remasterSelectionValid = false;
+	remasterVariants.clear();
 	remasterReplayFrame = RemasterFrame();
 	[remasterInspectorPanel orderOut:nil];
 	pauseEmulation = false;
@@ -3490,6 +3521,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterReplayFrame = std::move(frame);
 	remasterFramePresenting = true;
 	remasterSelectionValid = false;
+	remasterVariants.clear();
 	[remasterInspectorPanel orderOut:nil];
 	[s9xView updatePauseOverlay];
 	return nil;
@@ -3513,6 +3545,7 @@ void QuitWithFatalError ( NSString *message)
 	const RemasterFrameTileInstance *instance = S9xRemasterFrameInstanceAt(remasterReplayFrame, x, y);
 
 	remasterSelectionValid = instance != nullptr;
+	remasterTilePixelSelected = false;
 	if (instance)
 		remasterSelectedTile = instance->tileId;
 	DrawRemasterFrame(remasterReplayFrame, S9xRemasterGetDebugMode(),
@@ -3520,12 +3553,75 @@ void QuitWithFatalError ( NSString *message)
 
 	if (!remasterInspectorPanel)
 	{
-		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 480, 300)
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 420)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
 		remasterInspectorPanel.floatingPanel = YES;
-		NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:remasterInspectorPanel.contentView.bounds];
+		NSView *contentView = remasterInspectorPanel.contentView;
+		remasterTilePreview = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 265, 128, 128)];
+		remasterTilePreview.imageFrameStyle = NSImageFrameGrayBezel;
+		remasterTilePreview.imageScaling = NSImageScaleAxesIndependently;
+		NSClickGestureRecognizer *paintRecognizer = [[NSClickGestureRecognizer alloc] initWithTarget:self
+			action:@selector(paintRemasterTilePixel:)];
+		[remasterTilePreview addGestureRecognizer:paintRecognizer];
+		[contentView addSubview:remasterTilePreview];
+		remasterVariantLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 165, 128, 90)];
+		remasterVariantLabel.editable = NO;
+		remasterVariantLabel.selectable = YES;
+		remasterVariantLabel.bezeled = NO;
+		remasterVariantLabel.drawsBackground = NO;
+		remasterVariantLabel.alignment = NSTextAlignmentCenter;
+		remasterVariantLabel.font = [NSFont systemFontOfSize:11];
+		[contentView addSubview:remasterVariantLabel];
+		remasterPreviousVariantButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 125, 60, 30)];
+		remasterPreviousVariantButton.title = @"Previous";
+		remasterPreviousVariantButton.bezelStyle = NSBezelStyleRounded;
+		remasterPreviousVariantButton.target = self;
+		remasterPreviousVariantButton.action = @selector(previousRemasterVariant:);
+		[contentView addSubview:remasterPreviousVariantButton];
+		remasterNextVariantButton = [[NSButton alloc] initWithFrame:NSMakeRect(88, 125, 60, 30)];
+		remasterNextVariantButton.title = @"Next";
+		remasterNextVariantButton.bezelStyle = NSBezelStyleRounded;
+		remasterNextVariantButton.target = self;
+		remasterNextVariantButton.action = @selector(nextRemasterVariant:);
+		[contentView addSubview:remasterNextVariantButton];
+		remasterLayerSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 87, 128, 28) pullsDown:NO];
+		[remasterLayerSelector addItemsWithTitles:@[@"Artwork", @"Material", @"Occlusion", @"Height"]];
+		remasterLayerSelector.target = self;
+		remasterLayerSelector.action = @selector(changeRemasterLayer:);
+		[contentView addSubview:remasterLayerSelector];
+		remasterMaterialBrush = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(168, 377, 190, 28) pullsDown:NO];
+		[remasterMaterialBrush addItemWithTitle:@"Inherit"];
+		if (remasterEditingProfileLoaded)
+			for (const auto &entry : remasterEditingProfile.materials)
+				[remasterMaterialBrush addItemWithTitle:[NSString stringWithUTF8String:entry.first.c_str()]];
+		[contentView addSubview:remasterMaterialBrush];
+		remasterValueBrush = [[NSSlider alloc] initWithFrame:NSMakeRect(368, 380, 190, 22)];
+		remasterValueBrush.minValue = 0;
+		remasterValueBrush.maxValue = 255;
+		remasterValueBrush.integerValue = 255;
+		[contentView addSubview:remasterValueBrush];
+		remasterValueLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(562, 379, 145, 24)];
+		remasterValueLabel.editable = NO;
+		remasterValueLabel.bezeled = NO;
+		remasterValueLabel.drawsBackground = NO;
+		remasterValueLabel.stringValue = @"Select a pixel";
+		[remasterValueBrush setTarget:self];
+		[remasterValueBrush setAction:@selector(changeRemasterPixelValue:)];
+		[contentView addSubview:remasterValueLabel];
+		remasterHeightSamplingSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 10, 128, 28) pullsDown:NO];
+		[remasterHeightSamplingSelector addItemsWithTitles:@[@"Nearest", @"Linear"]];
+		remasterHeightSamplingSelector.target = self;
+		remasterHeightSamplingSelector.action = @selector(changeRemasterHeightSampling:);
+		[contentView addSubview:remasterHeightSamplingSelector];
+		remasterSaveProfileButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 45, 128, 30)];
+		remasterSaveProfileButton.title = @"Save Profile";
+		remasterSaveProfileButton.bezelStyle = NSBezelStyleRounded;
+		remasterSaveProfileButton.target = self;
+		remasterSaveProfileButton.action = @selector(saveRemasterProfile:);
+		[contentView addSubview:remasterSaveProfileButton];
+		NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(168, 20, 572, 347)];
 		scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 		scrollView.hasVerticalScroller = YES;
 		remasterInspectorText = [[NSTextView alloc] initWithFrame:scrollView.contentView.bounds];
@@ -3534,8 +3630,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterInspectorText.font = [NSFont userFixedPitchFontOfSize:12];
 		remasterInspectorText.textContainerInset = NSMakeSize(10, 10);
 		scrollView.documentView = remasterInspectorText;
-		remasterInspectorPanel.contentView = scrollView;
+		[contentView addSubview:scrollView];
 		[remasterInspectorPanel center];
+		[self refreshRemasterEditingControls];
 	}
 
 	std::ostringstream text;
@@ -3571,8 +3668,296 @@ void QuitWithFatalError ( NSString *message)
 		text << "Tile        No captured tile instance\n";
 	}
 	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
+	remasterVariants.clear();
+	if (instance)
+	{
+		remasterVariants = S9xRemasterFrameAssetGroupVariants(remasterReplayFrame, instance->assetGroup);
+		if (remasterVariants.empty())
+			remasterVariants.push_back(instance->tileId);
+		auto selected = std::find(remasterVariants.begin(), remasterVariants.end(), instance->tileId);
+		[self showRemasterVariantAtIndex:selected == remasterVariants.end() ? 0 :
+			static_cast<size_t>(selected - remasterVariants.begin())];
+	}
+	else
+	{
+		remasterTilePreview.image = nil;
+		remasterVariantLabel.stringValue = @"No decoded tile";
+		remasterPreviousVariantButton.enabled = NO;
+		remasterNextVariantButton.enabled = NO;
+	}
 	[remasterInspectorPanel orderFront:nil];
 	return YES;
+}
+
+- (void)showRemasterVariantAtIndex:(size_t)index
+{
+	if (index >= remasterVariants.size())
+		return;
+	if (!(remasterSelectedTile == remasterVariants[index]))
+		remasterTilePixelSelected = false;
+	remasterVariantIndex = index;
+	remasterSelectedTile = remasterVariants[index];
+	remasterSelectionValid = true;
+	DrawRemasterFrame(remasterReplayFrame, S9xRemasterGetDebugMode(), &remasterSelectedTile);
+
+	const RemasterFrameAsset *asset = S9xRemasterFrameAssetForTile(remasterReplayFrame, remasterSelectedTile);
+	const RemasterFrameAssetMetadata *capturedMetadata = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
+	const RemasterAssetMetadata *editableMetadata = nullptr;
+	if (remasterEditingProfileLoaded)
+	{
+		auto found = remasterEditingProfile.assets.find(remasterSelectedTile);
+		if (found != remasterEditingProfile.assets.end())
+			editableMetadata = &found->second;
+	}
+	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	const bool hasMaterials = editableMetadata ? editableMetadata->hasMaterialSelectors :
+		(capturedMetadata && capturedMetadata->hasMaterialSelectors);
+	const bool hasOcclusion = editableMetadata ? editableMetadata->hasOcclusion :
+		(capturedMetadata && capturedMetadata->hasOcclusion);
+	const bool hasHeight = editableMetadata ? editableMetadata->hasHeight :
+		(capturedMetadata && capturedMetadata->hasHeight);
+	const bool canRender = layer == 0 ? asset != nullptr : capturedMetadata != nullptr || remasterEditingProfileLoaded;
+	if (canRender)
+	{
+		const NSInteger size = 128;
+		NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
+			initWithBitmapDataPlanes:nil pixelsWide:size pixelsHigh:size bitsPerSample:8 samplesPerPixel:4
+			hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace bytesPerRow:size * 4 bitsPerPixel:32];
+		uint8_t *pixels = bitmap.bitmapData;
+		const unsigned maximum = (1u << std::min<unsigned>(remasterSelectedTile.bitDepth, 8)) - 1;
+		for (NSInteger y = 0; y < size; y++)
+		{
+			for (NSInteger x = 0; x < size; x++)
+			{
+				const size_t source = (y / 16) * 8 + x / 16;
+				const uint8_t paletteIndex = asset ? asset->indices[source] : 0;
+				uint8_t *pixel = pixels + (y * size + x) * 4;
+				if (layer == 1 && hasMaterials)
+				{
+					const std::string &name = editableMetadata ? editableMetadata->materialSelectors[source] :
+						capturedMetadata->materialSelectors[source];
+					if (name.empty())
+					{
+						pixel[0] = pixel[1] = pixel[2] = ((x / 8) + (y / 8)) & 1 ? 45 : 65;
+					}
+					else
+					{
+						uint32_t hash = 2166136261u;
+						for (uint8_t byte : name)
+							hash = (hash ^ byte) * 16777619u;
+						pixel[0] = 64 + (hash & 127);
+						pixel[1] = 64 + ((hash >> 8) & 127);
+						pixel[2] = 64 + ((hash >> 16) & 127);
+					}
+				}
+				else if (layer == 2 && hasOcclusion)
+				{
+					pixel[0] = pixel[1] = pixel[2] = editableMetadata ? editableMetadata->occlusion[source] :
+						capturedMetadata->occlusion[source];
+				}
+				else if (layer == 3 && hasHeight)
+				{
+					pixel[0] = pixel[1] = pixel[2] = editableMetadata ? editableMetadata->height[source] :
+						capturedMetadata->height[source];
+				}
+				else if (layer == 0)
+				{
+					const uint8_t value = paletteIndex ? static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
+						(((x / 8) + (y / 8)) & 1 ? 28 : 42);
+					pixel[0] = pixel[1] = pixel[2] = value;
+				}
+				else
+				{
+					pixel[0] = ((x / 8) + (y / 8)) & 1 ? 48 : 72;
+					pixel[1] = 28;
+					pixel[2] = 28;
+				}
+				if (remasterTilePixelSelected && source == remasterSelectedTilePixel &&
+					(x % 16 == 0 || x % 16 == 15 || y % 16 == 0 || y % 16 == 15))
+				{
+					pixel[0] = 32;
+					pixel[1] = 220;
+					pixel[2] = 255;
+				}
+				pixel[3] = 255;
+			}
+		}
+		NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
+		[image addRepresentation:bitmap];
+		remasterTilePreview.image = image;
+	}
+	else
+	{
+		remasterTilePreview.image = nil;
+	}
+
+	const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(remasterReplayFrame, remasterSelectedTile);
+	const RemasterHeightSampling sampling = editableMetadata ? editableMetadata->heightSampling :
+		(capturedMetadata ? capturedMetadata->heightSampling : RemasterHeightSampling::Nearest);
+	if (layer == 3)
+		[remasterHeightSamplingSelector selectItemAtIndex:sampling == RemasterHeightSampling::Linear ? 1 : 0];
+	NSString *layerStatus = [NSString stringWithFormat:@"material %@, occlusion %@, height %@ (%@)%@",
+		hasMaterials ? @"yes" : @"no", hasOcclusion ? @"yes" : @"no", hasHeight ? @"yes" : @"no",
+		sampling == RemasterHeightSampling::Linear ? @"linear" : @"nearest",
+		remasterEditingProfileDirty ? @", unsaved" : @""];
+	remasterVariantLabel.stringValue = [NSString stringWithFormat:@"Variant %lu of %lu\nv%u:%ubpp:%016llx\n%@, %lu visible pixels\n%@",
+		static_cast<unsigned long>(index + 1), static_cast<unsigned long>(remasterVariants.size()),
+		static_cast<unsigned>(remasterSelectedTile.hashVersion), static_cast<unsigned>(remasterSelectedTile.bitDepth),
+		static_cast<unsigned long long>(remasterSelectedTile.hash),
+		asset ? @"decoded indices" : @"not decoded in capture", static_cast<unsigned long>(occurrences.size()), layerStatus];
+	remasterPreviousVariantButton.enabled = remasterVariants.size() > 1;
+	remasterNextVariantButton.enabled = remasterVariants.size() > 1;
+	[self refreshRemasterEditingControls];
+}
+
+- (void)changeRemasterLayer:(id)sender
+{
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)refreshRemasterEditingControls
+{
+	const NSInteger layer = remasterLayerSelector ? remasterLayerSelector.indexOfSelectedItem : 0;
+	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty();
+	remasterMaterialBrush.hidden = layer != 1;
+	remasterValueBrush.hidden = layer != 2 && layer != 3;
+	remasterValueLabel.hidden = remasterValueBrush.hidden;
+	remasterHeightSamplingSelector.hidden = layer != 3;
+	remasterTilePreview.enabled = editable && layer != 0;
+	remasterValueBrush.enabled = editable && remasterTilePixelSelected;
+	if (remasterValueLabel && (layer == 2 || layer == 3))
+	{
+		if (!remasterTilePixelSelected)
+			remasterValueLabel.stringValue = @"Select a pixel";
+		else
+		{
+			uint8_t value = 0;
+			auto editableMetadata = remasterEditingProfile.assets.find(remasterSelectedTile);
+			if (editableMetadata != remasterEditingProfile.assets.end())
+				value = layer == 2 ? editableMetadata->second.occlusion[remasterSelectedTilePixel] :
+					editableMetadata->second.height[remasterSelectedTilePixel];
+			else
+			{
+				const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(
+					remasterReplayFrame, remasterSelectedTile);
+				if (captured)
+					value = layer == 2 ? captured->occlusion[remasterSelectedTilePixel] :
+						captured->height[remasterSelectedTilePixel];
+			}
+			remasterValueBrush.integerValue = value;
+			remasterValueLabel.stringValue = [NSString stringWithFormat:@"Pixel (%lu, %lu): %u",
+				static_cast<unsigned long>(remasterSelectedTilePixel % 8),
+				static_cast<unsigned long>(remasterSelectedTilePixel / 8), value];
+		}
+	}
+	remasterSaveProfileButton.enabled = remasterEditingProfileLoaded && remasterEditingProfileDirty;
+}
+
+- (void)paintRemasterTilePixel:(NSClickGestureRecognizer *)sender
+{
+	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	if (!remasterEditingProfileLoaded || remasterVariants.empty() || layer == 0)
+		return;
+	const NSPoint point = [sender locationInView:remasterTilePreview];
+	const NSRect bounds = remasterTilePreview.bounds;
+	if (!NSPointInRect(point, bounds) || NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0)
+		return;
+	const size_t x = std::min<size_t>(7, static_cast<size_t>((point.x - NSMinX(bounds)) * 8 / NSWidth(bounds)));
+	const size_t y = std::min<size_t>(7, static_cast<size_t>((NSMaxY(bounds) - point.y) * 8 / NSHeight(bounds)));
+	const size_t pixel = y * 8 + x;
+	remasterTilePixelSelected = true;
+	remasterSelectedTilePixel = pixel;
+	if (layer == 2 || layer == 3)
+	{
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
+		return;
+	}
+	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
+	metadata.tileId = remasterSelectedTile;
+	if (layer == 1)
+	{
+		metadata.hasMaterialSelectors = true;
+		metadata.materialSelectors[pixel] = remasterMaterialBrush.indexOfSelectedItem == 0 ? "" :
+			remasterMaterialBrush.titleOfSelectedItem.UTF8String;
+	}
+	remasterEditingProfile.schemaVersion = 2;
+	remasterEditingProfileDirty = true;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)changeRemasterPixelValue:(id)sender
+{
+	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	if (!remasterEditingProfileLoaded || remasterVariants.empty() || !remasterTilePixelSelected ||
+		(layer != 2 && layer != 3))
+		return;
+	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
+	metadata.tileId = remasterSelectedTile;
+	const uint8_t value = static_cast<uint8_t>(remasterValueBrush.integerValue);
+	if (layer == 2)
+	{
+		metadata.hasOcclusion = true;
+		metadata.occlusion[remasterSelectedTilePixel] = value;
+	}
+	else
+	{
+		metadata.hasHeight = true;
+		metadata.height[remasterSelectedTilePixel] = value;
+		metadata.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
+			RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
+	}
+	remasterEditingProfile.schemaVersion = 2;
+	remasterEditingProfileDirty = true;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)changeRemasterHeightSampling:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterVariants.empty())
+		return;
+	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
+	metadata.tileId = remasterSelectedTile;
+	metadata.hasHeight = true;
+	metadata.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
+		RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
+	remasterEditingProfile.schemaVersion = 2;
+	remasterEditingProfileDirty = true;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)saveRemasterProfile:(id)sender
+{
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (remasterEditingProfileLoaded && remasterEditingProfileURL &&
+		S9xRemasterWriteProfile(remasterEditingProfile, remasterEditingProfileURL.path.UTF8String, diagnostics))
+	{
+		remasterEditingProfileDirty = false;
+		if (running)
+			S9xRemasterSetProfile(remasterEditingProfile);
+		if (!remasterVariants.empty())
+			[self showRemasterVariantAtIndex:remasterVariantIndex];
+		return;
+	}
+	std::ostringstream message;
+	for (const RemasterProfileDiagnostic &diagnostic : diagnostics)
+		message << (diagnostic.line ? "Line " + std::to_string(diagnostic.line) + ": " : "") << diagnostic.message << '\n';
+	NSAlert *alert = [NSAlert new];
+	alert.messageText = @"Unable to Save Remaster Profile";
+	alert.informativeText = [NSString stringWithUTF8String:message.str().c_str()];
+	[alert runModal];
+}
+
+- (void)previousRemasterVariant:(id)sender
+{
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:(remasterVariantIndex + remasterVariants.size() - 1) % remasterVariants.size()];
+}
+
+- (void)nextRemasterVariant:(id)sender
+{
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:(remasterVariantIndex + 1) % remasterVariants.size()];
 }
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL
@@ -3593,17 +3978,40 @@ void QuitWithFatalError ( NSString *message)
 		return [NSString stringWithUTF8String:message.str().c_str()];
 	}
 
-	static const char hex[] = "0123456789abcdef";
-	std::string romHash(64, '0');
-	for (size_t i = 0; i < 32; i++)
+	std::string romHash;
+	if (remasterFramePresenting)
+		romHash = remasterReplayFrame.profileRomSha256;
+	else
 	{
-		romHash[i * 2] = hex[Memory.ROMSHA256[i] >> 4];
-		romHash[i * 2 + 1] = hex[Memory.ROMSHA256[i] & 15];
+		static const char hex[] = "0123456789abcdef";
+		romHash.assign(64, '0');
+		for (size_t i = 0; i < 32; i++)
+		{
+			romHash[i * 2] = hex[Memory.ROMSHA256[i] >> 4];
+			romHash[i * 2 + 1] = hex[Memory.ROMSHA256[i] & 15];
+		}
 	}
 	if (profile.romSha256 != romHash)
-		return @"Profile ROM SHA-256 does not match the running game.";
+		return remasterFramePresenting ? @"Profile ROM SHA-256 does not match the captured frame." :
+			@"Profile ROM SHA-256 does not match the running game.";
 
-	S9xRemasterSetProfile(std::move(profile));
+	remasterEditingProfile = profile;
+	remasterEditingProfileURL = fileURL;
+	remasterEditingProfileLoaded = true;
+	remasterEditingProfileDirty = false;
+	if (running)
+		S9xRemasterSetProfile(profile);
+	if (remasterMaterialBrush)
+	{
+		[remasterMaterialBrush removeAllItems];
+		[remasterMaterialBrush addItemWithTitle:@"Inherit"];
+		for (const auto &entry : profile.materials)
+			[remasterMaterialBrush addItemWithTitle:[NSString stringWithUTF8String:entry.first.c_str()]];
+	}
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
+	else
+		[self refreshRemasterEditingControls];
 	return nil;
 }
 

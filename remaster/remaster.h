@@ -633,6 +633,26 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			std::copy(entry.second.indices, entry.second.indices + 64, asset.indices);
 			frame.assets.push_back(asset);
 		}
+		for (const auto &entry : state.activeProfile.assetGroups)
+		{
+			RemasterFrameAssetGroup group;
+			group.name = entry.second.name;
+			group.tileIds = entry.second.tileIds;
+			frame.assetGroups.push_back(group);
+		}
+		for (const auto &entry : state.activeProfile.assets)
+		{
+			RemasterFrameAssetMetadata metadata;
+			metadata.tileId = entry.second.tileId;
+			metadata.materialSelectors = entry.second.materialSelectors;
+			metadata.occlusion = entry.second.occlusion;
+			metadata.height = entry.second.height;
+			metadata.hasMaterialSelectors = entry.second.hasMaterialSelectors;
+			metadata.hasOcclusion = entry.second.hasOcclusion;
+			metadata.hasHeight = entry.second.hasHeight;
+			metadata.heightSampling = entry.second.heightSampling;
+			frame.assetMetadata.push_back(metadata);
+		}
 		for (const auto &entry : state.activeProfile.materials)
 		{
 			const RemasterMaterial &source = entry.second;

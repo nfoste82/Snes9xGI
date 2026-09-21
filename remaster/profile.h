@@ -10,14 +10,18 @@
 #include "types.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <set>
 #include <sstream>
@@ -34,6 +38,12 @@ enum class RemasterSurfaceClass : uint8_t
 	Prop,
 	Effect,
 	UserInterface
+};
+
+enum class RemasterHeightSampling : uint8_t
+{
+	Nearest,
+	Linear
 };
 
 struct RemasterTileContentId
@@ -77,6 +87,18 @@ struct RemasterAssetGroup
 	std::string material;
 };
 
+struct RemasterAssetMetadata
+{
+	RemasterTileContentId tileId;
+	std::array<std::string, 64> materialSelectors;
+	std::array<uint8_t, 64> occlusion = {};
+	std::array<uint8_t, 64> height = {};
+	bool hasMaterialSelectors = false;
+	bool hasOcclusion = false;
+	bool hasHeight = false;
+	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
+};
+
 struct RemasterProfileRule
 {
 	std::string tileHash;
@@ -102,6 +124,7 @@ struct RemasterProfile
 	std::string romSha256;
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
+	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
 	std::vector<RemasterProfileRule> rules;
 };
 
@@ -263,6 +286,32 @@ namespace RemasterProfileParsing
 		return true;
 	}
 
+	inline bool ParseByteArray (const std::string &value, std::vector<uint8_t> &parsed)
+	{
+		if (value.size() < 2 || value.front() != '[' || value.back() != ']')
+			return false;
+		parsed.clear();
+		std::string body = Trim(value.substr(1, value.size() - 2));
+		if (body.empty())
+			return true;
+		size_t offset = 0;
+		while (offset < body.size())
+		{
+			size_t comma = body.find(',', offset);
+			std::string item = Trim(body.substr(offset, comma == std::string::npos ? comma : comma - offset));
+			uint32_t number = 0;
+			if (!ParseUnsigned(item, number) || number > 255)
+				return false;
+			parsed.push_back(static_cast<uint8_t>(number));
+			if (comma == std::string::npos)
+				break;
+			offset = comma + 1;
+			if (Trim(body.substr(offset)).empty())
+				return false;
+		}
+		return true;
+	}
+
 	inline bool ParseTileId (const std::string &value, RemasterTileContentId &id)
 	{
 		if (value.size() != 24 || value.compare(0, 3, "v1:") || value.compare(4, 4, "bpp:"))
@@ -330,17 +379,29 @@ namespace RemasterProfileParsing
 			return false;
 		return true;
 	}
+
+	inline bool ParseHeightSampling (const std::string &value, RemasterHeightSampling &sampling)
+	{
+		if (value == "nearest")
+			sampling = RemasterHeightSampling::Nearest;
+		else if (value == "linear")
+			sampling = RemasterHeightSampling::Linear;
+		else
+			return false;
+		return true;
+	}
 }
 
 inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &profile,
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, Material, AssetGroup, Rule };
+	enum class Section { Root, Game, Material, AssetGroup, Asset, Rule };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
+	RemasterAssetMetadata *asset = nullptr;
 	RemasterProfileRule *rule = nullptr;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
@@ -374,6 +435,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		{
 			material = nullptr;
 			group = nullptr;
+			asset = nullptr;
 			rule = nullptr;
 			if (line == "[game]")
 				section = Section::Game;
@@ -383,6 +445,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				parsed.rules.emplace_back();
 				rule = &parsed.rules.back();
 				rule->line = lineNumber;
+			}
+			else if (line == "[[assets]]")
+			{
+				section = Section::Asset;
+				RemasterTileContentId placeholder;
+				placeholder.hash = UINT64_MAX - lineNumber;
+				asset = &parsed.assets[placeholder];
+				asset->tileId = placeholder;
 			}
 			else
 			{
@@ -430,6 +500,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			keyScope += ":" + group->name;
 		if (rule)
 			keyScope += ":" + std::to_string(parsed.rules.size());
+		if (asset)
+			keyScope += ":" + std::to_string(parsed.assets.size());
 		if (!seenKeys[keyScope].insert(key).second)
 		{
 			fail(lineNumber, "duplicate key '" + key + "'");
@@ -515,6 +587,70 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			}
 			fail(lineNumber, "invalid value for '" + key + "'");
 			break;
+		case Section::Asset:
+			if (!asset)
+				break;
+			if (key == "tile_hash")
+			{
+				RemasterTileContentId tileId;
+				if (!ParseString(value, stringValue) || !ParseTileId(stringValue, tileId))
+				{
+					fail(lineNumber, "invalid value for 'tile_hash'");
+					break;
+				}
+				RemasterAssetMetadata metadata = *asset;
+				parsed.assets.erase(asset->tileId);
+				metadata.tileId = tileId;
+				auto inserted = parsed.assets.emplace(tileId, std::move(metadata));
+				if (!inserted.second)
+				{
+					fail(lineNumber, "duplicate asset tile_hash");
+					asset = nullptr;
+				}
+				else
+					asset = &inserted.first->second;
+			}
+			else if (key == "materials")
+			{
+				std::vector<std::string> selectors;
+				if (!ParseStringArray(value, selectors) || selectors.size() != 64)
+					fail(lineNumber, "materials must contain exactly 64 quoted names");
+				else
+				{
+					std::copy(selectors.begin(), selectors.end(), asset->materialSelectors.begin());
+					asset->hasMaterialSelectors = true;
+				}
+			}
+			else if (key == "occlusion")
+			{
+				std::vector<uint8_t> coverage;
+				if (!ParseByteArray(value, coverage) || coverage.size() != 64)
+					fail(lineNumber, "occlusion must contain exactly 64 values in [0, 255]");
+				else
+				{
+					std::copy(coverage.begin(), coverage.end(), asset->occlusion.begin());
+					asset->hasOcclusion = true;
+				}
+			}
+			else if (key == "height")
+			{
+				std::vector<uint8_t> heights;
+				if (!ParseByteArray(value, heights) || heights.size() != 64)
+					fail(lineNumber, "height must contain exactly 64 values in [0, 255]");
+				else
+				{
+					std::copy(heights.begin(), heights.end(), asset->height.begin());
+					asset->hasHeight = true;
+				}
+			}
+			else if (key == "height_sampling")
+			{
+				if (!ParseString(value, stringValue) || !ParseHeightSampling(stringValue, asset->heightSampling))
+					fail(lineNumber, "height_sampling must be \"nearest\" or \"linear\"");
+			}
+			else
+				fail(lineNumber, "unknown asset key '" + key + "'");
+			break;
 		case Section::Rule:
 			if (!rule)
 				break;
@@ -557,8 +693,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion != 1)
-		fail(0, "schema_version must be 1");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 2)
+		fail(0, "schema_version must be 1 or 2");
+	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
+		fail(0, "assets require schema_version 2");
 	if (parsed.gameTitle.empty())
 		fail(0, "game.title is required");
 	if (parsed.romSha256.size() != 64 || parsed.romSha256.find_first_not_of("0123456789abcdef") != std::string::npos)
@@ -586,6 +724,19 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			if (!inserted.second && inserted.first->second != item.name)
 				fail(0, "tile hash belongs to multiple asset groups");
 		}
+	}
+	for (const auto &entry : parsed.assets)
+	{
+		const RemasterAssetMetadata &item = entry.second;
+		if (!item.tileId.hashVersion)
+			fail(0, "asset requires tile_hash");
+		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight)
+			fail(0, "asset requires materials, occlusion, or height");
+		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
+			fail(0, "asset height_sampling requires height");
+		for (const std::string &name : item.materialSelectors)
+			if (!name.empty() && !parsed.materials.count(name))
+				fail(0, "asset references unknown material '" + name + "'");
 	}
 	for (RemasterProfileRule &item : parsed.rules)
 	{
@@ -633,6 +784,168 @@ inline bool S9xRemasterLoadProfile (const std::string &path, RemasterProfile &pr
 	}
 	std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 	return S9xRemasterParseProfile(text, profile, diagnostics);
+}
+
+namespace RemasterProfileSerialization
+{
+	inline std::string Quote (const std::string &value)
+	{
+		std::string result = "\"";
+		for (char character : value)
+		{
+			if (character == '\\' || character == '"')
+				result.push_back('\\');
+			result.push_back(character);
+		}
+		return result + '"';
+	}
+
+	inline std::string TileId (const RemasterTileContentId &tileId)
+	{
+		std::ostringstream text;
+		text << "v" << unsigned(tileId.hashVersion) << ':' << unsigned(tileId.bitDepth) << "bpp:"
+			<< std::hex << std::setfill('0') << std::setw(16) << tileId.hash;
+		return text.str();
+	}
+
+	inline const char *SurfaceClass (RemasterSurfaceClass surfaceClass)
+	{
+		switch (surfaceClass)
+		{
+		case RemasterSurfaceClass::Floor: return "floor";
+		case RemasterSurfaceClass::WallFace: return "wall_face";
+		case RemasterSurfaceClass::WallTop: return "wall_top";
+		case RemasterSurfaceClass::Character: return "character";
+		case RemasterSurfaceClass::Prop: return "prop";
+		case RemasterSurfaceClass::Effect: return "effect";
+		case RemasterSurfaceClass::UserInterface: return "user_interface";
+		case RemasterSurfaceClass::Unclassified:
+		default: return "unclassified";
+		}
+	}
+
+	inline const char *Source (RemasterSourceType source)
+	{
+		switch (source)
+		{
+		case RemasterSourceType::Background: return "background";
+		case RemasterSourceType::Object: return "object";
+		case RemasterSourceType::Backdrop:
+		default: return "backdrop";
+		}
+	}
+}
+
+inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::string &text,
+	std::vector<RemasterProfileDiagnostic> &diagnostics)
+{
+	using namespace RemasterProfileSerialization;
+	std::ostringstream output;
+	output.imbue(std::locale::classic());
+	output << std::setprecision(std::numeric_limits<float>::max_digits10);
+	output << "schema_version = " << (profile.assets.empty() ? profile.schemaVersion : 2) << "\n\n";
+	output << "[game]\n";
+	output << "title = " << Quote(profile.gameTitle) << "\n";
+	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
+	for (const auto &entry : profile.materials)
+	{
+		const RemasterMaterial &material = entry.second;
+		output << "\n[materials." << entry.first << "]\n";
+		output << "surface_class = " << Quote(SurfaceClass(material.surfaceClass)) << "\n";
+		output << "roughness = " << material.roughness << "\n";
+		output << "metalness = " << material.metalness << "\n";
+		output << "specular_level = " << material.specularLevel << "\n";
+		output << "z_min = " << material.zMin << "\n";
+		output << "z_max = " << material.zMax << "\n";
+		output << "receives_gi = " << (material.receivesGi ? "true" : "false") << "\n";
+		output << "casts_shadow = " << (material.castsShadow ? "true" : "false") << "\n";
+	}
+	for (const auto &entry : profile.assetGroups)
+	{
+		const RemasterAssetGroup &group = entry.second;
+		output << "\n[asset_groups." << entry.first << "]\n";
+		output << "tile_hashes = [";
+		for (size_t i = 0; i < group.tileIds.size(); i++)
+			output << (i ? ", " : "") << Quote(TileId(group.tileIds[i]));
+		output << "]\n";
+		if (!group.material.empty())
+			output << "material = " << Quote(group.material) << "\n";
+	}
+	for (const auto &entry : profile.assets)
+	{
+		const RemasterAssetMetadata &asset = entry.second;
+		output << "\n[[assets]]\n";
+		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
+		if (asset.hasMaterialSelectors)
+		{
+			output << "materials = [";
+			for (size_t i = 0; i < asset.materialSelectors.size(); i++)
+				output << (i ? ", " : "") << Quote(asset.materialSelectors[i]);
+			output << "]\n";
+		}
+		if (asset.hasOcclusion)
+		{
+			output << "occlusion = [";
+			for (size_t i = 0; i < asset.occlusion.size(); i++)
+				output << (i ? ", " : "") << unsigned(asset.occlusion[i]);
+			output << "]\n";
+		}
+		if (asset.hasHeight)
+		{
+			output << "height = [";
+			for (size_t i = 0; i < asset.height.size(); i++)
+				output << (i ? ", " : "") << unsigned(asset.height[i]);
+			output << "]\n";
+			output << "height_sampling = " << Quote(asset.heightSampling == RemasterHeightSampling::Linear ?
+				"linear" : "nearest") << "\n";
+		}
+	}
+	for (const RemasterProfileRule &rule : profile.rules)
+	{
+		output << "\n[[rules]]\n";
+		if (rule.hasTileHash)
+			output << "tile_hash = " << Quote(TileId(rule.tileId)) << "\n";
+		else if (rule.hasAssetGroup)
+			output << "asset_group = " << Quote(rule.assetGroup) << "\n";
+		if (rule.hasSource)
+			output << "source = " << Quote(Source(rule.source)) << "\n";
+		if (rule.hasSourceIndex)
+			output << "source_index = " << unsigned(rule.sourceIndex) << "\n";
+		if (rule.hasPalette)
+			output << "palette = " << unsigned(rule.palette) << "\n";
+		output << "material = " << Quote(rule.material) << "\n";
+	}
+
+	RemasterProfile validated;
+	const std::string serialized = output.str();
+	if (!S9xRemasterParseProfile(serialized, validated, diagnostics))
+		return false;
+	text = serialized;
+	return true;
+}
+
+inline bool S9xRemasterWriteProfile (const RemasterProfile &profile, const std::string &path,
+	std::vector<RemasterProfileDiagnostic> &diagnostics)
+{
+	std::string text;
+	if (!S9xRemasterSerializeProfile(profile, text, diagnostics))
+		return false;
+	const std::string temporaryPath = path + ".tmp";
+	std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+	if (!output)
+	{
+		diagnostics = { { 0, "unable to create temporary profile" } };
+		return false;
+	}
+	output.write(text.data(), static_cast<std::streamsize>(text.size()));
+	output.close();
+	if (!output.good() || std::rename(temporaryPath.c_str(), path.c_str()) != 0)
+	{
+		std::remove(temporaryPath.c_str());
+		diagnostics = { { 0, "unable to atomically replace profile" } };
+		return false;
+	}
+	return true;
 }
 
 inline RemasterProfileMatch S9xRemasterMatchProfile (const RemasterProfile &profile,
