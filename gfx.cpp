@@ -613,7 +613,8 @@ void S9xStartScreenRefresh (void)
 
 		memset(GFX.ZBuffer, 0, GFX.ScreenSize);
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
-		S9xRemasterBeginFrame(GFX.ScreenSize);
+		S9xRemasterBeginFrame(GFX.ScreenSize, GFX.RealPPL,
+			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
 	}
 
 	if (++IPPU.FrameCount == (uint32)Memory.ROMFramesPerSecond)

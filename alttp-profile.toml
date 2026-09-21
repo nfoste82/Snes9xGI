@@ -4,13 +4,125 @@ schema_version = 1
 title = "The Legend of Zelda: A Link to the Past"
 rom_sha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
 
-[materials.test_floor]
+[materials.dungeon_wall_face]
+surface_class = "wall_face"
+roughness = 0.9
+z_min = 0.0
+z_max = 1.0
+casts_shadow = true
+
+[materials.dungeon_floor]
 surface_class = "floor"
+roughness = 0.9
+z_min = 0.0
+z_max = 0.0
+casts_shadow = false
+
+[materials.dungeon_wall_top]
+surface_class = "wall_top"
+roughness = 0.85
+z_min = 1.0
+z_max = 1.0
+
+[materials.gold_door]
+surface_class = "prop"
+roughness = 0.55
+metalness = 0.35
+specular_level = 0.6
+z_min = 0.0
+z_max = 1.0
+casts_shadow = true
+
+[materials.link]
+surface_class = "character"
+roughness = 0.75
+z_min = 0.0
+z_max = 1.0
+casts_shadow = true
+
+[materials.torch_base]
+surface_class = "prop"
 roughness = 0.8
+z_min = 0.0
+z_max = 1.0
+casts_shadow = true
+
+[materials.torch_flame]
+surface_class = "effect"
+roughness = 0.5
+receives_gi = false
+casts_shadow = false
+
+[materials.hud]
+surface_class = "user_interface"
+receives_gi = false
+casts_shadow = false
+
+[asset_groups.wall_faces]
+tile_hashes = ["v1:4bpp:62112d6380887711", "v1:4bpp:767c76ae0c8b752a", "v1:4bpp:83ff6d16868aaa72", "v1:4bpp:9214aaf974182610", "v1:4bpp:9836d0b8491c70b9", "v1:4bpp:9a0d6f70c687e95c", "v1:4bpp:a3b3accbe0e35dca", "v1:4bpp:b4872f87eaca534f", "v1:4bpp:b514e9a7068a3c8a", "v1:4bpp:be387ef47891ffd9", "v1:4bpp:f8dd3cd336d542e0"]
+material = "dungeon_wall_face"
+
+[asset_groups.dungeon_floor]
+tile_hashes = ["v1:4bpp:c40518b112d0814e"]
+material = "dungeon_floor"
+
+[asset_groups.wall_tops]
+tile_hashes = ["v1:4bpp:14cc9da30528b0db", "v1:4bpp:65de435f21532a4b", "v1:4bpp:773dcf4a53f87b93", "v1:4bpp:8102c70a47a98fca", "v1:4bpp:a5e075f6bd76ee43", "v1:4bpp:c6bd4967cc8de85f", "v1:4bpp:e16508316c6127d5"]
+material = "dungeon_wall_top"
+
+[asset_groups.gold_doors]
+tile_hashes = ["v1:4bpp:9c36635bd77c6108", "v1:4bpp:e41e81c4f0f14d5f"]
+material = "gold_door"
+
+[asset_groups.link_sprite]
+tile_hashes = ["v1:4bpp:039b898e5c285260", "v1:4bpp:20a0ddd4c93719a7", "v1:4bpp:3eb68550ecd59f3a", "v1:4bpp:49498250841b5c44", "v1:4bpp:4f886c879dab9928", "v1:4bpp:508933e0ccff1752", "v1:4bpp:5fa3f586a41c73a5", "v1:4bpp:8885fa7f9ae0c546", "v1:4bpp:92c9960db1f2dd25", "v1:4bpp:961bf13bb60d8e6d", "v1:4bpp:9d81cf376ec21d28", "v1:4bpp:ca299d0917010ae0", "v1:4bpp:f8377564af81340e"]
+material = "link"
+
+[asset_groups.torch_base]
+tile_hashes = ["v1:4bpp:61e6eb877019d119", "v1:4bpp:9b997386f87571ef", "v1:4bpp:a6093b43c6175032", "v1:4bpp:d436e54bab34be6f"]
+material = "torch_base"
+
+[asset_groups.torch_flame]
+tile_hashes = ["v1:4bpp:b999cec705abc9df", "v1:4bpp:dd590b1bbf2aa77b", "v1:4bpp:ec826af2f1fc064b", "v1:4bpp:ef5733fd203601af"]
+material = "torch_flame"
+
+[asset_groups.hud_tiles]
+tile_hashes = ["v1:2bpp:0562377bf9c0c57b", "v1:2bpp:1762271a14b7d8fb", "v1:2bpp:2b3c25d7055fc31e", "v1:2bpp:2c64b4c0927b4010", "v1:2bpp:2f6ea3700cbf329b", "v1:2bpp:2ff5cb87fa472f67", "v1:2bpp:308ff498c9ea4aad", "v1:2bpp:323e7fcda3c6d8e7", "v1:2bpp:324220aa6bdb3e43", "v1:2bpp:35735f142711d3b7", "v1:2bpp:374dc90a071444c7", "v1:2bpp:37647352180911f6", "v1:2bpp:3ba32a47d718ad5b", "v1:2bpp:56459c7e7fe99513", "v1:2bpp:58316a8fc37ee06a", "v1:2bpp:62999e04c8df5d87", "v1:2bpp:7a9c678efc9a5fd7", "v1:2bpp:7d83a14333f0fc74", "v1:2bpp:9d07d2878092347e", "v1:2bpp:a8451c804a324af5", "v1:2bpp:b3990fc06e9b6faa", "v1:2bpp:b4bbaadefdf85efe", "v1:2bpp:d9b83b6241a6516d", "v1:2bpp:e4cc0aef86dd44d8", "v1:2bpp:fea8a375dcd60a8c"]
+material = "hud"
 
 [[rules]]
-tile_hash = "v1:4bpp:022af348d55b1a59"
+asset_group = "wall_faces"
 source = "background"
 source_index = 1
-palette = 2
-material = "test_floor"
+
+[[rules]]
+asset_group = "dungeon_floor"
+source = "background"
+source_index = 1
+
+[[rules]]
+asset_group = "wall_tops"
+source = "background"
+source_index = 1
+
+[[rules]]
+asset_group = "gold_doors"
+source = "background"
+source_index = 1
+
+[[rules]]
+asset_group = "link_sprite"
+source = "object"
+
+[[rules]]
+asset_group = "torch_base"
+source = "object"
+
+[[rules]]
+asset_group = "torch_flame"
+source = "object"
+
+[[rules]]
+asset_group = "hud_tiles"
+source = "background"
+source_index = 2

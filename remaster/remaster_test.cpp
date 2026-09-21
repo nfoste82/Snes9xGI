@@ -28,9 +28,10 @@ int main ()
 
 	const std::string path = "/tmp/snes9x-remaster-inventory-test.json";
 	S9xRemasterRequestTileInventory(path);
-	S9xRemasterBeginFrame(1);
+	S9xRemasterBeginFrame(1, 1, 1, 1);
 	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterWriteOwner(0);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
 	assert(S9xRemasterEndFrame());
 
@@ -40,6 +41,10 @@ int main ()
 	id << "v1:4bpp:" << std::hex << std::setfill('0') << std::setw(16) << hash;
 	assert(json.find(id.str()) != std::string::npos);
 	assert(json.find("\"observations\": 2") != std::string::npos);
+	assert(json.find("\"visible_pixels\": 1") != std::string::npos);
+	assert(json.find("\"visible_bounds\": { \"min_x\": 0, \"min_y\": 0, \"max_x\": 0, \"max_y\": 0 }") != std::string::npos);
+	assert(json.find("\"visible_cells\": [{ \"x\": 0, \"y\": 0, \"pixels\": 1 }]") != std::string::npos);
+	assert(json.find("\"contexts\": [{ \"source\": \"background\"") != std::string::npos);
 	assert(json.find("\"profile_loaded\": false") != std::string::npos);
 	std::remove(path.c_str());
 
@@ -97,7 +102,7 @@ material = "wet_stone"
 	S9xRemasterSetProfile(profile);
 	const std::string profiledPath = "/tmp/snes9x-remaster-profiled-inventory-test.json";
 	S9xRemasterRequestTileInventory(profiledPath);
-	S9xRemasterBeginFrame(1);
+	S9xRemasterBeginFrame(1, 1, 1, 1);
 	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
 	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
@@ -174,5 +179,10 @@ material = "missing"
 )PROFILE";
 	assert(!S9xRemasterParseProfile(invalidProfile, profile, diagnostics));
 	assert(diagnostics.size() >= 3);
+
+	assert(S9xRemasterLoadProfile("alttp-profile.toml", profile, diagnostics));
+	assert(profile.materials.size() == 8);
+	assert(profile.assetGroups.size() == 8);
+	assert(profile.rules.size() == 8);
 	return 0;
 }
