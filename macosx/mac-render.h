@@ -30,7 +30,11 @@ enum class RemasterLightingView : uint32_t
 	Occlusion,
 	Visibility,
 	DirectContribution,
-	Difference
+	Difference,
+	Height,
+	IndirectContribution,
+	Normal,
+	Count
 };
 
 void InitGraphics (void);

@@ -93,11 +93,14 @@ struct RemasterAssetMetadata
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = {};
 	std::array<uint8_t, 64> height = {};
+	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
+	bool hasNormals = false;
 	bool hasEmission = false;
+	bool directLightingOppositeFacing = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
 
@@ -124,6 +127,8 @@ struct RemasterProfile
 	uint32_t schemaVersion = 0;
 	std::string gameTitle;
 	std::string romSha256;
+	float lightingCoordinateScale = 16.0f;
+	uint8_t indirectBounceCount = 0;
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
@@ -398,9 +403,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, Material, AssetGroup, Asset, Rule };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule };
 	Section section = Section::Root;
 	RemasterProfile parsed;
+	bool hasLightingSpace = false;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
@@ -441,6 +447,11 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			rule = nullptr;
 			if (line == "[game]")
 				section = Section::Game;
+			else if (line == "[lighting_space]")
+			{
+				section = Section::LightingSpace;
+				hasLightingSpace = true;
+			}
 			else if (line == "[[rules]]")
 			{
 				section = Section::Rule;
@@ -531,6 +542,22 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				fail(lineNumber, "unknown game key '" + key + "'");
 			else
 				fail(lineNumber, key + " must be a quoted string");
+			break;
+		case Section::LightingSpace:
+			if (key == "coordinate_scale")
+			{
+				if (!ParseFloat(value, parsed.lightingCoordinateScale))
+					fail(lineNumber, "coordinate_scale must be a number");
+			}
+			else if (key == "indirect_bounces")
+			{
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue > 16)
+					fail(lineNumber, "indirect_bounces must be an integer in [0, 16]");
+				else
+					parsed.indirectBounceCount = static_cast<uint8_t>(unsignedValue);
+			}
+			else
+				fail(lineNumber, "unknown lighting_space key '" + key + "'");
 			break;
 		case Section::Material:
 			if (!material)
@@ -650,6 +677,22 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!ParseString(value, stringValue) || !ParseHeightSampling(stringValue, asset->heightSampling))
 					fail(lineNumber, "height_sampling must be \"nearest\" or \"linear\"");
 			}
+			else if (key == "normal_xyz")
+			{
+				std::vector<uint8_t> normals;
+				if (!ParseByteArray(value, normals) || normals.size() != 192)
+					fail(lineNumber, "normal_xyz must contain exactly 192 values in [0, 255]");
+				else
+				{
+					std::copy(normals.begin(), normals.end(), asset->normalXyz.begin());
+					asset->hasNormals = true;
+				}
+			}
+			else if (key == "direct_lighting_opposite_facing")
+			{
+				if (!ParseBool(value, asset->directLightingOppositeFacing))
+					fail(lineNumber, "direct_lighting_opposite_facing must be true or false");
+			}
 			else if (key == "emission_rgba")
 			{
 				std::vector<uint8_t> emission;
@@ -706,14 +749,26 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 3)
-		fail(0, "schema_version must be 1, 2, or 3");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 6)
+		fail(0, "schema_version must be 1, 2, 3, 4, 5, or 6");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
 		for (const auto &entry : parsed.assets)
 			if (entry.second.hasEmission)
 				fail(0, "emission_rgba requires schema_version 3");
+	if (parsed.schemaVersion < 4 && hasLightingSpace)
+		fail(0, "lighting_space requires schema_version 4");
+	if (parsed.schemaVersion < 5)
+		for (const auto &entry : parsed.assets)
+			if (entry.second.hasNormals)
+				fail(0, "normal_xyz requires schema_version 5");
+	if (parsed.schemaVersion < 6)
+		for (const auto &entry : parsed.assets)
+			if (entry.second.directLightingOppositeFacing)
+				fail(0, "direct_lighting_opposite_facing requires schema_version 6");
+	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
+		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (parsed.gameTitle.empty())
 		fail(0, "game.title is required");
 	if (parsed.romSha256.size() != 64 || parsed.romSha256.find_first_not_of("0123456789abcdef") != std::string::npos)
@@ -747,8 +802,9 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		const RemasterAssetMetadata &item = entry.second;
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
-		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasEmission)
-			fail(0, "asset requires materials, occlusion, height, or emission_rgba");
+		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission &&
+			!item.directLightingOppositeFacing)
+			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, or direct_lighting_opposite_facing");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
 		for (const std::string &name : item.materialSelectors)
@@ -861,13 +917,23 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output.imbue(std::locale::classic());
 	output << std::setprecision(std::numeric_limits<float>::max_digits10);
 	bool hasEmission = false;
+	bool hasNormals = false;
+	bool hasOppositeFacingDirectLighting = false;
 	for (const auto &entry : profile.assets)
+	{
 		hasEmission |= entry.second.hasEmission;
-	const uint32_t requiredSchema = hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2);
+		hasNormals |= entry.second.hasNormals;
+		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
+	}
+	const uint32_t requiredSchema = std::max<uint32_t>(4, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
+		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
+	output << "\n[lighting_space]\n";
+	output << "coordinate_scale = " << profile.lightingCoordinateScale << "\n";
+	output << "indirect_bounces = " << unsigned(profile.indirectBounceCount) << "\n";
 	for (const auto &entry : profile.materials)
 	{
 		const RemasterMaterial &material = entry.second;
@@ -920,6 +986,15 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			output << "height_sampling = " << Quote(asset.heightSampling == RemasterHeightSampling::Linear ?
 				"linear" : "nearest") << "\n";
 		}
+		if (asset.hasNormals)
+		{
+			output << "normal_xyz = [";
+			for (size_t i = 0; i < asset.normalXyz.size(); i++)
+				output << (i ? ", " : "") << unsigned(asset.normalXyz[i]);
+			output << "]\n";
+		}
+		if (asset.directLightingOppositeFacing)
+			output << "direct_lighting_opposite_facing = true\n";
 		if (asset.hasEmission)
 		{
 			output << "emission_rgba = [";

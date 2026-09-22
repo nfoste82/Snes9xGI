@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 6;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 10;
 
 struct RemasterFramePixel
 {
@@ -44,11 +44,14 @@ struct RemasterFrameAssetMetadata
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = {};
 	std::array<uint8_t, 64> height = {};
+	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
+	bool hasNormals = false;
 	bool hasEmission = false;
+	bool directLightingOppositeFacing = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
 
@@ -74,10 +77,22 @@ struct RemasterFrameTileInstance
 	uint16_t vramAddress = 0;
 	uint8_t sourceIndex = 0;
 	uint8_t palette = 0;
+	bool hFlip = false;
+	bool vFlip = false;
 	RemasterProfileMatchStatus matchStatus = RemasterProfileMatchStatus::NoMatch;
 	std::string assetGroup;
 	std::string material;
 };
+
+inline void S9xRemasterTransformNormalForTileInstance (const RemasterFrameTileInstance &instance,
+	float &x, float &y, float &z)
+{
+	if (instance.hFlip)
+		x = -x;
+	if (instance.vFlip)
+		y = -y;
+	(void) z;
+}
 
 struct RemasterFrameLight
 {
@@ -97,6 +112,8 @@ struct RemasterFrame
 	uint32_t width = 0;
 	uint32_t height = 0;
 	std::string profileRomSha256;
+	float lightingCoordinateScale = 16.0f;
+	uint8_t indirectBounceCount = 0;
 	std::vector<uint16_t> originalRgb555;
 	std::vector<RemasterFramePixel> mainPixels;
 	std::vector<RemasterFramePixel> subPixels;
@@ -266,10 +283,16 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		result.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION ||
 		!input.ReadU32(result.width) || !input.ReadU32(result.height) || !result.width || !result.height ||
 		result.width > UINT32_MAX / result.height || !input.ReadString(result.profileRomSha256) ||
+		(result.schemaVersion >= 7 && !input.ReadFloat(result.lightingCoordinateScale)) ||
+		(result.schemaVersion >= 9 && !input.ReadU8(result.indirectBounceCount)) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
+		return false;
+	if (!std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
+		return false;
+	if (result.indirectBounceCount > 16)
 		return false;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
 	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 || groupCount > bytes.size() / 4 ||
@@ -321,12 +344,16 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		uint8_t hasHeight = 0;
 		uint8_t heightSampling = 0;
 		uint8_t hasEmission = 0;
+		uint8_t hasNormals = 0;
+		uint8_t directLightingOppositeFacing = 0;
 		if (!input.ReadTileId(metadata.tileId) || !RemasterFrameSerialization::ValidTileId(metadata.tileId) ||
 			!input.ReadU8(hasMaterials) || !input.ReadU8(hasOcclusion) ||
 			hasMaterials > 1 || hasOcclusion > 1 ||
 			(result.schemaVersion >= 4 && (!input.ReadU8(hasHeight) || !input.ReadU8(heightSampling) ||
 				hasHeight > 1 || heightSampling > static_cast<uint8_t>(RemasterHeightSampling::Linear))) ||
-			(result.schemaVersion >= 6 && (!input.ReadU8(hasEmission) || hasEmission > 1)))
+			(result.schemaVersion >= 6 && (!input.ReadU8(hasEmission) || hasEmission > 1)) ||
+			(result.schemaVersion >= 8 && (!input.ReadU8(hasNormals) || hasNormals > 1)) ||
+			(result.schemaVersion >= 10 && (!input.ReadU8(directLightingOppositeFacing) || directLightingOppositeFacing > 1)))
 			return false;
 		if (!metadataIds.insert(metadata.tileId).second)
 			return false;
@@ -334,6 +361,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		metadata.hasOcclusion = hasOcclusion != 0;
 		metadata.hasHeight = hasHeight != 0;
 		metadata.hasEmission = hasEmission != 0;
+		metadata.hasNormals = hasNormals != 0;
+		metadata.directLightingOppositeFacing = directLightingOppositeFacing != 0;
 		metadata.heightSampling = static_cast<RemasterHeightSampling>(heightSampling);
 		if (metadata.hasMaterialSelectors)
 			for (std::string &name : metadata.materialSelectors)
@@ -354,6 +383,14 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + metadata.height.size(),
 				metadata.height.begin());
 			input.offset += metadata.height.size();
+		}
+		if (metadata.hasNormals)
+		{
+			if (input.offset + metadata.normalXyz.size() > bytes.size())
+				return false;
+			std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + metadata.normalXyz.size(),
+				metadata.normalXyz.begin());
+			input.offset += metadata.normalXyz.size();
 		}
 		if (metadata.hasEmission)
 		{
@@ -386,18 +423,23 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	{
 		uint8_t source = 0;
 		uint8_t matchStatus = 0;
+		uint8_t hFlip = 0;
+		uint8_t vFlip = 0;
 		if (!input.ReadTileId(instance.tileId) || !RemasterFrameSerialization::ValidTileId(instance.tileId) ||
 			!input.ReadU8(source) ||
 			source < static_cast<uint8_t>(RemasterSourceType::Backdrop) ||
 			source > static_cast<uint8_t>(RemasterSourceType::Object) ||
 			!input.ReadU8(instance.sourceIndex) || !input.ReadU16(instance.tileNumber) ||
 			!input.ReadU8(instance.palette) || !input.ReadU16(instance.vramAddress) ||
+			(result.schemaVersion >= 8 && (!input.ReadU8(hFlip) || !input.ReadU8(vFlip) || hFlip > 1 || vFlip > 1)) ||
 			!input.ReadU8(matchStatus) ||
 			matchStatus > static_cast<uint8_t>(RemasterProfileMatchStatus::Ambiguous) ||
 			!input.ReadU32(instance.ruleLine) || !input.ReadString(instance.assetGroup) ||
 			!input.ReadString(instance.material))
 			return false;
 		instance.source = static_cast<RemasterSourceType>(source);
+		instance.hFlip = hFlip != 0;
+		instance.vFlip = vFlip != 0;
 		instance.matchStatus = static_cast<RemasterProfileMatchStatus>(matchStatus);
 	}
 	result.lights.resize(lightCount);
@@ -475,6 +517,33 @@ inline const RemasterFrameAssetMetadata *S9xRemasterFrameMetadataForTile (
 	return nullptr;
 }
 
+inline const RemasterFrameMaterial *S9xRemasterFrameMaterialForName (
+	const RemasterFrame &frame, const std::string &name)
+{
+	for (const RemasterFrameMaterial &material : frame.materials)
+		if (material.name == name)
+			return &material;
+	return nullptr;
+}
+
+inline const RemasterFrameMaterial *S9xRemasterFrameMaterialForPixel (
+	const RemasterFrame &frame, const RemasterFramePixel &pixel)
+{
+	if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size())
+		return nullptr;
+	const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+	const std::string *name = nullptr;
+	if (pixel.tilePixel < 64)
+	{
+		const RemasterFrameAssetMetadata *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+		if (metadata && metadata->hasMaterialSelectors && !metadata->materialSelectors[pixel.tilePixel].empty())
+			name = &metadata->materialSelectors[pixel.tilePixel];
+	}
+	if (!name && !instance.material.empty())
+		name = &instance.material;
+	return name ? S9xRemasterFrameMaterialForName(frame, *name) : nullptr;
+}
+
 inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const RemasterFrame &frame)
 {
 	struct Accumulator
@@ -484,7 +553,8 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		float red = 0.0f;
 		float green = 0.0f;
 		float blue = 0.0f;
-		uint32_t visiblePixels = 0;
+		float z = 0.0f;
+		float weight = 0.0f;
 		bool emissive = false;
 	};
 	std::vector<Accumulator> accumulators(frame.tileInstances.size());
@@ -494,9 +564,6 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size())
 			continue;
 		Accumulator &accumulator = accumulators[pixel.instanceId - 1];
-		accumulator.x += static_cast<float>(offset % frame.width) + 0.5f;
-		accumulator.y += static_cast<float>(offset / frame.width) + 0.5f;
-		accumulator.visiblePixels++;
 		if (pixel.tilePixel >= 64)
 			continue;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
@@ -507,25 +574,31 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		const float intensity = metadata->emissionRgba[emissionOffset + 3] / 25.0f;
 		if (intensity <= 0.0f)
 			continue;
+		accumulator.x += (static_cast<float>(offset % frame.width) + 0.5f) * intensity;
+		accumulator.y += (static_cast<float>(offset / frame.width) + 0.5f) * intensity;
 		// Eight standard-intensity pixels produce a 1x light; every pixel remains additive.
 		accumulator.red += metadata->emissionRgba[emissionOffset] / 255.0f * intensity / 8.0f;
 		accumulator.green += metadata->emissionRgba[emissionOffset + 1] / 255.0f * intensity / 8.0f;
 		accumulator.blue += metadata->emissionRgba[emissionOffset + 2] / 255.0f * intensity / 8.0f;
+		accumulator.z += (metadata->hasHeight ? metadata->height[pixel.tilePixel] / 255.0f : 0.0f) * intensity;
+		accumulator.weight += intensity;
 		accumulator.emissive = true;
 	}
 	std::vector<RemasterFrameLight> lights;
 	for (const Accumulator &accumulator : accumulators)
 	{
-		if (!accumulator.emissive || !accumulator.visiblePixels)
+		if (!accumulator.emissive || accumulator.weight <= 0.0f)
 			continue;
 		RemasterFrameLight light;
-		light.x = accumulator.x / accumulator.visiblePixels;
-		light.y = accumulator.y / accumulator.visiblePixels;
-		light.radius = std::min(frame.width, frame.height) * 0.38f;
+		light.x = accumulator.x / accumulator.weight;
+		light.y = accumulator.y / accumulator.weight;
+		const float emitterHeight = accumulator.z / accumulator.weight * frame.lightingCoordinateScale;
+		light.z = std::max(emitterHeight, frame.lightingCoordinateScale / 255.0f);
+		light.radius = 96.0f;
 		light.red = accumulator.red;
 		light.green = accumulator.green;
 		light.blue = accumulator.blue;
-		light.intensity = 1.35f;
+		light.intensity = 12.0f;
 		lights.push_back(light);
 	}
 	return lights;
@@ -589,14 +662,23 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	RemasterFrameSerialization::U32(bytes, frame.width);
 	RemasterFrameSerialization::U32(bytes, frame.height);
 	if (!RemasterFrameSerialization::String(bytes, frame.profileRomSha256) ||
-		!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
+		(frame.schemaVersion >= 7 && (!std::isfinite(frame.lightingCoordinateScale) || frame.lightingCoordinateScale <= 0.0f)))
+		return false;
+	if (frame.schemaVersion >= 7)
+		RemasterFrameSerialization::Float(bytes, frame.lightingCoordinateScale);
+	if (frame.schemaVersion >= 9)
+	{
+		if (frame.indirectBounceCount > 16)
+			return false;
+		RemasterFrameSerialization::U8(bytes, frame.indirectBounceCount);
+	}
+	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetMetadata.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.materials.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.tileInstances.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.lights.size()))
 		return false;
-
 	for (uint16_t color : frame.originalRgb555)
 		RemasterFrameSerialization::U16(bytes, color);
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
@@ -632,6 +714,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U8(bytes, metadata.hasHeight ? 1 : 0);
 		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(metadata.heightSampling));
 		RemasterFrameSerialization::U8(bytes, metadata.hasEmission ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, metadata.hasNormals ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, metadata.directLightingOppositeFacing ? 1 : 0);
 		if (metadata.hasMaterialSelectors)
 			for (const std::string &name : metadata.materialSelectors)
 				if (!RemasterFrameSerialization::String(bytes, name))
@@ -640,6 +724,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			bytes.insert(bytes.end(), metadata.occlusion.begin(), metadata.occlusion.end());
 		if (metadata.hasHeight)
 			bytes.insert(bytes.end(), metadata.height.begin(), metadata.height.end());
+		if (metadata.hasNormals)
+			bytes.insert(bytes.end(), metadata.normalXyz.begin(), metadata.normalXyz.end());
 		if (metadata.hasEmission)
 			bytes.insert(bytes.end(), metadata.emissionRgba.begin(), metadata.emissionRgba.end());
 	}
@@ -664,6 +750,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U16(bytes, instance.tileNumber);
 		RemasterFrameSerialization::U8(bytes, instance.palette);
 		RemasterFrameSerialization::U16(bytes, instance.vramAddress);
+		RemasterFrameSerialization::U8(bytes, instance.hFlip ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, instance.vFlip ? 1 : 0);
 		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(instance.matchStatus));
 		RemasterFrameSerialization::U32(bytes, instance.ruleLine);
 		if (!RemasterFrameSerialization::String(bytes, instance.assetGroup) ||

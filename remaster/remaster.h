@@ -354,6 +354,8 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 		instance.sourceIndex = state.currentSourceIndex;
 		instance.tileNumber = tileWord & 0x3ff;
 		instance.palette = palette;
+		instance.hFlip = (tileWord & 0x4000) != 0;
+		instance.vFlip = (tileWord & 0x8000) != 0;
 		instance.vramAddress = vramAddress;
 		instance.matchStatus = profileMatch.status;
 		if (profileMatch.rule)
@@ -614,6 +616,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		frame.width = static_cast<uint32_t>(screenWidth);
 		frame.height = static_cast<uint32_t>(screenHeight);
 		frame.profileRomSha256 = state.activeProfile.romSha256;
+		frame.lightingCoordinateScale = state.activeProfile.lightingCoordinateScale;
+		frame.indirectBounceCount = state.activeProfile.indirectBounceCount;
 		const size_t pixelCount = screenWidth * screenHeight;
 		frame.originalRgb555.reserve(pixelCount);
 		frame.mainPixels.reserve(pixelCount);
@@ -657,11 +661,14 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			metadata.materialSelectors = entry.second.materialSelectors;
 			metadata.occlusion = entry.second.occlusion;
 			metadata.height = entry.second.height;
+			metadata.normalXyz = entry.second.normalXyz;
 			metadata.emissionRgba = entry.second.emissionRgba;
 			metadata.hasMaterialSelectors = entry.second.hasMaterialSelectors;
 			metadata.hasOcclusion = entry.second.hasOcclusion;
 			metadata.hasHeight = entry.second.hasHeight;
+			metadata.hasNormals = entry.second.hasNormals;
 			metadata.hasEmission = entry.second.hasEmission;
+			metadata.directLightingOppositeFacing = entry.second.directLightingOppositeFacing;
 			metadata.heightSampling = entry.second.heightSampling;
 			frame.assetMetadata.push_back(metadata);
 		}

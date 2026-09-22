@@ -38,11 +38,10 @@
 
 typedef struct
 {
-	vector_float2 position;
+	vector_float3 position;
 	float radius;
 	float intensity;
 	vector_float3 color;
-	float padding;
 } RemasterGpuLight;
 
 typedef struct
@@ -51,14 +50,17 @@ typedef struct
 	uint32_t height;
 	uint32_t view;
 	uint32_t lightCount;
+	uint32_t passIndex;
 } RemasterLightingUniforms;
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
 static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t,
 	const uint8_t *, size_t, RemasterDebugMode, const uint8_t * = nullptr,
-	const uint8_t * = nullptr, const std::vector<RemasterGpuLight> * = nullptr, bool = false,
-	RemasterLightingView = RemasterLightingView::Composite);
+	const uint8_t * = nullptr, const uint8_t * = nullptr, const float * = nullptr, const uint8_t * = nullptr,
+	const uint8_t * = nullptr,
+	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
+	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -90,6 +92,9 @@ id<MTLTexture>  			metalTexture = nil;
 id<MTLCommandQueue>			metalCommandQueue = nil;
 id<MTLRenderPipelineState>	metalPipelineState = nil;
 id<MTLComputePipelineState>	remasterLightingPipelineState = nil;
+id<MTLComputePipelineState>	remasterIndirectPipelineState = nil;
+id<MTLComputePipelineState>	remasterCompositePipelineState = nil;
+id<MTLComputePipelineState>	remasterHighlightPipelineState = nil;
 
 void InitGraphics (void)
 {
@@ -143,6 +148,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 {
 	if (frame.width > INT_MAX || frame.height > INT_MAX)
 		return false;
+	// Surface diagnostics are presentation-only, never lighting albedo.
+	lighting = lighting && debugMode == RemasterDebugMode::Original;
 	std::vector<uint32_t> owners;
 	owners.reserve(frame.mainPixels.size());
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
@@ -156,6 +163,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	}
 	std::vector<uint8_t> lightingField(frame.mainPixels.size() * 2, 0);
 	std::vector<uint8_t> emissionField(frame.mainPixels.size() * 4, 0);
+	std::vector<uint8_t> heightField(frame.mainPixels.size() * 2, 0);
+	std::vector<uint8_t> participationField(frame.mainPixels.size() * 2, 255);
+	std::vector<uint8_t> oppositeFacingField(frame.mainPixels.size(), 0);
+	std::vector<float> surfaceField(frame.mainPixels.size() * 4, 0.0f);
 	if (lighting && frame.schemaVersion >= 5)
 	{
 		for (size_t i = 0; i < frame.mainPixels.size(); i++)
@@ -163,29 +174,82 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			const RemasterFramePixel &pixel = frame.mainPixels[i];
 			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
 				continue;
-			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+				const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 			const RemasterFrameAssetMetadata *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+			const RemasterFrameMaterial *material = S9xRemasterFrameMaterialForPixel(frame, pixel);
+			if (material && material->surfaceClass == RemasterSurfaceClass::UserInterface)
+				participationField[i * 2] = participationField[i * 2 + 1] = 0;
+			else if (material && !material->receivesGi)
+				participationField[i * 2 + 1] = 0;
 			if (metadata && metadata->hasOcclusion)
 			{
 				lightingField[i * 2] = metadata->occlusion[pixel.tilePixel];
 				lightingField[i * 2 + 1] = 255;
 			}
+			if (metadata && metadata->directLightingOppositeFacing)
+				oppositeFacingField[i] = 255;
 			if (metadata && metadata->hasEmission)
 				std::copy(metadata->emissionRgba.begin() + pixel.tilePixel * 4,
 					metadata->emissionRgba.begin() + pixel.tilePixel * 4 + 4, emissionField.begin() + i * 4);
+			if (metadata && metadata->hasHeight)
+			{
+				heightField[i * 2] = metadata->height[pixel.tilePixel];
+				heightField[i * 2 + 1] = 255;
+			}
 		}
+		for (uint32_t y = 0; y < frame.height; y++)
+			for (uint32_t x = 0; x < frame.width; x++)
+			{
+				const size_t i = static_cast<size_t>(y) * frame.width + x;
+				const float center = heightField[i * 2] / 255.0f * frame.lightingCoordinateScale;
+				const size_t left = static_cast<size_t>(y) * frame.width + (x ? x - 1 : x);
+				const size_t right = static_cast<size_t>(y) * frame.width + std::min(frame.width - 1, x + 1);
+				const size_t top = static_cast<size_t>(y ? y - 1 : y) * frame.width + x;
+				const size_t bottom = static_cast<size_t>(std::min(frame.height - 1, y + 1)) * frame.width + x;
+				const float dx = (heightField[right * 2] - heightField[left * 2]) / 255.0f * frame.lightingCoordinateScale;
+				const float dy = (heightField[bottom * 2] - heightField[top * 2]) / 255.0f * frame.lightingCoordinateScale;
+				const float length = std::sqrt(dx * dx + dy * dy + 4.0f);
+				surfaceField[i * 4] = center;
+				const RemasterFramePixel &pixel = frame.mainPixels[i];
+				const RemasterFrameAssetMetadata *metadata = nullptr;
+				const RemasterFrameTileInstance *instance = nullptr;
+				if (pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64)
+				{
+					instance = &frame.tileInstances[pixel.instanceId - 1];
+					metadata = S9xRemasterFrameMetadataForTile(frame, instance->tileId);
+				}
+				if (metadata && metadata->hasNormals)
+				{
+					const size_t offset = pixel.tilePixel * 3;
+					float nx = metadata->normalXyz[offset] / 127.5f - 1.0f;
+					float ny = metadata->normalXyz[offset + 1] / 127.5f - 1.0f;
+					float nz = metadata->normalXyz[offset + 2] / 127.5f - 1.0f;
+					S9xRemasterTransformNormalForTileInstance(*instance, nx, ny, nz);
+					const float normalLength = std::sqrt(nx * nx + ny * ny + nz * nz);
+					surfaceField[i * 4 + 1] = normalLength > 0.0001f ? nx / normalLength : 0.0f;
+					surfaceField[i * 4 + 2] = normalLength > 0.0001f ? ny / normalLength : 0.0f;
+					surfaceField[i * 4 + 3] = normalLength > 0.0001f ? nz / normalLength : 1.0f;
+				}
+				else
+				{
+					surfaceField[i * 4 + 1] = -dx / length;
+					surfaceField[i * 4 + 2] = -dy / length;
+					surfaceField[i * 4 + 3] = 2.0f / length;
+				}
+			}
 	}
 	std::vector<RemasterGpuLight> lights;
 	if (lighting)
 		for (const RemasterFrameLight &light : S9xRemasterFrameEmissionLights(frame))
-			lights.push_back({ { light.x, light.y }, light.radius, light.intensity,
-				{ light.red, light.green, light.blue }, 0.0f });
-	const RemasterDebugMode presentationMode = lighting ? RemasterDebugMode::Original : debugMode;
+			lights.push_back({ { light.x, light.y, light.z }, light.radius, light.intensity,
+				{ light.red, light.green, light.blue } });
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
-		highlights.empty() ? nullptr : highlights.data(), frame.width, presentationMode,
-		lightingField.data(), emissionField.data(), &lights, lighting && frame.schemaVersion >= 5,
-		lightingView);
+		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
+		lightingField.data(), emissionField.data(), heightField.data(), surfaceField.data(), participationField.data(),
+		oppositeFacingField.data(), &lights,
+		lighting && frame.schemaVersion >= 5,
+		lightingView, frame.indirectBounceCount);
 }
 
 static void S9xInitMetal (void)
@@ -213,6 +277,12 @@ static void S9xInitMetal (void)
 	metalPipelineState = [metalDevice newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
 	id<MTLFunction> lightingFunction = [defaultLibrary newFunctionWithName:@"remasterDirectLighting"];
 	remasterLightingPipelineState = [metalDevice newComputePipelineStateWithFunction:lightingFunction error:&error];
+	id<MTLFunction> indirectFunction = [defaultLibrary newFunctionWithName:@"remasterIndirectBounce"];
+	remasterIndirectPipelineState = [metalDevice newComputePipelineStateWithFunction:indirectFunction error:&error];
+	id<MTLFunction> compositeFunction = [defaultLibrary newFunctionWithName:@"remasterCompositeLighting"];
+	remasterCompositePipelineState = [metalDevice newComputePipelineStateWithFunction:compositeFunction error:&error];
+	id<MTLFunction> highlightFunction = [defaultLibrary newFunctionWithName:@"remasterSelectedTileHighlight"];
+	remasterHighlightPipelineState = [metalDevice newComputePipelineStateWithFunction:highlightFunction error:&error];
 	
 	if (metalPipelineState == nil)
 	{
@@ -227,6 +297,9 @@ static void S9xDeinitMetal (void)
 	metalDevice = nil;
 	metalTexture = nil;
 	remasterLightingPipelineState = nil;
+	remasterIndirectPipelineState = nil;
+	remasterCompositePipelineState = nil;
+	remasterHighlightPipelineState = nil;
 	metalLayer = nil;
 }
 
@@ -369,9 +442,10 @@ void S9xPutImage (int width, int height)
 
 static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, size_t pitch,
 	const uint32_t *owners, size_t ownerPitch, const uint8_t *highlights, size_t highlightPitch,
-	RemasterDebugMode debugMode, const uint8_t *occlusion, const uint8_t *emission,
+	RemasterDebugMode debugMode, const uint8_t *occlusion, const uint8_t *emission, const uint8_t *heightField,
+	const float *surfaceField, const uint8_t *participation, const uint8_t *oppositeFacing,
 	const std::vector<RemasterGpuLight> *lights, bool lighting,
-	RemasterLightingView lightingView)
+	RemasterLightingView lightingView, uint8_t indirectBounceCount)
 {
 	static std::mutex renderMutex;
 	std::lock_guard<std::mutex> lock(renderMutex);
@@ -441,12 +515,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					blue = debugBlue;
 				}
 			}
-			if (highlights && highlightPitch >= static_cast<size_t>(width) && highlights[y * highlightPitch + x])
-			{
-				red = (red + 255) >> 1;
-				green = (green + 255) >> 1;
-				blue >>= 1;
-			}
 
 			int offset = (y * width + x) * 4;
 			buffer[offset++] = (uint8)red;
@@ -489,7 +557,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		id<MTLCommandBuffer> commandBuffer = [metalCommandQueue commandBuffer];
 		commandBuffer.label = @"Snes9x command buffer";
 		id<MTLTexture> presentationTexture = metalTexture;
-		if (lighting && occlusion && emission && remasterLightingPipelineState)
+		if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && remasterLightingPipelineState &&
+			remasterIndirectPipelineState && remasterCompositePipelineState)
 		{
 			MTLTextureDescriptor *fieldDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm
 				width:width height:height mipmapped:NO];
@@ -501,18 +570,43 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			id<MTLTexture> emissionTexture = [metalDevice newTextureWithDescriptor:emissionDescriptor];
 			[emissionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:emission bytesPerRow:width * 4];
+			id<MTLTexture> heightTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			[heightTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:heightField bytesPerRow:width * 2];
+			id<MTLTexture> participationTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			[participationTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:participation bytesPerRow:width * 2];
+			MTLTextureDescriptor *maskDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+				width:width height:height mipmapped:NO];
+			id<MTLTexture> oppositeFacingTexture = [metalDevice newTextureWithDescriptor:maskDescriptor];
+			[oppositeFacingTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:oppositeFacing bytesPerRow:width];
+			MTLTextureDescriptor *surfaceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+				width:width height:height mipmapped:NO];
+			id<MTLTexture> surfaceTexture = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
+			[surfaceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:surfaceField bytesPerRow:width * sizeof(float) * 4];
 			MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
 				width:width height:height mipmapped:NO];
 			outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 			presentationTexture = [metalDevice newTextureWithDescriptor:outputDescriptor];
+			MTLTextureDescriptor *radianceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+				width:width height:height mipmapped:NO];
+			radianceDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+			id<MTLTexture> directTexture = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-				static_cast<uint32_t>(lightingView), static_cast<uint32_t>(lights ? lights->size() : 0) };
+				static_cast<uint32_t>(lightingView), static_cast<uint32_t>(lights ? lights->size() : 0), 0 };
 			id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
 			[computeEncoder setTexture:metalTexture atIndex:0];
 			[computeEncoder setTexture:occlusionTexture atIndex:1];
 			[computeEncoder setTexture:presentationTexture atIndex:2];
 			[computeEncoder setTexture:emissionTexture atIndex:3];
+			[computeEncoder setTexture:heightTexture atIndex:4];
+			[computeEncoder setTexture:surfaceTexture atIndex:5];
+			[computeEncoder setTexture:directTexture atIndex:6];
+			[computeEncoder setTexture:participationTexture atIndex:7];
+			[computeEncoder setTexture:oppositeFacingTexture atIndex:8];
 			[computeEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 			const RemasterGpuLight emptyLight = {};
 			[computeEncoder setBytes:!lights || lights->empty() ? &emptyLight : lights->data()
@@ -520,8 +614,86 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[computeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[computeEncoder endEncoding];
+			if (indirectBounceCount > 0)
+			{
+				id<MTLTexture> bounceTextures[2] = {
+					[metalDevice newTextureWithDescriptor:radianceDescriptor],
+					[metalDevice newTextureWithDescriptor:radianceDescriptor]
+				};
+				id<MTLTexture> indirectTextures[2] = {
+					[metalDevice newTextureWithDescriptor:radianceDescriptor],
+					[metalDevice newTextureWithDescriptor:radianceDescriptor]
+				};
+				id<MTLTexture> previousBounce = directTexture;
+				for (uint32_t bounce = 0; bounce < indirectBounceCount; bounce++)
+				{
+					const uint32_t current = bounce & 1;
+					const uint32_t previous = current ^ 1;
+					uniforms.passIndex = bounce;
+					id<MTLComputeCommandEncoder> bounceEncoder = [commandBuffer computeCommandEncoder];
+					[bounceEncoder setComputePipelineState:remasterIndirectPipelineState];
+					[bounceEncoder setTexture:metalTexture atIndex:0];
+					[bounceEncoder setTexture:occlusionTexture atIndex:1];
+					[bounceEncoder setTexture:surfaceTexture atIndex:2];
+					[bounceEncoder setTexture:heightTexture atIndex:3];
+					[bounceEncoder setTexture:participationTexture atIndex:4];
+					[bounceEncoder setTexture:previousBounce atIndex:5];
+					[bounceEncoder setTexture:indirectTextures[previous] atIndex:6];
+					[bounceEncoder setTexture:bounceTextures[current] atIndex:7];
+					[bounceEncoder setTexture:indirectTextures[current] atIndex:8];
+					[bounceEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+					[bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
+						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+					[bounceEncoder endEncoding];
+					previousBounce = bounceTextures[current];
+				}
+				if (lightingView == RemasterLightingView::Composite ||
+					lightingView == RemasterLightingView::DirectContribution ||
+					lightingView == RemasterLightingView::Difference ||
+					lightingView == RemasterLightingView::IndirectContribution)
+				{
+					id<MTLComputeCommandEncoder> compositeEncoder = [commandBuffer computeCommandEncoder];
+					[compositeEncoder setComputePipelineState:remasterCompositePipelineState];
+					[compositeEncoder setTexture:metalTexture atIndex:0];
+					[compositeEncoder setTexture:directTexture atIndex:1];
+					[compositeEncoder setTexture:indirectTextures[(indirectBounceCount - 1) & 1] atIndex:2];
+					[compositeEncoder setTexture:presentationTexture atIndex:3];
+					[compositeEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+					[compositeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
+						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+					[compositeEncoder endEncoding];
+				}
+			}
 		}
 		
+		// Selection is presentation-only and must never feed lighting albedo or radiance.
+		if (highlights && highlightPitch >= static_cast<size_t>(width) && remasterHighlightPipelineState)
+		{
+			MTLTextureDescriptor *maskDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+				width:width height:height mipmapped:NO];
+			maskDescriptor.usage = MTLTextureUsageShaderRead;
+			id<MTLTexture> highlightMask = [metalDevice newTextureWithDescriptor:maskDescriptor];
+			MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				width:width height:height mipmapped:NO];
+			outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+			id<MTLTexture> highlightedTexture = [metalDevice newTextureWithDescriptor:outputDescriptor];
+			if (!highlightMask || !highlightedTexture)
+				return false;
+			[highlightMask replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:highlights bytesPerRow:highlightPitch];
+			id<MTLComputeCommandEncoder> highlightEncoder = [commandBuffer computeCommandEncoder];
+			if (!highlightEncoder)
+				return false;
+			[highlightEncoder setComputePipelineState:remasterHighlightPipelineState];
+			[highlightEncoder setTexture:presentationTexture atIndex:0];
+			[highlightEncoder setTexture:highlightMask atIndex:1];
+			[highlightEncoder setTexture:highlightedTexture atIndex:2];
+			[highlightEncoder dispatchThreadgroups:MTLSizeMake((width + 7) / 8, (height + 7) / 8, 1)
+				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+			[highlightEncoder endEncoding];
+			presentationTexture = highlightedTexture;
+		}
+
 		id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
 		if (!drawable)
 			return false;

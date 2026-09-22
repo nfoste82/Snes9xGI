@@ -146,6 +146,7 @@ extern pthread_mutex_t	keyLock;
 
 @interface S9xView: MTKView
 - (void)updatePauseOverlay;
+- (void)updateRemasterDebugOverlay;
 
 @property (nonatomic, weak) id<S9xEmulationDelegate> emulationDelegate;
 @end
