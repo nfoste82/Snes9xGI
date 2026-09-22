@@ -36,10 +36,29 @@
 #include "mac-screenshot.h"
 #include "mac-render.h"
 
+typedef struct
+{
+	vector_float2 position;
+	float radius;
+	float intensity;
+	vector_float3 color;
+	float padding;
+} RemasterGpuLight;
+
+typedef struct
+{
+	uint32_t width;
+	uint32_t height;
+	uint32_t view;
+	uint32_t lightCount;
+} RemasterLightingUniforms;
+
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
 static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t,
-	const uint8_t *, size_t, RemasterDebugMode);
+	const uint8_t *, size_t, RemasterDebugMode, const uint8_t * = nullptr,
+	const uint8_t * = nullptr, const std::vector<RemasterGpuLight> * = nullptr, bool = false,
+	RemasterLightingView = RemasterLightingView::Composite);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -70,6 +89,7 @@ id<MTLDevice>   			metalDevice = nil;
 id<MTLTexture>  			metalTexture = nil;
 id<MTLCommandQueue>			metalCommandQueue = nil;
 id<MTLRenderPipelineState>	metalPipelineState = nil;
+id<MTLComputePipelineState>	remasterLightingPipelineState = nil;
 
 void InitGraphics (void)
 {
@@ -119,7 +139,7 @@ void DrawFreezeDefrostScreen (uint8 *draw)
 }
 
 bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
-	const RemasterTileContentId *selectedTile)
+	const RemasterTileContentId *selectedTile, bool lighting, RemasterLightingView lightingView)
 {
 	if (frame.width > INT_MAX || frame.height > INT_MAX)
 		return false;
@@ -134,9 +154,38 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		for (uint32_t offset : S9xRemasterFrameOccurrences(frame, *selectedTile))
 			highlights[offset] = 1;
 	}
+	std::vector<uint8_t> lightingField(frame.mainPixels.size() * 2, 0);
+	std::vector<uint8_t> emissionField(frame.mainPixels.size() * 4, 0);
+	if (lighting && frame.schemaVersion >= 5)
+	{
+		for (size_t i = 0; i < frame.mainPixels.size(); i++)
+		{
+			const RemasterFramePixel &pixel = frame.mainPixels[i];
+			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
+				continue;
+			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+			const RemasterFrameAssetMetadata *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+			if (metadata && metadata->hasOcclusion)
+			{
+				lightingField[i * 2] = metadata->occlusion[pixel.tilePixel];
+				lightingField[i * 2 + 1] = 255;
+			}
+			if (metadata && metadata->hasEmission)
+				std::copy(metadata->emissionRgba.begin() + pixel.tilePixel * 4,
+					metadata->emissionRgba.begin() + pixel.tilePixel * 4 + 4, emissionField.begin() + i * 4);
+		}
+	}
+	std::vector<RemasterGpuLight> lights;
+	if (lighting)
+		for (const RemasterFrameLight &light : S9xRemasterFrameEmissionLights(frame))
+			lights.push_back({ { light.x, light.y }, light.radius, light.intensity,
+				{ light.red, light.green, light.blue }, 0.0f });
+	const RemasterDebugMode presentationMode = lighting ? RemasterDebugMode::Original : debugMode;
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
-		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode);
+		highlights.empty() ? nullptr : highlights.data(), frame.width, presentationMode,
+		lightingField.data(), emissionField.data(), &lights, lighting && frame.schemaVersion >= 5,
+		lightingView);
 }
 
 static void S9xInitMetal (void)
@@ -162,6 +211,8 @@ static void S9xInitMetal (void)
 	pipelineDescriptor.fragmentFunction = [defaultLibrary newFunctionWithName:@"fragmentShader"];
 	
 	metalPipelineState = [metalDevice newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
+	id<MTLFunction> lightingFunction = [defaultLibrary newFunctionWithName:@"remasterDirectLighting"];
+	remasterLightingPipelineState = [metalDevice newComputePipelineStateWithFunction:lightingFunction error:&error];
 	
 	if (metalPipelineState == nil)
 	{
@@ -175,6 +226,7 @@ static void S9xDeinitMetal (void)
 	metalCommandQueue = nil;
 	metalDevice = nil;
 	metalTexture = nil;
+	remasterLightingPipelineState = nil;
 	metalLayer = nil;
 }
 
@@ -317,7 +369,9 @@ void S9xPutImage (int width, int height)
 
 static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, size_t pitch,
 	const uint32_t *owners, size_t ownerPitch, const uint8_t *highlights, size_t highlightPitch,
-	RemasterDebugMode debugMode)
+	RemasterDebugMode debugMode, const uint8_t *occlusion, const uint8_t *emission,
+	const std::vector<RemasterGpuLight> *lights, bool lighting,
+	RemasterLightingView lightingView)
 {
 	static std::mutex renderMutex;
 	std::lock_guard<std::mutex> lock(renderMutex);
@@ -434,6 +488,39 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		
 		id<MTLCommandBuffer> commandBuffer = [metalCommandQueue commandBuffer];
 		commandBuffer.label = @"Snes9x command buffer";
+		id<MTLTexture> presentationTexture = metalTexture;
+		if (lighting && occlusion && emission && remasterLightingPipelineState)
+		{
+			MTLTextureDescriptor *fieldDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm
+				width:width height:height mipmapped:NO];
+			id<MTLTexture> occlusionTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			[occlusionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:occlusion bytesPerRow:width * 2];
+			MTLTextureDescriptor *emissionDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				width:width height:height mipmapped:NO];
+			id<MTLTexture> emissionTexture = [metalDevice newTextureWithDescriptor:emissionDescriptor];
+			[emissionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:emission bytesPerRow:width * 4];
+			MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				width:width height:height mipmapped:NO];
+			outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+			presentationTexture = [metalDevice newTextureWithDescriptor:outputDescriptor];
+			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+				static_cast<uint32_t>(lightingView), static_cast<uint32_t>(lights ? lights->size() : 0) };
+			id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
+			[computeEncoder setTexture:metalTexture atIndex:0];
+			[computeEncoder setTexture:occlusionTexture atIndex:1];
+			[computeEncoder setTexture:presentationTexture atIndex:2];
+			[computeEncoder setTexture:emissionTexture atIndex:3];
+			[computeEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+			const RemasterGpuLight emptyLight = {};
+			[computeEncoder setBytes:!lights || lights->empty() ? &emptyLight : lights->data()
+				length:!lights || lights->empty() ? sizeof(emptyLight) : lights->size() * sizeof(RemasterGpuLight) atIndex:1];
+			[computeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
+				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+			[computeEncoder endEncoding];
+		}
 		
 		id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
 		if (!drawable)
@@ -466,7 +553,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 								   length:sizeof(viewportSize)
 								  atIndex:1];
 			
-			[renderEncoder setFragmentTexture:metalTexture atIndex:0];
+			[renderEncoder setFragmentTexture:presentationTexture atIndex:0];
 			[renderEncoder setFragmentBuffer:fragmentBuffer offset:0 atIndex:1];
 			
 			[renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];

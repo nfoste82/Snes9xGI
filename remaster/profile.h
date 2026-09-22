@@ -93,9 +93,11 @@ struct RemasterAssetMetadata
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = {};
 	std::array<uint8_t, 64> height = {};
+	std::array<uint8_t, 256> emissionRgba = {};
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
+	bool hasEmission = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
 
@@ -648,6 +650,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!ParseString(value, stringValue) || !ParseHeightSampling(stringValue, asset->heightSampling))
 					fail(lineNumber, "height_sampling must be \"nearest\" or \"linear\"");
 			}
+			else if (key == "emission_rgba")
+			{
+				std::vector<uint8_t> emission;
+				if (!ParseByteArray(value, emission) || emission.size() != 256)
+					fail(lineNumber, "emission_rgba must contain exactly 256 values in [0, 255]");
+				else
+				{
+					std::copy(emission.begin(), emission.end(), asset->emissionRgba.begin());
+					asset->hasEmission = true;
+				}
+			}
 			else
 				fail(lineNumber, "unknown asset key '" + key + "'");
 			break;
@@ -693,10 +706,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 2)
-		fail(0, "schema_version must be 1 or 2");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 3)
+		fail(0, "schema_version must be 1, 2, or 3");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
+	if (parsed.schemaVersion < 3)
+		for (const auto &entry : parsed.assets)
+			if (entry.second.hasEmission)
+				fail(0, "emission_rgba requires schema_version 3");
 	if (parsed.gameTitle.empty())
 		fail(0, "game.title is required");
 	if (parsed.romSha256.size() != 64 || parsed.romSha256.find_first_not_of("0123456789abcdef") != std::string::npos)
@@ -730,8 +747,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		const RemasterAssetMetadata &item = entry.second;
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
-		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight)
-			fail(0, "asset requires materials, occlusion, or height");
+		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasEmission)
+			fail(0, "asset requires materials, occlusion, height, or emission_rgba");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
 		for (const std::string &name : item.materialSelectors)
@@ -843,7 +860,11 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	std::ostringstream output;
 	output.imbue(std::locale::classic());
 	output << std::setprecision(std::numeric_limits<float>::max_digits10);
-	output << "schema_version = " << (profile.assets.empty() ? profile.schemaVersion : 2) << "\n\n";
+	bool hasEmission = false;
+	for (const auto &entry : profile.assets)
+		hasEmission |= entry.second.hasEmission;
+	const uint32_t requiredSchema = hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2);
+	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -898,6 +919,13 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			output << "]\n";
 			output << "height_sampling = " << Quote(asset.heightSampling == RemasterHeightSampling::Linear ?
 				"linear" : "nearest") << "\n";
+		}
+		if (asset.hasEmission)
+		{
+			output << "emission_rgba = [";
+			for (size_t i = 0; i < asset.emissionRgba.size(); i++)
+				output << (i ? ", " : "") << unsigned(asset.emissionRgba[i]);
+			output << "]\n";
 		}
 	}
 	for (const RemasterProfileRule &rule : profile.rules)

@@ -213,6 +213,7 @@ extern id<S9xInputDelegate> inputDelegate;
 
 - (BOOL)isRunning;
 - (BOOL)isPaused;
+- (BOOL)isRemasterProfileLoaded;
 - (BOOL)isPresentingRemasterFrame;
 - (void)pause;
 - (void)quit;
@@ -237,6 +238,8 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)setMacFrameSkip:(int)_macFrameSkip;
 - (void)setShowFPS:(BOOL)showFPS;
 - (NSString *)cycleRemasterDebugMode;
+- (BOOL)toggleRemasterLighting;
+- (NSString *)cycleRemasterLightingView;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;

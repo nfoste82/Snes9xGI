@@ -234,7 +234,10 @@ namespace TileImpl {
 
 	#define OFFSET_IN_LINE \
 		uint32 OffsetInLine = Offset % GFX.RealPPL;
-	#define DRAW_PIXEL(N, M) PIXEL::Draw(N, M, Offset, OffsetInLine, Pix, Z1, Z2)
+	#define DRAW_PIXEL(N, M) \
+		(S9xRemasterSetTilePixel(static_cast<uint8>((bp - cache.Ptr()) + ((Tile & H_FLIP) ? 7 - (N) : (N)))), \
+		 PIXEL::Draw(N, M, Offset, OffsetInLine, Pix, Z1, Z2))
+	#define TILE_PIXEL(P) (S9xRemasterSetTilePixel(static_cast<uint8>((P) - cache.Ptr())), *(P))
 	#define Z1	GFX.Z1
 	#define Z2	GFX.Z2
 
@@ -265,7 +268,7 @@ namespace TileImpl {
 				for (l = LineCount; l > 0; l--, bp += 8 * Pitch, Offset += GFX.PPL)
 				{
 					for (int x = 0; x < 8; x++) {
-						Pix = bp[x]; DRAW_PIXEL(x, Pix);
+						Pix = TILE_PIXEL(bp + x); DRAW_PIXEL(x, Pix);
 					}
 				}
 			}
@@ -277,7 +280,7 @@ namespace TileImpl {
 				for (l = LineCount; l > 0; l--, bp += 8 * Pitch, Offset += GFX.PPL)
 				{
 					for (int x = 0; x < 8; x++) {
-						Pix = bp[7 - x]; DRAW_PIXEL(x, Pix);
+						Pix = TILE_PIXEL(bp + 7 - x); DRAW_PIXEL(x, Pix);
 					}
 				}
 			}
@@ -289,7 +292,7 @@ namespace TileImpl {
 				for (l = LineCount; l > 0; l--, bp -= 8 * Pitch, Offset += GFX.PPL)
 				{
 					for (int x = 0; x < 8; x++) {
-						Pix = bp[x]; DRAW_PIXEL(x, Pix);
+						Pix = TILE_PIXEL(bp + x); DRAW_PIXEL(x, Pix);
 					}
 				}
 			}
@@ -300,7 +303,7 @@ namespace TileImpl {
 				for (l = LineCount; l > 0; l--, bp -= 8 * Pitch, Offset += GFX.PPL)
 				{
 					for (int x = 0; x < 8; x++) {
-						Pix = bp[7 - x]; DRAW_PIXEL(x, Pix);
+						Pix = TILE_PIXEL(bp + 7 - x); DRAW_PIXEL(x, Pix);
 					}
 				}
 			}
@@ -428,6 +431,8 @@ namespace TileImpl {
 
 	#define Z1	GFX.Z1
 	#define Z2	GFX.Z2
+	#undef DRAW_PIXEL
+	#define DRAW_PIXEL(N, M) PIXEL::Draw(N, M, Offset, OffsetInLine, Pix, Z1, Z2)
 
 	template<class PIXEL>
 	struct DrawMosaicPixel16
@@ -452,9 +457,9 @@ namespace TileImpl {
 				StartPixel = 7 - StartPixel;
 
 			if (Tile & V_FLIP)
-				Pix = cache.Ptr()[56 - bpstart_t::Get(StartLine) + StartPixel];
+				Pix = TILE_PIXEL(cache.Ptr() + 56 - bpstart_t::Get(StartLine) + StartPixel);
 			else
-				Pix = cache.Ptr()[bpstart_t::Get(StartLine) + StartPixel];
+				Pix = TILE_PIXEL(cache.Ptr() + bpstart_t::Get(StartLine) + StartPixel);
 
 			if (Pix)
 			{
@@ -507,6 +512,7 @@ namespace TileImpl {
 	#undef Z1
 	#undef Z2
 	#undef DRAW_PIXEL
+	#undef TILE_PIXEL
 
 	// Basic routine to render a chunk of a Mode 7 BG.
 	// Mode 7 has no interlace, so bpstart_t and Pitch are unused.

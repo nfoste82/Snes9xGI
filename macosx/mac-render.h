@@ -24,10 +24,21 @@
 
 #include "remaster/frame.h"
 
+enum class RemasterLightingView : uint32_t
+{
+	Composite,
+	Occlusion,
+	Visibility,
+	DirectContribution,
+	Difference
+};
+
 void InitGraphics (void);
 void DeinitGraphics (void);
 void DrawFreezeDefrostScreen (uint8 *);
-bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode, const RemasterTileContentId * = nullptr);
+bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
+	const RemasterTileContentId * = nullptr, bool lighting = false,
+	RemasterLightingView = RemasterLightingView::Composite);
 void GetGameDisplay (int *, int *);
 
 #endif

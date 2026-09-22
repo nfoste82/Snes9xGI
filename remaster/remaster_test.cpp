@@ -35,6 +35,7 @@ int main ()
 	frame.subPixels.resize(2);
 	frame.mainPixels[0].owner = 0x02010002;
 	frame.mainPixels[0].instanceId = 1;
+	frame.mainPixels[0].tilePixel = 9;
 	RemasterFrameAsset frameAsset;
 	frameAsset.tileId = { hash, 1, 4 };
 	std::copy(indices, indices + 64, frameAsset.indices);
@@ -57,6 +58,15 @@ int main ()
 	frameMetadata.hasHeight = true;
 	frameMetadata.height[2] = 128;
 	frameMetadata.heightSampling = RemasterHeightSampling::Linear;
+	frameMetadata.hasEmission = true;
+	frameMetadata.emissionRgba[12] = 255;
+	frameMetadata.emissionRgba[13] = 96;
+	frameMetadata.emissionRgba[14] = 24;
+	frameMetadata.emissionRgba[15] = 25;
+	frameMetadata.emissionRgba[36] = 255;
+	frameMetadata.emissionRgba[37] = 96;
+	frameMetadata.emissionRgba[38] = 24;
+	frameMetadata.emissionRgba[39] = 25;
 	frame.assetMetadata.push_back(frameMetadata);
 	RemasterFrameMaterial frameMaterial;
 	frameMaterial.name = "stone";
@@ -82,17 +92,34 @@ int main ()
 	assert(decodedFrame.width == 2 && decodedFrame.height == 1);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
+	assert(decodedFrame.mainPixels[0].tilePixel == 9);
 	assert(decodedFrame.assetGroups.size() == 1);
 	assert(decodedFrame.assetMetadata.size() == 1);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->materialSelectors[0] == "stone");
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->occlusion[1] == 255);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->height[2] == 128);
+	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->emissionRgba[15] == 25);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->heightSampling == RemasterHeightSampling::Linear);
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0));
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0)->material == "stone");
 	assert(S9xRemasterFrameOccurrences(decodedFrame, frameAsset.tileId).size() == 1);
 	assert(S9xRemasterFrameAssetForTile(decodedFrame, frameAsset.tileId));
 	assert(S9xRemasterFrameAssetGroupVariants(decodedFrame, "animated_floor").size() == 2);
+	std::vector<RemasterFrameLight> emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	assert(emissionLights.size() == 1);
+	assert(emissionLights[0].x == 0.5f && emissionLights[0].y == 0.5f);
+	assert(emissionLights[0].red > emissionLights[0].green);
+	const float fullRed = emissionLights[0].red;
+	decodedFrame.assetMetadata[0].emissionRgba[39] = 12;
+	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	assert(emissionLights.size() == 1 && emissionLights[0].red < fullRed);
+	decodedFrame.assetMetadata[0].emissionRgba[39] = 25;
+	decodedFrame.mainPixels[1].instanceId = 1;
+	decodedFrame.mainPixels[1].tilePixel = 3;
+	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	assert(emissionLights.size() == 1 && emissionLights[0].red > fullRed);
+	assert(emissionLights[0].x == 1.0f);
+	decodedFrame.mainPixels[1] = RemasterFramePixel();
 	decodedFrame.assetGroups.clear();
 	assert(S9xRemasterFrameAssetGroupVariants(decodedFrame, "animated_floor").size() == 1);
 	RemasterFrame legacyFrame = frame;
@@ -101,6 +128,10 @@ int main ()
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
 	const size_t legacyGroupCountOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size() + 4;
+	const size_t legacyPixelOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size() + 6 * 4 +
+		legacyFrame.originalRgb555.size() * 2;
+	for (size_t i = legacyFrame.mainPixels.size() + legacyFrame.subPixels.size(); i > 0; i--)
+		legacyBytes.erase(legacyBytes.begin() + legacyPixelOffset + (i - 1) * 9 + 8);
 	legacyBytes[8] = 3;
 	assert(S9xDeserializeRemasterFrame(legacyBytes, decodedFrame));
 	assert(decodedFrame.schemaVersion == 3 && decodedFrame.assetMetadata.empty());
@@ -128,6 +159,7 @@ int main ()
 	S9xRemasterBeginFrame(1, 1, 1, 1);
 	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterSetTilePixel(0);
 	S9xRemasterWriteOwner(0);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
 	assert(S9xRemasterEndFrame());
@@ -147,7 +179,7 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-schema_version = 2
+	schema_version = 3
 
 [game]
 title = "Test Game"
@@ -185,6 +217,10 @@ material = "wet_stone"
 	for (size_t i = 0; i < 64; i++)
 		profileSource << (i ? ", " : "") << (i == 2 ? 128 : 0);
 	profileSource << "]\nheight_sampling = \"linear\"\n";
+	profileSource << "emission_rgba = [";
+	for (size_t i = 0; i < 256; i++)
+		profileSource << (i ? ", " : "") << (i == 12 ? 255 : (i == 13 ? 96 : (i == 14 ? 24 : (i == 15 ? 25 : 0))));
+	profileSource << "]\n";
 	const std::string profileText = profileSource.str();
 	RemasterProfile profile;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
@@ -195,6 +231,7 @@ material = "wet_stone"
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).occlusion[1] == 255);
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).height[2] == 128);
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).heightSampling == RemasterHeightSampling::Linear);
+	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).emissionRgba[15] == 25);
 	assert(profile.rules.size() == 2);
 	std::string serializedProfile;
 	assert(S9xRemasterSerializeProfile(profile, serializedProfile, diagnostics));
@@ -244,6 +281,7 @@ material = "wet_stone"
 	S9xRemasterSetSubscreen(false);
 	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
 	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterSetTilePixel(0);
 	S9xRemasterWriteOwner(0);
 	const uint16_t screen[] = { 0x001f, 0x03e0 };
 	assert(S9xRemasterEndFrame(screen, 2, 2, 1) & RemasterCaptureFrame);
@@ -253,11 +291,13 @@ material = "wet_stone"
 	assert(capturedFrameBytes.size() > 8);
 	assert(std::string(capturedFrameBytes.begin(), capturedFrameBytes.begin() + 6) == "S9XRMF");
 	assert(S9xDeserializeRemasterFrame(capturedFrameBytes, decodedFrame));
-	assert(decodedFrame.schemaVersion == 4);
+	assert(decodedFrame.schemaVersion == 6);
+	assert(decodedFrame.mainPixels[0].tilePixel == 0);
 	assert(decodedFrame.assetMetadata.size() == 1);
 	assert(decodedFrame.assetMetadata[0].materialSelectors[0] == "wet_stone");
 	assert(decodedFrame.assetMetadata[0].occlusion[1] == 255);
 	assert(decodedFrame.assetMetadata[0].height[2] == 128);
+	assert(decodedFrame.assetMetadata[0].emissionRgba[15] == 25);
 	assert(decodedFrame.assetMetadata[0].heightSampling == RemasterHeightSampling::Linear);
 	std::remove(framePath.c_str());
 	S9xRemasterRequestFrameCapture(framePath);

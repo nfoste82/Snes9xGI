@@ -29,6 +29,7 @@ NSWindowFrameAutosaveName const kCheatsWindowIdentifier = @"s9xCheatsWindow";
 NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderWindow";
 
 @interface AppDelegate () <S9xCheatFinderDelegate>
+@property (nonatomic, strong) NSMenuItem *remasterLightingItem;
 @end
 
 @implementation AppDelegate
@@ -45,6 +46,19 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	debugItem.target = self;
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
+	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
+	                                                      action:@selector(toggleRemasterLighting:)
+	                                               keyEquivalent:@"l"];
+	lightingItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	lightingItem.target = self;
+	self.remasterLightingItem = lightingItem;
+	[viewMenuItem.submenu addItem:lightingItem];
+	NSMenuItem *lightingViewItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"GI Debug: Composite", nil)
+	                                                          action:@selector(cycleRemasterLightingView:)
+	                                                   keyEquivalent:@"k"];
+	lightingViewItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	lightingViewItem.target = self;
+	[viewMenuItem.submenu addItem:lightingViewItem];
 	NSMenuItem *inventoryItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Tile Inventory", nil)
 	                                                       action:@selector(captureRemasterTileInventory:)
 	                                                keyEquivalent:@"i"];
@@ -562,6 +576,9 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	else if (action == @selector(cycleRemasterDebugMode:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
+	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:)) {
+		return [self.s9xEngine isPresentingRemasterFrame];
+	}
 	else if (action == @selector(captureRemasterTileInventory:) || action == @selector(captureRemasterFrame:)) {
 		return [self.s9xEngine isRunning];
 	}
@@ -655,6 +672,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	sender.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
 }
 
+- (IBAction)toggleRemasterLighting:(NSMenuItem *)sender
+{
+	sender.state = [self.s9xEngine toggleRemasterLighting] ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (IBAction)cycleRemasterLightingView:(NSMenuItem *)sender
+{
+	NSString *view = [self.s9xEngine cycleRemasterLightingView];
+	self.remasterLightingItem.state = NSControlStateValueOn;
+	sender.title = [NSString stringWithFormat:@"GI Debug: %@", view];
+}
+
 - (IBAction)captureRemasterTileInventory:(id)sender
 {
 	NSString *path = [self.s9xEngine captureRemasterTileInventory];
@@ -664,6 +693,14 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 - (IBAction)captureRemasterFrame:(id)sender
 {
+	if (![self.s9xEngine isRemasterProfileLoaded])
+	{
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Unable to Capture Remaster Frame";
+		alert.informativeText = @"Load the matching remaster profile before capturing so the frame includes its authored metadata.";
+		[alert runModal];
+		return;
+	}
 	NSString *path = [self.s9xEngine captureRemasterFrame];
 	if (path)
 		NSLog(@"Remaster frame capture requested: %@", path);
@@ -679,6 +716,8 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return;
 
 	NSString *error = [self.s9xEngine loadRemasterProfile:panel.URL];
+	if (error && error.length == 0)
+		return;
 	if (!error)
 	{
 		NSLog(@"Remaster profile loaded: %@", panel.URL.path);
@@ -708,6 +747,8 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return;
 
 	NSString *error = [self.s9xEngine openRemasterFrame:panel.URL];
+	if (error && error.length == 0)
+		return;
 	if (!error)
 	{
 		NSLog(@"Remaster frame opened: %@", panel.URL.path);

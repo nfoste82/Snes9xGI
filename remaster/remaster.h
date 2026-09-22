@@ -88,6 +88,8 @@ struct RemasterState
 	std::vector<uint64_t> subTileHashes;
 	std::vector<uint32_t> mainInstanceIds;
 	std::vector<uint32_t> subInstanceIds;
+	std::vector<uint8_t> mainTilePixels;
+	std::vector<uint8_t> subTilePixels;
 	std::mutex inventoryMutex;
 	RemasterProfile requestedProfile;
 	RemasterProfile activeProfile;
@@ -114,6 +116,7 @@ struct RemasterState
 	bool currentTileHashValid = false;
 	bool currentDrawSupported = false;
 	bool currentSubscreen = false;
+	uint8_t currentTilePixel = 0xff;
 };
 
 inline RemasterState &S9xRemasterState (void)
@@ -192,6 +195,8 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		state.tileInstances.clear();
 		state.mainInstanceIds.assign(pixelCount, 0);
 		state.subInstanceIds.assign(pixelCount, 0);
+		state.mainTilePixels.assign(pixelCount, 0xff);
+		state.subTilePixels.assign(pixelCount, 0xff);
 	}
 	state.currentTileHashValid = false;
 	state.currentSubscreen = false;
@@ -224,6 +229,8 @@ inline void S9xRemasterClearSpan (size_t offset, size_t width, uint32_t owner = 
 		const size_t instanceWidth = width < state.mainInstanceIds.size() - offset ? width : state.mainInstanceIds.size() - offset;
 		std::fill_n(state.mainInstanceIds.begin() + offset, instanceWidth, 0);
 		std::fill_n(state.subInstanceIds.begin() + offset, instanceWidth, 0);
+		std::fill_n(state.mainTilePixels.begin() + offset, instanceWidth, 0xff);
+		std::fill_n(state.subTilePixels.begin() + offset, instanceWidth, 0xff);
 	}
 	if (state.inventoryActive && offset < state.mainTileHashes.size())
 	{
@@ -314,6 +321,7 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 	uint64_t hash = S9xRemasterHashTile(bitDepth, indices);
 	state.currentTileHash = hash;
 	state.currentTileHashValid = true;
+	state.currentTilePixel = 0xff;
 	const uint8_t palette = (tileWord >> 10) & 7;
 	const uint64_t contextKey = (static_cast<uint64_t>(state.currentSource) << 56) |
 		(static_cast<uint64_t>(state.currentSourceIndex) << 48) |
@@ -619,10 +627,12 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				RemasterFramePixel mainPixel;
 				mainPixel.owner = state.mainOwners[sourceOffset];
 				mainPixel.instanceId = state.mainInstanceIds[sourceOffset];
+				mainPixel.tilePixel = state.mainTilePixels[sourceOffset];
 				frame.mainPixels.push_back(mainPixel);
 				RemasterFramePixel subPixel;
 				subPixel.owner = state.subOwners[sourceOffset];
 				subPixel.instanceId = state.subInstanceIds[sourceOffset];
+				subPixel.tilePixel = state.subTilePixels[sourceOffset];
 				frame.subPixels.push_back(subPixel);
 			}
 		}
@@ -647,9 +657,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			metadata.materialSelectors = entry.second.materialSelectors;
 			metadata.occlusion = entry.second.occlusion;
 			metadata.height = entry.second.height;
+			metadata.emissionRgba = entry.second.emissionRgba;
 			metadata.hasMaterialSelectors = entry.second.hasMaterialSelectors;
 			metadata.hasOcclusion = entry.second.hasOcclusion;
 			metadata.hasHeight = entry.second.hasHeight;
+			metadata.hasEmission = entry.second.hasEmission;
 			metadata.heightSampling = entry.second.heightSampling;
 			frame.assetMetadata.push_back(metadata);
 		}
@@ -676,6 +688,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	return result;
 }
 
+inline void S9xRemasterSetTilePixel (uint8_t tilePixel)
+{
+	S9xRemasterState().currentTilePixel = tilePixel;
+}
+
 inline void S9xRemasterWriteOwner (size_t offset)
 {
 	if (S9xRemasterCurrentOwners)
@@ -686,8 +703,12 @@ inline void S9xRemasterWriteOwner (size_t offset)
 		(state.currentSubscreen ? state.subTileHashes : state.mainTileHashes)[offset] =
 			state.currentTileHashValid ? state.currentTileHash : UINT64_C(0);
 	if (state.frameCaptureActive && offset < state.mainInstanceIds.size())
+	{
 		(state.currentSubscreen ? state.subInstanceIds : state.mainInstanceIds)[offset] =
 			state.currentTileHashValid ? static_cast<uint32_t>(state.tileInstances.size()) : 0;
+		(state.currentSubscreen ? state.subTilePixels : state.mainTilePixels)[offset] =
+			state.currentTileHashValid ? state.currentTilePixel : 0xff;
+	}
 }
 
 inline const uint32_t *S9xRemasterMainOwners (void)
