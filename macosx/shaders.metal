@@ -39,7 +39,27 @@ typedef struct
 	uint view;
 	uint lightCount;
 	uint passIndex;
+	uint diagnosticStage;
+	float indirectRoughness;
+	float originalSceneContribution;
+	uint sampleIndex;
+	uint sampleCount;
+	uint randomSeed;
 } RemasterLightingUniforms;
+
+static uint remasterHash(uint value)
+{
+	value ^= value >> 16;
+	value *= 0x7feb352du;
+	value ^= value >> 15;
+	value *= 0x846ca68bu;
+	return value ^ (value >> 16);
+}
+
+static float remasterRandom(uint value)
+{
+	return float(remasterHash(value) & 0x00ffffffu) / 16777216.0;
+}
 
 static float3 remasterToLinear(float3 color)
 {
@@ -154,7 +174,7 @@ kernel void remasterDirectLighting(
 		direct += albedo * irradiance;
 		maximumVisibility = max(maximumVisibility, visibility);
 	}
-	float3 ambient = remasterToLinear(original) * 0.65;
+	float3 ambient = remasterToLinear(original) * uniforms.originalSceneContribution;
 	float4 authoredEmission = emission.read(pixel);
 	float3 selfEmission = remasterToLinear(authoredEmission.rgb) * authoredEmission.a * (255.0 / 25.0);
 	float3 composite = ambient + direct + selfEmission;
@@ -175,7 +195,7 @@ kernel void remasterDirectLighting(
 	}
 	else if (uniforms.view == 2)
 		output.write(float4(float3(0.0, 0.85, 1.0) * maximumVisibility, 1.0), pixel);
-	else if (uniforms.view == 3)
+	else if (uniforms.view == 3 || uniforms.view == 8)
 		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
 	else if (uniforms.view == 4)
 		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
@@ -202,12 +222,6 @@ kernel void remasterIndirectBounce(
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
-	constexpr float2 directions[16] = {
-		float2(1.0, 0.0), float2(0.9239, 0.3827), float2(0.7071, 0.7071), float2(0.3827, 0.9239),
-		float2(0.0, 1.0), float2(-0.3827, 0.9239), float2(-0.7071, 0.7071), float2(-0.9239, 0.3827),
-		float2(-1.0, 0.0), float2(-0.9239, -0.3827), float2(-0.7071, -0.7071), float2(-0.3827, -0.9239),
-		float2(0.0, -1.0), float2(0.3827, -0.9239), float2(0.7071, -0.7071), float2(0.9239, -0.3827)
-	};
 	constexpr uint maximumDistance = 64;
 	constexpr uint distanceStep = 4;
 	constexpr float angularStep = 2.0 * M_PI_F / 16.0;
@@ -222,18 +236,27 @@ kernel void remasterIndirectBounce(
 		return;
 	}
 	float3 incoming = 0.0;
+	float3 distanceIncoming = 0.0;
+	float3 cosineIncoming = 0.0;
 	float totalFormFactor = 0.0;
 	for (uint directionIndex = 0; directionIndex < 16; directionIndex++)
 	{
-		float2 direction = directions[directionIndex];
+		uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu) ^
+			(uniforms.passIndex * 0xc2b2ae35u) ^ (uniforms.sampleIndex * 0x27d4eb2du) ^ directionIndex;
+		float angularJitter = uniforms.sampleCount > 1 ? remasterRandom(randomBase) - 0.5 : 0.0;
+		float angle = (float(directionIndex) + angularJitter) * angularStep;
+		float2 direction = float2(cos(angle), sin(angle));
 		float2 perpendicular = float2(-direction.y, direction.x);
 		for (uint distance = 2; distance <= maximumDistance; distance += distanceStep)
 		{
 			for (uint lane = 0; lane < 3; lane++)
 			{
-				float lateralOffset = (float(lane) - 1.0) * float(distance) * angularStep / 3.0;
+				float radialJitter = uniforms.sampleCount > 1 ?
+					(remasterRandom(randomBase ^ (distance * 0x165667b1u) ^ lane) - 0.5) * float(distanceStep) : 0.0;
+				float sampleDistance = max(0.5, float(distance) + radialJitter);
+				float lateralOffset = (float(lane) - 1.0) * sampleDistance * angularStep / 3.0;
 				// Sample about the receiver center so opposite directions select mirrored pixels.
-				float2 samplePoint = float2(pixel) + 0.5 + direction * float(distance) + perpendicular * lateralOffset;
+				float2 samplePoint = float2(pixel) + 0.5 + direction * sampleDistance + perpendicular * lateralOffset;
 				if (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height)
 					continue;
 				uint2 samplePixel = uint2(samplePoint);
@@ -247,10 +270,19 @@ kernel void remasterIndirectBounce(
 					float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
 					float receiverResponse = saturate(dot(normal, segmentDirection));
 					float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
+					// Normalize the narrowed lobe to the Lambertian hemisphere integral so
+					// roughness redistributes outgoing energy instead of absorbing it.
+					float sourceExponent = mix(32.0, 1.0, uniforms.indirectRoughness);
+					sourceResponse = pow(sourceResponse, sourceExponent) * (sourceExponent + 1.0) * 0.5;
 					float sampleArea = planarDistance * float(distanceStep) * angularStep / 3.0;
-					float formFactor = min(0.25, receiverResponse * sourceResponse * sampleArea /
-						(M_PI_F * (distanceSquared + 1.0)));
+					float distanceFormFactor = min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
+					float formFactor = distanceFormFactor * receiverResponse * sourceResponse;
 					float3 radiance = previousBounce.read(samplePixel).rgb;
+					if (uniforms.diagnosticStage != 0 && any(radiance > 0.0))
+					{
+						distanceIncoming += radiance * distanceFormFactor;
+						cosineIncoming += radiance * formFactor;
+					}
 					if (formFactor > 0.0 && any(radiance > 0.0))
 					{
 						float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiverSurface.r),
@@ -264,8 +296,16 @@ kernel void remasterIndirectBounce(
 	}
 	if (totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;
+	// Previous radiance is already linear and includes the source's reflection.
+	// Apply only this receiver's RGB albedo, once for this collision.
 	float3 albedo = remasterAlbedo(source.read(pixel).rgb);
 	float3 bounced = albedo * incoming;
+	if (uniforms.diagnosticStage == 1)
+		bounced = distanceIncoming;
+	else if (uniforms.diagnosticStage == 2)
+		bounced = cosineIncoming;
+	else if (uniforms.diagnosticStage == 3)
+		bounced = incoming;
 	nextBounce.write(float4(bounced, 1.0), pixel);
 	float3 accumulated = uniforms.passIndex == 0 ? float3(0.0) : previousIndirect.read(pixel).rgb;
 	nextIndirect.write(float4(accumulated + bounced, 1.0), pixel);
@@ -290,15 +330,32 @@ kernel void remasterCompositeLighting(
 	}
 	float3 direct = directSample.rgb;
 	float3 indirect = indirectField.read(pixel).rgb;
-	float3 composite = remasterToLinear(original) * 0.65 + direct + indirect;
+	float3 composite = remasterToLinear(original) * uniforms.originalSceneContribution + direct + indirect;
 	if (uniforms.view == 3)
 		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
 	else if (uniforms.view == 4)
 		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
 	else if (uniforms.view == 6)
 		output.write(float4(remasterToDisplay(indirect * 4.0), 1.0), pixel);
+	else if (uniforms.view == 8)
+		output.write(float4(remasterToDisplay((direct + indirect) * 4.0), 1.0), pixel);
 	else
 		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
+}
+
+kernel void remasterAccumulateSamples(
+	texture2d<float, access::read> sample [[texture(0)]],
+	texture2d<float, access::read> previous [[texture(1)]],
+	texture2d<float, access::write> output [[texture(2)]],
+	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
+		return;
+	float3 value = sample.read(pixel).rgb;
+	if (uniforms.sampleIndex > 0)
+		value = previous.read(pixel).rgb + (value - previous.read(pixel).rgb) / float(uniforms.sampleIndex + 1);
+	output.write(float4(value, 1.0), pixel);
 }
 
 kernel void remasterSelectedTileHighlight(

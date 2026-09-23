@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -20,9 +21,14 @@ struct Light
     float intensity;
     simd_float3 color;
 };
-struct Uniforms { uint32_t width, height, view, lightCount, passIndex; };
+struct Uniforms
+{
+    uint32_t width, height, view, lightCount, passIndex, diagnosticStage;
+    float indirectRoughness, originalSceneContribution;
+    uint32_t sampleIndex, sampleCount, randomSeed;
+};
 static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
-static_assert(sizeof(Uniforms) == 20, "Metal uniforms ABI");
+static_assert(sizeof(Uniforms) == 44, "Metal uniforms ABI");
 
 constexpr unsigned width = 32, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;
@@ -33,6 +39,21 @@ enum Field { Source, Occlusion, Surface, Height, Participation, PreviousBounce,
 using Image = std::vector<simd_float4>;
 using Scene = std::array<Image, FieldCount>;
 struct Result { simd_float4 bounce, accumulated; };
+
+static uint16_t floatToHalf(float value)
+{
+    __fp16 half = value;
+    uint16_t bits;
+    std::memcpy(&bits, &half, sizeof(bits));
+    return bits;
+}
+
+static float halfToFloat(uint16_t bits)
+{
+    __fp16 half;
+    std::memcpy(&half, &bits, sizeof(bits));
+    return half;
+}
 
 int main()
 {
@@ -58,12 +79,15 @@ int main()
             id<MTLComputePipelineState> indirect = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce"] error:&error];
             require(indirect != nil, error.localizedDescription);
+            id<MTLComputePipelineState> accumulate = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterAccumulateSamples"] error:&error];
+            require(accumulate != nil, error.localizedDescription);
             id<MTLComputePipelineState> highlight = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterSelectedTileHighlight"] error:&error];
             require(highlight != nil, error.localizedDescription);
             id<MTLCommandQueue> queue = [device newCommandQueue];
             require(queue != nil, @"Could not create Metal command queue");
-            std::printf("Device: %s; runtime shaders: macosx/shaders.metal; RGBA32Float\n",
+            std::printf("Device: %s; runtime shaders: macosx/shaders.metal; RGBA32Float and production RGBA16Float\n",
                 device.name.UTF8String);
 
             auto scene = [] {
@@ -87,7 +111,9 @@ int main()
                 s[Surface][pixel] = {z, 0, 0, 0};
             };
             auto run = [&](const Scene &s, bool bounce, unsigned passIndex = 0,
-                           float lightZ = 8.0f, int selectedPixel = -1, Scene *readback = nullptr) {
+                           float lightZ = 8.0f, int selectedPixel = -1, Scene *readback = nullptr,
+                            bool productionRadiance = false, unsigned diagnosticStage = 0, float indirectRoughness = 1.0f,
+                            unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
                 const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -95,19 +121,33 @@ int main()
                 const Field *bindings = bounce ? indirectBindings : directBindings;
                 unsigned count = 9;
                 id<MTLTexture> textures[9];
-                MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
-                    texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
-                    width:width height:height mipmapped:NO];
-                descriptor.storageMode = MTLStorageModeShared;
-                descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
                 for (unsigned i = 0; i < count; ++i)
                 {
+                    const bool radiance = bindings[i] == PreviousBounce || bindings[i] == PreviousIndirect ||
+                        bindings[i] == NextBounce || bindings[i] == NextIndirect || bindings[i] == Direct;
+                    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+                        texture2DDescriptorWithPixelFormat:productionRadiance && radiance ?
+                            MTLPixelFormatRGBA16Float : MTLPixelFormatRGBA32Float
+                        width:width height:height mipmapped:NO];
+                    descriptor.storageMode = MTLStorageModeShared;
+                    descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
                     textures[i] = [device newTextureWithDescriptor:descriptor];
-                    require(textures[i] != nil, @"RGBA32Float shared read/write texture unavailable");
-                    [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-                        withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
+                    require(textures[i] != nil, @"Shared read/write texture unavailable");
+                    if (productionRadiance && radiance)
+                    {
+                        std::vector<uint16_t> encoded(width * height * 4);
+                        for (unsigned pixel = 0; pixel < width * height; ++pixel)
+                            for (unsigned channel = 0; channel < 4; ++channel)
+                                encoded[pixel * 4 + channel] = floatToHalf(s[bindings[i]][pixel][channel]);
+                        [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+                            withBytes:encoded.data() bytesPerRow:width * 4 * sizeof(uint16_t)];
+                    }
+                    else
+                        [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+                            withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
-                Uniforms uniforms = {width, height, 0, 1, passIndex};
+                Uniforms uniforms = {width, height, 0, 1, passIndex, diagnosticStage,
+                    indirectRoughness, 0.65f, sampleIndex, sampleCount, randomSeed};
                 Light light = {};
                 light.position = {26.5f, receiverY + 0.5f, lightZ};
                 light.radius = 64;
@@ -136,7 +176,12 @@ int main()
                     id<MTLTexture> maskTexture = [device newTextureWithDescriptor:maskDescriptor];
                     [maskTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                         withBytes:mask.data() bytesPerRow:width];
-                    id<MTLTexture> highlighted = [device newTextureWithDescriptor:descriptor];
+                    MTLTextureDescriptor *highlightDescriptor = [MTLTextureDescriptor
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                        width:width height:height mipmapped:NO];
+                    highlightDescriptor.storageMode = MTLStorageModeShared;
+                    highlightDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                    id<MTLTexture> highlighted = [device newTextureWithDescriptor:highlightDescriptor];
                     id<MTLComputeCommandEncoder> overlay = [command computeCommandEncoder];
                     [overlay setComputePipelineState:highlight];
                     [overlay setTexture:presentation atIndex:0];
@@ -153,17 +198,75 @@ int main()
                     command.error.localizedDescription);
                 Result result;
                 MTLRegion region = MTLRegionMake2D(receiverX, receiverY, 1, 1);
-                [textures[bounce ? 7 : 6] getBytes:&result.bounce bytesPerRow:sizeof(simd_float4)
-                    fromRegion:region mipmapLevel:0];
-                [presentation getBytes:&result.accumulated bytesPerRow:sizeof(simd_float4)
-                    fromRegion:region mipmapLevel:0];
+                if (productionRadiance)
+                {
+                    uint16_t encoded[4];
+                    [textures[bounce ? 7 : 6] getBytes:encoded bytesPerRow:sizeof(encoded)
+                        fromRegion:region mipmapLevel:0];
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        result.bounce[channel] = halfToFloat(encoded[channel]);
+                    [presentation getBytes:encoded bytesPerRow:sizeof(encoded)
+                        fromRegion:region mipmapLevel:0];
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        result.accumulated[channel] = halfToFloat(encoded[channel]);
+                }
+                else
+                {
+                    [textures[bounce ? 7 : 6] getBytes:&result.bounce bytesPerRow:sizeof(simd_float4)
+                        fromRegion:region mipmapLevel:0];
+                    [presentation getBytes:&result.accumulated bytesPerRow:sizeof(simd_float4)
+                        fromRegion:region mipmapLevel:0];
+                }
                 if (bounce && readback)
                 {
-                    [textures[7] getBytes:(*readback)[NextBounce].data() bytesPerRow:width * sizeof(simd_float4)
-                        fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
-                    [textures[8] getBytes:(*readback)[NextIndirect].data() bytesPerRow:width * sizeof(simd_float4)
-                        fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                    if (productionRadiance)
+                    {
+                        std::vector<uint16_t> encoded(width * height * 4);
+                        for (Field field : {NextBounce, NextIndirect})
+                        {
+                            const unsigned binding = field == NextBounce ? 7 : 8;
+                            [textures[binding] getBytes:encoded.data() bytesPerRow:width * 4 * sizeof(uint16_t)
+                                fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                            for (unsigned pixel = 0; pixel < width * height; ++pixel)
+                                for (unsigned channel = 0; channel < 4; ++channel)
+                                    (*readback)[field][pixel][channel] = halfToFloat(encoded[pixel * 4 + channel]);
+                        }
+                    }
+                    else
+                    {
+                        [textures[7] getBytes:(*readback)[NextBounce].data() bytesPerRow:width * sizeof(simd_float4)
+                            fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                        [textures[8] getBytes:(*readback)[NextIndirect].data() bytesPerRow:width * sizeof(simd_float4)
+                            fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                    }
                 }
+                return result;
+            };
+            auto average = [&](simd_float4 first, simd_float4 second) {
+                MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+                    texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float width:1 height:1 mipmapped:NO];
+                descriptor.storageMode = MTLStorageModeShared;
+                descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                id<MTLTexture> sample = [device newTextureWithDescriptor:descriptor];
+                id<MTLTexture> previous = [device newTextureWithDescriptor:descriptor];
+                id<MTLTexture> output = [device newTextureWithDescriptor:descriptor];
+                [sample replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&second bytesPerRow:sizeof(second)];
+                [previous replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&first bytesPerRow:sizeof(first)];
+                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 1, 2, 1};
+                id<MTLCommandBuffer> command = [queue commandBuffer];
+                id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+                [encoder setComputePipelineState:accumulate];
+                [encoder setTexture:sample atIndex:0];
+                [encoder setTexture:previous atIndex:1];
+                [encoder setTexture:output atIndex:2];
+                [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+                [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder endEncoding];
+                [command commit];
+                [command waitUntilCompleted];
+                require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
+                simd_float4 result;
+                [output getBytes:&result bytesPerRow:sizeof(result) fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
                 return result;
             };
 
@@ -254,6 +357,79 @@ int main()
             s = scene();
             Result clear = run(s, true);
             positive("indirect distant mutually facing radiance patch", clear.bounce);
+            for (unsigned y = receiverY - 2; y <= receiverY + 2; y++)
+                for (unsigned x = 23; x <= 29; x++)
+                {
+                    const unsigned pixel = y * width + x;
+                    s[Surface][pixel] = {8, -1, 0, 0};
+                    s[Participation][pixel] = {1, 1, 0, 0};
+                    s[PreviousBounce][pixel] = {float(x - 22) / 7, 0.5f, 0.25f, 1};
+                }
+            Result stochasticA = run(s, true, 0, 8, -1, nullptr, false, 0, 1, 0, 4, 11);
+            Result stochasticB = run(s, true, 0, 8, -1, nullptr, false, 0, 1, 1, 4, 11);
+            check("stochastic samples jitter independently", stochasticA.bounce.x != stochasticB.bounce.x,
+                stochasticA.bounce, stochasticB.bounce);
+            simd_float4 stochasticMean = average(stochasticA.bounce, stochasticB.bounce);
+            near("sample accumulation computes an incremental mean", stochasticMean,
+                (stochasticA.bounce + stochasticB.bounce) * 0.5f);
+			s[Surface][emitter] = {8, -0.5f, 0, 0.8660254f};
+			Result diffuseAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f);
+			Result shinyAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 0.0f);
+			check("indirect lower roughness narrows an angled source lobe", shinyAngled.bounce.x > 0.0f &&
+				shinyAngled.bounce.x < diffuseAngled.bounce.x, shinyAngled.bounce, diffuseAngled.bounce);
+			s[Surface][emitter] = {8, -1, 0, 0};
+			Result diffuseNormal = run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f);
+			Result shinyNormal = run(s, true, 0, 8, -1, nullptr, false, 0, 0.0f);
+			check("indirect lower roughness concentrates rather than destroys normal energy",
+				shinyNormal.bounce.x > diffuseNormal.bounce.x, shinyNormal.bounce, diffuseNormal.bounce);
+			s = scene();
+            Result distanceStage = run(s, true, 0, 8, -1, nullptr, false, 1);
+            Result cosineStage = run(s, true, 0, 8, -1, nullptr, false, 2);
+            Result visibleStage = run(s, true, 0, 8, -1, nullptr, false, 3);
+            bool diagnosticOrdering = true;
+            for (unsigned channel = 0; channel < 3; ++channel)
+                diagnosticOrdering &= distanceStage.bounce[channel] >= cosineStage.bounce[channel] &&
+                    cosineStage.bounce[channel] >= visibleStage.bounce[channel] &&
+                    visibleStage.bounce[channel] > clear.bounce[channel];
+            check("indirect diagnostics attribute distance, cosine, visibility, and albedo in order",
+                diagnosticOrdering, clear.bounce, distanceStage.bounce);
+            s[Source][receiver] = {0, 0, 0, 1};
+            near("indirect pre-albedo diagnostic ignores black receiver", run(s, true, 0, 8, -1,
+                nullptr, false, 3).bounce, visibleStage.bounce);
+            near("indirect black receiver absorbs diagnosed incoming light", run(s, true).bounce, {});
+			s = scene();
+			s[Source][receiver] = {0.25f, 0.5f, 0.75f, 1};
+			Result paintedReflectance = run(s, true);
+            const simd_float4 reflectance = {0.9f * std::pow(0.25f, 2.2f),
+                0.9f * std::pow(0.5f, 2.2f), 0.9f * std::pow(0.75f, 2.2f), 1};
+            near("indirect applies linear RGB receiver albedo once", paintedReflectance.bounce,
+                visibleStage.bounce * reflectance);
+            near("direct and indirect use the same RGB material reflectance", run(s, false).bounce,
+                directClear * reflectance / 0.9f);
+            s[Source][emitter] = {0, 0, 0, 1};
+            near("indirect does not reapply source albedo to outgoing radiance", run(s, true).bounce,
+                paintedReflectance.bounce);
+            s[PreviousBounce][emitter] *= 8.0f;
+            near("indirect HDR input scales linearly without gamma decoding radiance", run(s, true).bounce,
+                paintedReflectance.bounce * 8.0f);
+            s[PreviousBounce][emitter] *= 512.0f;
+            const Result hdr = run(s, true);
+            near("indirect outgoing HDR radiance is not clamped", hdr.bounce,
+                paintedReflectance.bounce * 4096.0f);
+            check("HDR regression exercises outgoing radiance above one", hdr.bounce.z > 1.0f,
+                hdr.bounce, {});
+            s = scene();
+            s[PreviousBounce][emitter] = {1, 1, 1, 1};
+            s[Source][receiver] = {1, 0, 0, 1};
+            near("white light reflects red from a red surface", run(s, true).bounce,
+                simd_float4{clear.bounce.x, 0, 0, 1});
+            s[PreviousBounce][emitter] = {1, 0, 0, 1};
+            s[Source][receiver] = {0, 1, 0, 1};
+            near("green surface absorbs red light without inventing green", run(s, true).bounce, {});
+            s[Source][receiver] = {0, 0, 0, 1};
+            s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};
+            near("self emission decodes color once and ignores absorbing albedo", run(s, false).bounce,
+                reflectance * (2.0f / 0.9f));
             near("passIndex 0 ignores garbage previousIndirect", clear.accumulated, clear.bounce);
             s[PreviousBounce][emitter] = {};
             near("indirect needs radiance from previousBounce", run(s, true).bounce, {});
@@ -344,7 +520,17 @@ int main()
             check("chained energy decays without reseeding", previousPeak.x < firstPeak.x * 0.001f &&
                 previousPeak.y < firstPeak.y * 0.001f && previousPeak.z < firstPeak.z * 0.001f,
                 previousPeak, firstPeak);
-            s[PreviousBounce].assign(width * height, simd_float4{});
+			Scene exhaustedChain = s;
+			s = chain;
+			Result smoothFirst = run(s, true, 0, 8, -1, &s, false, 0, 0.5f);
+			s[PreviousBounce].swap(s[NextBounce]);
+			s[PreviousIndirect].swap(s[NextIndirect]);
+			Result smoothSecond = run(s, true, 1, 8, -1, &s, false, 0, 0.5f);
+			positive("smooth chained transport reaches C on second bounce", smoothSecond.bounce);
+			check("smooth second bounce increases accumulated light", smoothSecond.accumulated.x > smoothFirst.accumulated.x,
+				smoothSecond.accumulated, smoothFirst.accumulated);
+			s = std::move(exhaustedChain);
+			s[PreviousBounce].assign(width * height, simd_float4{});
             Result exhausted = run(s, true, 16);
             near("chained zero previous field cannot reseed light", exhausted.bounce, {});
             near("chained zero previous field preserves accumulation", exhausted.accumulated, sum[receiver]);
@@ -358,6 +544,74 @@ int main()
             Result absorbed = run(s, true, 1);
             near("chained black B prevents second-order reach to C", absorbed.bounce, {});
             near("chained black B leaves C accumulation dark", absorbed.accumulated, {});
+
+            // Colored A -> B -> C must multiply the two receiver reflectances,
+            // not grayscale them, decode radiance again, or apply B twice.
+            for (bool half : {false, true})
+            {
+                s = chain;
+                run(s, true, 0, 8, -1, &s, half);
+                const simd_float4 whiteRelay = s[NextBounce][relay];
+                s[PreviousBounce].swap(s[NextBounce]);
+                s[PreviousIndirect].swap(s[NextIndirect]);
+                const Result whiteSecond = run(s, true, 1, 8, -1, &s, half);
+                s = chain;
+                s[Source][relay] = {1, 0.5f, 0.25f, 1};
+                s[Source][receiver] = {0.5f, 1, 0.75f, 1};
+                run(s, true, 0, 8, -1, &s, half);
+                const simd_float4 coloredRelay = s[NextBounce][relay];
+                s[PreviousBounce].swap(s[NextBounce]);
+                s[PreviousIndirect].swap(s[NextIndirect]);
+                const Result coloredSecond = run(s, true, 1, 8, -1, &s, half);
+                simd_float4 expectedRelay = {}, expectedSecond = {};
+                bool relayMatches = true, secondMatches = true;
+                for (unsigned c = 0; c < 3; ++c)
+                {
+                    const float relayRatio = std::pow(s[Source][relay][c], 2.2f);
+                    const float receiverRatio = std::pow(s[Source][receiver][c], 2.2f);
+                    expectedRelay[c] = whiteRelay[c] * relayRatio;
+                    expectedSecond[c] = whiteSecond.bounce[c] * relayRatio * receiverRatio;
+                    const float relativeTolerance = half ? 0.005f : 1e-5f;
+                    const float absoluteTolerance = half ? 1e-7f : 1e-9f;
+                    relayMatches &= std::isfinite(coloredRelay[c]) && coloredRelay[c] > 0 &&
+                        std::fabs(coloredRelay[c] - expectedRelay[c]) <=
+                            absoluteTolerance + expectedRelay[c] * relativeTolerance;
+                    secondMatches &= std::isfinite(coloredSecond.bounce[c]) && coloredSecond.bounce[c] > 0 &&
+                        std::fabs(coloredSecond.bounce[c] - expectedSecond[c]) <=
+                            absoluteTolerance + expectedSecond[c] * relativeTolerance;
+                }
+                check(half ? "RGBA16Float colored relay applies RGB absorption" : "colored relay applies RGB absorption",
+                    relayMatches, coloredRelay, expectedRelay);
+                check(half ? "RGBA16Float second bounce carries product of material colors" :
+                    "second bounce carries product of material colors", secondMatches, coloredSecond.bounce, expectedSecond);
+                near("colored second bounce accumulates once", coloredSecond.accumulated, coloredSecond.bounce);
+            }
+
+            // Repeat the chain using the production RGBA16Float radiance format. This
+            // catches later bounces being lost to ping-pong precision or accumulation.
+            s = chain;
+            simd_float4 halfAccumulations[16] = {};
+            for (unsigned pass = 0; pass < 16; ++pass)
+            {
+                Result result = run(s, true, pass, 8, -1, &s, true);
+                halfAccumulations[pass] = result.accumulated;
+                s[PreviousBounce].swap(s[NextBounce]);
+                s[PreviousIndirect].swap(s[NextIndirect]);
+            }
+            positive("RGBA16Float chain reaches C on second bounce", halfAccumulations[1]);
+            bool halfAccumulationGrows = false;
+            for (unsigned channel = 0; channel < 3; ++channel)
+                halfAccumulationGrows |= halfAccumulations[15][channel] >
+                    halfAccumulations[0][channel] + std::fmax(1e-6f, halfAccumulations[0][channel] * 0.001f);
+            check("RGBA16Float sixteen-bounce accumulation differs from one bounce",
+                halfAccumulationGrows, halfAccumulations[15], halfAccumulations[0]);
+            bool halfMonotonic = true;
+            for (unsigned pass = 1; pass < 16; ++pass)
+                for (unsigned channel = 0; channel < 3; ++channel)
+                    halfMonotonic &= halfAccumulations[pass][channel] + 1e-6f >=
+                        halfAccumulations[pass - 1][channel];
+            check("RGBA16Float accumulated radiance is monotonic", halfMonotonic,
+                halfAccumulations[15], halfAccumulations[0]);
 
             // Sparse GI samples are at 2, 6, 10, ...; these blockers are strictly between them.
             for (unsigned distance : {3u, 7u, 11u, 15u, 19u})

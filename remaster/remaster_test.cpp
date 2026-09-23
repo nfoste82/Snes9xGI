@@ -32,6 +32,9 @@ int main ()
 	frame.profileRomSha256 = "0123456789abcdef";
 	frame.lightingCoordinateScale = 24.0f;
 	frame.indirectBounceCount = 6;
+	frame.originalSceneContribution = 0.4f;
+	frame.samplesPerFrame = 4;
+	frame.sampleAccumulation = false;
 	frame.originalRgb555 = { 0x001f, 0x03e0 };
 	frame.mainPixels.resize(2);
 	frame.subPixels.resize(2);
@@ -104,6 +107,9 @@ int main ()
 	assert(decodedFrame.width == 2 && decodedFrame.height == 1);
 	assert(decodedFrame.lightingCoordinateScale == 24.0f);
 	assert(decodedFrame.indirectBounceCount == 6);
+	assert(decodedFrame.originalSceneContribution == 0.4f);
+	assert(decodedFrame.samplesPerFrame == 4);
+	assert(!decodedFrame.sampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
 	float normalX = 0.6f;
@@ -122,6 +128,7 @@ int main ()
 	legacyFlipFrame.width = 2;
 	legacyFlipFrame.height = 2;
 	legacyFlipFrame.mainPixels.resize(4);
+	legacyFlipFrame.subPixels.resize(4);
 	legacyFlipFrame.tileInstances.resize(1);
 	legacyFlipFrame.mainPixels[0] = { 0, 1, 63 };
 	legacyFlipFrame.mainPixels[1] = { 0, 1, 62 };
@@ -159,6 +166,9 @@ int main ()
 	assert(emissionLights[0].x == 0.5f && emissionLights[0].y == 0.5f);
 	assert(emissionLights[0].z == decodedFrame.lightingCoordinateScale / 255.0f);
 	assert(emissionLights[0].red > emissionLights[0].green);
+	assert(std::fabs(emissionLights[0].red - 1.0f / 8.0f) < 1e-6f);
+	assert(std::fabs(emissionLights[0].green - std::pow(96.0f / 255.0f, 2.2f) / 8.0f) < 1e-6f);
+	assert(std::fabs(emissionLights[0].blue - std::pow(24.0f / 255.0f, 2.2f) / 8.0f) < 1e-6f);
 	const float fullRed = emissionLights[0].red;
 	decodedFrame.assetMetadata[0].emissionRgba[39] = 12;
 	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
@@ -172,6 +182,12 @@ int main ()
 	assert(emissionLights[0].x == 1.0f);
 	assert(emissionLights[0].z == decodedFrame.lightingCoordinateScale * 0.5f);
 	assert(emissionLights[0].radius == 96.0f);
+	decodedFrame.assetMetadata[0].emissionRgba[12] = 128;
+	decodedFrame.assetMetadata[0].emissionRgba[15] = 50;
+	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	assert(std::fabs(emissionLights[0].red - (1.0f + 2.0f * std::pow(128.0f / 255.0f, 2.2f)) / 8.0f) < 1e-6f);
+	decodedFrame.assetMetadata[0].emissionRgba[12] = 255;
+	decodedFrame.assetMetadata[0].emissionRgba[15] = 25;
 	decodedFrame.mainPixels[1] = RemasterFramePixel();
 	decodedFrame.assetGroups.clear();
 	assert(S9xRemasterFrameAssetGroupVariants(decodedFrame, "animated_floor").size() == 1);
@@ -184,6 +200,8 @@ int main ()
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
 	const size_t legacyScaleOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size();
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 9, legacyBytes.begin() + legacyScaleOffset + 15);
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 5, legacyBytes.begin() + legacyScaleOffset + 9);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 4);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset, legacyBytes.begin() + legacyScaleOffset + 4);
 	legacyBytes[8] = 6;
@@ -239,15 +257,19 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-		schema_version = 6
+		schema_version = 8
 
 [game]
 title = "Test Game"
 rom_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [lighting_space]
-coordinate_scale = 24
-indirect_bounces = 6
+		coordinate_scale = 24
+		indirect_bounces = 6
+		indirect_roughness = 0.5
+		original_scene_contribution = 0.4
+		samples_per_frame = 4
+		sample_accumulation = false
 
 [materials.stone]
 surface_class = "floor"
@@ -297,6 +319,10 @@ material = "wet_stone"
 	assert(profile.materials.size() == 2);
 	assert(profile.lightingCoordinateScale == 24.0f);
 	assert(profile.indirectBounceCount == 6);
+	assert(profile.indirectRoughness == 0.5f);
+	assert(profile.originalSceneContribution == 0.4f);
+	assert(profile.samplesPerFrame == 4);
+	assert(!profile.sampleAccumulation);
 	assert(profile.assetGroups.at("animated_floor").tileIds.size() == 2);
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).materialSelectors[0] == "wet_stone");
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).occlusion[1] == 255);
@@ -313,6 +339,10 @@ material = "wet_stone"
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).height[2] == 128);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).normalXyz[2] == 255);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).directLightingOppositeFacing);
+	assert(roundTrippedProfile.indirectRoughness == 0.5f);
+	assert(roundTrippedProfile.originalSceneContribution == 0.4f);
+	assert(roundTrippedProfile.samplesPerFrame == 4);
+	assert(!roundTrippedProfile.sampleAccumulation);
 	const std::string savedProfilePath = "/tmp/snes9x-remaster-profile-test.toml";
 	assert(S9xRemasterWriteProfile(profile, savedProfilePath, diagnostics));
 	assert(S9xRemasterLoadProfile(savedProfilePath, roundTrippedProfile, diagnostics));
@@ -366,9 +396,13 @@ material = "wet_stone"
 	assert(capturedFrameBytes.size() > 8);
 	assert(std::string(capturedFrameBytes.begin(), capturedFrameBytes.begin() + 6) == "S9XRMF");
 	assert(S9xDeserializeRemasterFrame(capturedFrameBytes, decodedFrame));
-	assert(decodedFrame.schemaVersion == 10);
+	assert(decodedFrame.schemaVersion == 12);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
+	assert(decodedFrame.indirectRoughness == profile.indirectRoughness);
+	assert(decodedFrame.originalSceneContribution == profile.originalSceneContribution);
+	assert(decodedFrame.samplesPerFrame == profile.samplesPerFrame);
+	assert(decodedFrame.sampleAccumulation == profile.sampleAccumulation);
 	assert(decodedFrame.mainPixels[0].tilePixel == 0);
 	assert(decodedFrame.assetMetadata.size() == 1);
 	assert(decodedFrame.assetMetadata[0].materialSelectors[0] == "wet_stone");

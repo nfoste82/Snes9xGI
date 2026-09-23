@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 10;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 12;
 
 struct RemasterFramePixel
 {
@@ -114,6 +114,10 @@ struct RemasterFrame
 	std::string profileRomSha256;
 	float lightingCoordinateScale = 16.0f;
 	uint8_t indirectBounceCount = 0;
+	float indirectRoughness = 1.0f;
+	float originalSceneContribution = 0.65f;
+	uint8_t samplesPerFrame = 1;
+	bool sampleAccumulation = true;
 	std::vector<uint16_t> originalRgb555;
 	std::vector<RemasterFramePixel> mainPixels;
 	std::vector<RemasterFramePixel> subPixels;
@@ -339,12 +343,16 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	uint32_t materialCount = 0;
 	uint32_t instanceCount = 0;
 	uint32_t lightCount = 0;
+	uint8_t sampleAccumulation = 1;
 	if (!input.ReadU32(result.schemaVersion) || result.schemaVersion < 1 ||
 		result.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION ||
 		!input.ReadU32(result.width) || !input.ReadU32(result.height) || !result.width || !result.height ||
 		result.width > UINT32_MAX / result.height || !input.ReadString(result.profileRomSha256) ||
 		(result.schemaVersion >= 7 && !input.ReadFloat(result.lightingCoordinateScale)) ||
 		(result.schemaVersion >= 9 && !input.ReadU8(result.indirectBounceCount)) ||
+		(result.schemaVersion >= 11 && !input.ReadFloat(result.indirectRoughness)) ||
+		(result.schemaVersion >= 12 && (!input.ReadFloat(result.originalSceneContribution) ||
+			!input.ReadU8(result.samplesPerFrame) || !input.ReadU8(sampleAccumulation))) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
@@ -354,6 +362,12 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	if (result.indirectBounceCount > 16)
 		return false;
+	if (!std::isfinite(result.indirectRoughness) || result.indirectRoughness < 0.0f || result.indirectRoughness > 1.0f)
+		return false;
+	if (!std::isfinite(result.originalSceneContribution) || result.originalSceneContribution < 0.0f ||
+		result.originalSceneContribution > 1.0f || result.samplesPerFrame < 1 || result.samplesPerFrame > 16 || sampleAccumulation > 1)
+		return false;
+	result.sampleAccumulation = sampleAccumulation != 0;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
 	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 || groupCount > bytes.size() / 4 ||
 		metadataCount > bytes.size() / 12 || metadataCount > 16384 ||
@@ -638,9 +652,10 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		accumulator.x += (static_cast<float>(offset % frame.width) + 0.5f) * intensity;
 		accumulator.y += (static_cast<float>(offset / frame.width) + 0.5f) * intensity;
 		// Eight standard-intensity pixels produce a 1x light; every pixel remains additive.
-		accumulator.red += metadata->emissionRgba[emissionOffset] / 255.0f * intensity / 8.0f;
-		accumulator.green += metadata->emissionRgba[emissionOffset + 1] / 255.0f * intensity / 8.0f;
-		accumulator.blue += metadata->emissionRgba[emissionOffset + 2] / 255.0f * intensity / 8.0f;
+		// Match the shader's emission decode before summing differently colored pixels.
+		accumulator.red += std::pow(metadata->emissionRgba[emissionOffset] / 255.0f, 2.2f) * intensity / 8.0f;
+		accumulator.green += std::pow(metadata->emissionRgba[emissionOffset + 1] / 255.0f, 2.2f) * intensity / 8.0f;
+		accumulator.blue += std::pow(metadata->emissionRgba[emissionOffset + 2] / 255.0f, 2.2f) * intensity / 8.0f;
 		accumulator.z += (metadata->hasHeight ? metadata->height[pixel.tilePixel] / 255.0f : 0.0f) * intensity;
 		accumulator.weight += intensity;
 		accumulator.emissive = true;
@@ -732,6 +747,21 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		if (frame.indirectBounceCount > 16)
 			return false;
 		RemasterFrameSerialization::U8(bytes, frame.indirectBounceCount);
+	}
+	if (frame.schemaVersion >= 11)
+	{
+		if (!std::isfinite(frame.indirectRoughness) || frame.indirectRoughness < 0.0f || frame.indirectRoughness > 1.0f)
+			return false;
+		RemasterFrameSerialization::Float(bytes, frame.indirectRoughness);
+	}
+	if (frame.schemaVersion >= 12)
+	{
+		if (!std::isfinite(frame.originalSceneContribution) || frame.originalSceneContribution < 0.0f ||
+			frame.originalSceneContribution > 1.0f || frame.samplesPerFrame < 1 || frame.samplesPerFrame > 16)
+			return false;
+		RemasterFrameSerialization::Float(bytes, frame.originalSceneContribution);
+		RemasterFrameSerialization::U8(bytes, frame.samplesPerFrame);
+		RemasterFrameSerialization::U8(bytes, frame.sampleAccumulation ? 1 : 0);
 	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||

@@ -308,6 +308,13 @@ static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
 static NSTextField		*remasterHeightScaleInput;
+static NSSlider			*remasterIndirectRoughnessSlider;
+static NSTextField		*remasterIndirectRoughnessInput;
+static NSSlider			*remasterOriginalSceneSlider;
+static NSTextField		*remasterOriginalSceneInput;
+static NSSlider			*remasterSamplesSlider;
+static NSTextField		*remasterSamplesInput;
+static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
 static NSTextView		*remasterInspectorText;
 static S9xRemasterTileView *remasterTilePreview;
@@ -589,6 +596,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::Height: return @"Height";
 	case RemasterLightingView::IndirectContribution: return @"Indirect Light";
 	case RemasterLightingView::Normal: return @"Normals";
+	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
 	case RemasterLightingView::Composite:
 	default: return @"Composite";
 	}
@@ -677,6 +685,10 @@ static void SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterR
 		return;
 	frame.lightingCoordinateScale = remasterEditingProfile.lightingCoordinateScale;
 	frame.indirectBounceCount = remasterEditingProfile.indirectBounceCount;
+	frame.indirectRoughness = remasterEditingProfile.indirectRoughness;
+	frame.originalSceneContribution = remasterEditingProfile.originalSceneContribution;
+	frame.samplesPerFrame = remasterEditingProfile.samplesPerFrame;
+	frame.sampleAccumulation = remasterEditingProfile.sampleAccumulation;
 	frame.assetMetadata.clear();
 	for (const auto &entry : remasterEditingProfile.assets)
 	{
@@ -3591,6 +3603,8 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterBounceCount:(id)sender;
 - (void)changeRemasterHeightScale:(id)sender;
 - (BOOL)commitRemasterHeightScale;
+- (void)changeRemasterIndirectRoughness:(id)sender;
+- (BOOL)commitRemasterIndirectRoughness;
 - (void)refreshRemasterEditingControls;
 - (void)restoreRemasterProfileFromText:(NSString *)text;
 - (BOOL)writeRemasterProfile;
@@ -5608,6 +5622,10 @@ void QuitWithFatalError ( NSString *message)
 		[self changeRemasterPixelValue:remasterValueInput];
 	else if (notification.object == remasterHeightScaleInput)
 		remasterSettingsSaveButton.enabled = YES;
+	else if (notification.object == remasterIndirectRoughnessInput)
+		remasterSettingsSaveButton.enabled = YES;
+	else if (notification.object == remasterOriginalSceneInput)
+		remasterSettingsSaveButton.enabled = YES;
 }
 
 - (void)stepRemasterPixelValue:(NSButton *)sender
@@ -6024,7 +6042,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)writeRemasterProfile
 {
-	if (![self commitRemasterHeightScale])
+	if (![self commitRemasterHeightScale] || ![self commitRemasterIndirectRoughness] ||
+		![self commitRemasterOriginalSceneContribution])
 		return NO;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (remasterEditingProfileLoaded && remasterEditingProfileURL &&
@@ -6071,6 +6090,15 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 		remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.lightingCoordinateScale];
+		remasterIndirectRoughnessSlider.floatValue = remasterEditingProfile.indirectRoughness;
+		remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g",
+			remasterEditingProfile.indirectRoughness];
+		remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
+		remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g",
+			remasterEditingProfile.originalSceneContribution];
+		remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
+		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
+		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	}
 	if (running)
@@ -6118,21 +6146,66 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 240)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 500)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
-		remasterProfileSettingsPanel.title = @"Remaster Profile Settings";
+		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
 		remasterProfileSettingsPanel.floatingPanel = YES;
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
-		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 190, 180, 24)];
+		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 450, 220, 24)];
+		originalTitle.stringValue = @"Original Scene RGB Contribution";
+		originalTitle.editable = NO;
+		originalTitle.bezeled = NO;
+		originalTitle.drawsBackground = NO;
+		[content addSubview:originalTitle];
+		remasterOriginalSceneSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 417, 300, 24)];
+		remasterOriginalSceneSlider.minValue = 0;
+		remasterOriginalSceneSlider.maxValue = 1;
+		remasterOriginalSceneSlider.continuous = NO;
+		remasterOriginalSceneSlider.target = self;
+		remasterOriginalSceneSlider.action = @selector(changeRemasterOriginalSceneContribution:);
+		[content addSubview:remasterOriginalSceneSlider];
+		remasterOriginalSceneInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 417, 60, 24)];
+		remasterOriginalSceneInput.alignment = NSTextAlignmentCenter;
+		remasterOriginalSceneInput.delegate = self;
+		remasterOriginalSceneInput.target = self;
+		remasterOriginalSceneInput.action = @selector(changeRemasterOriginalSceneContribution:);
+		[content addSubview:remasterOriginalSceneInput];
+		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 376, 180, 24)];
+		samplesTitle.stringValue = @"Samples Per Frame";
+		samplesTitle.editable = NO;
+		samplesTitle.bezeled = NO;
+		samplesTitle.drawsBackground = NO;
+		[content addSubview:samplesTitle];
+		remasterSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 343, 300, 24)];
+		remasterSamplesSlider.minValue = 1;
+		remasterSamplesSlider.maxValue = 16;
+		remasterSamplesSlider.numberOfTickMarks = 16;
+		remasterSamplesSlider.allowsTickMarkValuesOnly = YES;
+		remasterSamplesSlider.continuous = NO;
+		remasterSamplesSlider.target = self;
+		remasterSamplesSlider.action = @selector(changeRemasterSamplesPerFrame:);
+		[content addSubview:remasterSamplesSlider];
+		remasterSamplesInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 343, 60, 24)];
+		remasterSamplesInput.alignment = NSTextAlignmentCenter;
+		remasterSamplesInput.target = self;
+		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
+		[content addSubview:remasterSamplesInput];
+		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 306, 300, 24)];
+		remasterSampleAccumulationButton.buttonType = NSButtonTypeSwitch;
+		remasterSampleAccumulationButton.title = @"Accumulate and average samples";
+		remasterSampleAccumulationButton.target = self;
+		remasterSampleAccumulationButton.action = @selector(changeRemasterSampleAccumulation:);
+		[content addSubview:remasterSampleAccumulationButton];
+		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 270, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
 		title.bezeled = NO;
 		title.drawsBackground = NO;
 		[content addSubview:title];
-		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 157, 300, 24)];
+		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 237, 300, 24)];
 		remasterBounceSlider.minValue = 0;
 		remasterBounceSlider.maxValue = 16;
 		remasterBounceSlider.numberOfTickMarks = 17;
@@ -6141,32 +6214,51 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceSlider.target = self;
 		remasterBounceSlider.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceSlider];
-		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 157, 60, 24)];
+		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 237, 60, 24)];
 		remasterBounceInput.alignment = NSTextAlignmentCenter;
 		remasterBounceInput.target = self;
 		remasterBounceInput.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceInput];
-		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 118, 180, 24)];
+		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 166, 180, 24)];
+		roughnessTitle.stringValue = @"Indirect Light Roughness";
+		roughnessTitle.editable = NO;
+		roughnessTitle.bezeled = NO;
+		roughnessTitle.drawsBackground = NO;
+		[content addSubview:roughnessTitle];
+		remasterIndirectRoughnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 133, 300, 24)];
+		remasterIndirectRoughnessSlider.minValue = 0;
+		remasterIndirectRoughnessSlider.maxValue = 1;
+		remasterIndirectRoughnessSlider.continuous = NO;
+		remasterIndirectRoughnessSlider.target = self;
+		remasterIndirectRoughnessSlider.action = @selector(changeRemasterIndirectRoughness:);
+		[content addSubview:remasterIndirectRoughnessSlider];
+		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 133, 60, 24)];
+		remasterIndirectRoughnessInput.alignment = NSTextAlignmentCenter;
+		remasterIndirectRoughnessInput.delegate = self;
+		remasterIndirectRoughnessInput.target = self;
+		remasterIndirectRoughnessInput.action = @selector(changeRemasterIndirectRoughness:);
+		[content addSubview:remasterIndirectRoughnessInput];
+		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 102, 180, 24)];
 		heightScaleTitle.stringValue = @"Height Scale";
 		heightScaleTitle.editable = NO;
 		heightScaleTitle.bezeled = NO;
 		heightScaleTitle.drawsBackground = NO;
 		[content addSubview:heightScaleTitle];
-		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 118, 60, 24)];
+		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 102, 60, 24)];
 		remasterHeightScaleInput.alignment = NSTextAlignmentCenter;
 		remasterHeightScaleInput.delegate = self;
 		remasterHeightScaleInput.target = self;
 		remasterHeightScaleInput.action = @selector(changeRemasterHeightScale:);
 		[content addSubview:remasterHeightScaleInput];
-		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 82, 300, 30)];
+		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 66, 300, 30)];
 		heightScaleDescription.stringValue = @"Maps height byte 255 to this many screen-space Z units.";
 		heightScaleDescription.editable = NO;
 		heightScaleDescription.bezeled = NO;
 		heightScaleDescription.drawsBackground = NO;
 		heightScaleDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:heightScaleDescription];
-		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 38, 390, 38)];
-		remasterBounceDescription.stringValue = @"0 disables indirect light. Each bounce exchanges light between mutually facing surfaces. Coplanar surfaces do not exchange light; extra bounces cannot replace authored geometry.";
+		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 198, 390, 26)];
+		remasterBounceDescription.stringValue = @"1 is diffuse. Lower values narrow nonmetallic bounce lobes; they do not create mirrors.";
 		remasterBounceDescription.editable = NO;
 		remasterBounceDescription.bezeled = NO;
 		remasterBounceDescription.drawsBackground = NO;
@@ -6183,6 +6275,13 @@ void QuitWithFatalError ( NSString *message)
 	remasterBounceSlider.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.lightingCoordinateScale];
+	remasterIndirectRoughnessSlider.floatValue = remasterEditingProfile.indirectRoughness;
+	remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.indirectRoughness];
+	remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
+	remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.originalSceneContribution];
+	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
+	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
+	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	[remasterProfileSettingsPanel orderFront:nil];
 }
@@ -6190,6 +6289,144 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterHeightScale:(id)sender
 {
 	[self commitRemasterHeightScale];
+}
+
+- (void)changeRemasterOriginalSceneContribution:(id)sender
+{
+	if (sender == remasterOriginalSceneSlider)
+		remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterOriginalSceneSlider.floatValue];
+	[self commitRemasterOriginalSceneContribution];
+}
+
+- (BOOL)commitRemasterOriginalSceneContribution
+{
+	if (!remasterEditingProfileLoaded || !remasterOriginalSceneInput)
+		return YES;
+	const float contribution = remasterOriginalSceneInput.floatValue;
+	if (!std::isfinite(contribution) || contribution < 0.0f || contribution > 1.0f)
+	{
+		remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g",
+			remasterEditingProfile.originalSceneContribution];
+		remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
+		NSBeep();
+		return NO;
+	}
+	if (remasterEditingProfile.originalSceneContribution == contribution)
+		return YES;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.originalSceneContribution = contribution;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 8);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Original Scene Contribution"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	remasterOriginalSceneSlider.floatValue = contribution;
+	remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g", contribution];
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+	return YES;
+}
+
+- (void)changeRemasterSamplesPerFrame:(id)sender
+{
+	if (!remasterEditingProfileLoaded)
+		return;
+	const NSInteger requested = sender == remasterSamplesInput ? remasterSamplesInput.integerValue : remasterSamplesSlider.integerValue;
+	const uint8_t count = static_cast<uint8_t>(std::max<NSInteger>(1, std::min<NSInteger>(16, requested)));
+	remasterSamplesSlider.integerValue = count;
+	remasterSamplesInput.integerValue = count;
+	if (remasterEditingProfile.samplesPerFrame == count)
+		return;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.samplesPerFrame = count;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 8);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Samples Per Frame"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+}
+
+- (void)changeRemasterSampleAccumulation:(NSButton *)sender
+{
+	if (!remasterEditingProfileLoaded)
+		return;
+	const bool enabled = sender.state == NSControlStateValueOn;
+	if (remasterEditingProfile.sampleAccumulation == enabled)
+		return;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.sampleAccumulation = enabled;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 8);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Toggle Sample Accumulation"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+}
+
+- (void)changeRemasterIndirectRoughness:(id)sender
+{
+	if (sender == remasterIndirectRoughnessSlider)
+		remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterIndirectRoughnessSlider.floatValue];
+	[self commitRemasterIndirectRoughness];
+}
+
+- (BOOL)commitRemasterIndirectRoughness
+{
+	if (!remasterEditingProfileLoaded || !remasterIndirectRoughnessInput)
+		return YES;
+	const float roughness = remasterIndirectRoughnessInput.floatValue;
+	if (!std::isfinite(roughness) || roughness < 0.0f || roughness > 1.0f)
+	{
+		remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.indirectRoughness];
+		remasterIndirectRoughnessSlider.floatValue = remasterEditingProfile.indirectRoughness;
+		NSBeep();
+		return NO;
+	}
+	if (remasterEditingProfile.indirectRoughness == roughness)
+		return YES;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.indirectRoughness = roughness;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 7);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Indirect Roughness"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	remasterIndirectRoughnessSlider.floatValue = roughness;
+	remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", roughness];
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+	return YES;
 }
 
 - (BOOL)commitRemasterHeightScale

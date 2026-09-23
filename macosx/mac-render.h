@@ -34,6 +34,7 @@ enum class RemasterLightingView : uint32_t
 	Height,
 	IndirectContribution,
 	Normal,
+	DirectAndIndirectContribution,
 	Count
 };
 

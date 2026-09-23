@@ -129,6 +129,10 @@ struct RemasterProfile
 	std::string romSha256;
 	float lightingCoordinateScale = 16.0f;
 	uint8_t indirectBounceCount = 0;
+	float indirectRoughness = 1.0f;
+	float originalSceneContribution = 0.65f;
+	uint8_t samplesPerFrame = 1;
+	bool sampleAccumulation = true;
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
@@ -407,6 +411,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
+	bool hasIndirectRoughness = false;
+	bool hasSceneSampling = false;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
@@ -555,6 +561,32 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					fail(lineNumber, "indirect_bounces must be an integer in [0, 16]");
 				else
 					parsed.indirectBounceCount = static_cast<uint8_t>(unsignedValue);
+			}
+			else if (key == "indirect_roughness")
+			{
+				hasIndirectRoughness = true;
+				if (!ParseFloat(value, parsed.indirectRoughness))
+					fail(lineNumber, "indirect_roughness must be a number");
+			}
+			else if (key == "original_scene_contribution")
+			{
+				hasSceneSampling = true;
+				if (!ParseFloat(value, parsed.originalSceneContribution))
+					fail(lineNumber, "original_scene_contribution must be a number");
+			}
+			else if (key == "samples_per_frame")
+			{
+				hasSceneSampling = true;
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 16)
+					fail(lineNumber, "samples_per_frame must be an integer in [1, 16]");
+				else
+					parsed.samplesPerFrame = static_cast<uint8_t>(unsignedValue);
+			}
+			else if (key == "sample_accumulation")
+			{
+				hasSceneSampling = true;
+				if (!ParseBool(value, parsed.sampleAccumulation))
+					fail(lineNumber, "sample_accumulation must be true or false");
 			}
 			else
 				fail(lineNumber, "unknown lighting_space key '" + key + "'");
@@ -749,8 +781,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 6)
-		fail(0, "schema_version must be 1, 2, 3, 4, 5, or 6");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 8)
+		fail(0, "schema_version must be an integer in [1, 8]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -767,8 +799,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		for (const auto &entry : parsed.assets)
 			if (entry.second.directLightingOppositeFacing)
 				fail(0, "direct_lighting_opposite_facing requires schema_version 6");
+	if (parsed.schemaVersion < 7 && hasIndirectRoughness)
+		fail(0, "indirect_roughness requires schema_version 7");
+	if (parsed.schemaVersion < 8 && hasSceneSampling)
+		fail(0, "scene contribution and sampling controls require schema_version 8");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
+	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
+		fail(0, "lighting_space.indirect_roughness must be finite and in [0, 1]");
+	if (!std::isfinite(parsed.originalSceneContribution) || parsed.originalSceneContribution < 0.0f ||
+		parsed.originalSceneContribution > 1.0f)
+		fail(0, "lighting_space.original_scene_contribution must be finite and in [0, 1]");
 	if (parsed.gameTitle.empty())
 		fail(0, "game.title is required");
 	if (parsed.romSha256.size() != 64 || parsed.romSha256.find_first_not_of("0123456789abcdef") != std::string::npos)
@@ -925,7 +966,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 	}
-	const uint32_t requiredSchema = std::max<uint32_t>(4, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
+	const uint32_t requiredSchema = std::max<uint32_t>(8, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
@@ -934,6 +975,10 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output << "\n[lighting_space]\n";
 	output << "coordinate_scale = " << profile.lightingCoordinateScale << "\n";
 	output << "indirect_bounces = " << unsigned(profile.indirectBounceCount) << "\n";
+	output << "indirect_roughness = " << profile.indirectRoughness << "\n";
+	output << "original_scene_contribution = " << profile.originalSceneContribution << "\n";
+	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
+	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.materials)
 	{
 		const RemasterMaterial &material = entry.second;

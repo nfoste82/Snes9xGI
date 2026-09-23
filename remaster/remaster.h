@@ -618,6 +618,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		frame.profileRomSha256 = state.activeProfile.romSha256;
 		frame.lightingCoordinateScale = state.activeProfile.lightingCoordinateScale;
 		frame.indirectBounceCount = state.activeProfile.indirectBounceCount;
+		frame.indirectRoughness = state.activeProfile.indirectRoughness;
+		frame.originalSceneContribution = state.activeProfile.originalSceneContribution;
+		frame.samplesPerFrame = state.activeProfile.samplesPerFrame;
+		frame.sampleAccumulation = state.activeProfile.sampleAccumulation;
 		const size_t pixelCount = screenWidth * screenHeight;
 		frame.originalRgb555.reserve(pixelCount);
 		frame.mainPixels.reserve(pixelCount);
