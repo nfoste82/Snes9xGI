@@ -3842,6 +3842,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterVariants.clear();
 	remasterReplayFrame = RemasterFrame();
 	[remasterInspectorPanel orderOut:nil];
+	SetLiveRemasterPresentation(remasterLightingEnabled && remasterEditingProfileLoaded, remasterLightingView);
 	pauseEmulation = false;
 	[self.emulationDelegate emulationResumed];
 	[s9xView updatePauseOverlay];
@@ -3960,6 +3961,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)loadROM:(NSURL *)fileURL
 {
+	SetLiveRemasterPresentation(false, remasterLightingView);
 	running = false;
 	frzselecting = false;
 
@@ -3994,6 +3996,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		return NO;
 	}
+	SetLiveRemasterPresentation(false, remasterLightingView);
 
 	running = false;
 	frzselecting = false;
@@ -4051,6 +4054,8 @@ void QuitWithFatalError ( NSString *message)
 - (BOOL)toggleRemasterLighting
 {
 	remasterLightingEnabled = !remasterLightingEnabled;
+	SetLiveRemasterPresentation(running && remasterLightingEnabled && remasterEditingProfileLoaded,
+		remasterLightingView);
 	[s9xView updateRemasterDebugOverlay];
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
@@ -4065,6 +4070,7 @@ void QuitWithFatalError ( NSString *message)
 		static_cast<uint32_t>(RemasterLightingView::Count);
 	remasterLightingView = static_cast<RemasterLightingView>(next);
 	remasterLightingEnabled = true;
+	SetLiveRemasterPresentation(running && remasterEditingProfileLoaded, remasterLightingView);
 	[s9xView updateRemasterDebugOverlay];
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
@@ -6550,7 +6556,10 @@ void QuitWithFatalError ( NSString *message)
 	S9xRemasterSerializeProfile(profile, remasterSavedProfileText, diagnostics);
 	[remasterUndoManager removeAllActions];
 	if (running)
+	{
 		S9xRemasterSetProfile(profile);
+		SetLiveRemasterPresentation(remasterLightingEnabled, remasterLightingView);
+	}
 	if (remasterMaterialBrush)
 	{
 		[remasterMaterialBrush removeAllItems];

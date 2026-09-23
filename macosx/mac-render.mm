@@ -29,11 +29,13 @@
 #include "remaster/remaster.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <sys/time.h>
+#include <unordered_map>
 
 #include "mac-prefix.h"
 #include "mac-os.h"
@@ -179,6 +181,22 @@ id<MTLComputePipelineState>	remasterIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterCompositePipelineState = nil;
 id<MTLComputePipelineState>	remasterSampleAccumulationPipelineState = nil;
 id<MTLComputePipelineState>	remasterHighlightPipelineState = nil;
+static std::atomic<bool> liveRemasterPresentationEnabled(false);
+static std::atomic<RemasterLightingView> liveRemasterLightingView(RemasterLightingView::Composite);
+static id<MTLDevice> remasterTextureDevice = nil;
+static NSUInteger remasterTextureWidth = 0;
+static NSUInteger remasterTextureHeight = 0;
+static id<MTLTexture> remasterOcclusionTexture = nil;
+static id<MTLTexture> remasterEmissionTexture = nil;
+static id<MTLTexture> remasterHeightTexture = nil;
+static id<MTLTexture> remasterParticipationTexture = nil;
+static id<MTLTexture> remasterOppositeFacingTexture = nil;
+static id<MTLTexture> remasterSurfaceTexture = nil;
+static id<MTLTexture> remasterOutputTexture = nil;
+static id<MTLTexture> remasterDirectTexture = nil;
+static id<MTLTexture> remasterBounceTextures[2] = {};
+static id<MTLTexture> remasterIndirectTextures[2] = {};
+static id<MTLTexture> remasterSampleMeanTextures[2] = {};
 
 void InitGraphics (void)
 {
@@ -230,10 +248,12 @@ void DrawFreezeDefrostScreen (uint8 *draw)
 bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView)
 {
-	if (frame.width > INT_MAX || frame.height > INT_MAX)
+	if (frame.width > INT_MAX || frame.height > INT_MAX ||
+		!S9xRemasterFrameHasPixelData(frame, frame.width, frame.height))
 		return false;
 	// Surface diagnostics are presentation-only, never lighting albedo.
-	lighting = lighting && debugMode == RemasterDebugMode::Original;
+	if (lighting)
+		debugMode = RemasterDebugMode::Original;
 	std::vector<uint32_t> owners;
 	owners.reserve(frame.mainPixels.size());
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
@@ -254,14 +274,26 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	std::vector<float> surfaceField(frame.mainPixels.size() * 4, 0.0f);
 	if (lighting && frame.schemaVersion >= 5)
 	{
+		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size(), nullptr);
+		for (size_t i = 0; i < frame.tileInstances.size(); i++)
+			instanceMetadata[i] = S9xRemasterFrameMetadataForTile(frame, frame.tileInstances[i].tileId);
+		std::unordered_map<std::string, const RemasterFrameMaterial *> materials;
+		for (const RemasterFrameMaterial &material : frame.materials)
+			materials.emplace(material.name, &material);
 		for (size_t i = 0; i < frame.mainPixels.size(); i++)
 		{
 			const RemasterFramePixel &pixel = frame.mainPixels[i];
 			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
 				continue;
-				const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
-			const RemasterFrameAssetMetadata *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
-			const RemasterFrameMaterial *material = S9xRemasterFrameMaterialForPixel(frame, pixel);
+			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+			const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
+			const std::string *materialName = nullptr;
+			if (metadata && metadata->hasMaterialSelectors && !metadata->materialSelectors[pixel.tilePixel].empty())
+				materialName = &metadata->materialSelectors[pixel.tilePixel];
+			else if (!instance.material.empty())
+				materialName = &instance.material;
+			const auto materialEntry = materialName ? materials.find(*materialName) : materials.end();
+			const RemasterFrameMaterial *material = materialEntry == materials.end() ? nullptr : materialEntry->second;
 			if (material && material->surfaceClass == RemasterSurfaceClass::UserInterface)
 				participationField[i * 2] = participationField[i * 2 + 1] = 0;
 			else if (material && !material->receivesGi)
@@ -301,7 +333,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				if (pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64)
 				{
 					instance = &frame.tileInstances[pixel.instanceId - 1];
-					metadata = S9xRemasterFrameMetadataForTile(frame, instance->tileId);
+					metadata = instanceMetadata[pixel.instanceId - 1];
 				}
 				if (metadata && metadata->hasNormals)
 				{
@@ -336,6 +368,13 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		lighting && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.samplesPerFrame, frame.sampleAccumulation);
+}
+
+void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
+{
+	liveRemasterLightingView.store(lightingView, std::memory_order_relaxed);
+	liveRemasterPresentationEnabled.store(enabled, std::memory_order_relaxed);
+	S9xRemasterSetLiveFramesEnabled(enabled);
 }
 
 static void S9xInitMetal (void)
@@ -389,6 +428,14 @@ static void S9xDeinitMetal (void)
 	remasterCompositePipelineState = nil;
 	remasterSampleAccumulationPipelineState = nil;
 	remasterHighlightPipelineState = nil;
+	remasterTextureDevice = nil;
+	remasterTextureWidth = remasterTextureHeight = 0;
+	remasterOcclusionTexture = remasterEmissionTexture = remasterHeightTexture = nil;
+	remasterParticipationTexture = remasterOppositeFacingTexture = remasterSurfaceTexture = nil;
+	remasterOutputTexture = remasterDirectTexture = nil;
+	remasterBounceTextures[0] = remasterBounceTextures[1] = nil;
+	remasterIndirectTextures[0] = remasterIndirectTextures[1] = nil;
+	remasterSampleMeanTextures[0] = remasterSampleMeanTextures[1] = nil;
 	metalLayer = nil;
 }
 
@@ -524,6 +571,14 @@ void S9xPutImage (int width, int height)
         IPPU.DisplayedRenderedFrameCount = (Memory.ROMFramesPerSecond * 60) / frameCalc;
     }
 	
+	const RemasterFrame *liveFrame = S9xRemasterCompletedFrame();
+	if (liveRemasterPresentationEnabled.load(std::memory_order_relaxed) &&
+		width == SNES_WIDTH && height > 0 && liveFrame &&
+		S9xRemasterFrameHasPixelData(*liveFrame, static_cast<uint32_t>(width), static_cast<uint32_t>(height)) &&
+		DrawRemasterFrame(*liveFrame, S9xRemasterGetDebugMode(), nullptr, true,
+			liveRemasterLightingView.load(std::memory_order_relaxed)))
+		return;
+
 	S9xPutImageMetal(width, height, GFX.Screen, GFX.RealPPL, S9xRemasterMainOwners(), GFX.RealPPL,
 		nullptr, 0, S9xRemasterGetDebugMode());
 }
@@ -617,12 +672,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	CGSize layerSize = metalLayer.bounds.size;
 	
 	@autoreleasepool {
-		MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor new];
-		textureDescriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-		textureDescriptor.width = width;
-		textureDescriptor.height = height;
-		
-		metalTexture = [metalDevice newTextureWithDescriptor:textureDescriptor];
+		if (!metalTexture || metalTexture.width != static_cast<NSUInteger>(width) ||
+			metalTexture.height != static_cast<NSUInteger>(height))
+		{
+			MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				width:width height:height mipmapped:NO];
+			metalTexture = [metalDevice newTextureWithDescriptor:textureDescriptor];
+		}
 		
 		[metalTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:buffer bytesPerRow:width * 4];
 		
@@ -656,42 +712,68 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && remasterLightingPipelineState &&
 			remasterIndirectPipelineState && remasterCompositePipelineState && remasterSampleAccumulationPipelineState)
 		{
-			MTLTextureDescriptor *fieldDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm
-				width:width height:height mipmapped:NO];
-			id<MTLTexture> occlusionTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			const bool rebuildTextures = remasterTextureDevice != metalDevice ||
+				remasterTextureWidth != static_cast<NSUInteger>(width) ||
+				remasterTextureHeight != static_cast<NSUInteger>(height);
+			if (rebuildTextures)
+			{
+				remasterTextureDevice = metalDevice;
+				remasterTextureWidth = width;
+				remasterTextureHeight = height;
+				MTLTextureDescriptor *fieldDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm
+					width:width height:height mipmapped:NO];
+				remasterOcclusionTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+				remasterHeightTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+				remasterParticipationTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+				MTLTextureDescriptor *emissionDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+					width:width height:height mipmapped:NO];
+				remasterEmissionTexture = [metalDevice newTextureWithDescriptor:emissionDescriptor];
+				MTLTextureDescriptor *maskDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+					width:width height:height mipmapped:NO];
+				remasterOppositeFacingTexture = [metalDevice newTextureWithDescriptor:maskDescriptor];
+				MTLTextureDescriptor *surfaceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+					width:width height:height mipmapped:NO];
+				remasterSurfaceTexture = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
+				MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+					width:width height:height mipmapped:NO];
+				outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+				remasterOutputTexture = [metalDevice newTextureWithDescriptor:outputDescriptor];
+				MTLTextureDescriptor *radianceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+					width:width height:height mipmapped:NO];
+				radianceDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+				remasterDirectTexture = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+				for (size_t i = 0; i < 2; i++)
+				{
+					remasterBounceTextures[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+					remasterIndirectTextures[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+					remasterSampleMeanTextures[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+				}
+			}
+			id<MTLTexture> occlusionTexture = remasterOcclusionTexture;
 			[occlusionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:occlusion bytesPerRow:width * 2];
-			MTLTextureDescriptor *emissionDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-				width:width height:height mipmapped:NO];
-			id<MTLTexture> emissionTexture = [metalDevice newTextureWithDescriptor:emissionDescriptor];
+			id<MTLTexture> emissionTexture = remasterEmissionTexture;
 			[emissionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:emission bytesPerRow:width * 4];
-			id<MTLTexture> heightTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			id<MTLTexture> heightTexture = remasterHeightTexture;
 			[heightTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:heightField bytesPerRow:width * 2];
-			id<MTLTexture> participationTexture = [metalDevice newTextureWithDescriptor:fieldDescriptor];
+			id<MTLTexture> participationTexture = remasterParticipationTexture;
 			[participationTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:participation bytesPerRow:width * 2];
-			MTLTextureDescriptor *maskDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
-				width:width height:height mipmapped:NO];
-			id<MTLTexture> oppositeFacingTexture = [metalDevice newTextureWithDescriptor:maskDescriptor];
+			id<MTLTexture> oppositeFacingTexture = remasterOppositeFacingTexture;
 			[oppositeFacingTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:oppositeFacing bytesPerRow:width];
-			MTLTextureDescriptor *surfaceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
-				width:width height:height mipmapped:NO];
-			id<MTLTexture> surfaceTexture = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
+			id<MTLTexture> surfaceTexture = remasterSurfaceTexture;
 			[surfaceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:surfaceField bytesPerRow:width * sizeof(float) * 4];
-			MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-				width:width height:height mipmapped:NO];
-			outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-			presentationTexture = [metalDevice newTextureWithDescriptor:outputDescriptor];
+			presentationTexture = remasterOutputTexture;
 			MTLTextureDescriptor *radianceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
 				width:width height:height mipmapped:NO];
 			radianceDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 			if (measureGi)
 				radianceDescriptor.storageMode = MTLStorageModeShared;
-			id<MTLTexture> directTexture = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+			id<MTLTexture> directTexture = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : remasterDirectTexture;
 			diagnosticDirectTexture = measureGi ? directTexture : nil;
 			static uint32_t randomSeed = 0;
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
@@ -744,18 +826,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			}
 			if (indirectBounceCount > 0)
 			{
-				id<MTLTexture> bounceTextures[2] = {
-					[metalDevice newTextureWithDescriptor:radianceDescriptor],
-					[metalDevice newTextureWithDescriptor:radianceDescriptor]
-				};
-				id<MTLTexture> indirectTextures[2] = {
-					[metalDevice newTextureWithDescriptor:radianceDescriptor],
-					[metalDevice newTextureWithDescriptor:radianceDescriptor]
-				};
-				id<MTLTexture> sampleMeanTextures[2] = {
-					[metalDevice newTextureWithDescriptor:radianceDescriptor],
-					[metalDevice newTextureWithDescriptor:radianceDescriptor]
-				};
+				id<MTLTexture> bounceTextures[2] = { remasterBounceTextures[0], remasterBounceTextures[1] };
+				id<MTLTexture> indirectTextures[2] = { remasterIndirectTextures[0], remasterIndirectTextures[1] };
+				id<MTLTexture> sampleMeanTextures[2] = { remasterSampleMeanTextures[0], remasterSampleMeanTextures[1] };
 				id<MTLTexture> finalIndirect = nil;
 				for (uint32_t sample = 0; sample < uniforms.sampleCount; sample++)
 				{

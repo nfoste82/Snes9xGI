@@ -44,6 +44,7 @@ void DrawFreezeDefrostScreen (uint8 *);
 bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
 	const std::vector<RemasterTileContentId> * = nullptr, bool lighting = false,
 	RemasterLightingView = RemasterLightingView::Composite);
+void SetLiveRemasterPresentation (bool, RemasterLightingView);
 void GetGameDisplay (int *, int *);
 
 #endif

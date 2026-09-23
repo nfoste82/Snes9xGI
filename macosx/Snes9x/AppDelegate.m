@@ -577,7 +577,8 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
 	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:)) {
-		return [self.s9xEngine isPresentingRemasterFrame];
+		return [self.s9xEngine isPresentingRemasterFrame] ||
+			([self.s9xEngine isRunning] && [self.s9xEngine isRemasterProfileLoaded]);
 	}
 	else if (action == @selector(captureRemasterTileInventory:) || action == @selector(captureRemasterFrame:)) {
 		return [self.s9xEngine isRunning];

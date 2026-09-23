@@ -389,13 +389,20 @@ material = "wet_stone"
 	S9xRemasterSetTilePixel(0);
 	S9xRemasterWriteOwner(0);
 	const uint16_t screen[] = { 0x001f, 0x03e0 };
-	assert(S9xRemasterEndFrame(screen, 2, 2, 1) & RemasterCaptureFrame);
+	RemasterFrame finalizedFrame;
+	assert(S9xRemasterEndFrame(screen, 2, 2, 1, &finalizedFrame) & RemasterCaptureFrame);
 	std::ifstream frameInput(framePath, std::ios::binary);
 	std::vector<uint8_t> capturedFrameBytes((std::istreambuf_iterator<char>(frameInput)),
 		std::istreambuf_iterator<char>());
 	assert(capturedFrameBytes.size() > 8);
 	assert(std::string(capturedFrameBytes.begin(), capturedFrameBytes.begin() + 6) == "S9XRMF");
+	std::vector<uint8_t> finalizedFrameBytes;
+	assert(S9xSerializeRemasterFrame(finalizedFrame, finalizedFrameBytes));
+	assert(finalizedFrameBytes == capturedFrameBytes);
 	assert(S9xDeserializeRemasterFrame(capturedFrameBytes, decodedFrame));
+	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
+	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
+	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
 	assert(decodedFrame.schemaVersion == 12);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
@@ -415,8 +422,34 @@ material = "wet_stone"
 	std::remove(framePath.c_str());
 	S9xRemasterRequestFrameCapture(framePath);
 	S9xRemasterBeginFrame(2, 2, 2, 1);
-	assert(!(S9xRemasterEndFrame(screen, 1, 2, 1) & RemasterCaptureFrame));
+	finalizedFrame.width = 99;
+	assert(!(S9xRemasterEndFrame(screen, 1, 2, 1, &finalizedFrame) & RemasterCaptureFrame));
+	assert(finalizedFrame.width == 0);
 	std::remove(framePath.c_str());
+
+	S9xRemasterSetLiveFramesEnabled(true);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	assert(!S9xRemasterCompletedFrame());
+	S9xRemasterSetSubscreen(false);
+	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
+	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterSetTilePixel(0);
+	S9xRemasterWriteOwner(0);
+	assert(S9xRemasterEndFrame(screen, 2, 2, 1) == RemasterCaptureNone);
+	const RemasterFrame *liveFrame = S9xRemasterCompletedFrame();
+	assert(liveFrame && liveFrame->width == 2 && liveFrame->height == 1);
+	assert(S9xRemasterFrameHasPixelData(*liveFrame, 2, 1));
+	assert(!S9xRemasterFrameHasPixelData(*liveFrame, 1, 2));
+	assert(liveFrame->originalRgb555[1] == screen[1]);
+	assert(liveFrame->mainPixels[0].instanceId == 1);
+	assert(liveFrame->tileInstances.size() == 1);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	assert(!S9xRemasterCompletedFrame());
+	S9xRemasterEndFrame(screen, 2, 2, 1);
+	S9xRemasterSetLiveFramesEnabled(false);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	assert(!S9xRemasterCompletedFrame());
+	S9xRemasterEndFrame(screen, 2, 2, 1);
 
 	const char *ambiguousProfile = R"PROFILE(
 schema_version = 1

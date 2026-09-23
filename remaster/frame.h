@@ -129,6 +129,16 @@ struct RemasterFrame
 	std::vector<RemasterFrameLight> lights;
 };
 
+inline bool S9xRemasterFrameHasPixelData (const RemasterFrame &frame, uint32_t width, uint32_t height)
+{
+	if (!width || !height || frame.width != width || frame.height != height ||
+		width > SIZE_MAX / height)
+		return false;
+	const size_t pixelCount = static_cast<size_t>(width) * height;
+	return frame.originalRgb555.size() == pixelCount && frame.mainPixels.size() == pixelCount &&
+		frame.subPixels.size() == pixelCount;
+}
+
 inline void S9xRemasterInferLegacyTileInstanceFlips (RemasterFrame &frame)
 {
 	if (frame.schemaVersion < 5 || frame.schemaVersion >= 8 || frame.tileInstances.empty())
@@ -632,6 +642,9 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		float weight = 0.0f;
 		bool emissive = false;
 	};
+	std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadataByTile;
+	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+		metadataByTile.emplace(metadata.tileId, &metadata);
 	std::vector<Accumulator> accumulators(frame.tileInstances.size());
 	for (size_t offset = 0; offset < frame.mainPixels.size(); offset++)
 	{
@@ -642,7 +655,8 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		if (pixel.tilePixel >= 64)
 			continue;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
-		const RemasterFrameAssetMetadata *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+		const auto metadataEntry = metadataByTile.find(instance.tileId);
+		const RemasterFrameAssetMetadata *metadata = metadataEntry == metadataByTile.end() ? nullptr : metadataEntry->second;
 		if (!metadata || !metadata->hasEmission)
 			continue;
 		const size_t emissionOffset = pixel.tilePixel * 4;
