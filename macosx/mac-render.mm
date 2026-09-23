@@ -144,7 +144,7 @@ void DrawFreezeDefrostScreen (uint8 *draw)
 }
 
 bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
-	const RemasterTileContentId *selectedTile, bool lighting, RemasterLightingView lightingView)
+	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView)
 {
 	if (frame.width > INT_MAX || frame.height > INT_MAX)
 		return false;
@@ -155,11 +155,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
 		owners.push_back(pixel.owner);
 	std::vector<uint8_t> highlights;
-	if (selectedTile)
+	if (selectedTiles && !selectedTiles->empty())
 	{
 		highlights.assign(frame.mainPixels.size(), 0);
-		for (uint32_t offset : S9xRemasterFrameOccurrences(frame, *selectedTile))
-			highlights[offset] = 1;
+		for (const RemasterTileContentId &tileId : *selectedTiles)
+			for (uint32_t offset : S9xRemasterFrameOccurrences(frame, tileId))
+				highlights[offset] = 1;
 	}
 	std::vector<uint8_t> lightingField(frame.mainPixels.size() * 2, 0);
 	std::vector<uint8_t> emissionField(frame.mainPixels.size() * 4, 0);

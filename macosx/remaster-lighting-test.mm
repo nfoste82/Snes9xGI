@@ -87,7 +87,7 @@ int main()
                 s[Surface][pixel] = {z, 0, 0, 0};
             };
             auto run = [&](const Scene &s, bool bounce, unsigned passIndex = 0,
-                           float lightZ = 8.0f, int selectedPixel = -1) {
+                           float lightZ = 8.0f, int selectedPixel = -1, Scene *readback = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
                 const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -157,6 +157,13 @@ int main()
                     fromRegion:region mipmapLevel:0];
                 [presentation getBytes:&result.accumulated bytesPerRow:sizeof(simd_float4)
                     fromRegion:region mipmapLevel:0];
+                if (bounce && readback)
+                {
+                    [textures[7] getBytes:(*readback)[NextBounce].data() bytesPerRow:width * sizeof(simd_float4)
+                        fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                    [textures[8] getBytes:(*readback)[NextIndirect].data() bytesPerRow:width * sizeof(simd_float4)
+                        fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                }
                 return result;
             };
 
@@ -220,6 +227,30 @@ int main()
             near("wall above receiver-to-torch ray blocks direct light",
                 run(s, false, 0, 8.5f).bounce, {});
 
+            for (float scale : {8.0f, 255.0f})
+            {
+                const float dz = 32.0f / 255.0f * scale;
+                const float distance = std::sqrt(22.0f * 22.0f + dz * dz);
+                const float response = 0.9f * (dz / distance) /
+                    (1.0f + 6.0f * distance * distance / (64.0f * 64.0f));
+                const simd_float4 expected = {response, response * 0.5f, response * 0.25f, 1};
+                for (float normalZ : {1.0f, -1.0f})
+                {
+                    s = scene();
+                    // Height bytes 0 and 32 become world heights before reaching the shader.
+                    const float receiverZ = normalZ > 0 ? 0 : dz;
+                    s[Height][receiver] = {receiverZ, 1, 0, 0};
+                    s[Surface][receiver] = {receiverZ, 0, 0, normalZ};
+                    char name[96];
+                    std::snprintf(name, sizeof(name), "direct Lambertian RGB scale %.0f normal %+.0fZ", scale, normalZ);
+                    near(name, run(s, false, 0, receiverZ + normalZ * dz).bounce, expected);
+                    std::snprintf(name, sizeof(name), "direct equal height scale %.0f normal %+.0fZ", scale, normalZ);
+                    near(name, run(s, false, 0, receiverZ).bounce, {});
+                    std::snprintf(name, sizeof(name), "direct backface height scale %.0f normal %+.0fZ", scale, normalZ);
+                    near(name, run(s, false, 0, receiverZ - normalZ * dz).bounce, {});
+                }
+            }
+
             s = scene();
             Result clear = run(s, true);
             positive("indirect distant mutually facing radiance patch", clear.bounce);
@@ -229,6 +260,104 @@ int main()
             s = scene();
             s[Surface][receiver] = s[Surface][emitter] = {8, 0, 0, 1};
             near("indirect coplanar +Z surfaces do not exchange light", run(s, true).bounce, {});
+
+            simd_float4 diagonal[2];
+            for (int side : {1, -1})
+            {
+                s = scene();
+                s[Participation][emitter] = {};
+                s[PreviousBounce][emitter] = {};
+                const unsigned patch = int(receiver) + side * (int(width) + 1);
+                const float normal = side / std::sqrt(2.0f);
+                s[Surface][receiver] = {8, normal, normal, 0};
+                s[Surface][patch] = {8, -normal, -normal, 0};
+                s[Participation][patch] = {1, 1, 0, 0};
+                s[PreviousBounce][patch] = {1, 0.5f, 0.25f, 1};
+                diagonal[side > 0 ? 0 : 1] = run(s, true).bounce;
+            }
+            positive("indirect diagonal +(1,1) has energy", diagonal[0]);
+            positive("indirect diagonal -(1,1) has energy", diagonal[1]);
+            near("indirect mirrored diagonal energy matches", diagonal[1], diagonal[0]);
+
+            // A is a 3x3 patch so both stencil origins sample A -> B. C cannot see
+            // A's +X-facing radiance, but B faces both A and C and relays it.
+            Scene chain = scene();
+            chain[Participation][emitter] = {};
+            chain[PreviousBounce][emitter] = {};
+            constexpr unsigned relay = receiverY * width + 10;
+            chain[Surface][relay] = {8, -1, 0, 0};
+            chain[Participation][relay] = {1, 1, 0, 0};
+            for (unsigned y = 2; y <= 4; ++y)
+                for (unsigned x = 4; x <= 6; ++x)
+                {
+                    const unsigned patch = y * width + x;
+                    chain[Surface][patch] = {8, 1, 0, 0};
+                    chain[Participation][patch] = {1, 1, 0, 0};
+                    chain[PreviousBounce][patch] = {1, 0.5f, 0.25f, 1};
+                }
+            s = chain;
+            Image sum(width * height, simd_float4{});
+            simd_float4 oneBounce = {}, firstPeak = {}, previousPeak = {1, 0.5f, 0.25f, 0};
+            for (unsigned pass = 0; pass < 16; ++pass)
+            {
+                Result result = run(s, true, pass, 8, -1, &s);
+                simd_float4 peak = {};
+                bool accumulatedMatches = true, bounded = true;
+                for (unsigned pixel = 0; pixel < width * height; ++pixel)
+                {
+                    sum[pixel] += s[NextBounce][pixel];
+                    for (unsigned c = 0; c < 3; ++c)
+                    {
+                        const float value = s[NextBounce][pixel][c];
+                        bounded &= std::isfinite(value) && value >= 0 &&
+                            value <= previousPeak[c] * (0.9f * 0.95f) + 1e-7f;
+                        peak[c] = std::fmax(peak[c], value);
+                        accumulatedMatches &= std::isfinite(s[NextIndirect][pixel][c]) &&
+                            std::fabs(s[NextIndirect][pixel][c] - sum[pixel][c]) <=
+                                1e-6f + std::fabs(sum[pixel][c]) * 1e-5f;
+                    }
+                }
+                char name[96];
+                std::snprintf(name, sizeof(name), "chained pass %u full accumulation equals bounce sum", pass + 1);
+                check(name, accumulatedMatches, result.accumulated, sum[receiver]);
+                std::snprintf(name, sizeof(name), "chained pass %u white-albedo energy is bounded", pass + 1);
+                check(name, bounded, peak, previousPeak * (0.9f * 0.95f));
+                if (pass == 0)
+                {
+                    oneBounce = result.accumulated;
+                    firstPeak = peak;
+                    near("chained A cannot reach C in first bounce", result.bounce, {});
+                    positive("chained A reaches B in first bounce", s[NextBounce][relay]);
+                    for (unsigned y = 2; y <= 4; ++y)
+                        for (unsigned x = 4; x <= 6; ++x)
+                            near("chained initial seed is not copied into next bounce", s[NextBounce][y * width + x], {});
+                }
+                if (pass == 1)
+                    positive("chained A -> B -> C reaches C in second bounce", result.bounce);
+                previousPeak = peak;
+                // Feed only the last outgoing field, never the seed or accumulated light.
+                s[PreviousBounce].swap(s[NextBounce]);
+                s[PreviousIndirect].swap(s[NextIndirect]);
+            }
+            positive("chained sixteen bounces reach beyond one bounce",
+                s[PreviousIndirect][receiver] - oneBounce);
+            check("chained energy decays without reseeding", previousPeak.x < firstPeak.x * 0.001f &&
+                previousPeak.y < firstPeak.y * 0.001f && previousPeak.z < firstPeak.z * 0.001f,
+                previousPeak, firstPeak);
+            s[PreviousBounce].assign(width * height, simd_float4{});
+            Result exhausted = run(s, true, 16);
+            near("chained zero previous field cannot reseed light", exhausted.bounce, {});
+            near("chained zero previous field preserves accumulation", exhausted.accumulated, sum[receiver]);
+
+            s = chain;
+            s[Source][relay] = {0, 0, 0, 1};
+            run(s, true, 0, 8, -1, &s);
+            near("chained black B absorbs first bounce", s[NextBounce][relay], {});
+            s[PreviousBounce].swap(s[NextBounce]);
+            s[PreviousIndirect].swap(s[NextIndirect]);
+            Result absorbed = run(s, true, 1);
+            near("chained black B prevents second-order reach to C", absorbed.bounce, {});
+            near("chained black B leaves C accumulation dark", absorbed.accumulated, {});
 
             // Sparse GI samples are at 2, 6, 10, ...; these blockers are strictly between them.
             for (unsigned distance : {3u, 7u, 11u, 15u, 19u})

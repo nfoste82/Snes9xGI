@@ -232,7 +232,8 @@ kernel void remasterIndirectBounce(
 			for (uint lane = 0; lane < 3; lane++)
 			{
 				float lateralOffset = (float(lane) - 1.0) * float(distance) * angularStep / 3.0;
-				float2 samplePoint = float2(pixel) + direction * float(distance) + perpendicular * lateralOffset;
+				// Sample about the receiver center so opposite directions select mirrored pixels.
+				float2 samplePoint = float2(pixel) + 0.5 + direction * float(distance) + perpendicular * lateralOffset;
 				if (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height)
 					continue;
 				uint2 samplePixel = uint2(samplePoint);

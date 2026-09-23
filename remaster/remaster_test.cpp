@@ -117,6 +117,18 @@ int main ()
 	S9xRemasterTransformNormalForTileInstance(decodedFrame.tileInstances[0], normalX, normalY, normalZ);
 	assert(normalX == -0.6f && normalY == 0.8f && normalZ == 0.25f);
 	decodedFrame.tileInstances[0].vFlip = false;
+	RemasterFrame legacyFlipFrame;
+	legacyFlipFrame.schemaVersion = 7;
+	legacyFlipFrame.width = 2;
+	legacyFlipFrame.height = 2;
+	legacyFlipFrame.mainPixels.resize(4);
+	legacyFlipFrame.tileInstances.resize(1);
+	legacyFlipFrame.mainPixels[0] = { 0, 1, 63 };
+	legacyFlipFrame.mainPixels[1] = { 0, 1, 62 };
+	legacyFlipFrame.mainPixels[2] = { 0, 1, 55 };
+	legacyFlipFrame.mainPixels[3] = { 0, 1, 54 };
+	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
+	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
 	assert(decodedFrame.assetGroups.size() == 1);
 	assert(decodedFrame.assetMetadata.size() == 1);

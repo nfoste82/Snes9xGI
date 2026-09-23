@@ -125,6 +125,66 @@ struct RemasterFrame
 	std::vector<RemasterFrameLight> lights;
 };
 
+inline void S9xRemasterInferLegacyTileInstanceFlips (RemasterFrame &frame)
+{
+	if (frame.schemaVersion < 5 || frame.schemaVersion >= 8 || frame.tileInstances.empty())
+		return;
+	struct Evidence
+	{
+		std::array<int64_t, 8> rowScreenX;
+		std::array<int8_t, 8> rowTileX;
+		std::array<int64_t, 8> columnScreenY;
+		std::array<int8_t, 8> columnTileY;
+		bool hKnown = false;
+		bool vKnown = false;
+		Evidence ()
+		{
+			rowScreenX.fill(-1);
+			rowTileX.fill(-1);
+			columnScreenY.fill(-1);
+			columnTileY.fill(-1);
+		}
+	};
+	std::vector<Evidence> evidence(frame.tileInstances.size());
+	auto collect = [&] (const std::vector<RemasterFramePixel> &pixels) {
+		for (uint32_t y = 0; y < frame.height; y++)
+			for (uint32_t x = 0; x < frame.width; x++)
+			{
+				const RemasterFramePixel &pixel = pixels[static_cast<size_t>(y) * frame.width + x];
+				if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
+					continue;
+				const size_t instanceIndex = pixel.instanceId - 1;
+				Evidence &item = evidence[instanceIndex];
+				const int8_t tileX = pixel.tilePixel % 8;
+				const int8_t tileY = pixel.tilePixel / 8;
+				if (!item.hKnown && item.rowTileX[tileY] >= 0 && item.rowTileX[tileY] != tileX)
+				{
+					frame.tileInstances[instanceIndex].hFlip =
+						(static_cast<int64_t>(x) - item.rowScreenX[tileY]) * (tileX - item.rowTileX[tileY]) < 0;
+					item.hKnown = true;
+				}
+				else if (item.rowTileX[tileY] < 0)
+				{
+					item.rowScreenX[tileY] = x;
+					item.rowTileX[tileY] = tileX;
+				}
+				if (!item.vKnown && item.columnTileY[tileX] >= 0 && item.columnTileY[tileX] != tileY)
+				{
+					frame.tileInstances[instanceIndex].vFlip =
+						(static_cast<int64_t>(y) - item.columnScreenY[tileX]) * (tileY - item.columnTileY[tileX]) < 0;
+					item.vKnown = true;
+				}
+				else if (item.columnTileY[tileX] < 0)
+				{
+					item.columnScreenY[tileX] = y;
+					item.columnTileY[tileX] = tileY;
+				}
+			}
+	};
+	collect(frame.mainPixels);
+	collect(frame.subPixels);
+}
+
 namespace RemasterFrameSerialization
 {
 	inline bool ValidTileId (const RemasterTileContentId &tileId)
@@ -458,6 +518,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		if (pixel.instanceId > result.tileInstances.size() ||
 			(result.schemaVersion >= 5 && pixel.instanceId && pixel.tilePixel >= 64))
 			return false;
+	S9xRemasterInferLegacyTileInstanceFlips(result);
 	frame = std::move(result);
 	return true;
 }
