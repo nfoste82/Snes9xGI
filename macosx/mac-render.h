@@ -35,6 +35,7 @@ enum class RemasterLightingView : uint32_t
 	IndirectContribution,
 	Normal,
 	DirectAndIndirectContribution,
+	Emission,
 	Count
 };
 
@@ -43,7 +44,7 @@ void DeinitGraphics (void);
 void DrawFreezeDefrostScreen (uint8 *);
 bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
 	const std::vector<RemasterTileContentId> * = nullptr, bool lighting = false,
-	RemasterLightingView = RemasterLightingView::Composite);
+	RemasterLightingView = RemasterLightingView::Composite, bool asynchronous = false);
 void SetLiveRemasterPresentation (bool, RemasterLightingView);
 void GetGameDisplay (int *, int *);
 

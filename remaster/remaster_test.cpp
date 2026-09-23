@@ -49,6 +49,11 @@ int main ()
 	secondFrameAsset.tileId = { UINT64_C(0x1111111111111111), 1, 4 };
 	std::fill(secondFrameAsset.indices, secondFrameAsset.indices + 64, 3);
 	frame.assets.push_back(secondFrameAsset);
+	RemasterFrameArtworkColors frameArtwork;
+	frameArtwork.tileId = frameAsset.tileId;
+	frameArtwork.rgb555[9] = 0x4210;
+	frameArtwork.visiblePixels = UINT64_C(1) << 9;
+	frame.artworkColors.push_back(frameArtwork);
 	RemasterFrameAssetGroup frameGroup;
 	frameGroup.name = "animated_floor";
 	frameGroup.tileIds = { frameAsset.tileId, secondFrameAsset.tileId };
@@ -137,6 +142,10 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
+	assert(decodedFrame.schemaVersion == 13);
+	assert(decodedFrame.artworkColors.size() == 1);
+	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
+	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
 	assert(decodedFrame.assetGroups.size() == 1);
 	assert(decodedFrame.assetMetadata.size() == 1);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->materialSelectors[0] == "stone");
@@ -193,6 +202,7 @@ int main ()
 	assert(S9xRemasterFrameAssetGroupVariants(decodedFrame, "animated_floor").size() == 1);
 	RemasterFrame legacyFrame = frame;
 	legacyFrame.assetMetadata.clear();
+	legacyFrame.artworkColors.clear();
 	legacyFrame.assetGroups.clear();
 	legacyFrame.tileInstances.clear();
 	for (RemasterFramePixel &pixel : legacyFrame.mainPixels)
@@ -204,6 +214,8 @@ int main ()
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 5, legacyBytes.begin() + legacyScaleOffset + 9);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 4);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset, legacyBytes.begin() + legacyScaleOffset + 4);
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 4,
+		legacyBytes.begin() + legacyScaleOffset + 8);
 	legacyBytes[8] = 6;
 	const size_t legacyGroupCountOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size() + 4;
 	const size_t legacyPixelOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size() + 6 * 4 +
@@ -229,6 +241,9 @@ int main ()
 	RemasterFrame invalidIdFrame = frame;
 	invalidIdFrame.assets[0].tileId.bitDepth = 0;
 	assert(!S9xSerializeRemasterFrame(invalidIdFrame, secondFrameBytes));
+	RemasterFrame duplicateArtworkFrame = frame;
+	duplicateArtworkFrame.artworkColors.push_back(frameArtwork);
+	assert(!S9xSerializeRemasterFrame(duplicateArtworkFrame, secondFrameBytes));
 	frame.mainPixels.pop_back();
 	assert(!S9xSerializeRemasterFrame(frame, secondFrameBytes));
 
@@ -403,7 +418,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 12);
+	assert(decodedFrame.schemaVersion == 13);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
 	assert(decodedFrame.indirectRoughness == profile.indirectRoughness);
@@ -419,7 +434,99 @@ material = "wet_stone"
 	assert(decodedFrame.assetMetadata[0].emissionRgba[15] == 25);
 	assert(decodedFrame.assetMetadata[0].heightSampling == RemasterHeightSampling::Linear);
 	assert(decodedFrame.assetMetadata[0].directLightingOppositeFacing);
+	const RemasterFrameArtworkColors *capturedArtwork = S9xRemasterFrameArtworkColorsForTile(
+		decodedFrame, decodedFrame.tileInstances[0].tileId);
+	assert(capturedArtwork && (capturedArtwork->visiblePixels & UINT64_C(1)));
+	assert(capturedArtwork->rgb555[0] == screen[0]);
 	std::remove(framePath.c_str());
+
+	RemasterAnimationCapture animationCapture;
+	RemasterFrame animationFrame = decodedFrame;
+	animationFrame.width = 16;
+	animationFrame.height = 8;
+	animationFrame.originalRgb555.assign(128, 0);
+	animationFrame.mainPixels.assign(128, RemasterFramePixel());
+	animationFrame.subPixels.assign(128, RemasterFramePixel());
+	animationFrame.tileInstances.resize(2);
+	animationFrame.tileInstances[0].tileId = { 1, 1, 4 };
+	animationFrame.tileInstances[0].source = RemasterSourceType::Object;
+	animationFrame.tileInstances[1].tileId = { 10, 1, 4 };
+	animationFrame.tileInstances[1].source = RemasterSourceType::Object;
+	animationFrame.assets.clear();
+	animationFrame.artworkColors = { { { 1, 1, 4 }, {}, UINT64_C(1) },
+		{ { 10, 1, 4 }, {}, UINT64_C(1) } };
+	animationFrame.artworkColors[0].rgb555[0] = 0x001f;
+	animationFrame.artworkColors[1].rgb555[0] = 0x03e0;
+	for (size_t y = 0; y < 8; y++)
+		for (size_t x = 0; x < 16; x++)
+		{
+			animationFrame.mainPixels[y * 16 + x].instanceId = x < 8 ? 1 : 2;
+			animationFrame.mainPixels[y * 16 + x].tilePixel = static_cast<uint8_t>(y * 8 + x % 8);
+		}
+	S9xRemasterAddAnimationCaptureFrame(animationCapture, animationFrame);
+	animationFrame.tileInstances[0].tileId = { 2, 1, 4 };
+	animationFrame.tileInstances[1].tileId = { 20, 1, 4 };
+	animationFrame.artworkColors = { { { 2, 1, 4 }, {}, UINT64_C(1) },
+		{ { 20, 1, 4 }, {}, UINT64_C(1) } };
+	animationFrame.artworkColors[0].rgb555[0] = 0x7c00;
+	animationFrame.artworkColors[1].rgb555[0] = 0x4210;
+	S9xRemasterAddAnimationCaptureFrame(animationCapture, animationFrame);
+	RemasterFrame animationResult = S9xRemasterFinishAnimationCapture(std::move(animationCapture));
+	assert(animationResult.assetGroups.size() == decodedFrame.assetGroups.size() + 2);
+	assert(animationResult.tileInstances[0].assetGroup != animationResult.tileInstances[1].assetGroup);
+	assert(S9xRemasterFrameAssetGroupVariants(animationResult,
+		animationResult.tileInstances[0].assetGroup) ==
+		(std::vector<RemasterTileContentId> { { 1, 1, 4 }, { 2, 1, 4 } }));
+	assert(S9xRemasterFrameAssetGroupVariants(animationResult,
+		animationResult.tileInstances[1].assetGroup) ==
+		(std::vector<RemasterTileContentId> { { 10, 1, 4 }, { 20, 1, 4 } }));
+	assert(animationResult.artworkColors.size() == 4);
+	assert(S9xRemasterFrameArtworkColorsForTile(animationResult, { 2, 1, 4 })->rgb555[0] == 0x7c00);
+	assert(S9xRemasterFrameArtworkColorsForTile(animationResult, { 20, 1, 4 })->rgb555[0] == 0x4210);
+	assert(S9xSerializeRemasterFrame(animationResult, secondFrameBytes));
+	assert(S9xDeserializeRemasterFrame(secondFrameBytes, decodedFrame));
+	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, { 2, 1, 4 })->rgb555[0] == 0x7c00);
+	RemasterAnimationCapture classifiedAnimationCapture;
+	animationFrame.artworkColors.clear();
+	animationFrame.assetGroups = { { "misclassified", { { 50, 1, 4 }, { 60, 1, 4 } } } };
+	animationFrame.tileInstances.resize(2);
+	animationFrame.tileInstances[0].tileId = { 30, 1, 4 };
+	animationFrame.tileInstances[0].assetGroup.clear();
+	animationFrame.tileInstances[1].tileId = { 60, 1, 4 };
+	animationFrame.tileInstances[1].assetGroup = "misclassified";
+	animationFrame.mainPixels.assign(128, RemasterFramePixel());
+	for (size_t pixel = 0; pixel < 128; pixel++)
+		animationFrame.mainPixels[pixel].instanceId = pixel % 16 < 8 ? 1 : 2;
+	S9xRemasterAddAnimationCaptureFrame(classifiedAnimationCapture, animationFrame);
+	animationFrame.tileInstances[0].tileId = { 40, 1, 4 };
+	S9xRemasterAddAnimationCaptureFrame(classifiedAnimationCapture, animationFrame);
+	animationFrame.tileInstances[0].tileId = { 50, 1, 4 };
+	animationFrame.tileInstances[0].assetGroup = "misclassified";
+	S9xRemasterAddAnimationCaptureFrame(classifiedAnimationCapture, animationFrame);
+	RemasterFrame classifiedAnimationResult = S9xRemasterFinishAnimationCapture(
+		std::move(classifiedAnimationCapture));
+	assert(classifiedAnimationResult.tileInstances[0].assetGroup == "capture_animation_1");
+	assert(S9xRemasterFrameAssetGroupVariants(classifiedAnimationResult, "capture_animation_1") ==
+		(std::vector<RemasterTileContentId> { { 30, 1, 4 }, { 40, 1, 4 }, { 50, 1, 4 } }));
+	assert(S9xRemasterFrameAssetGroupVariants(classifiedAnimationResult, "misclassified") ==
+		(std::vector<RemasterTileContentId> { { 60, 1, 4 } }));
+	RemasterAnimationCapture replacedTileCapture;
+	animationFrame.assetGroups.clear();
+	animationFrame.tileInstances.resize(1);
+	animationFrame.tileInstances[0].tileId = { 70, 1, 4 };
+	animationFrame.tileInstances[0].tileNumber = 7;
+	animationFrame.tileInstances[0].assetGroup.clear();
+	animationFrame.mainPixels.assign(128, RemasterFramePixel());
+	for (size_t pixel = 0; pixel < 64; pixel++)
+		animationFrame.mainPixels[pixel].instanceId = 1;
+	S9xRemasterAddAnimationCaptureFrame(replacedTileCapture, animationFrame);
+	animationFrame.tileInstances[0].tileId = { 80, 1, 4 };
+	animationFrame.tileInstances[0].tileNumber = 8;
+	S9xRemasterAddAnimationCaptureFrame(replacedTileCapture, animationFrame);
+	RemasterFrame replacedTileResult = S9xRemasterFinishAnimationCapture(std::move(replacedTileCapture));
+	assert(replacedTileResult.assetGroups.empty());
+	assert(replacedTileResult.tileInstances[0].assetGroup.empty());
+
 	S9xRemasterRequestFrameCapture(framePath);
 	S9xRemasterBeginFrame(2, 2, 2, 1);
 	finalizedFrame.width = 99;

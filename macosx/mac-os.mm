@@ -362,6 +362,7 @@ static NSButton			*remasterCopyLayerButton;
 static NSButton			*remasterPasteLayerButton;
 static NSButton			*remasterCopyTileButton;
 static NSButton			*remasterPasteTileButton;
+static NSButton			*remasterApplyTileToVariantsButton;
 static NSButton			*remasterSaveProfileButton;
 static std::vector<RemasterTileContentId> remasterVariants;
 static size_t			remasterVariantIndex;
@@ -585,6 +586,9 @@ enum RemasterHeightPreviewMode
 	RemasterHeightPreviewNormals
 };
 
+static std::array<bool, 64> RemasterVisibleTileColors (const RemasterFrame &frame,
+	const RemasterTileContentId &tileId, std::array<std::array<uint8_t, 3>, 64> &colors);
+
 static NSString *RemasterLightingViewName (RemasterLightingView view)
 {
 	switch (view)
@@ -597,6 +601,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::IndirectContribution: return @"Indirect Light";
 	case RemasterLightingView::Normal: return @"Normals";
 	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
+	case RemasterLightingView::Emission: return @"Emission";
 	case RemasterLightingView::Composite:
 	default: return @"Composite";
 	}
@@ -623,8 +628,9 @@ static float SampleRemasterHeight (const std::array<uint8_t, 64> &height,
 static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, const RemasterFrame &frame,
 	const RemasterTileContentId &tileId, int selectedPixel)
 {
-	const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(frame, tileId);
-	if (occurrences.empty())
+	std::array<std::array<uint8_t, 3>, 64> visibleColors = {};
+	const std::array<bool, 64> visible = RemasterVisibleTileColors(frame, tileId, visibleColors);
+	if (std::find(visible.begin(), visible.end(), true) == visible.end())
 		return false;
 	const bool hadAsset = profile.assets.count(tileId);
 	RemasterAssetMetadata &metadata = profile.assets[tileId];
@@ -633,32 +639,17 @@ static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, cons
 	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(frame, tileId);
 	if (!hadLayer && captured && captured->hasEmission)
 		metadata.emissionRgba = captured->emissionRgba;
-	std::array<uint32_t, 64> red = {};
-	std::array<uint32_t, 64> green = {};
-	std::array<uint32_t, 64> blue = {};
-	std::array<uint32_t, 64> count = {};
-	for (uint32_t occurrence : occurrences)
-	{
-		const RemasterFramePixel &pixel = frame.mainPixels[occurrence];
-		if (pixel.tilePixel >= 64)
-			continue;
-		const uint16_t color = frame.originalRgb555[occurrence];
-		red[pixel.tilePixel] += (((color >> 10) & 31) * 527 + 23) >> 6;
-		green[pixel.tilePixel] += (((color >> 5) & 31) * 527 + 23) >> 6;
-		blue[pixel.tilePixel] += ((color & 31) * 527 + 23) >> 6;
-		count[pixel.tilePixel]++;
-	}
 	bool changed = false;
 	bool imported = false;
 	for (size_t pixel = 0; pixel < 64; pixel++)
 	{
-		if (!count[pixel] || (selectedPixel >= 0 && pixel != static_cast<size_t>(selectedPixel)))
+		if (!visible[pixel] || (selectedPixel >= 0 && pixel != static_cast<size_t>(selectedPixel)))
 			continue;
 		imported = true;
 		const size_t offset = pixel * 4;
-		const uint8_t newRed = static_cast<uint8_t>(red[pixel] / count[pixel]);
-		const uint8_t newGreen = static_cast<uint8_t>(green[pixel] / count[pixel]);
-		const uint8_t newBlue = static_cast<uint8_t>(blue[pixel] / count[pixel]);
+		const uint8_t newRed = visibleColors[pixel][0];
+		const uint8_t newGreen = visibleColors[pixel][1];
+		const uint8_t newBlue = visibleColors[pixel][2];
 		if (metadata.emissionRgba[offset] != newRed || metadata.emissionRgba[offset + 1] != newGreen ||
 			metadata.emissionRgba[offset + 2] != newBlue)
 		{
@@ -677,6 +668,49 @@ static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, cons
 	metadata.hasEmission = true;
 	profile.schemaVersion = std::max<uint32_t>(profile.schemaVersion, 3);
 	return changed || !hadLayer;
+}
+
+static std::array<bool, 64> RemasterVisibleTileColors (const RemasterFrame &frame,
+	const RemasterTileContentId &tileId, std::array<std::array<uint8_t, 3>, 64> &colors)
+{
+	if (const RemasterFrameArtworkColors *artwork = S9xRemasterFrameArtworkColorsForTile(frame, tileId))
+	{
+		std::array<bool, 64> visible = {};
+		for (size_t pixel = 0; pixel < 64; pixel++)
+			if (artwork->visiblePixels & (UINT64_C(1) << pixel))
+			{
+				const uint16_t color = artwork->rgb555[pixel];
+				colors[pixel] = {{ static_cast<uint8_t>((((color >> 10) & 31) * 527 + 23) >> 6),
+					static_cast<uint8_t>((((color >> 5) & 31) * 527 + 23) >> 6),
+					static_cast<uint8_t>(((color & 31) * 527 + 23) >> 6) }};
+				visible[pixel] = true;
+			}
+		return visible;
+	}
+	std::array<uint32_t, 64> red = {};
+	std::array<uint32_t, 64> green = {};
+	std::array<uint32_t, 64> blue = {};
+	std::array<uint32_t, 64> count = {};
+	for (uint32_t occurrence : S9xRemasterFrameOccurrences(frame, tileId))
+	{
+		const RemasterFramePixel &pixel = frame.mainPixels[occurrence];
+		if (pixel.tilePixel >= 64)
+			continue;
+		const uint16_t color = frame.originalRgb555[occurrence];
+		red[pixel.tilePixel] += (((color >> 10) & 31) * 527 + 23) >> 6;
+		green[pixel.tilePixel] += (((color >> 5) & 31) * 527 + 23) >> 6;
+		blue[pixel.tilePixel] += ((color & 31) * 527 + 23) >> 6;
+		count[pixel.tilePixel]++;
+	}
+	std::array<bool, 64> visible = {};
+	for (size_t pixel = 0; pixel < 64; pixel++)
+		if (count[pixel])
+		{
+			colors[pixel] = {{ static_cast<uint8_t>(red[pixel] / count[pixel]),
+				static_cast<uint8_t>(green[pixel] / count[pixel]), static_cast<uint8_t>(blue[pixel] / count[pixel]) }};
+			visible[pixel] = true;
+		}
+	return visible;
 }
 
 static void SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterReplayFrame)
@@ -3598,6 +3632,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)pasteRemasterLayer:(id)sender;
 - (void)copyRemasterTile:(id)sender;
 - (void)pasteRemasterTile:(id)sender;
+- (void)applyRemasterTileToVariants:(id)sender;
 - (void)saveRemasterProfile:(id)sender;
 - (void)showRemasterProfileSettings;
 - (void)changeRemasterBounceCount:(id)sender;
@@ -4116,7 +4151,8 @@ void QuitWithFatalError ( NSString *message)
 		return nil;
 
 	NSURL *file = [directory URLByAppendingPathComponent:@"frame.s9xrmf"];
-	S9xRemasterRequestFrameCapture(file.path.UTF8String);
+	// Two seconds covers slow ALTTP tile animation without creating an unbounded capture.
+	S9xRemasterRequestFrameCapture(file.path.UTF8String, 120);
 	return file.path;
 }
 
@@ -4509,8 +4545,9 @@ void QuitWithFatalError ( NSString *message)
 			@selector(copyRemasterTile:), @selector(pasteRemasterTile:) };
 		for (size_t buttonIndex = 0; buttonIndex < 4; buttonIndex++)
 		{
-			NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(244 + buttonIndex * 124, 267, 118, 28)];
+			NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(168 + buttonIndex * 96, 267, 90, 28)];
 			button.title = clipboardTitles[buttonIndex];
+			button.font = [NSFont systemFontOfSize:10];
 			button.bezelStyle = NSBezelStyleRounded;
 			button.target = self;
 			button.action = clipboardActions[buttonIndex];
@@ -4524,6 +4561,14 @@ void QuitWithFatalError ( NSString *message)
 			else
 				remasterPasteTileButton = button;
 		}
+		remasterApplyTileToVariantsButton = [[NSButton alloc] initWithFrame:NSMakeRect(552, 267, 188, 28)];
+		remasterApplyTileToVariantsButton.title = @"Apply Frame to Other Frames";
+		remasterApplyTileToVariantsButton.font = [NSFont systemFontOfSize:10];
+		remasterApplyTileToVariantsButton.bezelStyle = NSBezelStyleRounded;
+		remasterApplyTileToVariantsButton.target = self;
+		remasterApplyTileToVariantsButton.action = @selector(applyRemasterTileToVariants:);
+		remasterApplyTileToVariantsButton.toolTip = @"Copy every metadata layer and tile option from the current frame to the other frames.";
+		[contentView addSubview:remasterApplyTileToVariantsButton];
 		remasterSaveProfileButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 45, 128, 30)];
 		remasterSaveProfileButton.title = @"Save Profile";
 		remasterSaveProfileButton.bezelStyle = NSBezelStyleRounded;
@@ -4579,7 +4624,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
 	remasterVariants.clear();
-	if (instance)
+	if (instance && instance->assetGroup.compare(0, 18, "capture_animation_") == 0)
 	{
 		remasterVariants = S9xRemasterFrameAssetGroupVariants(remasterReplayFrame, instance->assetGroup);
 		if (remasterVariants.empty())
@@ -4590,10 +4635,18 @@ void QuitWithFatalError ( NSString *message)
 	}
 	else
 	{
-		remasterTilePreview.image = nil;
-		remasterVariantLabel.stringValue = @"No decoded tile";
-		remasterPreviousVariantButton.enabled = NO;
-		remasterNextVariantButton.enabled = NO;
+		if (instance)
+		{
+			remasterVariants.push_back(instance->tileId);
+			[self showRemasterVariantAtIndex:0];
+		}
+		else
+		{
+			remasterTilePreview.image = nil;
+			remasterVariantLabel.stringValue = @"No decoded tile";
+			remasterPreviousVariantButton.enabled = NO;
+			remasterNextVariantButton.enabled = NO;
+		}
 	}
 	[remasterInspectorPanel orderFront:nil];
 	return YES;
@@ -4653,23 +4706,16 @@ void QuitWithFatalError ( NSString *message)
 	const bool canRender = asset != nullptr || capturedMetadata != nullptr || remasterEditingProfileLoaded;
 	std::array<uint8_t, 64 * 3> visibleColors = {};
 	std::array<uint32_t, 64> visibleColorCounts = {};
-	for (uint32_t occurrence : S9xRemasterFrameOccurrences(remasterReplayFrame, remasterSelectedTile))
-	{
-		const RemasterFramePixel &visiblePixel = remasterReplayFrame.mainPixels[occurrence];
-		if (visiblePixel.tilePixel >= 64)
-			continue;
-		const uint16_t color = remasterReplayFrame.originalRgb555[occurrence];
-		const size_t colorOffset = visiblePixel.tilePixel * 3;
-		const uint32_t count = ++visibleColorCounts[visiblePixel.tilePixel];
-		const uint8_t components[3] = {
-			static_cast<uint8_t>((((color >> 10) & 31) * 527 + 23) >> 6),
-			static_cast<uint8_t>((((color >> 5) & 31) * 527 + 23) >> 6),
-			static_cast<uint8_t>(((color & 31) * 527 + 23) >> 6)
-		};
-		for (size_t component = 0; component < 3; component++)
-			visibleColors[colorOffset + component] = static_cast<uint8_t>(
-				(visibleColors[colorOffset + component] * (count - 1) + components[component]) / count);
-	}
+	std::array<std::array<uint8_t, 3>, 64> artworkColors = {};
+	const std::array<bool, 64> artworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
+		remasterSelectedTile, artworkColors);
+	for (size_t source = 0; source < 64; source++)
+		if (artworkVisible[source])
+		{
+			visibleColorCounts[source] = 1;
+			for (size_t component = 0; component < 3; component++)
+				visibleColors[source * 3 + component] = artworkColors[source][component];
+		}
 	if (canRender)
 	{
 		const NSInteger size = 128;
@@ -4684,6 +4730,9 @@ void QuitWithFatalError ( NSString *message)
 			{
 				const size_t source = (y / 16) * 8 + x / 16;
 				const uint8_t paletteIndex = asset ? asset->indices[source] : 0;
+				const uint8_t decodedArtwork = paletteIndex ?
+					static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
+					(((x / 8) + (y / 8)) & 1 ? 28 : 42);
 				uint8_t *pixel = pixels + (y * size + x) * 4;
 				if (layer == RemasterEditorMaterial && hasMaterials)
 				{
@@ -4703,6 +4752,10 @@ void QuitWithFatalError ( NSString *message)
 						pixel[2] = 64 + ((hash >> 16) & 127);
 					}
 				}
+				else if (layer == RemasterEditorMaterial)
+				{
+					pixel[0] = pixel[1] = pixel[2] = decodedArtwork;
+				}
 				else if (layer == RemasterEditorOcclusion)
 				{
 					const uint8_t coverage = hasOcclusion ? (editableMetadata && editableMetadata->hasOcclusion ?
@@ -4710,15 +4763,13 @@ void QuitWithFatalError ( NSString *message)
 					const bool hasArtworkColor = visibleColorCounts[source] != 0;
 					for (size_t component = 0; component < 3; component++)
 					{
-						const uint8_t artwork = hasArtworkColor ? visibleColors[source * 3 + component] :
-							(((x / 8) + (y / 8)) & 1 ? 48 : 72);
+						const uint8_t artwork = hasArtworkColor ? visibleColors[source * 3 + component] : decodedArtwork;
 						pixel[component] = static_cast<uint8_t>((artwork * (255 - coverage) + coverage * coverage) / 255);
 					}
 				}
 				else if (layer == RemasterEditorHeight)
 				{
-					const bool showArtwork = remasterHeightArtworkVisibleButton.state == NSControlStateValueOn &&
-						visibleColorCounts[source];
+					const bool showArtwork = remasterHeightArtworkVisibleButton.state == NSControlStateValueOn && asset;
 					const bool showHeight = remasterHeightDataVisibleButton.state == NSControlStateValueOn && height;
 					uint8_t overlay[3] = {};
 					if (showHeight)
@@ -4746,7 +4797,8 @@ void QuitWithFatalError ( NSString *message)
 					}
 					for (size_t component = 0; component < 3; component++)
 					{
-						const uint8_t artwork = showArtwork ? visibleColors[source * 3 + component] : 0;
+						const uint8_t artwork = showArtwork ? (visibleColorCounts[source] ?
+							visibleColors[source * 3 + component] : decodedArtwork) : 0;
 						pixel[component] = showArtwork && showHeight ? static_cast<uint8_t>((artwork + overlay[component]) / 2) :
 							(showHeight ? overlay[component] : artwork);
 					}
@@ -4788,12 +4840,13 @@ void QuitWithFatalError ( NSString *message)
 					const bool hasArtworkColor = showArtwork && visibleColorCounts[source];
 					for (size_t component = 0; component < 3; component++)
 					{
-						const float artworkValue = hasArtworkColor ? visibleColors[source * 3 + component] : 0.0f;
+						const float artworkValue = hasArtworkColor ? visibleColors[source * 3 + component] :
+							(showArtwork && asset ? decodedArtwork : 0.0f);
 						const float emissionValue = emission ? (*emission)[emissionOffset + component] *
 							((*emission)[emissionOffset + 3] / 25.0f) : 0.0f;
 						pixel[component] = static_cast<uint8_t>(std::min(255.0f, artworkValue + emissionValue));
 					}
-					if (!hasArtworkColor && !emission)
+					if (!hasArtworkColor && !(showArtwork && asset) && !emission)
 					{
 						pixel[0] = ((x / 8) + (y / 8)) & 1 ? 48 : 72;
 						pixel[1] = 28;
@@ -4802,9 +4855,7 @@ void QuitWithFatalError ( NSString *message)
 				}
 				else if (layer == RemasterEditorArtwork)
 				{
-					const uint8_t value = paletteIndex ? static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
-						(((x / 8) + (y / 8)) & 1 ? 28 : 42);
-					pixel[0] = pixel[1] = pixel[2] = value;
+					pixel[0] = pixel[1] = pixel[2] = decodedArtwork;
 				}
 				else
 				{
@@ -4859,13 +4910,13 @@ void QuitWithFatalError ( NSString *message)
 	}
 	remasterOppositeFacingDirectButton.state = oppositeFacingMixed ? NSControlStateValueMixed :
 		(oppositeFacingDirect ? NSControlStateValueOn : NSControlStateValueOff);
-	NSString *layerStatus = [NSString stringWithFormat:@"material %@, occlusion %@, height %@ (%@), normal %@, emission %@%@%@",
+	NSString *layerStatus = [NSString stringWithFormat:@"metadata: material %@, occlusion %@, height %@ (%@), normal %@, emission %@%@%@",
 		hasMaterials ? @"yes" : @"no", hasOcclusion ? @"yes" : @"no", hasHeight ? @"yes" : @"no",
 		sampling == RemasterHeightSampling::Linear ? @"linear" : @"nearest", hasNormals ? @"yes" : @"no",
 		hasEmission ? @"yes" : @"no",
 		remasterEditingProfileDirty ? @", unsaved" : @"",
 		remasterEditingProfileLoaded ? @"" : @"\nRead only; load profile to edit"];
-	remasterVariantLabel.stringValue = [NSString stringWithFormat:@"Variant %lu of %lu\nv%u:%ubpp:%016llx\n%@, %lu visible pixels%@\n%@",
+	remasterVariantLabel.stringValue = [NSString stringWithFormat:@"Frame %lu of %lu\nv%u:%ubpp:%016llx\n%@, %lu visible pixels%@\n%@",
 		static_cast<unsigned long>(index + 1), static_cast<unsigned long>(remasterVariants.size()),
 		static_cast<unsigned>(remasterSelectedTile.hashVersion), static_cast<unsigned>(remasterSelectedTile.bitDepth),
 		static_cast<unsigned long long>(remasterSelectedTile.hash),
@@ -5074,6 +5125,58 @@ void QuitWithFatalError ( NSString *message)
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)applyRemasterTileToVariants:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterVariants.size() < 2)
+		return;
+	const RemasterAssetMetadata sourceMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
+	if (!RemasterMetadataHasData(sourceMetadata))
+		return;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	std::array<std::array<uint8_t, 3>, 64> sourceArtwork = {};
+	const std::array<bool, 64> sourceArtworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
+		remasterSelectedTile, sourceArtwork);
+	for (const RemasterTileContentId &tileId : remasterVariants)
+	{
+		RemasterAssetMetadata destination = sourceMetadata;
+		destination.tileId = tileId;
+		if (sourceMetadata.hasEmission && !(tileId == remasterSelectedTile))
+		{
+			std::array<std::array<uint8_t, 3>, 64> destinationArtwork = {};
+			const std::array<bool, 64> destinationArtworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
+				tileId, destinationArtwork);
+			for (size_t pixel = 0; pixel < 64; pixel++)
+			{
+				const size_t offset = pixel * 4;
+				if (sourceArtworkVisible[pixel] && destinationArtworkVisible[pixel] &&
+					sourceMetadata.emissionRgba[offset] == sourceArtwork[pixel][0] &&
+					sourceMetadata.emissionRgba[offset + 1] == sourceArtwork[pixel][1] &&
+					sourceMetadata.emissionRgba[offset + 2] == sourceArtwork[pixel][2])
+				{
+					// Artwork-colored emission tracks each frame's artwork; only its intensity is shared.
+					destination.emissionRgba[offset] = destinationArtwork[pixel][0];
+					destination.emissionRgba[offset + 1] = destinationArtwork[pixel][1];
+					destination.emissionRgba[offset + 2] = destinationArtwork[pixel][2];
+					destination.emissionRgba[offset + 3] = sourceMetadata.emissionRgba[offset + 3];
+				}
+			}
+		}
+		remasterEditingProfile.assets[tileId] = std::move(destination);
+	}
+	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion,
+		RemasterMetadataSchemaVersion(sourceMetadata));
+	std::string current;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics) || current == before)
+		return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Apply Frame to Other Frames"];
+	remasterEditingProfileDirty = current != remasterSavedProfileText;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)setRemasterEmissionFromVisibleTile:(id)sender
 {
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() ||
@@ -5208,6 +5311,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterPasteLayerButton.enabled = editable && layer != RemasterEditorArtwork && RemasterClipboardAvailable(layer);
 	remasterCopyTileButton.enabled = !remasterVariants.empty();
 	remasterPasteTileButton.enabled = editable && RemasterClipboardAvailable(-1);
+	remasterApplyTileToVariantsButton.enabled = editable && remasterVariants.size() > 1 &&
+		RemasterMetadataHasData(EffectiveRemasterMetadata(remasterSelectedTile));
 	if (remasterValueLabel && (layer == RemasterEditorOcclusion || layer == RemasterEditorHeight))
 	{
 		if (!remasterTilePixelSelected)

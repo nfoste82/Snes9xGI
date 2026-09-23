@@ -116,6 +116,9 @@ struct RemasterState
 	std::string activeInventoryPath;
 	std::string requestedFramePath;
 	std::string activeFramePath;
+	RemasterAnimationCapture animationCapture;
+	uint32_t requestedFrameCount = 1;
+	uint32_t activeFrameCount = 0;
 	std::map<uint64_t, ObservedTile> observedTiles;
 	std::map<ProfileMatchKey, RemasterProfileMatch> profileMatchCache;
 	std::vector<RemasterFrameTileInstance> tileInstances;
@@ -211,6 +214,8 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.activeFramePath = std::move(state.requestedFramePath);
 			state.requestedFramePath.clear();
 			state.frameCaptureActive = true;
+			state.activeFrameCount = state.requestedFrameCount;
+			state.animationCapture = RemasterAnimationCapture();
 			state.capturePitch = pitch;
 			state.captureWidth = width;
 			state.captureHeight = height;
@@ -220,6 +225,13 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.drawContexts = 0;
 			state.tileCacheVisits = 0;
 		}
+	}
+	if (state.frameCaptureActive)
+	{
+		state.observedTiles.clear();
+		state.hashCollisions = 0;
+		state.drawContexts = 0;
+		state.tileCacheVisits = 0;
 	}
 	if (state.liveFramesActive)
 	{
@@ -482,11 +494,12 @@ inline void S9xRemasterRequestTileInventory (const std::string &path)
 	state.requestedInventoryPath = path;
 }
 
-inline void S9xRemasterRequestFrameCapture (const std::string &path)
+inline void S9xRemasterRequestFrameCapture (const std::string &path, uint32_t frameCount = 1)
 {
 	RemasterState &state = S9xRemasterState();
 	std::lock_guard<std::mutex> lock(state.inventoryMutex);
 	state.requestedFramePath = path;
+	state.requestedFrameCount = std::max<uint32_t>(1, frameCount);
 }
 
 inline void S9xRemasterSetLiveFramesEnabled (bool enabled)
@@ -615,6 +628,44 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		result.materials.push_back(material);
 	}
 	result.tileInstances = state.tileInstances;
+	struct ArtworkAccumulator
+	{
+		std::array<uint32_t, 64> red = {};
+		std::array<uint32_t, 64> green = {};
+		std::array<uint32_t, 64> blue = {};
+		std::array<uint32_t, 64> count = {};
+	};
+	std::map<RemasterTileContentId, ArtworkAccumulator> artwork;
+	if (state.frameCaptureActive)
+	{
+		for (size_t offset = 0; offset < result.mainPixels.size(); offset++)
+		{
+			const RemasterFramePixel &pixel = result.mainPixels[offset];
+			if (!pixel.instanceId || pixel.instanceId > result.tileInstances.size() || pixel.tilePixel >= 64)
+				continue;
+			ArtworkAccumulator &samples = artwork[result.tileInstances[pixel.instanceId - 1].tileId];
+			const uint16_t color = result.originalRgb555[offset];
+			samples.red[pixel.tilePixel] += (color >> 10) & 31;
+			samples.green[pixel.tilePixel] += (color >> 5) & 31;
+			samples.blue[pixel.tilePixel] += color & 31;
+			samples.count[pixel.tilePixel]++;
+		}
+		for (const auto &entry : artwork)
+		{
+			RemasterFrameArtworkColors colors;
+			colors.tileId = entry.first;
+			for (size_t pixel = 0; pixel < 64; pixel++)
+			{
+				const uint32_t count = entry.second.count[pixel];
+				if (!count)
+					continue;
+				colors.rgb555[pixel] = static_cast<uint16_t>(((entry.second.red[pixel] / count) << 10) |
+					((entry.second.green[pixel] / count) << 5) | (entry.second.blue[pixel] / count));
+				colors.visiblePixels |= UINT64_C(1) << pixel;
+			}
+			result.artworkColors.push_back(colors);
+		}
+	}
 	frame = std::move(result);
 	return true;
 }
@@ -779,10 +830,20 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	}
 
 	RemasterFrame frame;
-	if (S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight))
+	const bool frameFinalized = S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight);
+	if (frameFinalized)
 	{
-		if (state.frameCaptureActive && S9xWriteRemasterFrame(frame, state.activeFramePath))
-			result |= RemasterCaptureFrame;
+		if (state.frameCaptureActive)
+		{
+			S9xRemasterAddAnimationCaptureFrame(state.animationCapture, frame);
+			if (state.animationCapture.frameCount >= state.activeFrameCount)
+			{
+				RemasterFrame captured = S9xRemasterFinishAnimationCapture(std::move(state.animationCapture));
+				if (S9xWriteRemasterFrame(captured, state.activeFramePath))
+					result |= RemasterCaptureFrame;
+				state.frameCaptureActive = false;
+			}
+		}
 		if (completedFrame)
 			*completedFrame = frame;
 		if (state.liveFramesActive)
@@ -791,7 +852,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			state.completedFrameAvailable = true;
 		}
 	}
-	state.frameCaptureActive = false;
+	else if (state.frameCaptureActive)
+	{
+		state.frameCaptureActive = false;
+		state.animationCapture = RemasterAnimationCapture();
+	}
 	return result;
 }
 

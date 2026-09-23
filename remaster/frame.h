@@ -14,10 +14,13 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 12;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 13;
 
 struct RemasterFramePixel
 {
@@ -30,6 +33,13 @@ struct RemasterFrameAsset
 {
 	RemasterTileContentId tileId;
 	uint8_t indices[64] = {};
+};
+
+struct RemasterFrameArtworkColors
+{
+	RemasterTileContentId tileId;
+	std::array<uint16_t, 64> rgb555 = {};
+	uint64_t visiblePixels = 0;
 };
 
 struct RemasterFrameAssetGroup
@@ -122,12 +132,116 @@ struct RemasterFrame
 	std::vector<RemasterFramePixel> mainPixels;
 	std::vector<RemasterFramePixel> subPixels;
 	std::vector<RemasterFrameAsset> assets;
+	std::vector<RemasterFrameArtworkColors> artworkColors;
 	std::vector<RemasterFrameAssetGroup> assetGroups;
 	std::vector<RemasterFrameAssetMetadata> assetMetadata;
 	std::vector<RemasterFrameMaterial> materials;
 	std::vector<RemasterFrameTileInstance> tileInstances;
 	std::vector<RemasterFrameLight> lights;
 };
+
+struct RemasterAnimationTrackKey
+{
+	RemasterSourceType source = RemasterSourceType::Backdrop;
+	uint8_t sourceIndex = 0;
+	uint16_t tileNumber = 0;
+	uint16_t cellX = 0;
+	uint16_t cellY = 0;
+
+	bool operator< (const RemasterAnimationTrackKey &other) const
+	{
+		return std::tie(source, sourceIndex, tileNumber, cellX, cellY) <
+			std::tie(other.source, other.sourceIndex, other.tileNumber, other.cellX, other.cellY);
+	}
+};
+
+struct RemasterAnimationCapture
+{
+	RemasterFrame representativeFrame;
+	std::map<RemasterAnimationTrackKey, std::vector<RemasterTileContentId>> tracks;
+	uint32_t frameCount = 0;
+};
+
+inline bool S9xRemasterFrameHasPixelData (const RemasterFrame &, uint32_t, uint32_t);
+
+inline void S9xRemasterAddAnimationCaptureFrame (RemasterAnimationCapture &capture, const RemasterFrame &frame)
+{
+	if (!S9xRemasterFrameHasPixelData(frame, frame.width, frame.height))
+		return;
+	if (!capture.frameCount)
+		capture.representativeFrame = frame;
+	else if (frame.width != capture.representativeFrame.width || frame.height != capture.representativeFrame.height)
+		return;
+
+	std::set<RemasterTileContentId> capturedAssets;
+	for (const RemasterFrameAsset &asset : capture.representativeFrame.assets)
+		capturedAssets.insert(asset.tileId);
+	for (const RemasterFrameAsset &asset : frame.assets)
+		if (capturedAssets.insert(asset.tileId).second)
+			capture.representativeFrame.assets.push_back(asset);
+	std::set<RemasterTileContentId> capturedArtworkColors;
+	for (const RemasterFrameArtworkColors &artwork : capture.representativeFrame.artworkColors)
+		capturedArtworkColors.insert(artwork.tileId);
+	for (const RemasterFrameArtworkColors &artwork : frame.artworkColors)
+		if (capturedArtworkColors.insert(artwork.tileId).second)
+			capture.representativeFrame.artworkColors.push_back(artwork);
+	std::set<RemasterTileContentId> capturedMetadata;
+	for (const RemasterFrameAssetMetadata &metadata : capture.representativeFrame.assetMetadata)
+		capturedMetadata.insert(metadata.tileId);
+	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+		if (capturedMetadata.insert(metadata.tileId).second)
+			capture.representativeFrame.assetMetadata.push_back(metadata);
+
+	std::vector<uint32_t> minimumX(frame.tileInstances.size(), UINT32_MAX);
+	std::vector<uint32_t> minimumY(frame.tileInstances.size(), UINT32_MAX);
+	for (uint32_t y = 0; y < frame.height; y++)
+		for (uint32_t x = 0; x < frame.width; x++)
+		{
+			const RemasterFramePixel &pixel = frame.mainPixels[static_cast<size_t>(y) * frame.width + x];
+			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size())
+				continue;
+			const size_t instance = pixel.instanceId - 1;
+			minimumX[instance] = std::min(minimumX[instance], x);
+			minimumY[instance] = std::min(minimumY[instance], y);
+		}
+	for (size_t i = 0; i < frame.tileInstances.size(); i++)
+	{
+		if (minimumX[i] == UINT32_MAX || minimumY[i] == UINT32_MAX)
+			continue;
+		const RemasterFrameTileInstance &instance = frame.tileInstances[i];
+		const RemasterAnimationTrackKey key = { instance.source, instance.sourceIndex, instance.tileNumber,
+			static_cast<uint16_t>(minimumX[i] / 8), static_cast<uint16_t>(minimumY[i] / 8) };
+		std::vector<RemasterTileContentId> &variants = capture.tracks[key];
+		if (std::find(variants.begin(), variants.end(), instance.tileId) == variants.end())
+			variants.push_back(instance.tileId);
+	}
+	capture.frameCount++;
+}
+
+inline RemasterFrame S9xRemasterFinishAnimationCapture (RemasterAnimationCapture capture)
+{
+	RemasterFrame &frame = capture.representativeFrame;
+	std::set<std::vector<RemasterTileContentId>> emittedGroups;
+	uint32_t groupNumber = 1;
+	for (const auto &entry : capture.tracks)
+	{
+		const std::vector<RemasterTileContentId> &variants = entry.second;
+		if (variants.size() < 2 || !emittedGroups.insert(variants).second)
+			continue;
+		for (RemasterFrameAssetGroup &authoredGroup : frame.assetGroups)
+			for (const RemasterTileContentId &variant : variants)
+				authoredGroup.tileIds.erase(std::remove(authoredGroup.tileIds.begin(),
+					authoredGroup.tileIds.end(), variant), authoredGroup.tileIds.end());
+		RemasterFrameAssetGroup group;
+		group.name = "capture_animation_" + std::to_string(groupNumber++);
+		group.tileIds = variants;
+		frame.assetGroups.push_back(group);
+		for (RemasterFrameTileInstance &instance : frame.tileInstances)
+			if (std::find(variants.begin(), variants.end(), instance.tileId) != variants.end())
+				instance.assetGroup = group.name;
+	}
+	return std::move(frame);
+}
 
 inline bool S9xRemasterFrameHasPixelData (const RemasterFrame &frame, uint32_t width, uint32_t height)
 {
@@ -348,6 +462,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	input.offset = sizeof(magic);
 	RemasterFrame result;
 	uint32_t assetCount = 0;
+	uint32_t artworkColorCount = 0;
 	uint32_t groupCount = 0;
 	uint32_t metadataCount = 0;
 	uint32_t materialCount = 0;
@@ -364,6 +479,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		(result.schemaVersion >= 12 && (!input.ReadFloat(result.originalSceneContribution) ||
 			!input.ReadU8(result.samplesPerFrame) || !input.ReadU8(sampleAccumulation))) ||
 		!input.ReadU32(assetCount) ||
+		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
@@ -379,7 +495,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	result.sampleAccumulation = sampleAccumulation != 0;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
-	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 || groupCount > bytes.size() / 4 ||
+	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 ||
+		artworkColorCount > bytes.size() / 146 || groupCount > bytes.size() / 4 ||
 		metadataCount > bytes.size() / 12 || metadataCount > 16384 ||
 		materialCount > bytes.size() || instanceCount > bytes.size() / 25 || lightCount > bytes.size() / 32)
 		return false;
@@ -407,6 +524,17 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			return false;
 		std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + 64, asset.indices);
 		input.offset += 64;
+	}
+	result.artworkColors.resize(artworkColorCount);
+	std::set<RemasterTileContentId> artworkColorIds;
+	for (RemasterFrameArtworkColors &artwork : result.artworkColors)
+	{
+		if (!input.ReadTileId(artwork.tileId) || !RemasterFrameSerialization::ValidTileId(artwork.tileId) ||
+			!input.ReadU64(artwork.visiblePixels) || !artworkColorIds.insert(artwork.tileId).second)
+			return false;
+		for (uint16_t &color : artwork.rgb555)
+			if (!input.ReadU16(color))
+				return false;
 	}
 	result.assetGroups.resize(groupCount);
 	for (RemasterFrameAssetGroup &group : result.assetGroups)
@@ -593,6 +721,15 @@ inline const RemasterFrameAsset *S9xRemasterFrameAssetForTile (
 	return nullptr;
 }
 
+inline const RemasterFrameArtworkColors *S9xRemasterFrameArtworkColorsForTile (
+	const RemasterFrame &frame, const RemasterTileContentId &tileId)
+{
+	for (const RemasterFrameArtworkColors &artwork : frame.artworkColors)
+		if (artwork.tileId == tileId)
+			return &artwork;
+	return nullptr;
+}
+
 inline const RemasterFrameAssetMetadata *S9xRemasterFrameMetadataForTile (
 	const RemasterFrame &frame, const RemasterTileContentId &tileId)
 {
@@ -727,6 +864,11 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	for (const RemasterFrameAsset &asset : frame.assets)
 		if (!RemasterFrameSerialization::ValidTileId(asset.tileId))
 			return false;
+	std::set<RemasterTileContentId> artworkColorIds;
+	for (const RemasterFrameArtworkColors &artwork : frame.artworkColors)
+		if (!RemasterFrameSerialization::ValidTileId(artwork.tileId) ||
+			!artworkColorIds.insert(artwork.tileId).second)
+			return false;
 	for (const RemasterFrameAssetGroup &group : frame.assetGroups)
 		for (const RemasterTileContentId &tileId : group.tileIds)
 			if (!RemasterFrameSerialization::ValidTileId(tileId))
@@ -778,6 +920,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U8(bytes, frame.sampleAccumulation ? 1 : 0);
 	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
+		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetMetadata.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.materials.size()) ||
@@ -802,6 +945,13 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	{
 		RemasterFrameSerialization::TileId(bytes, asset.tileId);
 		bytes.insert(bytes.end(), asset.indices, asset.indices + 64);
+	}
+	for (const RemasterFrameArtworkColors &artwork : frame.artworkColors)
+	{
+		RemasterFrameSerialization::TileId(bytes, artwork.tileId);
+		RemasterFrameSerialization::U64(bytes, artwork.visiblePixels);
+		for (uint16_t color : artwork.rgb555)
+			RemasterFrameSerialization::U16(bytes, color);
 	}
 	for (const RemasterFrameAssetGroup &group : frame.assetGroups)
 	{

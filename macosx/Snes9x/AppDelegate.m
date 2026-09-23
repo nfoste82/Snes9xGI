@@ -65,7 +65,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	inventoryItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	inventoryItem.target = self;
 	[viewMenuItem.submenu addItem:inventoryItem];
-	NSMenuItem *frameItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Frame", nil)
+	NSMenuItem *frameItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Animation", nil)
 	                                                   action:@selector(captureRemasterFrame:)
 	                                            keyEquivalent:@"f"];
 	frameItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
@@ -704,7 +704,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	}
 	NSString *path = [self.s9xEngine captureRemasterFrame];
 	if (path)
-		NSLog(@"Remaster frame capture requested: %@", path);
+		NSLog(@"Remaster animation capture requested: %@", path);
 }
 
 - (IBAction)loadRemasterProfile:(id)sender

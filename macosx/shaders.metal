@@ -203,6 +203,8 @@ kernel void remasterDirectLighting(
 		output.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
 	else if (uniforms.view == 7)
 		output.write(float4(normal * 0.5 + 0.5, 1.0), pixel);
+	else if (uniforms.view == 9)
+		output.write(float4(remasterToDisplay(selfEmission), 1.0), pixel);
 	else
 		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
 }
