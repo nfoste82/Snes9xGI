@@ -262,6 +262,8 @@ kernel void remasterIndirectBounce(
 	uint diskSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
 	float diskHeightSquared = max(1.0, pow(uniforms.debugPositionRadius.z - receiverSurface.r, 2.0));
 	uint sampleTotal = directCollision ? emitterCount + diskSamples : 16 * radialSteps * 3;
+	uint directionStart = 0, nextDirectionSample = 0, randomBase = 0;
+	float2 direction = float2(0.0), perpendicular = float2(0.0);
 	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
 	{
 		float2 samplePoint;
@@ -285,15 +287,21 @@ kernel void remasterIndirectBounce(
 		}
 		else
 		{
-			uint directionIndex = sampleIndex / (radialSteps * 3);
-			uint distance = 2 + ((sampleIndex / 3) % radialSteps) * distanceStep;
+			// Angular setup is shared by every radial cell and lane of this direction.
+			if (sampleIndex == nextDirectionSample)
+			{
+				uint directionIndex = sampleIndex / (radialSteps * 3);
+				directionStart = sampleIndex;
+				nextDirectionSample += radialSteps * 3;
+				randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu) ^
+					(uniforms.passIndex * 0xc2b2ae35u) ^ (uniforms.sampleIndex * 0x27d4eb2du) ^ directionIndex;
+				float angularJitter = uniforms.sampleCount > 1 ? remasterRandom(randomBase) - 0.5 : 0.0;
+				float angle = (float(directionIndex) + angularJitter) * angularStep;
+				direction = float2(cos(angle), sin(angle));
+				perpendicular = float2(-direction.y, direction.x);
+			}
+			uint distance = 2 + ((sampleIndex - directionStart) / 3) * distanceStep;
 			uint lane = sampleIndex % 3;
-			uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu) ^
-				(uniforms.passIndex * 0xc2b2ae35u) ^ (uniforms.sampleIndex * 0x27d4eb2du) ^ directionIndex;
-			float angularJitter = uniforms.sampleCount > 1 ? remasterRandom(randomBase) - 0.5 : 0.0;
-			float angle = (float(directionIndex) + angularJitter) * angularStep;
-			float2 direction = float2(cos(angle), sin(angle));
-			float2 perpendicular = float2(-direction.y, direction.x);
 			float radialJitter = uniforms.sampleCount > 1 ?
 				(remasterRandom(randomBase ^ (distance * 0x165667b1u) ^ lane) - 0.5) * float(distanceStep) : 0.0;
 			float sampleDistance = max(0.5, float(distance) + radialJitter);

@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
@@ -223,6 +224,10 @@ struct RemasterMetalResources
 	id<MTLTexture> sampleMean[2] = {};
 };
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
+// Serialize producers and lifecycle changes, not the drawable-waiting worker.
+static std::recursive_mutex renderMutex;
+static dispatch_queue_t presentationQueue = dispatch_queue_create("org.snes9x.presentation", DISPATCH_QUEUE_SERIAL);
+static std::atomic<uint64_t> droppedRemasterPresentations { 0 };
 static std::mutex remasterResourceMutex;
 static std::condition_variable remasterResourceAvailable;
 
@@ -315,6 +320,9 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView,
 	bool asynchronous)
 {
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	if (asynchronous && !liveRemasterPresentationEnabled.load(std::memory_order_relaxed))
+		return true;
 	if (frame.width > INT_MAX || frame.height > INT_MAX ||
 		!S9xRemasterFrameHasPixelData(frame, frame.width, frame.height))
 		return false;
@@ -323,7 +331,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		debugMode = RemasterDebugMode::Original;
 	const int resourceSlot = lighting ? AcquireRemasterResourceSlot(!asynchronous) : -1;
 	if (lighting && resourceSlot < 0)
+	{
+		droppedRemasterPresentations.fetch_add(1, std::memory_order_relaxed);
 		return true;
+	}
 	std::vector<uint32_t> owners;
 	owners.reserve(frame.mainPixels.size());
 	for (const RemasterFramePixel &pixel : frame.mainPixels)
@@ -437,6 +448,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
 {
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
 	liveRemasterLightingView.store(lightingView, std::memory_order_relaxed);
 	liveRemasterPresentationEnabled.store(enabled, std::memory_order_relaxed);
 	S9xRemasterSetLiveFramesEnabled(enabled);
@@ -444,6 +456,9 @@ void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingVie
 
 static void S9xInitMetal (void)
 {
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	if (metalCommandQueue)
+		S9xDeinitMetal();
     glScreenW = glScreenBounds.size.width;
     glScreenH = glScreenBounds.size.height;
 
@@ -484,6 +499,9 @@ static void S9xInitMetal (void)
 
 static void S9xDeinitMetal (void)
 {
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	// No producer can reserve a slot while draining queued presentation and GPU work.
+	dispatch_sync(presentationQueue, ^{});
 	int acquiredSlots[remasterResourceSlotCount];
 	for (size_t i = 0; i < remasterResourceSlotCount; i++)
 		acquiredSlots[i] = AcquireRemasterResourceSlot(true);
@@ -667,12 +685,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
-	static std::mutex renderMutex;
-	std::lock_guard<std::mutex> lock(renderMutex);
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
 	static uint8 *buffer = nil;
 	static size_t buffer_size = 0;
 	if (width <= 0 || height <= 0 || !buffer16 || pitch < static_cast<size_t>(width) ||
-		!metalLayer || !metalDevice || !metalCommandQueue || !metalPipelineState)
+		!metalLayer || !metalDevice || !metalCommandQueue || !metalPipelineState ||
+		(!waitForCompletion && resourceSlot < 0))
 		return false;
 	vector_float3 normalizedCameraDirection = cameraDirection ? vector_float3{ (*cameraDirection)[0], (*cameraDirection)[1],
 		(*cameraDirection)[2] } : vector_float3{ 0.0f, 0.0f, -1.0f };
@@ -770,8 +788,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		float vWidth = layerSize.width / 2.0;
 		float vHeight = layerSize.height / 2.0;
 		
-		const MetalVertex verticies[] =
-		{
+		const std::array<MetalVertex, 6> verticies = {{
 			// Pixel positions, Texture coordinates
 			{ {  vWidth,  -vHeight },  { 1.f, 1.f } },
 			{ { -vWidth,  -vHeight },  { 0.f, 1.f } },
@@ -780,9 +797,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			{ {  vWidth,  -vHeight },  { 1.f, 1.f } },
 			{ { -vWidth,   vHeight },  { 0.f, 0.f } },
 			{ {  vWidth,   vHeight },  { 1.f, 0.f } },
-		};
+		}};
 		
 		id<MTLCommandBuffer> commandBuffer = [metalCommandQueue commandBuffer];
+		if (!commandBuffer)
+			return false;
 		commandBuffer.label = @"Snes9x command buffer";
 		id<MTLTexture> presentationTexture = sourceTexture;
 		const bool measureGi = std::getenv("S9X_REMASTER_GI_METRICS") != nullptr;
@@ -937,8 +956,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				id<MTLTexture> finalIndirect = nil;
 				id<MTLTexture> finalDirect = nil;
 				const bool visibilityView = lightingView == RemasterLightingView::Visibility;
-				const uint32_t transportBounceCount = visibilityView ? 0 : indirectBounceCount;
-				for (uint32_t sample = 0; sample < uniforms.sampleCount; sample++)
+				const bool directOnly = lightingView == RemasterLightingView::DirectContribution && !measureGi;
+				const uint32_t transportBounceCount = visibilityView || directOnly ? 0 : indirectBounceCount;
+				// With no indirect transport, all samples are the same deterministic direct result.
+				const uint32_t transportSampleCount = transportBounceCount ? uniforms.sampleCount : 1;
+				for (uint32_t sample = 0; sample < transportSampleCount; sample++)
 				{
 					uniforms.sampleIndex = sample;
 					uniforms.passIndex = 0;
@@ -1078,90 +1100,112 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			presentationTexture = highlightedTexture;
 		}
 
-		id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
-		if (!drawable)
-			return false;
-		
-		MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-		
-		renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
-		renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-		renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0,0.0,0.0,1.0);
-		
-		if(renderPassDescriptor != nil)
-		{
-			id<MTLRenderCommandEncoder> renderEncoder =
-			[commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-			renderEncoder.label = @"Snes9x render encoder";
-			
-			vector_uint2 viewportSize = { static_cast<unsigned int>(layerSize.width), static_cast<unsigned int>(layerSize.height) };
-			
-			CGFloat scale = metalLayer.contentsScale;
-			[renderEncoder setViewport:(MTLViewport){0.0, 0.0, layerSize.width * scale, layerSize.height * scale, -1.0, 1.0 }];
-			
-			[renderEncoder setRenderPipelineState:metalPipelineState];
-			
-			[renderEncoder setVertexBytes:verticies length:sizeof(verticies) atIndex:0];
-			
-			[renderEncoder setVertexBytes:&viewportSize
-								   length:sizeof(viewportSize)
-								  atIndex:1];
-			
-			[renderEncoder setFragmentTexture:presentationTexture atIndex:0];
-			[renderEncoder setFragmentBytes:&videoMode length:sizeof(videoMode) atIndex:1];
-			
-			[renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
-			
-			[renderEncoder endEncoding];
-
-			[commandBuffer presentDrawable:drawable];
-			if (!waitForCompletion)
-			{
-				const int completedSlot = resourceSlot;
-				[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
-					ReleaseRemasterResourceSlot(completedSlot);
-				}];
-				resourceGuard.disarm();
+		// Only retained Metal objects and copied values cross this boundary. Frame
+		// pixels and temporary CPU fields have already been uploaded on the producer.
+		CAMetalLayer *presentationLayer = metalLayer;
+		id<MTLRenderPipelineState> presentationPipeline = metalPipelineState;
+		const int presentationVideoMode = videoMode;
+		const CGFloat presentationScale = metalLayer.contentsScale;
+		const bool measureFrames = std::getenv("S9X_REMASTER_FRAME_METRICS") != nullptr;
+		const auto queuedAt = std::chrono::steady_clock::now();
+		bool (^present)(void) = ^bool {
+			@autoreleasepool {
+				RemasterResourceSlotGuard queuedGuard(waitForCompletion ? -1 : resourceSlot);
+				const auto drawableStart = std::chrono::steady_clock::now();
+				id<CAMetalDrawable> drawable = [presentationLayer nextDrawable];
+				const auto drawableEnd = std::chrono::steady_clock::now();
+				if (!drawable)
+					return false;
+				MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+				renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
+				renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+				renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+				id<MTLRenderCommandEncoder> renderEncoder =
+					[commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+				if (!renderEncoder)
+					return false;
+				renderEncoder.label = @"Snes9x render encoder";
+				vector_uint2 viewportSize = { static_cast<unsigned int>(layerSize.width), static_cast<unsigned int>(layerSize.height) };
+				[renderEncoder setViewport:(MTLViewport){0.0, 0.0, layerSize.width * presentationScale,
+					layerSize.height * presentationScale, -1.0, 1.0}];
+				[renderEncoder setRenderPipelineState:presentationPipeline];
+				[renderEncoder setVertexBytes:verticies.data() length:sizeof(verticies) atIndex:0];
+				[renderEncoder setVertexBytes:&viewportSize length:sizeof(viewportSize) atIndex:1];
+				[renderEncoder setFragmentTexture:presentationTexture atIndex:0];
+				[renderEncoder setFragmentBytes:&presentationVideoMode length:sizeof(presentationVideoMode) atIndex:1];
+				[renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+				[renderEncoder endEncoding];
+				[commandBuffer presentDrawable:drawable];
+				if (measureFrames)
+				{
+					const double queuedMs = std::chrono::duration<double, std::milli>(drawableStart - queuedAt).count();
+					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
+					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+						if (@available(macOS 10.15, *))
+							NSLog(@"Remaster frame: queued=%.3fms drawable=%.3fms gpu=%.3fms dropped=%llu",
+								queuedMs, drawableMs, (completed.GPUEndTime - completed.GPUStartTime) * 1000.0,
+								static_cast<unsigned long long>(droppedRemasterPresentations.exchange(0)));
+					}];
+				}
+				if (!waitForCompletion)
+				{
+					const int completedSlot = resourceSlot;
+					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+						ReleaseRemasterResourceSlot(completedSlot);
+					}];
+					queuedGuard.disarm();
+				}
 				[commandBuffer commit];
 				return true;
 			}
-			[commandBuffer commit];
-			[commandBuffer waitUntilCompleted];
-			if (measureGi && diagnosticDirectTexture)
+		};
+		if (!waitForCompletion)
+		{
+			// Slots bound queued + GPU work to three frames. Drawable starvation can
+			// drop video frames, but can no longer stop emulation or audio production.
+			resourceGuard.disarm();
+			dispatch_async(presentationQueue, ^{ present(); });
+			return true;
+		}
+		__block bool presented = false;
+		dispatch_sync(presentationQueue, ^{ presented = present(); });
+		if (!presented)
+			return false;
+		[commandBuffer waitUntilCompleted];
+		if (measureGi && diagnosticDirectTexture)
+		{
+			if (commandBuffer.status != MTLCommandBufferStatusCompleted)
+				NSLog(@"Remaster GI metrics unavailable: %@", commandBuffer.error);
+			else
 			{
-				if (commandBuffer.status != MTLCommandBufferStatusCompleted)
-					NSLog(@"Remaster GI metrics unavailable: %@", commandBuffer.error);
-				else
+				NSLog(@"Remaster GI config: bounces=%u roughness=%.6g camera=(%.6g, %.6g, %.6g) original=%.6g samples=%u accumulation=%s",
+					unsigned(indirectBounceCount), indirectRoughness, normalizedCameraDirection.x,
+					normalizedCameraDirection.y, normalizedCameraDirection.z,
+					originalSceneContribution, unsigned(samplesPerFrame), sampleAccumulation ? "on" : "off");
+				if (lights)
+					for (size_t lightIndex = 0; lightIndex < lights->size(); lightIndex++)
+					{
+						const RemasterGpuLight &light = (*lights)[lightIndex];
+						NSLog(@"Remaster GI light %zu: position=(%.3f, %.3f, %.3f) color=(%.6g, %.6g, %.6g) intensity=%.6g radius=%.6g",
+							lightIndex, light.position.x, light.position.y, light.position.z, light.color.x, light.color.y,
+							light.color.z, light.intensity, light.radius);
+					}
+				const RemasterRadianceMetrics directMetrics = MeasureRemasterRadiance(diagnosticDirectTexture);
+				LogRemasterRadianceMetrics("direct", 0, directMetrics);
+				for (uint32_t stage = 0; stage < 3; stage++)
 				{
-					NSLog(@"Remaster GI config: bounces=%u roughness=%.6g camera=(%.6g, %.6g, %.6g) original=%.6g samples=%u accumulation=%s",
-						unsigned(indirectBounceCount), indirectRoughness, normalizedCameraDirection.x,
-						normalizedCameraDirection.y, normalizedCameraDirection.z,
-						originalSceneContribution, unsigned(samplesPerFrame), sampleAccumulation ? "on" : "off");
-					if (lights)
-						for (size_t lightIndex = 0; lightIndex < lights->size(); lightIndex++)
-						{
-							const RemasterGpuLight &light = (*lights)[lightIndex];
-							NSLog(@"Remaster GI light %zu: position=(%.3f, %.3f, %.3f) color=(%.6g, %.6g, %.6g) intensity=%.6g radius=%.6g",
-								lightIndex, light.position.x, light.position.y, light.position.z, light.color.x, light.color.y,
-								light.color.z, light.intensity, light.radius);
-						}
-					const RemasterRadianceMetrics directMetrics = MeasureRemasterRadiance(diagnosticDirectTexture);
-					LogRemasterRadianceMetrics("direct", 0, directMetrics);
-					for (uint32_t stage = 0; stage < 3; stage++)
-					{
-						const RemasterRadianceMetrics stageMetrics = MeasureRemasterRadiance(diagnosticStageTextures[stage]);
-						const char *labels[] = { "distance", "cosine", "visible" };
-						LogRemasterRadianceMetrics(labels[stage], 1, stageMetrics);
-					}
-					RemasterRadianceMetrics previousAccumulated;
-					for (uint32_t bounce = 0; bounce < diagnosticBounceCount; bounce++)
-					{
-						const RemasterRadianceMetrics outgoing = MeasureRemasterRadiance(diagnosticBounceTextures[bounce]);
-						const RemasterRadianceMetrics accumulated = MeasureRemasterRadiance(diagnosticIndirectTextures[bounce]);
-						LogRemasterRadianceMetrics("bounce", bounce + 1, outgoing);
-						LogRemasterRadianceMetrics("accumulated", bounce + 1, accumulated, &previousAccumulated);
-						previousAccumulated = accumulated;
-					}
+					const RemasterRadianceMetrics stageMetrics = MeasureRemasterRadiance(diagnosticStageTextures[stage]);
+					const char *labels[] = { "distance", "cosine", "visible" };
+					LogRemasterRadianceMetrics(labels[stage], 1, stageMetrics);
+				}
+				RemasterRadianceMetrics previousAccumulated;
+				for (uint32_t bounce = 0; bounce < diagnosticBounceCount; bounce++)
+				{
+					const RemasterRadianceMetrics outgoing = MeasureRemasterRadiance(diagnosticBounceTextures[bounce]);
+					const RemasterRadianceMetrics accumulated = MeasureRemasterRadiance(diagnosticIndirectTextures[bounce]);
+					LogRemasterRadianceMetrics("bounce", bounce + 1, outgoing);
+					LogRemasterRadianceMetrics("accumulated", bounce + 1, accumulated, &previousAccumulated);
+					previousAccumulated = accumulated;
 				}
 			}
 		}
