@@ -553,6 +553,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.height = static_cast<uint32_t>(screenHeight);
 	result.profileRomSha256 = state.activeProfile.romSha256;
 	result.lightingCoordinateScale = state.activeProfile.lightingCoordinateScale;
+	result.cameraDirection = state.activeProfile.cameraDirection;
 	result.indirectBounceCount = state.activeProfile.indirectBounceCount;
 	result.indirectRoughness = state.activeProfile.indirectRoughness;
 	result.originalSceneContribution = state.activeProfile.originalSceneContribution;

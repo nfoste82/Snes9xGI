@@ -299,6 +299,22 @@ static bool			remasterLightingEnabled = false;
 static RemasterLightingView remasterLightingView = RemasterLightingView::Composite;
 static RemasterDebugMode remasterReplayDebugMode = RemasterDebugMode::Original;
 static NSTextField		*remasterDebugOverlay;
+static NSPanel			*remasterDebugLightPanel;
+static NSButton			*remasterDebugLightEnabledButton;
+static NSTextField		*remasterDebugLightInputs[3];
+static NSColorWell		*remasterDebugLightColor;
+// A paused live packet may only be read by its producer. Zero means no redraw.
+static std::atomic<uint32_t> remasterDebugLightRedraw { 0 };
+static std::mutex remasterDebugLightRedrawMutex;
+
+static void ClearRemasterDebugLightRedraw ()
+{
+	// Drain an already-consumed preview before a transition. Release this lock
+	// before calling the renderer or changing renderer state on the main thread.
+	std::lock_guard<std::mutex> lock(remasterDebugLightRedrawMutex);
+	remasterDebugLightRedraw.store(0);
+}
+
 static bool			remasterSelectionValid = false;
 static RemasterTileContentId remasterSelectedTile;
 static std::vector<RemasterTileContentId> remasterSelectedTiles;
@@ -308,6 +324,7 @@ static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
 static NSTextField		*remasterHeightScaleInput;
+static NSTextField		*remasterCameraDirectionInputs[3];
 static NSSlider			*remasterIndirectRoughnessSlider;
 static NSTextField		*remasterIndirectRoughnessInput;
 static NSSlider			*remasterOriginalSceneSlider;
@@ -718,6 +735,7 @@ static void SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterR
 	if (!remasterEditingProfileLoaded)
 		return;
 	frame.lightingCoordinateScale = remasterEditingProfile.lightingCoordinateScale;
+	frame.cameraDirection = remasterEditingProfile.cameraDirection;
 	frame.indirectBounceCount = remasterEditingProfile.indirectBounceCount;
 	frame.indirectRoughness = remasterEditingProfile.indirectRoughness;
 	frame.originalSceneContribution = remasterEditingProfile.originalSceneContribution;
@@ -846,6 +864,7 @@ static inline void EmulationLoop (void)
 
             if (!pauseEmulation)
             {
+                ClearRemasterDebugLightRedraw();
                 S9xMainLoop();
             }
             else
@@ -857,6 +876,18 @@ static inline void EmulationLoop (void)
                     frameAdvance = false;
                     S9xMainLoop();
                     macFrameSkip = storedMacFrameSkip;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(remasterDebugLightRedrawMutex);
+                    const uint32_t lightRedraw = remasterDebugLightRedraw.exchange(0);
+                    if (lightRedraw && running && pauseEmulation && !frzselecting)
+                    {
+                        const RemasterFrame *frame = S9xRemasterCompletedFrame();
+                        if (frame && frame->width == SNES_WIDTH)
+                            DrawRemasterFrame(*frame, RemasterDebugMode::Original, nullptr, true,
+                                static_cast<RemasterLightingView>(lightRedraw - 1));
+                    }
                 }
 
                 usleep(Settings.FrameTime);
@@ -3230,6 +3261,14 @@ void QuitWithFatalError ( NSString *message)
     [NSApp terminate:nil];
 }
 
+@interface S9xView ()
+@property (nonatomic) BOOL remasterRightConsumed;
+@property (nonatomic) BOOL remasterRightDown;
+@property (nonatomic) BOOL remasterRightDragged;
+@property (nonatomic) NSPoint remasterRightDownPoint;
+- (void)cancelRemasterDebugLightGesture;
+@end
+
 @implementation S9xView
 
 + (void)initialize
@@ -3441,6 +3480,15 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)rightMouseDown:(NSEvent *)event
 {
+	self.remasterRightDownPoint = [self convertPoint:event.locationInWindow fromView:nil];
+	self.remasterRightDragged = NO;
+	self.remasterRightConsumed = !useMouse &&
+		[self.emulationDelegate respondsToSelector:@selector(canBeginRemasterDebugLightAtViewPoint:)] &&
+		[self.emulationDelegate respondsToSelector:@selector(updateRemasterDebugLightAtViewPoint:toggle:)] &&
+		[self.emulationDelegate canBeginRemasterDebugLightAtViewPoint:self.remasterRightDownPoint];
+	self.remasterRightDown = self.remasterRightConsumed;
+	if (self.remasterRightConsumed)
+		return;
 	if ( useMouse )
 	{
 		switch (deviceSetting)
@@ -3464,6 +3512,16 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)rightMouseUp:(NSEvent *)event
 {
+	if (self.remasterRightConsumed)
+	{
+		[self rightMouseDragged:event];
+		if (self.remasterRightDown && !self.remasterRightDragged && !useMouse &&
+			[self.emulationDelegate respondsToSelector:@selector(updateRemasterDebugLightAtViewPoint:toggle:)])
+			[self.emulationDelegate updateRemasterDebugLightAtViewPoint:self.remasterRightDownPoint toggle:YES];
+		self.remasterRightConsumed = NO;
+		[self cancelRemasterDebugLightGesture];
+		return;
+	}
 	if ( useMouse )
 	{
 		switch (deviceSetting)
@@ -3523,7 +3581,26 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)rightMouseDragged:(NSEvent *)event
 {
+	if (self.remasterRightConsumed)
+	{
+		if (!self.remasterRightDown || useMouse)
+			return;
+		const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+		if (std::hypot(point.x - self.remasterRightDownPoint.x, point.y - self.remasterRightDownPoint.y) >= 3.0)
+			self.remasterRightDragged = YES;
+		if (self.remasterRightDragged &&
+			[self.emulationDelegate respondsToSelector:@selector(updateRemasterDebugLightAtViewPoint:toggle:)])
+			[self.emulationDelegate updateRemasterDebugLightAtViewPoint:point toggle:NO];
+		return;
+	}
 	[self mouseMoved:event];
+}
+
+- (void)cancelRemasterDebugLightGesture
+{
+	// Still swallow the release of a consumed gesture after a session change.
+	self.remasterRightDown = NO;
+	self.remasterRightDragged = NO;
 }
 
 - (void)otherMouseDragged:(NSEvent *)event
@@ -3605,6 +3682,12 @@ void QuitWithFatalError ( NSString *message)
 @end
 
 @interface S9xEngine () <NSWindowDelegate, NSTextFieldDelegate>
+- (BOOL)hasRemasterDebugLightContext;
+- (void)showRemasterDebugLight;
+- (void)refreshRemasterDebugLightControls;
+- (void)changeRemasterDebugLight:(id)sender;
+- (void)publishRemasterDebugLight:(const RemasterDebugLight &)light;
+- (void)resetRemasterDebugLight;
 - (void)showRemasterVariantAtIndex:(size_t)index;
 - (void)previousRemasterVariant:(id)sender;
 - (void)nextRemasterVariant:(id)sender;
@@ -3638,6 +3721,8 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterBounceCount:(id)sender;
 - (void)changeRemasterHeightScale:(id)sender;
 - (BOOL)commitRemasterHeightScale;
+- (void)changeRemasterCameraDirection:(id)sender;
+- (BOOL)commitRemasterCameraDirection;
 - (void)changeRemasterIndirectRoughness:(id)sender;
 - (BOOL)commitRemasterIndirectRoughness;
 - (void)refreshRemasterEditingControls;
@@ -3774,6 +3859,17 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)dealloc
 {
+	[self resetRemasterDebugLight];
+	remasterDebugLightPanel.delegate = nil;
+	remasterDebugLightEnabledButton.target = nil;
+	remasterDebugLightColor.target = nil;
+	for (NSTextField *input : remasterDebugLightInputs)
+		input.target = nil;
+	remasterDebugLightPanel = nil;
+	remasterDebugLightEnabledButton = nil;
+	remasterDebugLightColor = nil;
+	for (size_t i = 0; i < 3; i++)
+		remasterDebugLightInputs[i] = nil;
     Deinitialize();
 }
 
@@ -3817,12 +3913,15 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)stop
 {
+	ClearRemasterDebugLightRedraw();
+	[s9xView cancelRemasterDebugLightGesture];
 	SNES9X_Quit();
     S9xExit();
 }
 
 - (void)softwareReset
 {
+	ClearRemasterDebugLightRedraw();
 	SNES9X_SoftReset();
 	SNES9X_Go();
 	[self resume];
@@ -3831,6 +3930,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)hardwareReset
 {
+	ClearRemasterDebugLightRedraw();
 	SNES9X_Reset();
 	SNES9X_Go();
 	[self resume];
@@ -3865,12 +3965,15 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)quit
 {
+	ClearRemasterDebugLightRedraw();
+	[s9xView cancelRemasterDebugLightGesture];
 	SNES9X_Quit();
 	[self pause];
 }
 
 - (void)resume
 {
+	ClearRemasterDebugLightRedraw();
 	remasterFramePresenting = false;
 	remasterSelectionValid = false;
 	remasterSelectedTiles.clear();
@@ -3996,6 +4099,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)loadROM:(NSURL *)fileURL
 {
+	[self resetRemasterDebugLight];
 	SetLiveRemasterPresentation(false, remasterLightingView);
 	running = false;
 	frzselecting = false;
@@ -4031,6 +4135,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		return NO;
 	}
+	[self resetRemasterDebugLight];
 	SetLiveRemasterPresentation(false, remasterLightingView);
 
 	running = false;
@@ -4088,6 +4193,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)toggleRemasterLighting
 {
+	ClearRemasterDebugLightRedraw();
+	[s9xView cancelRemasterDebugLightGesture];
 	remasterLightingEnabled = !remasterLightingEnabled;
 	SetLiveRemasterPresentation(running && remasterLightingEnabled && remasterEditingProfileLoaded,
 		remasterLightingView);
@@ -4101,6 +4208,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSString *)cycleRemasterLightingView
 {
+	ClearRemasterDebugLightRedraw();
 	const uint32_t next = (static_cast<uint32_t>(remasterLightingView) + 1) %
 		static_cast<uint32_t>(RemasterLightingView::Count);
 	remasterLightingView = static_cast<RemasterLightingView>(next);
@@ -4193,8 +4301,15 @@ void QuitWithFatalError ( NSString *message)
 		return @"";
 	if (!incompatibleProfile)
 		SyncRemasterEditingMetadataToFrame(frame);
+	const RemasterDebugLight previousLight = GetRemasterDebugLight();
+	ClearRemasterDebugLightRedraw();
+	SetRemasterDebugLight(RemasterDebugLight());
 	if (!DrawRemasterFrame(frame, RemasterDebugMode::Original, nullptr, remasterLightingEnabled, remasterLightingView))
+	{
+		SetRemasterDebugLight(previousLight);
 		return @"The captured frame could not be presented.";
+	}
+	[self resetRemasterDebugLight];
 	if (incompatibleProfile)
 	{
 		remasterEditingProfile = RemasterProfile();
@@ -4213,6 +4328,189 @@ void QuitWithFatalError ( NSString *message)
 	[remasterInspectorPanel orderOut:nil];
 	[s9xView updatePauseOverlay];
 	return nil;
+}
+
+- (BOOL)hasRemasterDebugLightContext
+{
+	if (!remasterLightingEnabled || frzselecting)
+		return NO;
+	if (remasterFramePresenting)
+		return (!running || pauseEmulation) && remasterReplayFrame.width && remasterReplayFrame.height &&
+			!remasterReplayFrame.profileRomSha256.empty();
+	if (!running || !remasterEditingProfileLoaded || remasterEditingProfile.romSha256.size() != 64)
+		return NO;
+	static const char hex[] = "0123456789abcdef";
+	for (size_t i = 0; i < 32; i++)
+		if (remasterEditingProfile.romSha256[i * 2] != hex[Memory.ROMSHA256[i] >> 4] ||
+			remasterEditingProfile.romSha256[i * 2 + 1] != hex[Memory.ROMSHA256[i] & 15])
+			return NO;
+	return YES;
+}
+
+- (BOOL)canBeginRemasterDebugLightAtViewPoint:(NSPoint)point
+{
+	const NSRect bounds = s9xView.bounds;
+	return !useMouse && [self hasRemasterDebugLightContext] &&
+		std::isfinite(point.x) && std::isfinite(point.y) &&
+		NSWidth(bounds) > 0 && NSHeight(bounds) > 0 && NSPointInRect(point, bounds);
+}
+
+- (void)updateRemasterDebugLightAtViewPoint:(NSPoint)point toggle:(BOOL)toggle
+{
+	if (useMouse || ![self hasRemasterDebugLightContext])
+		return;
+	const NSRect bounds = s9xView.bounds;
+	if (!std::isfinite(point.x) || !std::isfinite(point.y) || NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0)
+		return;
+	RemasterDebugLight light = GetRemasterDebugLight();
+	light.x = std::max<CGFloat>(0, std::min<CGFloat>(1, (point.x - NSMinX(bounds)) / NSWidth(bounds)));
+	const CGFloat y = s9xView.isFlipped ? point.y - NSMinY(bounds) : NSMaxY(bounds) - point.y;
+	light.y = std::max<CGFloat>(0, std::min<CGFloat>(1, y / NSHeight(bounds)));
+	if (toggle)
+		light.enabled = !light.enabled;
+	[self publishRemasterDebugLight:light];
+	remasterDebugLightEnabledButton.state = light.enabled ? NSControlStateValueOn : NSControlStateValueOff;
+	if (light.enabled && !remasterDebugLightPanel.visible)
+		[self showRemasterDebugLight];
+}
+
+- (void)publishRemasterDebugLight:(const RemasterDebugLight &)light
+{
+	SetRemasterDebugLight(light);
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	else if (running && pauseEmulation)
+		remasterDebugLightRedraw.store(static_cast<uint32_t>(remasterLightingView) + 1);
+	// Live emulation consumes the published light on its next presentation.
+}
+
+- (void)resetRemasterDebugLight
+{
+	ClearRemasterDebugLightRedraw();
+	[s9xView cancelRemasterDebugLightGesture];
+	for (NSTextField *input : remasterDebugLightInputs)
+		[input abortEditing];
+	[remasterDebugLightColor deactivate];
+	[remasterDebugLightPanel orderOut:nil];
+	SetRemasterDebugLight(RemasterDebugLight());
+	[self refreshRemasterDebugLightControls];
+}
+
+- (void)refreshRemasterDebugLightControls
+{
+	const RemasterDebugLight light = GetRemasterDebugLight();
+	remasterDebugLightEnabledButton.state = light.enabled ? NSControlStateValueOn : NSControlStateValueOff;
+	const float values[] = { light.radius, light.height, light.intensity };
+	for (size_t i = 0; i < 3; i++)
+		remasterDebugLightInputs[i].stringValue = [NSString stringWithFormat:@"%.6g", values[i]];
+	remasterDebugLightColor.color = [NSColor colorWithSRGBRed:light.red green:light.green blue:light.blue alpha:1];
+}
+
+- (void)showRemasterDebugLight
+{
+	if (!remasterDebugLightPanel)
+	{
+		remasterDebugLightPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 335)
+			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
+			backing:NSBackingStoreBuffered defer:NO];
+		remasterDebugLightPanel.title = @"Remaster Debug Light (Session Only)";
+		remasterDebugLightPanel.releasedWhenClosed = NO;
+		remasterDebugLightPanel.floatingPanel = YES;
+		remasterDebugLightPanel.hidesOnDeactivate = NO;
+		remasterDebugLightPanel.delegate = self;
+		NSView *content = remasterDebugLightPanel.contentView;
+		remasterDebugLightEnabledButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 293, 180, 24)];
+		remasterDebugLightEnabledButton.buttonType = NSButtonTypeSwitch;
+		remasterDebugLightEnabledButton.title = @"Enabled";
+		remasterDebugLightEnabledButton.target = self;
+		remasterDebugLightEnabledButton.action = @selector(changeRemasterDebugLight:);
+		[content addSubview:remasterDebugLightEnabledButton];
+		NSArray<NSString *> *labels = @[ @"Disk Radius (source pixels)", @"Height (source pixels)", @"Intensity (emission units)", @"Color (RGB)" ];
+		for (NSInteger i = 0; i < 4; i++)
+		{
+			const CGFloat y = 252 - i * 36;
+			NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, y, 280, 24)];
+			label.stringValue = labels[i];
+			label.editable = NO;
+			label.bezeled = NO;
+			label.drawsBackground = NO;
+			[content addSubview:label];
+			if (i < 3)
+			{
+				NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(310, y, 100, 24)];
+				input.alignment = NSTextAlignmentRight;
+				input.target = self;
+				input.action = @selector(changeRemasterDebugLight:);
+				[(NSTextFieldCell *)input.cell setSendsActionOnEndEditing:YES];
+				input.toolTip = i == 2 ? @"Floating-point emission intensity: 0 to 10000." :
+					@"Native source-pixel units: 0 to 4096. Independent of window size.";
+				remasterDebugLightInputs[i] = input;
+				[content addSubview:input];
+			}
+			else
+			{
+				remasterDebugLightColor = [[NSColorWell alloc] initWithFrame:NSMakeRect(310, y, 100, 26)];
+				remasterDebugLightColor.target = self;
+				remasterDebugLightColor.action = @selector(changeRemasterDebugLight:);
+				[content addSubview:remasterDebugLightColor];
+			}
+		}
+		NSTextField *hint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 14, 390, 114)];
+		hint.stringValue = @"Right-click the scene to toggle at that position.\nRight-drag to move (3-point threshold); dragging keeps the enabled state. Emulated mouse controls take priority.\nRadius is physical disk extent, not a range cutoff.\nRadius/height: 0-4096 source pixels. Intensity: 0-10000.\nSession only; not saved in profiles. Closing keeps the light.";
+		hint.editable = NO;
+		hint.bezeled = NO;
+		hint.drawsBackground = NO;
+		hint.font = [NSFont systemFontOfSize:11];
+		[content addSubview:hint];
+		[remasterDebugLightPanel center];
+	}
+	[self refreshRemasterDebugLightControls];
+	// Do not take keyboard focus away from gameplay when opening via a gesture.
+	[remasterDebugLightPanel orderFront:nil];
+}
+
+- (void)changeRemasterDebugLight:(id)sender
+{
+	if (![self hasRemasterDebugLightContext])
+	{
+		[self refreshRemasterDebugLightControls];
+		return;
+	}
+	RemasterDebugLight light = GetRemasterDebugLight();
+	float *values[] = { &light.radius, &light.height, &light.intensity };
+	for (size_t i = 0; i < 3; i++)
+	{
+		float value;
+		NSScanner *scanner = [NSScanner scannerWithString:remasterDebugLightInputs[i].stringValue];
+		if (![scanner scanFloat:&value] || !scanner.isAtEnd || !std::isfinite(value))
+		{
+			NSBeep();
+			[self refreshRemasterDebugLightControls];
+			return;
+		}
+		*values[i] = std::max(0.0f, std::min(i == 2 ? 10000.0f : 4096.0f, value));
+	}
+	NSColor *color = [remasterDebugLightColor.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	if (!color || !std::isfinite(color.redComponent) || !std::isfinite(color.greenComponent) ||
+		!std::isfinite(color.blueComponent))
+	{
+		NSBeep();
+		[self refreshRemasterDebugLightControls];
+		return;
+	}
+	light.red = std::max<CGFloat>(0, std::min<CGFloat>(1, color.redComponent));
+	light.green = std::max<CGFloat>(0, std::min<CGFloat>(1, color.greenComponent));
+	light.blue = std::max<CGFloat>(0, std::min<CGFloat>(1, color.blueComponent));
+	light.enabled = remasterDebugLightEnabledButton.state == NSControlStateValueOn;
+	[self publishRemasterDebugLight:light];
+	[self refreshRemasterDebugLightControls];
+}
+
+- (void)windowWillClose:(NSNotification *)notification
+{
+	if (notification.object == remasterDebugLightPanel)
+		[remasterDebugLightColor deactivate];
 }
 
 - (BOOL)selectRemasterPixelAtViewPoint:(NSPoint)point extendingSelection:(BOOL)extendingSelection
@@ -5733,6 +6031,10 @@ void QuitWithFatalError ( NSString *message)
 		[self changeRemasterPixelValue:remasterValueInput];
 	else if (notification.object == remasterHeightScaleInput)
 		remasterSettingsSaveButton.enabled = YES;
+	else if (notification.object == remasterCameraDirectionInputs[0] ||
+		notification.object == remasterCameraDirectionInputs[1] ||
+		notification.object == remasterCameraDirectionInputs[2])
+		remasterSettingsSaveButton.enabled = YES;
 	else if (notification.object == remasterIndirectRoughnessInput)
 		remasterSettingsSaveButton.enabled = YES;
 	else if (notification.object == remasterOriginalSceneInput)
@@ -6153,7 +6455,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)writeRemasterProfile
 {
-	if (![self commitRemasterHeightScale] || ![self commitRemasterIndirectRoughness] ||
+	if (![self commitRemasterHeightScale] || ![self commitRemasterCameraDirection] ||
+		![self commitRemasterIndirectRoughness] ||
 		![self commitRemasterOriginalSceneContribution])
 		return NO;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
@@ -6201,6 +6504,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 		remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.lightingCoordinateScale];
+		for (size_t component = 0; component < 3; component++)
+			remasterCameraDirectionInputs[component].stringValue = [NSString stringWithFormat:@"%.6g",
+				remasterEditingProfile.cameraDirection[component]];
 		remasterIndirectRoughnessSlider.floatValue = remasterEditingProfile.indirectRoughness;
 		remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.indirectRoughness];
@@ -6257,7 +6563,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 500)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 600)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
@@ -6265,32 +6571,32 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
-		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 450, 220, 24)];
+		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 550, 220, 24)];
 		originalTitle.stringValue = @"Original Scene RGB Contribution";
 		originalTitle.editable = NO;
 		originalTitle.bezeled = NO;
 		originalTitle.drawsBackground = NO;
 		[content addSubview:originalTitle];
-		remasterOriginalSceneSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 417, 300, 24)];
+		remasterOriginalSceneSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 517, 300, 24)];
 		remasterOriginalSceneSlider.minValue = 0;
 		remasterOriginalSceneSlider.maxValue = 1;
 		remasterOriginalSceneSlider.continuous = NO;
 		remasterOriginalSceneSlider.target = self;
 		remasterOriginalSceneSlider.action = @selector(changeRemasterOriginalSceneContribution:);
 		[content addSubview:remasterOriginalSceneSlider];
-		remasterOriginalSceneInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 417, 60, 24)];
+		remasterOriginalSceneInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 517, 60, 24)];
 		remasterOriginalSceneInput.alignment = NSTextAlignmentCenter;
 		remasterOriginalSceneInput.delegate = self;
 		remasterOriginalSceneInput.target = self;
 		remasterOriginalSceneInput.action = @selector(changeRemasterOriginalSceneContribution:);
 		[content addSubview:remasterOriginalSceneInput];
-		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 376, 180, 24)];
+		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 476, 180, 24)];
 		samplesTitle.stringValue = @"Samples Per Frame";
 		samplesTitle.editable = NO;
 		samplesTitle.bezeled = NO;
 		samplesTitle.drawsBackground = NO;
 		[content addSubview:samplesTitle];
-		remasterSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 343, 300, 24)];
+		remasterSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 443, 300, 24)];
 		remasterSamplesSlider.minValue = 1;
 		remasterSamplesSlider.maxValue = 16;
 		remasterSamplesSlider.numberOfTickMarks = 16;
@@ -6299,24 +6605,24 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesSlider.target = self;
 		remasterSamplesSlider.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesSlider];
-		remasterSamplesInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 343, 60, 24)];
+		remasterSamplesInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 443, 60, 24)];
 		remasterSamplesInput.alignment = NSTextAlignmentCenter;
 		remasterSamplesInput.target = self;
 		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesInput];
-		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 306, 300, 24)];
+		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 406, 300, 24)];
 		remasterSampleAccumulationButton.buttonType = NSButtonTypeSwitch;
 		remasterSampleAccumulationButton.title = @"Accumulate and average samples";
 		remasterSampleAccumulationButton.target = self;
 		remasterSampleAccumulationButton.action = @selector(changeRemasterSampleAccumulation:);
 		[content addSubview:remasterSampleAccumulationButton];
-		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 270, 180, 24)];
+		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 370, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
 		title.bezeled = NO;
 		title.drawsBackground = NO;
 		[content addSubview:title];
-		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 237, 300, 24)];
+		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 337, 300, 24)];
 		remasterBounceSlider.minValue = 0;
 		remasterBounceSlider.maxValue = 16;
 		remasterBounceSlider.numberOfTickMarks = 17;
@@ -6325,56 +6631,80 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceSlider.target = self;
 		remasterBounceSlider.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceSlider];
-		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 237, 60, 24)];
+		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 337, 60, 24)];
 		remasterBounceInput.alignment = NSTextAlignmentCenter;
 		remasterBounceInput.target = self;
 		remasterBounceInput.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceInput];
-		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 166, 180, 24)];
-		roughnessTitle.stringValue = @"Indirect Light Roughness";
+		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 266, 180, 24)];
+		roughnessTitle.stringValue = @"Surface Roughness";
 		roughnessTitle.editable = NO;
 		roughnessTitle.bezeled = NO;
 		roughnessTitle.drawsBackground = NO;
 		[content addSubview:roughnessTitle];
-		remasterIndirectRoughnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 133, 300, 24)];
+		remasterIndirectRoughnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 233, 300, 24)];
 		remasterIndirectRoughnessSlider.minValue = 0;
 		remasterIndirectRoughnessSlider.maxValue = 1;
 		remasterIndirectRoughnessSlider.continuous = NO;
 		remasterIndirectRoughnessSlider.target = self;
 		remasterIndirectRoughnessSlider.action = @selector(changeRemasterIndirectRoughness:);
 		[content addSubview:remasterIndirectRoughnessSlider];
-		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 133, 60, 24)];
+		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 233, 60, 24)];
 		remasterIndirectRoughnessInput.alignment = NSTextAlignmentCenter;
 		remasterIndirectRoughnessInput.delegate = self;
 		remasterIndirectRoughnessInput.target = self;
 		remasterIndirectRoughnessInput.action = @selector(changeRemasterIndirectRoughness:);
 		[content addSubview:remasterIndirectRoughnessInput];
-		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 102, 180, 24)];
+		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 202, 180, 24)];
 		heightScaleTitle.stringValue = @"Height Scale";
 		heightScaleTitle.editable = NO;
 		heightScaleTitle.bezeled = NO;
 		heightScaleTitle.drawsBackground = NO;
 		[content addSubview:heightScaleTitle];
-		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 102, 60, 24)];
+		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 202, 60, 24)];
 		remasterHeightScaleInput.alignment = NSTextAlignmentCenter;
 		remasterHeightScaleInput.delegate = self;
 		remasterHeightScaleInput.target = self;
 		remasterHeightScaleInput.action = @selector(changeRemasterHeightScale:);
 		[content addSubview:remasterHeightScaleInput];
-		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 66, 300, 30)];
+		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 166, 300, 30)];
 		heightScaleDescription.stringValue = @"Maps height byte 255 to this many screen-space Z units.";
 		heightScaleDescription.editable = NO;
 		heightScaleDescription.bezeled = NO;
 		heightScaleDescription.drawsBackground = NO;
 		heightScaleDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:heightScaleDescription];
-		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 198, 390, 26)];
-		remasterBounceDescription.stringValue = @"1 is diffuse. Lower values narrow nonmetallic bounce lobes; they do not create mirrors.";
+		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 298, 390, 26)];
+		remasterBounceDescription.stringValue = @"Controls the global Oren-Nayar diffuse BRDF: 0 is Lambertian; 1 is maximally rough.";
 		remasterBounceDescription.editable = NO;
 		remasterBounceDescription.bezeled = NO;
 		remasterBounceDescription.drawsBackground = NO;
 		remasterBounceDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:remasterBounceDescription];
+		NSTextField *cameraDirectionTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 130, 180, 24)];
+		cameraDirectionTitle.stringValue = @"Camera Direction";
+		cameraDirectionTitle.editable = NO;
+		cameraDirectionTitle.bezeled = NO;
+		cameraDirectionTitle.drawsBackground = NO;
+		[content addSubview:cameraDirectionTitle];
+		NSArray<NSString *> *componentLabels = @[ @"X", @"Y", @"Z" ];
+		for (NSInteger component = 0; component < 3; component++)
+		{
+			const CGFloat x = 20 + component * 125;
+			NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 96, 20, 24)];
+			label.stringValue = componentLabels[component];
+			label.alignment = NSTextAlignmentRight;
+			label.editable = NO;
+			label.bezeled = NO;
+			label.drawsBackground = NO;
+			[content addSubview:label];
+			remasterCameraDirectionInputs[component] = [[NSTextField alloc] initWithFrame:NSMakeRect(x + 25, 96, 85, 24)];
+			remasterCameraDirectionInputs[component].alignment = NSTextAlignmentCenter;
+			remasterCameraDirectionInputs[component].delegate = self;
+			remasterCameraDirectionInputs[component].target = self;
+			remasterCameraDirectionInputs[component].action = @selector(changeRemasterCameraDirection:);
+			[content addSubview:remasterCameraDirectionInputs[component]];
+		}
 		remasterSettingsSaveButton = [[NSButton alloc] initWithFrame:NSMakeRect(300, 8, 110, 30)];
 		remasterSettingsSaveButton.title = @"Save Profile";
 		remasterSettingsSaveButton.bezelStyle = NSBezelStyleRounded;
@@ -6386,6 +6716,9 @@ void QuitWithFatalError ( NSString *message)
 	remasterBounceSlider.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.lightingCoordinateScale];
+	for (size_t component = 0; component < 3; component++)
+		remasterCameraDirectionInputs[component].stringValue = [NSString stringWithFormat:@"%.6g",
+			remasterEditingProfile.cameraDirection[component]];
 	remasterIndirectRoughnessSlider.floatValue = remasterEditingProfile.indirectRoughness;
 	remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.indirectRoughness];
 	remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
@@ -6400,6 +6733,63 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterHeightScale:(id)sender
 {
 	[self commitRemasterHeightScale];
+}
+
+- (void)changeRemasterCameraDirection:(id)sender
+{
+	[self commitRemasterCameraDirection];
+}
+
+- (BOOL)commitRemasterCameraDirection
+{
+	if (!remasterEditingProfileLoaded || !remasterCameraDirectionInputs[0])
+		return YES;
+	std::array<float, 3> direction;
+	float lengthSquared = 0.0f;
+	for (size_t component = 0; component < direction.size(); component++)
+	{
+		NSScanner *scanner = [NSScanner scannerWithString:remasterCameraDirectionInputs[component].stringValue];
+		if (![scanner scanFloat:&direction[component]] || !scanner.isAtEnd || !std::isfinite(direction[component]))
+		{
+			for (size_t restoreComponent = 0; restoreComponent < direction.size(); restoreComponent++)
+				remasterCameraDirectionInputs[restoreComponent].stringValue = [NSString stringWithFormat:@"%.6g",
+					remasterEditingProfile.cameraDirection[restoreComponent]];
+			NSBeep();
+			return NO;
+		}
+		lengthSquared += direction[component] * direction[component];
+	}
+	if (!std::isfinite(lengthSquared) || lengthSquared <= 0.0f)
+	{
+		for (size_t component = 0; component < direction.size(); component++)
+			remasterCameraDirectionInputs[component].stringValue = [NSString stringWithFormat:@"%.6g",
+				remasterEditingProfile.cameraDirection[component]];
+		NSBeep();
+		return NO;
+	}
+	if (remasterEditingProfile.cameraDirection == direction)
+		return YES;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.cameraDirection = direction;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 9);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Camera Direction"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	for (size_t component = 0; component < direction.size(); component++)
+		remasterCameraDirectionInputs[component].stringValue = [NSString stringWithFormat:@"%.6g", direction[component]];
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+	return YES;
 }
 
 - (void)changeRemasterOriginalSceneContribution:(id)sender
@@ -6523,7 +6913,7 @@ void QuitWithFatalError ( NSString *message)
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
 	remasterEditingProfile.indirectRoughness = roughness;
-	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 7);
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 9);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
 	[remasterUndoManager setActionName:@"Change Indirect Roughness"];
@@ -6531,6 +6921,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
@@ -6705,6 +7097,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)setDeviceSetting:(S9xDeviceSetting)_deviceSetting
 {
+	[s9xView cancelRemasterDebugLightGesture];
 	deviceSetting = _deviceSetting;
 	ChangeInputDevice();
 }

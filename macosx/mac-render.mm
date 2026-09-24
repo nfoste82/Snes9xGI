@@ -64,6 +64,9 @@ typedef struct
 	uint32_t sampleIndex;
 	uint32_t sampleCount;
 	uint32_t randomSeed;
+	vector_float4 cameraDirection;
+	vector_float4 debugPositionRadius;
+	vector_float4 debugColorIntensity;
 } RemasterLightingUniforms;
 
 struct RemasterRadianceMetrics
@@ -146,7 +149,7 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	const uint8_t * = nullptr,
 	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
-	float = 0.65f, uint8_t = 1, bool = true, int = -1, bool = true);
+	float = 0.65f, uint8_t = 1, bool = true, const std::array<float, 3> * = nullptr, int = -1, bool = true);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -184,6 +187,20 @@ id<MTLComputePipelineState>	remasterSampleAccumulationPipelineState = nil;
 id<MTLComputePipelineState>	remasterHighlightPipelineState = nil;
 static std::atomic<bool> liveRemasterPresentationEnabled(false);
 static std::atomic<RemasterLightingView> liveRemasterLightingView(RemasterLightingView::Composite);
+static std::mutex debugLightMutex;
+static RemasterDebugLight debugLight;
+
+void SetRemasterDebugLight (const RemasterDebugLight &light)
+{
+	std::lock_guard<std::mutex> lock(debugLightMutex);
+	debugLight = light;
+}
+
+RemasterDebugLight GetRemasterDebugLight ()
+{
+	std::lock_guard<std::mutex> lock(debugLightMutex);
+	return debugLight;
+}
 static constexpr size_t remasterResourceSlotCount = 3;
 struct RemasterMetalResources
 {
@@ -202,6 +219,7 @@ struct RemasterMetalResources
 	id<MTLTexture> direct = nil;
 	id<MTLTexture> bounce[2] = {};
 	id<MTLTexture> indirect[2] = {};
+	id<MTLTexture> directMean[2] = {};
 	id<MTLTexture> sampleMean[2] = {};
 };
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
@@ -407,19 +425,14 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				}
 			}
 	}
-	std::vector<RemasterGpuLight> lights;
-	if (lighting)
-		for (const RemasterFrameLight &light : S9xRemasterFrameEmissionLights(frame))
-			lights.push_back({ { light.x, light.y, light.z }, light.radius, light.intensity,
-				{ light.red, light.green, light.blue } });
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
 		lightingField.data(), emissionField.data(), heightField.data(), surfaceField.data(), participationField.data(),
-		oppositeFacingField.data(), &lights,
+		oppositeFacingField.data(), nullptr,
 		lighting && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
-		frame.samplesPerFrame, frame.sampleAccumulation, resourceSlot, !asynchronous);
+		frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection, resourceSlot, !asynchronous);
 }
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
@@ -483,6 +496,7 @@ static void S9xDeinitMetal (void)
 		resources.participation = resources.oppositeFacing = resources.surface = resources.output = nil;
 		resources.direct = resources.bounce[0] = resources.bounce[1] = nil;
 		resources.indirect[0] = resources.indirect[1] = nil;
+		resources.directMean[0] = resources.directMean[1] = nil;
 		resources.sampleMean[0] = resources.sampleMean[1] = nil;
 	}
 	for (int slot : acquiredSlots)
@@ -650,7 +664,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const std::vector<RemasterGpuLight> *lights, bool lighting,
 	RemasterLightingView lightingView, uint8_t indirectBounceCount, float indirectRoughness,
 	float originalSceneContribution, uint8_t samplesPerFrame, bool sampleAccumulation,
-	int resourceSlot, bool waitForCompletion)
+	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
 	static std::mutex renderMutex;
@@ -660,6 +674,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	if (width <= 0 || height <= 0 || !buffer16 || pitch < static_cast<size_t>(width) ||
 		!metalLayer || !metalDevice || !metalCommandQueue || !metalPipelineState)
 		return false;
+	vector_float3 normalizedCameraDirection = cameraDirection ? vector_float3{ (*cameraDirection)[0], (*cameraDirection)[1],
+		(*cameraDirection)[2] } : vector_float3{ 0.0f, 0.0f, -1.0f };
+	normalizedCameraDirection = simd_normalize(normalizedCameraDirection);
 	const size_t requiredSize = static_cast<size_t>(width) * height * 4;
 
 	if (buffer_size != requiredSize)
@@ -813,6 +830,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				{
 					resources->bounce[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 					resources->indirect[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+					resources->directMean[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 					resources->sampleMean[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 				}
 			}
@@ -841,11 +859,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			if (measureGi)
 				radianceDescriptor.storageMode = MTLStorageModeShared;
 			id<MTLTexture> directTexture = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : resources->direct;
-			diagnosticDirectTexture = measureGi ? directTexture : nil;
+			// Keep every visible emitting pixel, with no proxy clustering or distance cutoff.
+			std::vector<uint32_t> emitterPixels;
+			for (uint32_t pixel = 0; pixel < static_cast<uint32_t>(width * height); pixel++)
+				if (participation[pixel * 2] > 127 && emission[pixel * 4 + 3] &&
+					(emission[pixel * 4] || emission[pixel * 4 + 1] || emission[pixel * 4 + 2]))
+					emitterPixels.push_back(pixel);
+			const uint32_t emitterCount = static_cast<uint32_t>(emitterPixels.size());
+			const uint32_t emptyEmitter = 0;
+			id<MTLBuffer> emitterBuffer = [metalDevice newBufferWithBytes:emitterCount ? emitterPixels.data() : &emptyEmitter
+				length:std::max<size_t>(1, emitterCount) * sizeof(uint32_t) options:MTLResourceStorageModeShared];
 			static uint32_t randomSeed = 0;
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-				static_cast<uint32_t>(lightingView), static_cast<uint32_t>(lights ? lights->size() : 0), 0, 0,
-				indirectRoughness, originalSceneContribution, 0, std::max<uint32_t>(1, samplesPerFrame), ++randomSeed };
+				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution, 0,
+				std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, { normalizedCameraDirection.x,
+					normalizedCameraDirection.y, normalizedCameraDirection.z, 0.0f }, {}, {} };
+			const RemasterDebugLight light = GetRemasterDebugLight();
+			if (light.enabled)
+			{
+				uniforms.debugPositionRadius = { light.x * width, light.y * height, light.height, light.radius };
+				uniforms.debugColorIntensity = { std::pow(light.red, 2.2f), std::pow(light.green, 2.2f),
+					std::pow(light.blue, 2.2f), light.intensity / 25.0f };
+			}
 			id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
 			[computeEncoder setTexture:sourceTexture atIndex:0];
@@ -864,7 +899,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[computeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[computeEncoder endEncoding];
-			if (measureGi && indirectBounceCount > 0)
+			if (measureGi)
 			{
 				id<MTLTexture> discardedPreviousIndirect = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 				id<MTLTexture> discardedNextIndirect = [metalDevice newTextureWithDescriptor:radianceDescriptor];
@@ -884,28 +919,62 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[diagnosticEncoder setTexture:discardedPreviousIndirect atIndex:6];
 					[diagnosticEncoder setTexture:diagnosticStageTextures[stage - 1] atIndex:7];
 					[diagnosticEncoder setTexture:discardedNextIndirect atIndex:8];
+					[diagnosticEncoder setTexture:oppositeFacingTexture atIndex:9];
 					[diagnosticEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+					[diagnosticEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
+					[diagnosticEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
 					[diagnosticEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 					[diagnosticEncoder endEncoding];
 				}
 				uniforms.diagnosticStage = 0;
 			}
-			if (indirectBounceCount > 0)
 			{
 				id<MTLTexture> bounceTextures[2] = { resources->bounce[0], resources->bounce[1] };
 				id<MTLTexture> indirectTextures[2] = { resources->indirect[0], resources->indirect[1] };
+				id<MTLTexture> directMeanTextures[2] = { resources->directMean[0], resources->directMean[1] };
 				id<MTLTexture> sampleMeanTextures[2] = { resources->sampleMean[0], resources->sampleMean[1] };
 				id<MTLTexture> finalIndirect = nil;
+				id<MTLTexture> finalDirect = nil;
+				const bool visibilityView = lightingView == RemasterLightingView::Visibility;
+				const uint32_t transportBounceCount = visibilityView ? 0 : indirectBounceCount;
 				for (uint32_t sample = 0; sample < uniforms.sampleCount; sample++)
 				{
 					uniforms.sampleIndex = sample;
-					id<MTLTexture> previousBounce = directTexture;
-					for (uint32_t bounce = 0; bounce < indirectBounceCount; bounce++)
+					uniforms.passIndex = 0;
+					uniforms.diagnosticStage = visibilityView ? 4 : 0;
+					if (sample == 0)
 					{
-						const uint32_t current = bounce & 1;
+						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : directMeanTextures[0];
+						diagnosticDirectTexture = measureGi ? finalDirect : nil;
+						id<MTLComputeCommandEncoder> directEncoder = [commandBuffer computeCommandEncoder];
+						[directEncoder setComputePipelineState:remasterIndirectPipelineState];
+						[directEncoder setTexture:sourceTexture atIndex:0];
+						[directEncoder setTexture:occlusionTexture atIndex:1];
+						[directEncoder setTexture:surfaceTexture atIndex:2];
+						[directEncoder setTexture:heightTexture atIndex:3];
+						[directEncoder setTexture:participationTexture atIndex:4];
+						[directEncoder setTexture:directTexture atIndex:5];
+						[directEncoder setTexture:indirectTextures[1] atIndex:6];
+						[directEncoder setTexture:finalDirect atIndex:7];
+						[directEncoder setTexture:indirectTextures[0] atIndex:8];
+						[directEncoder setTexture:oppositeFacingTexture atIndex:9];
+						[directEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+						[directEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
+						[directEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
+						[directEncoder dispatchThreads:MTLSizeMake(width, height, 1)
+							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+						[directEncoder endEncoding];
+					}
+
+					// Direct is deterministic and need not be recomputed for each indirect sample.
+					uniforms.diagnosticStage = 0;
+					id<MTLTexture> previousBounce = finalDirect;
+					for (uint32_t bounce = 0; bounce < transportBounceCount; bounce++)
+					{
+						const uint32_t current = (bounce + 1) & 1;
 						const uint32_t previous = current ^ 1;
-						uniforms.passIndex = bounce;
+						uniforms.passIndex = bounce + 1;
 						id<MTLComputeCommandEncoder> bounceEncoder = [commandBuffer computeCommandEncoder];
 						[bounceEncoder setComputePipelineState:remasterIndirectPipelineState];
 						[bounceEncoder setTexture:sourceTexture atIndex:0];
@@ -917,7 +986,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[bounceEncoder setTexture:indirectTextures[previous] atIndex:6];
 						[bounceEncoder setTexture:bounceTextures[current] atIndex:7];
 						[bounceEncoder setTexture:indirectTextures[current] atIndex:8];
+						[bounceEncoder setTexture:oppositeFacingTexture atIndex:9];
 						[bounceEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+						[bounceEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
+						[bounceEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
 						[bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 						[bounceEncoder endEncoding];
@@ -939,7 +1011,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							diagnosticBounceCount = bounce + 1;
 						}
 					}
-					finalIndirect = indirectTextures[(indirectBounceCount - 1) & 1];
+					finalIndirect = indirectTextures[transportBounceCount & 1];
 					if (sampleAccumulation)
 					{
 						const uint32_t current = sample & 1;
@@ -956,6 +1028,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					}
 				}
 				if (lightingView == RemasterLightingView::Composite ||
+					visibilityView ||
 					lightingView == RemasterLightingView::DirectContribution ||
 					lightingView == RemasterLightingView::Difference ||
 					lightingView == RemasterLightingView::IndirectContribution ||
@@ -965,8 +1038,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[compositeEncoder setComputePipelineState:remasterCompositePipelineState];
 					[compositeEncoder setTexture:sourceTexture atIndex:0];
 					[compositeEncoder setTexture:directTexture atIndex:1];
-					[compositeEncoder setTexture:finalIndirect atIndex:2];
-					[compositeEncoder setTexture:presentationTexture atIndex:3];
+					[compositeEncoder setTexture:finalDirect atIndex:2];
+					[compositeEncoder setTexture:finalIndirect atIndex:3];
+					[compositeEncoder setTexture:presentationTexture atIndex:4];
+					[compositeEncoder setTexture:surfaceTexture atIndex:5];
 					[compositeEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 					[compositeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
@@ -1058,9 +1133,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					NSLog(@"Remaster GI metrics unavailable: %@", commandBuffer.error);
 				else
 				{
-					NSLog(@"Remaster GI config: bounces=%u roughness=%.6g original=%.6g samples=%u accumulation=%s lights=%zu",
-						unsigned(indirectBounceCount), indirectRoughness, originalSceneContribution,
-						unsigned(samplesPerFrame), sampleAccumulation ? "on" : "off", lights ? lights->size() : 0);
+					NSLog(@"Remaster GI config: bounces=%u roughness=%.6g camera=(%.6g, %.6g, %.6g) original=%.6g samples=%u accumulation=%s",
+						unsigned(indirectBounceCount), indirectRoughness, normalizedCameraDirection.x,
+						normalizedCameraDirection.y, normalizedCameraDirection.z,
+						originalSceneContribution, unsigned(samplesPerFrame), sampleAccumulation ? "on" : "off");
 					if (lights)
 						for (size_t lightIndex = 0; lightIndex < lights->size(); lightIndex++)
 						{

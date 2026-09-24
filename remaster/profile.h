@@ -128,6 +128,7 @@ struct RemasterProfile
 	std::string gameTitle;
 	std::string romSha256;
 	float lightingCoordinateScale = 16.0f;
+	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
 	float originalSceneContribution = 0.65f;
@@ -238,6 +239,25 @@ namespace RemasterProfileParsing
 			return false;
 		parsed = result;
 		return true;
+	}
+
+	inline bool ParseFloat3 (const std::string &value, std::array<float, 3> &parsed)
+	{
+		if (value.size() < 2 || value.front() != '[' || value.back() != ']')
+			return false;
+		std::string body = value.substr(1, value.size() - 2);
+		size_t offset = 0;
+		for (size_t component = 0; component < parsed.size(); component++)
+		{
+			size_t comma = body.find(',', offset);
+			if ((component + 1 < parsed.size()) != (comma != std::string::npos))
+				return false;
+			std::string item = Trim(body.substr(offset, comma == std::string::npos ? comma : comma - offset));
+			if (!ParseFloat(item, parsed[component]))
+				return false;
+			offset = comma == std::string::npos ? body.size() : comma + 1;
+		}
+		return offset == body.size();
 	}
 
 	inline bool ParseBool (const std::string &value, bool &parsed)
@@ -413,6 +433,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	bool hasLightingSpace = false;
 	bool hasIndirectRoughness = false;
 	bool hasSceneSampling = false;
+	bool hasCameraDirection = false;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
@@ -554,6 +575,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			{
 				if (!ParseFloat(value, parsed.lightingCoordinateScale))
 					fail(lineNumber, "coordinate_scale must be a number");
+			}
+			else if (key == "camera_direction")
+			{
+				hasCameraDirection = true;
+				if (!ParseFloat3(value, parsed.cameraDirection))
+					fail(lineNumber, "camera_direction must contain exactly three numbers");
 			}
 			else if (key == "indirect_bounces")
 			{
@@ -781,8 +808,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 8)
-		fail(0, "schema_version must be an integer in [1, 8]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 9)
+		fail(0, "schema_version must be an integer in [1, 9]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -803,10 +830,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		fail(0, "indirect_roughness requires schema_version 7");
 	if (parsed.schemaVersion < 8 && hasSceneSampling)
 		fail(0, "scene contribution and sampling controls require schema_version 8");
+	if (parsed.schemaVersion < 9 && hasCameraDirection)
+		fail(0, "camera_direction requires schema_version 9");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
 		fail(0, "lighting_space.indirect_roughness must be finite and in [0, 1]");
+	const float cameraLengthSquared = parsed.cameraDirection[0] * parsed.cameraDirection[0] +
+		parsed.cameraDirection[1] * parsed.cameraDirection[1] + parsed.cameraDirection[2] * parsed.cameraDirection[2];
+	if (!std::isfinite(parsed.cameraDirection[0]) || !std::isfinite(parsed.cameraDirection[1]) ||
+		!std::isfinite(parsed.cameraDirection[2]) || !std::isfinite(cameraLengthSquared) || cameraLengthSquared <= 0.0f)
+		fail(0, "lighting_space.camera_direction must be finite and nonzero");
 	if (!std::isfinite(parsed.originalSceneContribution) || parsed.originalSceneContribution < 0.0f ||
 		parsed.originalSceneContribution > 1.0f)
 		fail(0, "lighting_space.original_scene_contribution must be finite and in [0, 1]");
@@ -966,7 +1000,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 	}
-	const uint32_t requiredSchema = std::max<uint32_t>(8, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
+	const uint32_t requiredSchema = std::max<uint32_t>(9, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
@@ -974,6 +1008,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
 	output << "\n[lighting_space]\n";
 	output << "coordinate_scale = " << profile.lightingCoordinateScale << "\n";
+	output << "camera_direction = [" << profile.cameraDirection[0] << ", " << profile.cameraDirection[1] << ", " <<
+		profile.cameraDirection[2] << "]\n";
 	output << "indirect_bounces = " << unsigned(profile.indirectBounceCount) << "\n";
 	output << "indirect_roughness = " << profile.indirectRoughness << "\n";
 	output << "original_scene_contribution = " << profile.originalSceneContribution << "\n";

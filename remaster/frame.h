@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 13;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 14;
 
 struct RemasterFramePixel
 {
@@ -123,6 +123,7 @@ struct RemasterFrame
 	uint32_t height = 0;
 	std::string profileRomSha256;
 	float lightingCoordinateScale = 16.0f;
+	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
 	float originalSceneContribution = 0.65f;
@@ -478,6 +479,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		(result.schemaVersion >= 11 && !input.ReadFloat(result.indirectRoughness)) ||
 		(result.schemaVersion >= 12 && (!input.ReadFloat(result.originalSceneContribution) ||
 			!input.ReadU8(result.samplesPerFrame) || !input.ReadU8(sampleAccumulation))) ||
+		(result.schemaVersion >= 14 && (!input.ReadFloat(result.cameraDirection[0]) ||
+			!input.ReadFloat(result.cameraDirection[1]) || !input.ReadFloat(result.cameraDirection[2]))) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
@@ -489,6 +492,11 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	if (result.indirectBounceCount > 16)
 		return false;
 	if (!std::isfinite(result.indirectRoughness) || result.indirectRoughness < 0.0f || result.indirectRoughness > 1.0f)
+		return false;
+	const float cameraLengthSquared = result.cameraDirection[0] * result.cameraDirection[0] +
+		result.cameraDirection[1] * result.cameraDirection[1] + result.cameraDirection[2] * result.cameraDirection[2];
+	if (!std::isfinite(result.cameraDirection[0]) || !std::isfinite(result.cameraDirection[1]) ||
+		!std::isfinite(result.cameraDirection[2]) || !std::isfinite(cameraLengthSquared) || cameraLengthSquared <= 0.0f)
 		return false;
 	if (!std::isfinite(result.originalSceneContribution) || result.originalSceneContribution < 0.0f ||
 		result.originalSceneContribution > 1.0f || result.samplesPerFrame < 1 || result.samplesPerFrame > 16 || sampleAccumulation > 1)
@@ -918,6 +926,16 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::Float(bytes, frame.originalSceneContribution);
 		RemasterFrameSerialization::U8(bytes, frame.samplesPerFrame);
 		RemasterFrameSerialization::U8(bytes, frame.sampleAccumulation ? 1 : 0);
+	}
+	if (frame.schemaVersion >= 14)
+	{
+		const float cameraLengthSquared = frame.cameraDirection[0] * frame.cameraDirection[0] +
+			frame.cameraDirection[1] * frame.cameraDirection[1] + frame.cameraDirection[2] * frame.cameraDirection[2];
+		if (!std::isfinite(frame.cameraDirection[0]) || !std::isfinite(frame.cameraDirection[1]) ||
+			!std::isfinite(frame.cameraDirection[2]) || !std::isfinite(cameraLengthSquared) || cameraLengthSquared <= 0.0f)
+			return false;
+		for (float component : frame.cameraDirection)
+			RemasterFrameSerialization::Float(bytes, component);
 	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||

@@ -26,11 +26,14 @@ struct Uniforms
     uint32_t width, height, view, lightCount, passIndex, diagnosticStage;
     float indirectRoughness, originalSceneContribution;
     uint32_t sampleIndex, sampleCount, randomSeed;
+    simd_float4 cameraDirection;
+    simd_float4 debugPositionRadius;
+    simd_float4 debugColorIntensity;
 };
 static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
-static_assert(sizeof(Uniforms) == 44, "Metal uniforms ABI");
+static_assert(sizeof(Uniforms) == 96 && offsetof(Uniforms, cameraDirection) == 48, "Metal uniforms ABI");
 
-constexpr unsigned width = 32, height = 17, receiverX = 4, receiverY = 8;
+constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;
 constexpr unsigned emitter = receiverY * width + 26;
 enum Field { Source, Occlusion, Surface, Height, Participation, PreviousBounce,
@@ -79,6 +82,9 @@ int main()
             id<MTLComputePipelineState> indirect = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce"] error:&error];
             require(indirect != nil, error.localizedDescription);
+            id<MTLComputePipelineState> composite = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterCompositeLighting"] error:&error];
+            require(composite != nil, error.localizedDescription);
             id<MTLComputePipelineState> accumulate = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterAccumulateSamples"] error:&error];
             require(accumulate != nil, error.localizedDescription);
@@ -97,8 +103,8 @@ int main()
                 s[Source].assign(width * height, simd_float4{1, 1, 1, 1});
                 s[Surface].assign(width * height, simd_float4{8, 0, 0, 0});
                 // Only the receiver and a distant one-pixel radiance patch participate.
-                s[Surface][receiver] = {8, 1, 0, 0};
-                s[Surface][emitter] = {8, -1, 0, 0};
+                s[Surface][receiver] = {8, 0.98f, 0, 0.198997f};
+                s[Surface][emitter] = {8, -0.98f, 0, 0.198997f};
                 s[Participation][receiver] = s[Participation][emitter] = {1, 1, 0, 0};
                 s[PreviousBounce][emitter] = {1, 0.5f, 0.25f, 1};
                 s[PreviousIndirect].assign(width * height, simd_float4{91, 37, 13, 1});
@@ -113,14 +119,19 @@ int main()
             auto run = [&](const Scene &s, bool bounce, unsigned passIndex = 0,
                            float lightZ = 8.0f, int selectedPixel = -1, Scene *readback = nullptr,
                             bool productionRadiance = false, unsigned diagnosticStage = 0, float indirectRoughness = 1.0f,
-                            unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1) {
+                            unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1,
+                             simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
+                             const Light *debugLight = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
                 const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
-                    Participation, PreviousBounce, PreviousIndirect, NextBounce, NextIndirect};
-                const Field *bindings = bounce ? indirectBindings : directBindings;
-                unsigned count = 9;
-                id<MTLTexture> textures[9];
+                    Participation, PreviousBounce, PreviousIndirect, NextBounce, NextIndirect, OppositeFacing};
+                // Direct holds the emission seed; NextBounce holds the saved first collision.
+                const Field compositeBindings[] = {Source, Direct, NextBounce, NextIndirect, Output, Surface};
+                const bool composing = compositeView >= 0;
+                const Field *bindings = composing ? compositeBindings : bounce ? indirectBindings : directBindings;
+                unsigned count = composing ? 6 : bounce ? 10 : 9;
+                id<MTLTexture> textures[10];
                 for (unsigned i = 0; i < count; ++i)
                 {
                     const bool radiance = bindings[i] == PreviousBounce || bindings[i] == PreviousIndirect ||
@@ -146,8 +157,17 @@ int main()
                         [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                             withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
-                Uniforms uniforms = {width, height, 0, 1, passIndex, diagnosticStage,
-                    indirectRoughness, 0.65f, sampleIndex, sampleCount, randomSeed};
+                Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
+                    indirectRoughness, 0.65f, sampleIndex, sampleCount, randomSeed,
+                    {cameraDirection.x, cameraDirection.y, cameraDirection.z, 0}, {}, {}};
+                if (debugLight)
+                {
+                    uniforms.debugPositionRadius = {debugLight->position.x, debugLight->position.y,
+                        debugLight->position.z, debugLight->radius};
+                    uniforms.debugColorIntensity = {std::pow(debugLight->color.x, 2.2f),
+                        std::pow(debugLight->color.y, 2.2f), std::pow(debugLight->color.z, 2.2f),
+                        debugLight->intensity / 25.0f};
+                }
                 Light light = {};
                 light.position = {26.5f, receiverY + 0.5f, lightZ};
                 light.radius = 64;
@@ -156,16 +176,31 @@ int main()
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 require(encoder != nil, @"Could not create compute encoder");
-                [encoder setComputePipelineState:bounce ? indirect : direct];
+                [encoder setComputePipelineState:composing ? composite : bounce ? indirect : direct];
                 for (unsigned i = 0; i < count; ++i)
                     [encoder setTexture:textures[i] atIndex:i];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-                if (!bounce)
+                if (!bounce && !composing)
                     [encoder setBytes:&light length:sizeof(light) atIndex:1];
+                if (bounce && !composing)
+                {
+                    std::vector<uint32_t> emitters;
+                    for (uint32_t pixel = 0; pixel < width * height; ++pixel)
+                        if (s[Participation][pixel].x > 0.5f &&
+                            (s[PreviousBounce][pixel].x > 0 || s[PreviousBounce][pixel].y > 0 || s[PreviousBounce][pixel].z > 0))
+                            emitters.push_back(pixel);
+                    const uint32_t emitterCount = static_cast<uint32_t>(emitters.size());
+                    if (emitters.empty())
+                        emitters.push_back(0);
+                    id<MTLBuffer> emitterBuffer = [device newBufferWithBytes:emitters.data()
+                        length:emitters.size() * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                    [encoder setBuffer:emitterBuffer offset:0 atIndex:1];
+                    [encoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
+                }
                 [encoder dispatchThreadgroups:MTLSizeMake(width, height, 1)
                     threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                 [encoder endEncoding];
-                id<MTLTexture> presentation = textures[bounce ? 8 : 2];
+                id<MTLTexture> presentation = textures[composing ? 4 : bounce ? 8 : 2];
                 if (selectedPixel >= 0)
                 {
                     std::array<uint8_t, width * height> mask = {};
@@ -198,46 +233,49 @@ int main()
                     command.error.localizedDescription);
                 Result result;
                 MTLRegion region = MTLRegionMake2D(receiverX, receiverY, 1, 1);
+                const unsigned radianceBinding = composing ? 2 : bounce ? 7 : 6;
                 if (productionRadiance)
                 {
                     uint16_t encoded[4];
-                    [textures[bounce ? 7 : 6] getBytes:encoded bytesPerRow:sizeof(encoded)
+                    [textures[radianceBinding] getBytes:encoded bytesPerRow:sizeof(encoded)
                         fromRegion:region mipmapLevel:0];
                     for (unsigned channel = 0; channel < 4; ++channel)
                         result.bounce[channel] = halfToFloat(encoded[channel]);
+                }
+                else
+                    [textures[radianceBinding] getBytes:&result.bounce bytesPerRow:sizeof(simd_float4)
+                        fromRegion:region mipmapLevel:0];
+                if (presentation.pixelFormat == MTLPixelFormatRGBA16Float)
+                {
+                    uint16_t encoded[4];
                     [presentation getBytes:encoded bytesPerRow:sizeof(encoded)
                         fromRegion:region mipmapLevel:0];
                     for (unsigned channel = 0; channel < 4; ++channel)
                         result.accumulated[channel] = halfToFloat(encoded[channel]);
                 }
                 else
-                {
-                    [textures[bounce ? 7 : 6] getBytes:&result.bounce bytesPerRow:sizeof(simd_float4)
-                        fromRegion:region mipmapLevel:0];
                     [presentation getBytes:&result.accumulated bytesPerRow:sizeof(simd_float4)
                         fromRegion:region mipmapLevel:0];
-                }
-                if (bounce && readback)
+                if (readback)
                 {
-                    if (productionRadiance)
+                    for (unsigned binding = 0; binding < count; ++binding)
                     {
-                        std::vector<uint16_t> encoded(width * height * 4);
-                        for (Field field : {NextBounce, NextIndirect})
+                        const Field field = bindings[binding];
+                        if (composing ? field != Output : bounce ?
+                            (field != NextBounce && field != NextIndirect) : (field != Direct && field != Output))
+                            continue;
+                        if (textures[binding].pixelFormat == MTLPixelFormatRGBA16Float)
                         {
-                            const unsigned binding = field == NextBounce ? 7 : 8;
+                            std::vector<uint16_t> encoded(width * height * 4);
                             [textures[binding] getBytes:encoded.data() bytesPerRow:width * 4 * sizeof(uint16_t)
                                 fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
                             for (unsigned pixel = 0; pixel < width * height; ++pixel)
                                 for (unsigned channel = 0; channel < 4; ++channel)
                                     (*readback)[field][pixel][channel] = halfToFloat(encoded[pixel * 4 + channel]);
                         }
-                    }
-                    else
-                    {
-                        [textures[7] getBytes:(*readback)[NextBounce].data() bytesPerRow:width * sizeof(simd_float4)
-                            fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
-                        [textures[8] getBytes:(*readback)[NextIndirect].data() bytesPerRow:width * sizeof(simd_float4)
-                            fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                        else
+                            [textures[binding] getBytes:(*readback)[field].data() bytesPerRow:width * sizeof(simd_float4)
+                                fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
                     }
                 }
                 return result;
@@ -252,7 +290,7 @@ int main()
                 id<MTLTexture> output = [device newTextureWithDescriptor:descriptor];
                 [sample replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&second bytesPerRow:sizeof(second)];
                 [previous replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&first bytesPerRow:sizeof(first)];
-                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 1, 2, 1};
+                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 1, 2, 1, {0, 0, -1, 0}, {}, {}};
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 [encoder setComputePipelineState:accumulate];
@@ -301,62 +339,215 @@ int main()
             };
 
             Scene s = scene();
-            simd_float4 directClear = run(s, false).bounce;
-            positive("direct unblocked point light", directClear);
-            blocker(s, 7, 1, false, 0);
-            near("direct missing-height full blocker shadows", run(s, false).bounce, {});
-            blocker(s, 7, 1, true, 0);
-            near("direct passes over low authored blocker", run(s, false).bounce, directClear);
-            blocker(s, 7, 1, true, 16);
-            near("direct high authored blocker shadows", run(s, false).bounce, {});
-            blocker(s, 7, 0.5f, true, 16);
-            dimmed("direct partial coverage dims", run(s, false).bounce, directClear);
+            near("direct field excludes generated point-light proxies", run(s, false).bounce, {});
+            s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};
+            positive("direct field retains per-pixel emission seed", run(s, false).bounce);
 
-            s = scene();
-            s[Surface][receiver] = {8, -1, 0, 0};
-            near("back-facing normal rejects direct light", run(s, false).bounce, {});
-            s[OppositeFacing][receiver].x = 1;
-            positive("opposite-facing option reverses XY for direct light", run(s, false).bounce);
-            near("opposite-facing option does not alter indirect transport", run(s, true).bounce, {});
+            // Authored normal(255,128,128) retains a small camera-facing +Z.
+            // Put the source to the left: it faces the receiver, but the receiver faces away.
+            constexpr unsigned wallSource = receiver - 2;
+            const simd_float3 wallNormal = simd_normalize(simd_float3{1, 1.0f / 255, 1.0f / 255});
+            Scene wall = scene();
+            wall[Participation][emitter] = {};
+            wall[PreviousBounce].assign(width * height, simd_float4{});
+            wall[Surface][receiver] = wall[Surface][wallSource] =
+                {8, wallNormal.x, wallNormal.y, wallNormal.z};
+            wall[Participation][wallSource] = {1, 1, 0, 0};
+            wall[PreviousBounce][wallSource] = {1, 0.5f, 0.25f, 1};
+            near("co-oriented walls reject direct collision with opposite facing off", run(wall, true).bounce, {});
+            wall[OppositeFacing][receiver].x = 1;
+            const Result oppositeWall = run(wall, true);
+            positive("co-oriented walls receive direct collision with opposite facing on", oppositeWall.bounce);
+            near("opposite-facing first collision does not accumulate indirect", oppositeWall.accumulated, {});
+            s = wall;
+            s[OppositeFacing][receiver].x = 0;
+            s[Surface][receiver].y *= -1;
+            s[Surface][receiver].z *= -1;
+            near("opposite receiver uses mirrored XY normal including Oren-Nayar response",
+                oppositeWall.bounce, run(s, true).bounce);
+            near("passIndex 1 ignores opposite receiver toggle", run(wall, true, 1).bounce, {});
+            wall[OppositeFacing][receiver].x = 0;
+            near("passIndex 1 stays black with toggle off", run(wall, true, 1).bounce, {});
+            wall[OppositeFacing][receiver].x = 1;
+            s = wall;
+            s[Surface][wallSource].y *= -1;
+            s[OppositeFacing][wallSource].x = 1;
+            near("opposite facing never rescues a rejected source cosine", run(s, true).bounce, {});
 
-            s = scene();
-            s[Surface][receiver] = {20.0f / 255 * 16, 0, 0, 1};
-            Result raisedLight = run(s, false, 0, 8.5f);
-            positive("raised torch illuminates front-facing speckled surface", raisedLight.bounce);
-            blocker(s, 7, 1, true, 14.0f / 255 * 16);
-            near("profile-scale wall lies below receiver-to-torch ray",
-                run(s, false, 0, 8.5f).bounce, raisedLight.bounce);
-            blocker(s, 7, 1, true, 5);
-            near("wall above receiver-to-torch ray blocks direct light",
-                run(s, false, 0, 8.5f).bounce, {});
-
-            for (float scale : {8.0f, 255.0f})
+            for (bool half : {false, true})
             {
-                const float dz = 32.0f / 255.0f * scale;
-                const float distance = std::sqrt(22.0f * 22.0f + dz * dz);
-                const float response = 0.9f * (dz / distance) /
-                    (1.0f + 6.0f * distance * distance / (64.0f * 64.0f));
-                const simd_float4 expected = {response, response * 0.5f, response * 0.25f, 1};
-                for (float normalZ : {1.0f, -1.0f})
+                simd_float4 collisions[2] = {};
+                for (unsigned level = 0; level < 2; ++level)
                 {
-                    s = scene();
-                    // Height bytes 0 and 32 become world heights before reaching the shader.
-                    const float receiverZ = normalZ > 0 ? 0 : dz;
-                    s[Height][receiver] = {receiverZ, 1, 0, 0};
-                    s[Surface][receiver] = {receiverZ, 0, 0, normalZ};
-                    char name[96];
-                    std::snprintf(name, sizeof(name), "direct Lambertian RGB scale %.0f normal %+.0fZ", scale, normalZ);
-                    near(name, run(s, false, 0, receiverZ + normalZ * dz).bounce, expected);
-                    std::snprintf(name, sizeof(name), "direct equal height scale %.0f normal %+.0fZ", scale, normalZ);
-                    near(name, run(s, false, 0, receiverZ).bounce, {});
-                    std::snprintf(name, sizeof(name), "direct backface height scale %.0f normal %+.0fZ", scale, normalZ);
-                    near(name, run(s, false, 0, receiverZ - normalZ * dz).bounce, {});
+                    const float intensity = level == 0 ? 10.0f : 200.0f;
+                    s = wall;
+                    // Discard synthetic radiance and feed the actual emission-kernel readback.
+                    s[PreviousBounce].assign(width * height, simd_float4{});
+                    s[Emission][wallSource] = {1, 0.75f, 0.5f, intensity / 255.0f};
+                    run(s, false, 0, 8, -1, &s, half);
+                    positive("emission readback contains authored seed", s[Direct][wallSource]);
+                    near("emission seed does not contain receiver lighting", s[Direct][receiver], {});
+                    s[PreviousBounce] = s[Direct];
+                    const Result collision = run(s, true, 0, 8, -1, &s, half);
+                    collisions[level] = collision.bounce;
+                    positive("actual emission seed illuminates co-oriented receiver", collision.bounce);
+                    bool noIndirect = true;
+                    for (const auto &pixel : s[NextIndirect])
+                        noIndirect &= pixel.x == 0 && pixel.y == 0 && pixel.z == 0;
+                    check("mandatory collision clears entire indirect field", noIndirect, collision.accumulated, {});
+                    s[OppositeFacing][receiver].x = 0;
+                    near("actual emission collision stays black with opposite facing off",
+                        run(s, true, 0, 8, -1, nullptr, half).bounce, {});
                 }
+                bool linear = true;
+                for (unsigned c = 0; c < 3; ++c)
+                    linear &= std::isfinite(collisions[1][c]) && collisions[0][c] > 0 &&
+                        std::fabs(collisions[1][c] / collisions[0][c] - 20.0f) < (half ? 0.08f : 0.001f);
+                check(half ? "RGBA16Float intensity 10 to 200 scales collision by 20" :
+                    "intensity 10 to 200 scales collision by 20", linear, collisions[1], collisions[0] * 20);
             }
 
             s = scene();
             Result clear = run(s, true);
             positive("indirect distant mutually facing radiance patch", clear.bounce);
+
+            for (bool half : {false, true})
+            {
+                Scene visibility = scene();
+                visibility[Emission][emitter] = {1, 0.75f, 0.5f, 10.0f / 255.0f};
+                run(visibility, false, 0, 8, -1, &visibility, half);
+                visibility[PreviousBounce] = visibility[Direct];
+                auto visible = [&] {
+                    return run(visibility, true, 0, 8, -1, &visibility, half, 4);
+                };
+                near("unblocked emission path has full visibility", visible().bounce, simd_float4{1, 1, 1, 1});
+                near("visibility diagnostic leaves indirect empty", visible().accumulated, {});
+                visibility[Surface][receiver] = visibility[Surface][emitter] = {8, 0, 0, 1};
+                near("coplanar normals still reject actual direct light",
+                    run(visibility, true, 0, 8, -1, nullptr, half).bounce, {});
+                near("visibility does not confuse facing rejection with occlusion", visible().bounce, simd_float4{1, 1, 1, 1});
+                visibility[Source][receiver] = {0, 0, 0, 1};
+                visibility[Participation][receiver].y = 0;
+                near("visibility ignores albedo and receivesGi", visible().bounce, simd_float4{1, 1, 1, 1});
+                blocker(visibility, 7, 1, true, 16);
+                near("opaque high blocker has zero visibility", visible().bounce, {});
+                blocker(visibility, 7, 1, true, 0);
+                near("visibility passes over low authored blocker", visible().bounce, simd_float4{1, 1, 1, 1});
+                blocker(visibility, 7, 0.5f, true, 16);
+                near("fractional blocker preserves half visibility", visible().bounce, simd_float4{0.5f, 0.5f, 0.5f, 1});
+                const Result presented = run(visibility, false, 0, 8, -1, nullptr, half,
+                    0, 1, 0, 1, 1, simd_float3{0, 0, -1}, 2);
+                near("Visibility view presents transmittance in cyan without exposure or gamma",
+                    presented.accumulated, simd_float4{0, 0.425f, 0.5f, 1});
+                visibility[Direct][receiver].w = 0;
+                visibility[Source][receiver] = {0.2f, 0.4f, 0.6f, 1};
+                near("Visibility presentation preserves UI pixels",
+                    run(visibility, false, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1, simd_float3{0, 0, -1}, 2).accumulated,
+                    visibility[Source][receiver]);
+                blocker(visibility, 7, 1, false, 0);
+                near("missing-height blocker remains opaque in visibility", visible().bounce, {});
+                blocker(visibility, 7, 0, false, 0);
+                visibility[Participation][emitter].x = 0;
+                near("visibility excludes UI emitters", visible().bounce, {});
+                visibility[Participation][emitter].x = 1;
+                visibility[PreviousBounce][emitter] = {};
+                near("no sampled emission yields zero visibility", visible().bounce, {});
+            }
+            for (bool half : {false, true})
+            {
+                Scene distant = scene();
+                distant[PreviousBounce][emitter] = {};
+                constexpr unsigned farEmitter = receiver + 100;
+                distant[Surface][farEmitter] = distant[Surface][emitter];
+                distant[Participation][farEmitter] = {1, 1, 0, 0};
+                distant[Emission][farEmitter] = {1, 1, 1, 200.0f / 255.0f};
+                run(distant, false, 0, 8, -1, &distant, half);
+                distant[PreviousBounce] = distant[Direct];
+                const Result far = run(distant, true, 0, 8, -1, nullptr, half, 0, 0);
+                positive("single-pixel emitter illuminates beyond old 64-pixel cutoff", far.bounce);
+                const float expected = 0.9f * 800.0f * 0.98f * 0.98f / (float(M_PI) * 10001.0f);
+                check("direct uses unit pixel area and inverse-square distance", std::fabs(far.bounce.x - expected) <
+                    expected * (half ? 0.002f : 1e-5f), far.bounce, simd_float4{expected, expected, expected, 1});
+                near("far emitter visibility is fully clear", run(distant, true, 0, 8, -1, nullptr, half, 4).bounce,
+                    simd_float4{1, 1, 1, 1});
+                near("direct enumeration is independent of jitter seed", run(distant, true, 0, 8, -1, nullptr,
+                    half, 0, 0, 3, 8, 97).bounce, far.bounce);
+                blocker(distant, 80, 1, false, 0);
+                near("visibility traverses blockers beyond old range", run(distant, true, 0, 8, -1, nullptr, half, 4).bounce, {});
+                near("far blocker shadows direct", run(distant, true, 0, 8, -1, nullptr, half).bounce, {});
+                blocker(distant, 80, 0, false, 0);
+                distant[Surface][receiver] = {50, 0, 0, 1};
+                distant[Surface][farEmitter].x = 32;
+                near("higher +Z out-of-bounds surface rejects lower emitter despite clear visibility",
+                    run(distant, true, 0, 8, -1, nullptr, half).bounce, {});
+                near("height-facing rejection is not shadowing", run(distant, true, 0, 8, -1, nullptr, half, 4).bounce,
+                    simd_float4{1, 1, 1, 1});
+                distant[Surface][receiver].x = 0;
+                positive("height-zero floor receives direct light from elevated emitter",
+                    run(distant, true, 0, 8, -1, nullptr, half).bounce);
+                // Distance 3 falls between the old radial stencil's samples at 2 and 6.
+                distant[PreviousBounce][farEmitter] = {};
+                constexpr unsigned tinyEmitter = receiver + 3;
+                distant[Surface][receiver] = s[Surface][receiver];
+                distant[Surface][tinyEmitter] = s[Surface][emitter];
+                distant[Participation][tinyEmitter] = {1, 1, 0, 0};
+                distant[PreviousBounce][tinyEmitter] = {1, 1, 1, 1};
+                positive("direct finds tiny emitter between stencil cells", run(distant, true, 0, 8, -1, nullptr, half).bounce);
+            }
+            for (bool half : {false, true})
+            {
+                Scene distant = scene();
+                distant[PreviousBounce][emitter] = {};
+                // Last in-frame radial sample, 122 pixels from the receiver.
+                constexpr unsigned patch = receiver + 122;
+                distant[Participation][patch] = {1, 1, 0, 0};
+                distant[Surface][patch] = distant[Surface][emitter];
+                distant[PreviousBounce][patch] = {1, 1, 1, 1};
+                const Result clearFar = run(distant, true, 1, 8, -1, nullptr, half, 0, 0);
+                positive("indirect reaches radiance near frame edge beyond 64 pixels", clearFar.bounce);
+                near("distant indirect accumulates once", clearFar.accumulated, clearFar.bounce);
+                blocker(distant, 80, 1, false, 0);
+                near("distant indirect respects missing-height blocker",
+                    run(distant, true, 1, 8, -1, nullptr, half).bounce, {});
+                blocker(distant, 80, 1, true, 16);
+                near("distant indirect respects high authored blocker",
+                    run(distant, true, 1, 8, -1, nullptr, half).bounce, {});
+                blocker(distant, 80, 1, true, 0);
+                near("distant indirect passes over low blocker",
+                    run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce, clearFar.bounce);
+                blocker(distant, 80, 0.5f, true, 16);
+                dimmed("distant indirect retains fractional transmittance",
+                    run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce, clearFar.bounce);
+                // A farther endpoint may clear a blocker that hides a nearer, lower one.
+                blocker(distant, 80, 1, true, 16);
+                constexpr unsigned hiddenPatch = receiver + 90;
+                distant[Participation][hiddenPatch] = {1, 1, 0, 0};
+                distant[Surface][hiddenPatch] = distant[Surface][emitter];
+                distant[PreviousBounce][hiddenPatch] = {1, 1, 1, 1};
+                distant[Surface][patch].x = 40;
+                positive("blocked lower connection does not terminate search for higher radiance",
+                    run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce);
+            }
+            s[OppositeFacing][receiver].x = 1;
+            near("opposite facing retains valid original receiver response", run(s, true).bounce, clear.bounce);
+            s[OppositeFacing][receiver].x = 0;
+            const Result indirectClear = run(s, true, 1);
+            s[OppositeFacing][receiver].x = 1;
+            near("passIndex 1 ignores toggle on an illuminated receiver", run(s, true, 1).bounce, indirectClear.bounce);
+            s[OppositeFacing][receiver].x = 0;
+            Scene sloped = scene();
+            sloped[Surface][receiver] = {8, 0.5f, 0, 0.8660254f};
+            sloped[Surface][emitter] = {40, 0, 0, -1};
+            const simd_float4 originalResponse = run(sloped, true).bounce;
+            sloped[Surface][receiver].y *= -1;
+            const simd_float4 mirroredResponse = run(sloped, true).bounce;
+            positive("max-response fixture illuminates both receiver orientations", mirroredResponse);
+            sloped[OppositeFacing][receiver].x = 1;
+            simd_float4 maximumResponse = {};
+            for (unsigned c = 0; c < 3; ++c)
+                maximumResponse[c] = std::fmax(originalResponse[c], mirroredResponse[c]);
+            near("opposite facing takes maximum full cosine-times-Oren-Nayar response, not sum",
+                run(sloped, true).bounce, maximumResponse);
             for (unsigned y = receiverY - 2; y <= receiverY + 2; y++)
                 for (unsigned x = 23; x <= 29; x++)
                 {
@@ -365,8 +556,8 @@ int main()
                     s[Participation][pixel] = {1, 1, 0, 0};
                     s[PreviousBounce][pixel] = {float(x - 22) / 7, 0.5f, 0.25f, 1};
                 }
-            Result stochasticA = run(s, true, 0, 8, -1, nullptr, false, 0, 1, 0, 4, 11);
-            Result stochasticB = run(s, true, 0, 8, -1, nullptr, false, 0, 1, 1, 4, 11);
+            Result stochasticA = run(s, true, 1, 8, -1, nullptr, false, 0, 1, 0, 4, 11);
+            Result stochasticB = run(s, true, 1, 8, -1, nullptr, false, 0, 1, 1, 4, 11);
             check("stochastic samples jitter independently", stochasticA.bounce.x != stochasticB.bounce.x,
                 stochasticA.bounce, stochasticB.bounce);
             simd_float4 stochasticMean = average(stochasticA.bounce, stochasticB.bounce);
@@ -375,13 +566,12 @@ int main()
 			s[Surface][emitter] = {8, -0.5f, 0, 0.8660254f};
 			Result diffuseAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f);
 			Result shinyAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 0.0f);
-			check("indirect lower roughness narrows an angled source lobe", shinyAngled.bounce.x > 0.0f &&
-				shinyAngled.bounce.x < diffuseAngled.bounce.x, shinyAngled.bounce, diffuseAngled.bounce);
-			s[Surface][emitter] = {8, -1, 0, 0};
-			Result diffuseNormal = run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f);
-			Result shinyNormal = run(s, true, 0, 8, -1, nullptr, false, 0, 0.0f);
-			check("indirect lower roughness concentrates rather than destroys normal energy",
-				shinyNormal.bounce.x > diffuseNormal.bounce.x, shinyNormal.bounce, diffuseNormal.bounce);
+			check("surface roughness changes camera-facing diffuse scattering", shinyAngled.bounce.x > 0.0f &&
+				std::fabs(shinyAngled.bounce.x - diffuseAngled.bounce.x) > 1e-6f, shinyAngled.bounce, diffuseAngled.bounce);
+			near("camera forward magnitude is normalized", run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f,
+				0, 1, 1, simd_float3{0, 0, -4}).bounce, diffuseAngled.bounce);
+			near("camera behind the surface rejects its reflected radiance", run(s, true, 0, 8, -1, nullptr,
+				false, 0, 1.0f, 0, 1, 1, simd_float3{0, 0, 1}).bounce, {});
 			s = scene();
             Result distanceStage = run(s, true, 0, 8, -1, nullptr, false, 1);
             Result cosineStage = run(s, true, 0, 8, -1, nullptr, false, 2);
@@ -404,18 +594,16 @@ int main()
                 0.9f * std::pow(0.5f, 2.2f), 0.9f * std::pow(0.75f, 2.2f), 1};
             near("indirect applies linear RGB receiver albedo once", paintedReflectance.bounce,
                 visibleStage.bounce * reflectance);
-            near("direct and indirect use the same RGB material reflectance", run(s, false).bounce,
-                directClear * reflectance / 0.9f);
             s[Source][emitter] = {0, 0, 0, 1};
             near("indirect does not reapply source albedo to outgoing radiance", run(s, true).bounce,
                 paintedReflectance.bounce);
             s[PreviousBounce][emitter] *= 8.0f;
             near("indirect HDR input scales linearly without gamma decoding radiance", run(s, true).bounce,
                 paintedReflectance.bounce * 8.0f);
-            s[PreviousBounce][emitter] *= 512.0f;
+            s[PreviousBounce][emitter] *= 8192.0f;
             const Result hdr = run(s, true);
             near("indirect outgoing HDR radiance is not clamped", hdr.bounce,
-                paintedReflectance.bounce * 4096.0f);
+                paintedReflectance.bounce * 65536.0f);
             check("HDR regression exercises outgoing radiance above one", hdr.bounce.z > 1.0f,
                 hdr.bounce, {});
             s = scene();
@@ -429,13 +617,121 @@ int main()
             s[Source][receiver] = {0, 0, 0, 1};
             s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};
             near("self emission decodes color once and ignores absorbing albedo", run(s, false).bounce,
-                reflectance * (2.0f / 0.9f));
-            near("passIndex 0 ignores garbage previousIndirect", clear.accumulated, clear.bounce);
+                reflectance * (200.0f / 0.9f));
+            near("passIndex 0 classifies first collision as direct", clear.accumulated, {});
             s[PreviousBounce][emitter] = {};
             near("indirect needs radiance from previousBounce", run(s, true).bounce, {});
             s = scene();
             s[Surface][receiver] = s[Surface][emitter] = {8, 0, 0, 1};
             near("indirect coplanar +Z surfaces do not exchange light", run(s, true).bounce, {});
+
+            Scene edgeWall = scene();
+            edgeWall[Surface][receiver] = {8, 1, 0, 0};
+            const float edgeExpected = 0.9f * 0.98f / (float(M_PI) * (22 * 22 + 1));
+            near("edge-on Lambertian wall retains finite grazing radiance",
+                run(edgeWall, true, 0, 8, -1, nullptr, false, 0, 0).bounce,
+                simd_float4{edgeExpected, edgeExpected * 0.5f, edgeExpected * 0.25f, 1});
+            positive("edge-on rough wall retains finite grazing radiance", run(edgeWall, true).bounce);
+            edgeWall[Surface][receiver] = {8, 0.98f, 0, -0.198997f};
+            near("actual camera backface remains rejected", run(edgeWall, true).bounce, {});
+
+            for (bool half : {false, true})
+            {
+                Scene disk = scene();
+                disk[PreviousBounce][emitter] = {};
+                disk[Surface][receiver] = {0, 0, 0, 1};
+                Light light = {};
+                light.position = {104.5f, receiverY + 0.5f, 24};
+                light.radius = 4;
+                light.intensity = 25;
+                light.color = {1, 1, 1};
+                auto illuminate = [&](unsigned pass = 0, unsigned stage = 0, int view = -1) {
+                    return run(disk, view < 0, pass, 8, -1, nullptr, half, stage, 0,
+                        0, 1, 1, simd_float3{0, 0, -1}, view, &light);
+                };
+                const simd_float4 clearDisk = illuminate().bounce;
+                positive("debug disk lights floor beyond 64 pixels", clearDisk);
+                const float d2 = 100 * 100 + 24 * 24;
+                const float analytic = 0.9f * 100 * 16 * 24 * 24 / (d2 * (d2 + 1));
+                check("small distant disk matches area and inverse-square cosine reference",
+                    std::fabs(clearDisk.x - analytic) < analytic * 0.02f, clearDisk, simd_float4{analytic, analytic, analytic, 1});
+                light.intensity = 200;
+                near("debug intensity is linear and calibrated like authored emission", illuminate().bounce, clearDisk * 8);
+                light.intensity = 25;
+                light.radius = 2;
+                dimmed("smaller physical disk emits less power", illuminate().bounce, clearDisk);
+                light.radius = 4;
+                for (unsigned y = 0; y < height; y++)
+                {
+                    const unsigned p = y * width + 80;
+                    disk[Occlusion][p] = {1, 1, 0, 0};
+                    disk[Height][p] = {40, 1, 0, 0};
+                    disk[Surface][p] = {40, 0, 0, 1};
+                }
+                near("debug disk respects full-height wall", illuminate().bounce, {});
+                for (unsigned y = 0; y < height; y++)
+                    disk[Surface][y * width + 80].x = 0;
+                near("debug disk clears low wall", illuminate().bounce, clearDisk);
+                light.color = {1, 0, 0};
+                near("debug disk preserves light color", illuminate().bounce, simd_float4{clearDisk.x, 0, 0, 1});
+                light.color = {1, 1, 1};
+                disk[Surface][receiver].x = 50;
+                near("debug disk does not light higher out-of-bounds surface", illuminate().bounce, {});
+                disk[Surface][receiver].x = 0;
+                disk[Participation][receiver].y = 0;
+                near("debug disk honors receives GI", illuminate().bounce, {});
+                near("debug visibility ignores receives GI", illuminate(0, 4).bounce, simd_float4{1, 1, 1, 1});
+                disk[Participation][receiver].x = 0;
+                near("debug disk excludes UI", illuminate().bounce, {});
+                disk[Participation][receiver] = {1, 1, 0, 0};
+                near("debug light is not reinjected into later bounces", illuminate(1).bounce, {});
+                light.intensity = 0;
+                near("zero debug intensity disables illumination", illuminate().bounce, {});
+                light.intensity = 25;
+                light.radius = 0;
+                near("zero debug radius has zero power", illuminate().bounce, {});
+                light.radius = 2;
+                light.position.x = receiverX + 0.5f;
+                disk[Direct][receiver] = {0, 0, 0, 1};
+                const auto glow = illuminate(0, 0, 0).accumulated;
+                check("composite displays debug disk without altering scene pixels", glow.x > 1, glow, {});
+                near("Direct diagnostic excludes disk self-emission", illuminate(0, 0, 3).accumulated, {});
+                disk[Surface][receiver].x = 50;
+                const float ambient = std::pow(0.65f, 1.0f / 2.2f);
+                near("higher geometry hides debug disk glow", illuminate(0, 0, 0).accumulated, simd_float4{ambient, ambient, ambient, 1});
+                disk[Surface][receiver].x = 0;
+                light.radius = 0;
+                near("zero radius also removes visible glow", illuminate(0, 0, 0).accumulated, simd_float4{ambient, ambient, ambient, 1});
+                for (unsigned y = 0; y < height; y++)
+                    disk[Occlusion][y * width + 80] = {};
+                light.radius = 4096;
+                const auto largeDisk = illuminate().bounce;
+                const float capped = 0.9f * 100 * 0.95f;
+                check("large overhead disk approaches capped hemisphere irradiance",
+                    std::fabs(largeDisk.x - capped) < capped * 0.03f, largeDisk, simd_float4{capped, capped, capped, 1});
+                for (float radius : {4.0f, 24.0f, 64.0f, 256.0f})
+                {
+                    light.radius = radius;
+                    const float reference = 90 * std::min(0.95f, radius * radius / (radius * radius + 24 * 24));
+                    const auto actual = illuminate().bounce;
+                    check("overhead disk tracks analytic irradiance across sizes",
+                        std::fabs(actual.x - reference) < reference * 0.04f, actual,
+                        simd_float4{reference, reference, reference, 1});
+                }
+                light.radius = 4;
+                light.position = {14.5f, receiverY + 0.5f, 32};
+                Scene relayDisk = scene();
+                relayDisk[PreviousBounce][emitter] = {};
+                run(relayDisk, true, 0, 8, -1, &relayDisk, half, 0, 0,
+                    0, 1, 1, simd_float3{0, 0, -1}, -1, &light);
+                positive("debug disk produces Direct on reflecting surfaces", relayDisk[NextBounce][receiver]);
+                relayDisk[PreviousBounce] = relayDisk[NextBounce];
+                const auto secondary = run(relayDisk, true, 1, 8, -1, nullptr, half, 0, 0).bounce;
+                positive("debug disk Direct seeds secondary reflected light", secondary);
+                near("secondary light does not reinject enabled debug emitter",
+                    run(relayDisk, true, 1, 8, -1, nullptr, half, 0, 0, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, &light).bounce, secondary);
+            }
 
             simd_float4 diagonal[2];
             for (int side : {1, -1})
@@ -444,9 +740,9 @@ int main()
                 s[Participation][emitter] = {};
                 s[PreviousBounce][emitter] = {};
                 const unsigned patch = int(receiver) + side * (int(width) + 1);
-                const float normal = side / std::sqrt(2.0f);
-                s[Surface][receiver] = {8, normal, normal, 0};
-                s[Surface][patch] = {8, -normal, -normal, 0};
+                const float normal = side * std::sqrt(0.48f);
+                s[Surface][receiver] = {8, normal, normal, 0.2f};
+                s[Surface][patch] = {8, -normal, -normal, 0.2f};
                 s[Participation][patch] = {1, 1, 0, 0};
                 s[PreviousBounce][patch] = {1, 0.5f, 0.25f, 1};
                 diagonal[side > 0 ? 0 : 1] = run(s, true).bounce;
@@ -461,15 +757,68 @@ int main()
             chain[Participation][emitter] = {};
             chain[PreviousBounce][emitter] = {};
             constexpr unsigned relay = receiverY * width + 10;
-            chain[Surface][relay] = {8, -1, 0, 0};
+            chain[Surface][relay] = {8, -0.98f, 0, 0.198997f};
             chain[Participation][relay] = {1, 1, 0, 0};
             for (unsigned y = 2; y <= 4; ++y)
                 for (unsigned x = 4; x <= 6; ++x)
                 {
                     const unsigned patch = y * width + x;
-                    chain[Surface][patch] = {8, 1, 0, 0};
+                    chain[Surface][patch] = {8, 0.98f, 0, 0.198997f};
                     chain[Participation][patch] = {1, 1, 0, 0};
                     chain[PreviousBounce][patch] = {1, 0.5f, 0.25f, 1};
+                }
+            // Exercise production view composition with real seed and collision fields.
+            // Checking every pixel includes emissive A, directly lit B, and indirectly lit C.
+            for (bool half : {false, true})
+                for (unsigned extraBounces : {0u, 1u})
+                {
+                    s = chain;
+                    for (unsigned pixel = 0; pixel < width * height; ++pixel)
+                        if (chain[PreviousBounce][pixel].x > 0)
+                            s[Emission][pixel] = {1, 0.75f, 0.5f, 200.0f / 255.0f};
+                    s[PreviousBounce].assign(width * height, simd_float4{});
+                    run(s, false, 0, 8, -1, &s, half);
+                    s[PreviousBounce] = s[Direct];
+                    run(s, true, 0, 8, -1, &s, half);
+                    const Image firstCollision = s[NextBounce];
+                    positive("emission chain lights relay in mandatory collision", firstCollision[relay]);
+                    if (extraBounces)
+                    {
+                        s[PreviousBounce] = firstCollision;
+                        s[PreviousIndirect] = s[NextIndirect];
+                        run(s, true, 1, 8, -1, &s, half);
+                        positive("emission chain reaches receiver with one extra bounce", s[NextIndirect][receiver]);
+                        near("one extra bounce accumulates only second collision",
+                            s[NextIndirect][receiver], s[NextBounce][receiver]);
+                        s[NextBounce] = firstCollision;
+                    }
+                    else
+                        near("zero extra bounces leave indirect black", s[NextIndirect][receiver], {});
+                    for (unsigned view : {3u, 6u, 8u, 0u})
+                    {
+                        run(s, false, 0, 8, -1, &s, half, 0, 1, 0, 1, 1, simd_float3{0, 0, -1}, view);
+                        bool matches = true;
+                        simd_float4 expectedReceiver = {};
+                        for (unsigned pixel = 0; pixel < width * height; ++pixel)
+                            for (unsigned c = 0; c < 3; ++c)
+                            {
+                                float linear = view == 3 ? firstCollision[pixel][c] * 4 :
+                                    view == 6 ? s[NextIndirect][pixel][c] * 4 :
+                                    view == 8 ? (firstCollision[pixel][c] + s[NextIndirect][pixel][c]) * 4 :
+                                    std::pow(s[Source][pixel][c], 2.2f) * 0.65f + s[Direct][pixel][c] +
+                                        firstCollision[pixel][c] + s[NextIndirect][pixel][c];
+                                const float expected = s[Direct][pixel].w < 0.5f ? s[Source][pixel][c] :
+                                    std::pow(linear, 1.0f / 2.2f);
+                                matches &= std::isfinite(s[Output][pixel][c]) &&
+                                    std::fabs(s[Output][pixel][c] - expected) <= 1e-6f + expected * 1e-5f;
+                                if (pixel == receiver)
+                                    expectedReceiver[c] = expected;
+                            }
+                        char name[128];
+                        std::snprintf(name, sizeof(name), "%s view %u with %u extra bounces counts seed/direct/indirect once",
+                            half ? "RGBA16Float" : "RGBA32Float", view, extraBounces);
+                        check(name, matches, s[Output][receiver], expectedReceiver);
+                    }
                 }
             s = chain;
             Image sum(width * height, simd_float4{});
@@ -481,7 +830,8 @@ int main()
                 bool accumulatedMatches = true, bounded = true;
                 for (unsigned pixel = 0; pixel < width * height; ++pixel)
                 {
-                    sum[pixel] += s[NextBounce][pixel];
+					if (pass > 0)
+						sum[pixel] += s[NextBounce][pixel];
                     for (unsigned c = 0; c < 3; ++c)
                     {
                         const float value = s[NextBounce][pixel][c];
@@ -637,8 +987,8 @@ int main()
             simd_float4 prior = {0.125f, 0.25f, 0.5f, 1};
             s[PreviousIndirect][receiver] = prior;
             Result second = run(s, true, 1);
-            near("passIndex 1 preserves new bounce", second.bounce, clear.bounce);
-            near("passIndex 1 accumulates exactly prior + new", second.accumulated, prior + clear.bounce);
+            near("passIndex 1 preserves new bounce", second.bounce, indirectClear.bounce);
+            near("passIndex 1 starts indirect accumulation with second collision", second.accumulated, indirectClear.bounce);
             s[Participation][receiver].y = 0;
             Result disabled = run(s, true);
             near("receivesGi false produces zero bounce", disabled.bounce, {});
@@ -652,6 +1002,14 @@ int main()
             near("intervening wall blocks wall-to-floor indirect", run(s, true).bounce, {});
 
             s = scene();
+            for (bool bounce : {false, true})
+            {
+                Result plain = run(s, bounce, 0, 8, -1, nullptr, true);
+                Result selected = run(s, bounce, 0, 8, receiver, nullptr, true);
+                near("half radiance with float presentation preserves selected radiance", selected.bounce, plain.bounce);
+                near("half radiance with float presentation reads highlighted output correctly", selected.accumulated,
+                    (plain.accumulated + simd_float4{1, 1, 0, 1}) * 0.5f);
+            }
             for (bool bounce : {false, true})
             {
                 Result plain = run(s, bounce);

@@ -142,6 +142,8 @@ extern pthread_mutex_t	keyLock;
 - (void)emulationResumed;
 @optional
 - (BOOL)selectRemasterPixelAtViewPoint:(NSPoint)point extendingSelection:(BOOL)extendingSelection;
+- (BOOL)canBeginRemasterDebugLightAtViewPoint:(NSPoint)point;
+- (void)updateRemasterDebugLightAtViewPoint:(NSPoint)point toggle:(BOOL)toggle;
 @end
 
 @interface S9xView: MTKView

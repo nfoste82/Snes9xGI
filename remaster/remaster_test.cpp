@@ -31,6 +31,7 @@ int main ()
 	frame.height = 1;
 	frame.profileRomSha256 = "0123456789abcdef";
 	frame.lightingCoordinateScale = 24.0f;
+	frame.cameraDirection = {{ 0.25f, -0.5f, -1.0f }};
 	frame.indirectBounceCount = 6;
 	frame.originalSceneContribution = 0.4f;
 	frame.samplesPerFrame = 4;
@@ -111,6 +112,7 @@ int main ()
 	assert(S9xDeserializeRemasterFrame(firstFrameBytes, decodedFrame));
 	assert(decodedFrame.width == 2 && decodedFrame.height == 1);
 	assert(decodedFrame.lightingCoordinateScale == 24.0f);
+	assert(decodedFrame.cameraDirection == frame.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == 6);
 	assert(decodedFrame.originalSceneContribution == 0.4f);
 	assert(decodedFrame.samplesPerFrame == 4);
@@ -142,7 +144,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 13);
+	assert(decodedFrame.schemaVersion == 14);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -210,6 +212,7 @@ int main ()
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
 	const size_t legacyScaleOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size();
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 15, legacyBytes.begin() + legacyScaleOffset + 27);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 9, legacyBytes.begin() + legacyScaleOffset + 15);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 5, legacyBytes.begin() + legacyScaleOffset + 9);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 4);
@@ -272,7 +275,7 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-		schema_version = 8
+		schema_version = 9
 
 [game]
 title = "Test Game"
@@ -280,6 +283,7 @@ rom_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [lighting_space]
 		coordinate_scale = 24
+		camera_direction = [0.25, -0.5, -1]
 		indirect_bounces = 6
 		indirect_roughness = 0.5
 		original_scene_contribution = 0.4
@@ -333,6 +337,7 @@ material = "wet_stone"
 	assert(S9xRemasterParseProfile(profileText, profile, diagnostics));
 	assert(profile.materials.size() == 2);
 	assert(profile.lightingCoordinateScale == 24.0f);
+	assert(profile.cameraDirection == frame.cameraDirection);
 	assert(profile.indirectBounceCount == 6);
 	assert(profile.indirectRoughness == 0.5f);
 	assert(profile.originalSceneContribution == 0.4f);
@@ -355,6 +360,7 @@ material = "wet_stone"
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).normalXyz[2] == 255);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).directLightingOppositeFacing);
 	assert(roundTrippedProfile.indirectRoughness == 0.5f);
+	assert(roundTrippedProfile.cameraDirection == frame.cameraDirection);
 	assert(roundTrippedProfile.originalSceneContribution == 0.4f);
 	assert(roundTrippedProfile.samplesPerFrame == 4);
 	assert(!roundTrippedProfile.sampleAccumulation);
@@ -362,6 +368,15 @@ material = "wet_stone"
 	assert(S9xRemasterWriteProfile(profile, savedProfilePath, diagnostics));
 	assert(S9xRemasterLoadProfile(savedProfilePath, roundTrippedProfile, diagnostics));
 	std::remove(savedProfilePath.c_str());
+	std::string invalidCameraProfile = serializedProfile;
+	const size_t cameraBegin = invalidCameraProfile.find("camera_direction = [");
+	assert(cameraBegin != std::string::npos);
+	const size_t cameraEnd = invalidCameraProfile.find('\n', cameraBegin);
+	invalidCameraProfile.replace(cameraBegin, cameraEnd - cameraBegin, "camera_direction = [0, 0, 0]");
+	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
+	invalidCameraProfile = serializedProfile;
+	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 9"), 18, "schema_version = 8");
+	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 
 	RemasterProfileMatchContext context;
 	context.tileId = { hash, 1, 4 };
@@ -418,8 +433,9 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 13);
+	assert(decodedFrame.schemaVersion == 14);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
+	assert(decodedFrame.cameraDirection == profile.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
 	assert(decodedFrame.indirectRoughness == profile.indirectRoughness);
 	assert(decodedFrame.originalSceneContribution == profile.originalSceneContribution);

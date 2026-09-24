@@ -45,7 +45,35 @@ typedef struct
 	uint sampleIndex;
 	uint sampleCount;
 	uint randomSeed;
+	float4 cameraDirection;
+	float4 debugPositionRadius;
+	float4 debugColorIntensity;
 } RemasterLightingUniforms;
+
+// Radiance calibration: byte 25 is 100 linear radiance units, not display white.
+// A small emitter must be much brighter than a reflecting surface at room distances.
+constant float remasterEmissionRadiance = 100.0;
+
+static float remasterRoughDiffuse(float3 normal, float3 incoming, float3 outgoing, float roughness)
+{
+	float cosineIncoming = saturate(dot(normal, incoming));
+	float outgoingDot = dot(normal, outgoing);
+	float cosineOutgoing = saturate(outgoingDot);
+	if (cosineIncoming <= 0.0 || outgoingDot < 0.0)
+		return 0.0;
+	float sigma = roughness * M_PI_F * 0.5;
+	float sigmaSquared = sigma * sigma;
+	float a = 1.0 - 0.5 * sigmaSquared / (sigmaSquared + 0.33);
+	float b = 0.45 * sigmaSquared / (sigmaSquared + 0.09);
+	float3 incomingTangent = incoming - normal * cosineIncoming;
+	float3 outgoingTangent = outgoing - normal * cosineOutgoing;
+	float tangentProduct = length(incomingTangent) * length(outgoingTangent);
+	float azimuth = tangentProduct > 0.0001 ? max(0.0, dot(incomingTangent, outgoingTangent) / tangentProduct) : 0.0;
+	float sineAlpha = sqrt(max(0.0, 1.0 - min(cosineIncoming, cosineOutgoing) * min(cosineIncoming, cosineOutgoing)));
+	float tangentBeta = sqrt(max(0.0, 1.0 - max(cosineIncoming, cosineOutgoing) *
+		max(cosineIncoming, cosineOutgoing))) / max(max(cosineIncoming, cosineOutgoing), 0.0001);
+	return a + b * azimuth * sineAlpha * tangentBeta;
+}
 
 static uint remasterHash(uint value)
 {
@@ -139,7 +167,6 @@ kernel void remasterDirectLighting(
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
 	float4 surface = surfaceField.read(pixel);
-	float3 position = float3(float2(pixel) + 0.5, surface.r);
 	float3 normal = surface.gba;
 	float3 original = source.read(pixel).rgb;
 	float2 participation = participationField.read(pixel).rg;
@@ -149,34 +176,10 @@ kernel void remasterDirectLighting(
 		output.write(float4(original, 1.0), pixel);
 		return;
 	}
-	float3 albedo = remasterAlbedo(original);
 	float3 direct = 0.0;
-	float maximumVisibility = uniforms.lightCount ? 0.0 : 1.0;
-	for (uint lightIndex = 0; lightIndex < uniforms.lightCount; lightIndex++)
-	{
-		RemasterGpuLight light = lights[lightIndex];
-		float3 toLight = light.position - position;
-		float distanceToLight = length(toLight);
-		float visibility = remasterVisibility(position, light.position, occlusion, heightField, surfaceField);
-		float normalizedDistance = distanceToLight / max(light.radius, 1.0);
-		// Radius is the authored influence scale, not a hard cutoff.
-		float attenuation = 1.0 / (1.0 + 6.0 * normalizedDistance * normalizedDistance);
-		float normalResponse = 1.0;
-		if (distanceToLight > 0.0)
-		{
-			float3 lightDirection = toLight / distanceToLight;
-			float response = dot(normal, lightDirection);
-			if (oppositeFacingField.read(pixel).r > 0.5)
-				response = max(response, dot(float3(-normal.xy, normal.z), lightDirection));
-			normalResponse = saturate(response);
-		}
-		float3 irradiance = light.color * attenuation * light.intensity * visibility * normalResponse;
-		direct += albedo * irradiance;
-		maximumVisibility = max(maximumVisibility, visibility);
-	}
 	float3 ambient = remasterToLinear(original) * uniforms.originalSceneContribution;
 	float4 authoredEmission = emission.read(pixel);
-	float3 selfEmission = remasterToLinear(authoredEmission.rgb) * authoredEmission.a * (255.0 / 25.0);
+	float3 selfEmission = remasterToLinear(authoredEmission.rgb) * authoredEmission.a * (255.0 / 25.0) * remasterEmissionRadiance;
 	float3 composite = ambient + direct + selfEmission;
 	directField.write(float4(direct + selfEmission, 1.0), pixel);
 	if (uniforms.view == 5)
@@ -193,8 +196,6 @@ kernel void remasterDirectLighting(
 			float3(0.22, 0.0, 0.28);
 		output.write(float4(coverage, 1.0), pixel);
 	}
-	else if (uniforms.view == 2)
-		output.write(float4(float3(0.0, 0.85, 1.0) * maximumVisibility, 1.0), pixel);
 	else if (uniforms.view == 3 || uniforms.view == 8)
 		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
 	else if (uniforms.view == 4)
@@ -204,7 +205,11 @@ kernel void remasterDirectLighting(
 	else if (uniforms.view == 7)
 		output.write(float4(normal * 0.5 + 0.5, 1.0), pixel);
 	else if (uniforms.view == 9)
-		output.write(float4(remasterToDisplay(selfEmission), 1.0), pixel);
+	{
+		float3 debugEmission = uniforms.debugPositionRadius.w > 0.0 && distance(float2(pixel) + 0.5, uniforms.debugPositionRadius.xy) <= uniforms.debugPositionRadius.w &&
+			uniforms.debugPositionRadius.z >= surface.r ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : float3(0.0);
+		output.write(float4(remasterToDisplay(selfEmission + debugEmission), 1.0), pixel);
+	}
 	else
 		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
 }
@@ -219,21 +224,25 @@ kernel void remasterIndirectBounce(
 	texture2d<float, access::read> previousIndirect [[texture(6)]],
 	texture2d<float, access::write> nextBounce [[texture(7)]],
 	texture2d<float, access::write> nextIndirect [[texture(8)]],
+	texture2d<float, access::read> oppositeFacingField [[texture(9)]],
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	const device uint *emitterPixels [[buffer(1)]],
+	constant uint &emitterCount [[buffer(2)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
-	constexpr uint maximumDistance = 64;
 	constexpr uint distanceStep = 4;
 	constexpr float angularStep = 2.0 * M_PI_F / 16.0;
 	float4 receiverSurface = surfaceField.read(pixel);
 	float3 normal = receiverSurface.gba;
+	bool oppositeFacing = uniforms.passIndex == 0 && oppositeFacingField.read(pixel).r > 0.5;
+	bool visibilityDiagnostic = uniforms.diagnosticStage == 4;
 	float2 receiverParticipation = participationField.read(pixel).rg;
-	if (receiverParticipation.r < 0.5 || receiverParticipation.g < 0.5)
+	if (receiverParticipation.r < 0.5 || (!visibilityDiagnostic && receiverParticipation.g < 0.5))
 	{
 		nextBounce.write(float4(0.0), pixel);
-		float3 accumulated = uniforms.passIndex == 0 ? float3(0.0) : previousIndirect.read(pixel).rgb;
+		float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
 		nextIndirect.write(float4(accumulated, 1.0), pixel);
 		return;
 	}
@@ -241,60 +250,115 @@ kernel void remasterIndirectBounce(
 	float3 distanceIncoming = 0.0;
 	float3 cosineIncoming = 0.0;
 	float totalFormFactor = 0.0;
-	for (uint directionIndex = 0; directionIndex < 16; directionIndex++)
+	float maximumVisibility = 0.0;
+	// Direct enumerates visible emissive pixels, not receiver-local quadrature cells.
+	bool directCollision = uniforms.passIndex == 0;
+	// Cover the farthest frame corner, including the final jittered radial cell.
+	float2 cornerDistance = max(float2(pixel) + 0.5,
+		float2(uniforms.width, uniforms.height) - (float2(pixel) + 0.5));
+	uint radialSteps = uint(ceil(length(cornerDistance) / float(distanceStep))) + 1;
+	// Mix uniform disk samples with receiver-centered projected-solid-angle samples.
+	// The latter resolve nearby energy even when the disk is much larger than its height.
+	uint diskSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
+	float diskHeightSquared = max(1.0, pow(uniforms.debugPositionRadius.z - receiverSurface.r, 2.0));
+	uint sampleTotal = directCollision ? emitterCount + diskSamples : 16 * radialSteps * 3;
+	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
 	{
-		uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu) ^
-			(uniforms.passIndex * 0xc2b2ae35u) ^ (uniforms.sampleIndex * 0x27d4eb2du) ^ directionIndex;
-		float angularJitter = uniforms.sampleCount > 1 ? remasterRandom(randomBase) - 0.5 : 0.0;
-		float angle = (float(directionIndex) + angularJitter) * angularStep;
-		float2 direction = float2(cos(angle), sin(angle));
-		float2 perpendicular = float2(-direction.y, direction.x);
-		for (uint distance = 2; distance <= maximumDistance; distance += distanceStep)
+		float2 samplePoint;
+		bool debugSample = directCollision && sampleIndex >= emitterCount;
+		if (debugSample)
 		{
-			for (uint lane = 0; lane < 3; lane++)
-			{
-				float radialJitter = uniforms.sampleCount > 1 ?
-					(remasterRandom(randomBase ^ (distance * 0x165667b1u) ^ lane) - 0.5) * float(distanceStep) : 0.0;
-				float sampleDistance = max(0.5, float(distance) + radialJitter);
-				float lateralOffset = (float(lane) - 1.0) * sampleDistance * angularStep / 3.0;
-				// Sample about the receiver center so opposite directions select mirrored pixels.
-				float2 samplePoint = float2(pixel) + 0.5 + direction * sampleDistance + perpendicular * lateralOffset;
-				if (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height)
-					continue;
-				uint2 samplePixel = uint2(samplePoint);
-				float4 sampleSurface = surfaceField.read(samplePixel);
-				float2 planarSegment = (float2(samplePixel) + 0.5) - (float2(pixel) + 0.5);
-				float planarDistance = length(planarSegment);
-				if (participationField.read(samplePixel).r > 0.5)
-				{
-					float3 toSource = float3(planarSegment, sampleSurface.r - receiverSurface.r);
-					float distanceSquared = dot(toSource, toSource);
-					float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
-					float receiverResponse = saturate(dot(normal, segmentDirection));
-					float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
-					// Normalize the narrowed lobe to the Lambertian hemisphere integral so
-					// roughness redistributes outgoing energy instead of absorbing it.
-					float sourceExponent = mix(32.0, 1.0, uniforms.indirectRoughness);
-					sourceResponse = pow(sourceResponse, sourceExponent) * (sourceExponent + 1.0) * 0.5;
-					float sampleArea = planarDistance * float(distanceStep) * angularStep / 3.0;
-					float distanceFormFactor = min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
-					float formFactor = distanceFormFactor * receiverResponse * sourceResponse;
-					float3 radiance = previousBounce.read(samplePixel).rgb;
-					if (uniforms.diagnosticStage != 0 && any(radiance > 0.0))
-					{
-						distanceIncoming += radiance * distanceFormFactor;
-						cosineIncoming += radiance * formFactor;
-					}
-					if (formFactor > 0.0 && any(radiance > 0.0))
-					{
-						float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiverSurface.r),
-							float3(float2(samplePixel) + 0.5, sampleSurface.r), occlusion, heightField, surfaceField);
-						incoming += radiance * formFactor * visibility;
-					}
-					totalFormFactor += formFactor;
-				}
-			}
+			uint diskIndex = sampleIndex - emitterCount;
+			float index = float(diskIndex % 64) + 0.5;
+			float fraction = index / 64.0;
+			float radius = diskIndex < 64 ? uniforms.debugPositionRadius.w * sqrt(fraction) :
+				sqrt(diskHeightSquared * fraction / (1.0 - fraction));
+			float angle = index * 2.39996323;
+			samplePoint = (diskIndex < 64 ? uniforms.debugPositionRadius.xy : float2(pixel) + 0.5) + radius * float2(cos(angle), sin(angle));
+			if (distance(samplePoint, uniforms.debugPositionRadius.xy) > uniforms.debugPositionRadius.w)
+				continue;
 		}
+		else if (directCollision)
+		{
+			uint emitter = emitterPixels[sampleIndex];
+			samplePoint = float2(emitter % uniforms.width, emitter / uniforms.width) + 0.5;
+		}
+		else
+		{
+			uint directionIndex = sampleIndex / (radialSteps * 3);
+			uint distance = 2 + ((sampleIndex / 3) % radialSteps) * distanceStep;
+			uint lane = sampleIndex % 3;
+			uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu) ^
+				(uniforms.passIndex * 0xc2b2ae35u) ^ (uniforms.sampleIndex * 0x27d4eb2du) ^ directionIndex;
+			float angularJitter = uniforms.sampleCount > 1 ? remasterRandom(randomBase) - 0.5 : 0.0;
+			float angle = (float(directionIndex) + angularJitter) * angularStep;
+			float2 direction = float2(cos(angle), sin(angle));
+			float2 perpendicular = float2(-direction.y, direction.x);
+			float radialJitter = uniforms.sampleCount > 1 ?
+				(remasterRandom(randomBase ^ (distance * 0x165667b1u) ^ lane) - 0.5) * float(distanceStep) : 0.0;
+			float sampleDistance = max(0.5, float(distance) + radialJitter);
+			float lateralOffset = (float(lane) - 1.0) * sampleDistance * angularStep / 3.0;
+			// Sample about the receiver center so opposite directions select mirrored pixels.
+			samplePoint = float2(pixel) + 0.5 + direction * sampleDistance + perpendicular * lateralOffset;
+		}
+		if (!debugSample && (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height))
+			continue;
+		uint2 samplePixel = debugSample ? pixel : uint2(samplePoint);
+		if (!debugSample)
+			samplePoint = float2(samplePixel) + 0.5;
+		if (!debugSample && (all(samplePixel == pixel) || participationField.read(samplePixel).r < 0.5))
+			continue;
+		float4 sampleSurface = debugSample ? float4(uniforms.debugPositionRadius.z, 0.0, 0.0, -1.0) : surfaceField.read(samplePixel);
+		float2 planarSegment = samplePoint - (float2(pixel) + 0.5);
+		float planarDistance = length(planarSegment);
+		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : previousBounce.read(samplePixel).rgb;
+		if (visibilityDiagnostic)
+		{
+			// Diagnose shadowing separately from facing, BRDF, and material absorption.
+			if (any(radiance > 0.0))
+				maximumVisibility = max(maximumVisibility, remasterVisibility(
+					float3(float2(pixel) + 0.5, receiverSurface.r),
+					float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField));
+			if (maximumVisibility == 1.0)
+				break;
+			continue;
+		}
+		float3 toSource = float3(planarSegment, sampleSurface.r - receiverSurface.r);
+		float distanceSquared = dot(toSource, toSource);
+		float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
+		float receiverResponse = saturate(dot(normal, segmentDirection));
+		float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
+		float3 viewDirection = normalize(-uniforms.cameraDirection.xyz);
+		float receiverScattering = receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
+			viewDirection, uniforms.indirectRoughness);
+		if (oppositeFacing)
+		{
+			// Reused wall artwork may receive direct light on either authored XY facing.
+			float3 alternateNormal = float3(-normal.xy, normal.z);
+			receiverScattering = max(receiverScattering, saturate(dot(alternateNormal, segmentDirection)) *
+				remasterRoughDiffuse(alternateNormal, segmentDirection, viewDirection, uniforms.indirectRoughness));
+		}
+		float sampleArea = directCollision ? 1.0 : planarDistance * float(distanceStep) * angularStep / 3.0;
+		if (debugSample)
+		{
+			float uniformDensity = 1.0 / (M_PI_F * uniforms.debugPositionRadius.w * uniforms.debugPositionRadius.w);
+			float importanceDensity = diskHeightSquared / (M_PI_F * pow(dot(planarSegment, planarSegment) + diskHeightSquared, 2.0));
+			sampleArea = 1.0 / (64.0 * (uniformDensity + importanceDensity));
+		}
+		float distanceFormFactor = min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
+		float formFactor = distanceFormFactor * receiverScattering * sourceResponse;
+		if (uniforms.diagnosticStage != 0 && any(radiance > 0.0))
+		{
+			distanceIncoming += radiance * distanceFormFactor;
+			cosineIncoming += radiance * formFactor;
+		}
+		if (formFactor > 0.0 && any(radiance > 0.0))
+		{
+			float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiverSurface.r),
+				float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField);
+			incoming += radiance * formFactor * visibility;
+		}
+		totalFormFactor += formFactor;
 	}
 	if (totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;
@@ -308,32 +372,45 @@ kernel void remasterIndirectBounce(
 		bounced = cosineIncoming;
 	else if (uniforms.diagnosticStage == 3)
 		bounced = incoming;
+	else if (visibilityDiagnostic)
+		bounced = float3(maximumVisibility);
 	nextBounce.write(float4(bounced, 1.0), pixel);
-	float3 accumulated = uniforms.passIndex == 0 ? float3(0.0) : previousIndirect.read(pixel).rgb;
-	nextIndirect.write(float4(accumulated + bounced, 1.0), pixel);
+	float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
+	if (uniforms.passIndex > 0)
+		accumulated += bounced;
+	nextIndirect.write(float4(accumulated, 1.0), pixel);
 }
 
 kernel void remasterCompositeLighting(
 	texture2d<float, access::read> source [[texture(0)]],
-	texture2d<float, access::read> directField [[texture(1)]],
-	texture2d<float, access::read> indirectField [[texture(2)]],
-	texture2d<float, access::write> output [[texture(3)]],
+	texture2d<float, access::read> emissionField [[texture(1)]],
+	texture2d<float, access::read> directField [[texture(2)]],
+	texture2d<float, access::read> indirectField [[texture(3)]],
+	texture2d<float, access::write> output [[texture(4)]],
+	texture2d<float, access::read> surfaceField [[texture(5)]],
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
 	float3 original = source.read(pixel).rgb;
-	float4 directSample = directField.read(pixel);
-	if (directSample.a < 0.5)
+	float4 emissionSample = emissionField.read(pixel);
+	if (emissionSample.a < 0.5)
 	{
 		output.write(float4(original, 1.0), pixel);
 		return;
 	}
-	float3 direct = directSample.rgb;
+	float3 emission = emissionSample.rgb;
+	float3 direct = directField.read(pixel).rgb;
 	float3 indirect = indirectField.read(pixel).rgb;
-	float3 composite = remasterToLinear(original) * uniforms.originalSceneContribution + direct + indirect;
-	if (uniforms.view == 3)
+	float3 composite = remasterToLinear(original) * uniforms.originalSceneContribution + emission + direct + indirect;
+	// The disk's visible glow is presentation-only; its physical samples seed Direct above.
+	if (uniforms.debugPositionRadius.w > 0.0 && uniforms.debugPositionRadius.z >= surfaceField.read(pixel).r &&
+		distance(float2(pixel) + 0.5, uniforms.debugPositionRadius.xy) <= uniforms.debugPositionRadius.w)
+		composite += uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance;
+	if (uniforms.view == 2)
+		output.write(float4(float3(0.0, 0.85, 1.0) * direct.r, 1.0), pixel);
+	else if (uniforms.view == 3)
 		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
 	else if (uniforms.view == 4)
 		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
