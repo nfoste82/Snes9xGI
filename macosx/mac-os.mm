@@ -346,6 +346,7 @@ static NSTextField		*remasterValueInput;
 static NSButton			*remasterValueDownButton;
 static NSButton			*remasterValueUpButton;
 static NSTextField		*remasterValueLabel;
+static NSButton			*remasterOcclusionFillOpaqueButton;
 static NSPopUpButton	*remasterHeightSamplingSelector;
 static NSPopUpButton	*remasterHeightPreviewMode;
 static NSButton			*remasterHeightArtworkVisibleButton;
@@ -734,33 +735,7 @@ static void SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterR
 {
 	if (!remasterEditingProfileLoaded)
 		return;
-	frame.lightingCoordinateScale = remasterEditingProfile.lightingCoordinateScale;
-	frame.cameraDirection = remasterEditingProfile.cameraDirection;
-	frame.indirectBounceCount = remasterEditingProfile.indirectBounceCount;
-	frame.indirectRoughness = remasterEditingProfile.indirectRoughness;
-	frame.originalSceneContribution = remasterEditingProfile.originalSceneContribution;
-	frame.samplesPerFrame = remasterEditingProfile.samplesPerFrame;
-	frame.sampleAccumulation = remasterEditingProfile.sampleAccumulation;
-	frame.assetMetadata.clear();
-	for (const auto &entry : remasterEditingProfile.assets)
-	{
-		const RemasterAssetMetadata &source = entry.second;
-		RemasterFrameAssetMetadata metadata;
-		metadata.tileId = source.tileId;
-		metadata.materialSelectors = source.materialSelectors;
-		metadata.occlusion = source.occlusion;
-		metadata.height = source.height;
-		metadata.normalXyz = source.normalXyz;
-		metadata.emissionRgba = source.emissionRgba;
-		metadata.hasMaterialSelectors = source.hasMaterialSelectors;
-		metadata.hasOcclusion = source.hasOcclusion;
-		metadata.hasHeight = source.hasHeight;
-		metadata.hasNormals = source.hasNormals;
-		metadata.hasEmission = source.hasEmission;
-		metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
-		metadata.heightSampling = source.heightSampling;
-		frame.assetMetadata.push_back(metadata);
-	}
+	S9xRemasterApplyProfileToFrame(remasterEditingProfile, frame);
 }
 
 static uint16			changeAuto[2] = { 0x0000, 0x0000 };
@@ -3698,6 +3673,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)endRemasterTileStroke;
 - (void)changeRemasterPixelValue:(id)sender;
 - (void)stepRemasterPixelValue:(id)sender;
+- (void)fillRemasterOpaqueOcclusion:(id)sender;
 - (void)changeRemasterHeightSampling:(id)sender;
 - (void)fillRemasterTileHeight:(id)sender;
 - (void)stepRemasterTileHeight:(NSButton *)sender;
@@ -4661,6 +4637,13 @@ void QuitWithFatalError ( NSString *message)
 		[remasterValueBrush setTarget:self];
 		[remasterValueBrush setAction:@selector(changeRemasterPixelValue:)];
 		[contentView addSubview:remasterValueLabel];
+		remasterOcclusionFillOpaqueButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 342, 170, 28)];
+		remasterOcclusionFillOpaqueButton.title = @"Fill Opaque Pixels";
+		remasterOcclusionFillOpaqueButton.bezelStyle = NSBezelStyleRounded;
+		remasterOcclusionFillOpaqueButton.target = self;
+		remasterOcclusionFillOpaqueButton.action = @selector(fillRemasterOpaqueOcclusion:);
+		remasterOcclusionFillOpaqueButton.toolTip = @"Apply the current value to every nontransparent pixel on all selected tile identities.";
+		[contentView addSubview:remasterOcclusionFillOpaqueButton];
 		remasterHeightSamplingSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 10, 128, 28) pullsDown:NO];
 		[remasterHeightSamplingSelector addItemsWithTitles:@[@"Nearest", @"Linear"]];
 		remasterHeightSamplingSelector.target = self;
@@ -5538,6 +5521,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterValueLabel.hidden = layer == RemasterEditorArtwork;
 	remasterValueLabel.frame = layer == RemasterEditorNormal ? NSMakeRect(350, 400, 390, 18) :
 		NSMakeRect(535, 379, 205, 24);
+	remasterOcclusionFillOpaqueButton.hidden = layer != RemasterEditorOcclusion;
 	remasterHeightSamplingSelector.hidden = layer != RemasterEditorHeight;
 	remasterHeightPreviewMode.hidden = layer != RemasterEditorHeight;
 	remasterHeightArtworkVisibleButton.hidden = layer != RemasterEditorHeight;
@@ -5567,10 +5551,11 @@ void QuitWithFatalError ( NSString *message)
 	remasterTilePreview.enabled = !remasterVariants.empty();
 	remasterMaterialBrush.enabled = editable;
 	remasterValueBrush.enabled = editable &&
-		(layer == RemasterEditorHeight || layer == RemasterEditorEmission || remasterTilePixelSelected);
+		(layer == RemasterEditorOcclusion || layer == RemasterEditorHeight || layer == RemasterEditorEmission || remasterTilePixelSelected);
 	remasterValueInput.enabled = remasterValueBrush.enabled;
 	remasterValueDownButton.enabled = remasterValueBrush.enabled;
 	remasterValueUpButton.enabled = remasterValueBrush.enabled;
+	remasterOcclusionFillOpaqueButton.enabled = editable && !remasterSelectedTiles.empty();
 	remasterHeightSamplingSelector.enabled = editable;
 	remasterHeightPreviewMode.enabled = layer == RemasterEditorHeight;
 	remasterHeightArtworkVisibleButton.enabled = layer == RemasterEditorHeight;
@@ -6047,6 +6032,43 @@ void QuitWithFatalError ( NSString *message)
 		std::min<NSInteger>(255, remasterValueBrush.integerValue + sender.tag));
 	remasterValueInput.integerValue = remasterValueBrush.integerValue;
 	[self changeRemasterPixelValue:remasterValueBrush];
+}
+
+- (void)fillRemasterOpaqueOcclusion:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty())
+		return;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	const uint8_t value = static_cast<uint8_t>(remasterValueBrush.integerValue);
+	bool changed = false;
+	for (const RemasterTileContentId &tileId : remasterSelectedTiles)
+	{
+		const RemasterFrameAsset *asset = S9xRemasterFrameAssetForTile(remasterReplayFrame, tileId);
+		if (!asset)
+			continue;
+		RemasterAssetMetadata &metadata = remasterEditingProfile.assets[tileId];
+		metadata.tileId = tileId;
+		const bool hadLayer = metadata.hasOcclusion;
+		metadata.hasOcclusion = true;
+		for (size_t pixel = 0; pixel < 64; pixel++)
+		{
+			const uint8_t target = asset->indices[pixel] ? value : 0;
+			changed |= !hadLayer || metadata.occlusion[pixel] != target;
+			metadata.occlusion[pixel] = target;
+		}
+	}
+	if (!changed)
+		return;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Fill Opaque Occlusion"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
 - (void)changeRemasterHeightSampling:(id)sender

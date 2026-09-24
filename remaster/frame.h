@@ -141,6 +141,79 @@ struct RemasterFrame
 	std::vector<RemasterFrameLight> lights;
 };
 
+inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, RemasterFrame &frame)
+{
+	frame.profileRomSha256 = profile.romSha256;
+	frame.lightingCoordinateScale = profile.lightingCoordinateScale;
+	frame.cameraDirection = profile.cameraDirection;
+	frame.indirectBounceCount = profile.indirectBounceCount;
+	frame.indirectRoughness = profile.indirectRoughness;
+	frame.originalSceneContribution = profile.originalSceneContribution;
+	frame.samplesPerFrame = profile.samplesPerFrame;
+	frame.sampleAccumulation = profile.sampleAccumulation;
+
+	frame.assetGroups.clear();
+	for (const auto &entry : profile.assetGroups)
+	{
+		RemasterFrameAssetGroup group;
+		group.name = entry.second.name;
+		group.tileIds = entry.second.tileIds;
+		frame.assetGroups.push_back(group);
+	}
+
+	frame.assetMetadata.clear();
+	for (const auto &entry : profile.assets)
+	{
+		const RemasterAssetMetadata &source = entry.second;
+		RemasterFrameAssetMetadata metadata;
+		metadata.tileId = source.tileId;
+		metadata.materialSelectors = source.materialSelectors;
+		metadata.occlusion = source.occlusion;
+		metadata.height = source.height;
+		metadata.normalXyz = source.normalXyz;
+		metadata.emissionRgba = source.emissionRgba;
+		metadata.hasMaterialSelectors = source.hasMaterialSelectors;
+		metadata.hasOcclusion = source.hasOcclusion;
+		metadata.hasHeight = source.hasHeight;
+		metadata.hasNormals = source.hasNormals;
+		metadata.hasEmission = source.hasEmission;
+		metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
+		metadata.heightSampling = source.heightSampling;
+		frame.assetMetadata.push_back(metadata);
+	}
+
+	frame.materials.clear();
+	for (const auto &entry : profile.materials)
+	{
+		const RemasterMaterial &source = entry.second;
+		RemasterFrameMaterial material;
+		material.name = source.name;
+		material.surfaceClass = source.surfaceClass;
+		material.roughness = source.roughness;
+		material.metalness = source.metalness;
+		material.specularLevel = source.specularLevel;
+		material.zMin = source.zMin;
+		material.zMax = source.zMax;
+		material.receivesGi = source.receivesGi;
+		material.castsShadow = source.castsShadow;
+		frame.materials.push_back(material);
+	}
+
+	for (RemasterFrameTileInstance &instance : frame.tileInstances)
+	{
+		RemasterProfileMatchContext context;
+		context.tileId = instance.tileId;
+		context.source = instance.source;
+		context.sourceIndex = instance.sourceIndex;
+		context.palette = instance.palette;
+		const RemasterProfileMatch match = S9xRemasterMatchProfile(profile, context);
+		instance.matchStatus = match.status;
+		instance.ruleLine = match.rule ? static_cast<uint32_t>(match.rule->line) : 0;
+		instance.assetGroup = match.assetGroup ? match.assetGroup->name : std::string();
+		instance.material = match.material ? match.material->name : std::string();
+	}
+}
+
 struct RemasterAnimationTrackKey
 {
 	RemasterSourceType source = RemasterSourceType::Backdrop;

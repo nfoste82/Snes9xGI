@@ -393,6 +393,22 @@ material = "wet_stone"
 	assert(match.status == RemasterProfileMatchStatus::Matched);
 	assert(match.material && match.material->name == "stone");
 
+	RemasterFrame synchronizedFrame = frame;
+	synchronizedFrame.tileInstances[0].matchStatus = RemasterProfileMatchStatus::NoMatch;
+	synchronizedFrame.tileInstances[0].ruleLine = 999;
+	synchronizedFrame.tileInstances[0].assetGroup = "stale_group";
+	synchronizedFrame.tileInstances[0].material = "stale_material";
+	synchronizedFrame.materials[0].name = "stale_material";
+	S9xRemasterApplyProfileToFrame(profile, synchronizedFrame);
+	assert(synchronizedFrame.profileRomSha256 == profile.romSha256);
+	assert(synchronizedFrame.assetGroups.size() == profile.assetGroups.size());
+	assert(synchronizedFrame.assetMetadata.size() == profile.assets.size());
+	assert(synchronizedFrame.materials.size() == profile.materials.size());
+	assert(synchronizedFrame.tileInstances[0].matchStatus == RemasterProfileMatchStatus::Matched);
+	assert(synchronizedFrame.tileInstances[0].ruleLine == profile.rules[0].line);
+	assert(synchronizedFrame.tileInstances[0].assetGroup == "animated_floor");
+	assert(synchronizedFrame.tileInstances[0].material == "stone");
+
 	S9xRemasterSetProfile(profile);
 	const std::string profiledPath = "/tmp/snes9x-remaster-profiled-inventory-test.json";
 	S9xRemasterRequestTileInventory(profiledPath);
