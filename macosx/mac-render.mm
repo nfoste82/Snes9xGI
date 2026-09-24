@@ -686,6 +686,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	const bool panelMetrics = S9xRemasterPerformanceMetricsEnabled();
+	const auto lightingPreparationStarted = std::chrono::steady_clock::now();
+	double directEncodeMs = 0.0;
+	double indirectEncodeMs = 0.0;
+	double accumulationEncodeMs = 0.0;
+	double compositeEncodeMs = 0.0;
 	static uint8 *buffer = nil;
 	static size_t buffer_size = 0;
 	if (width <= 0 || height <= 0 || !buffer16 || pitch < static_cast<size_t>(width) ||
@@ -901,6 +907,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					std::pow(light.blue, 2.2f), light.intensity / 25.0f };
 			}
 			id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+			const auto directEncodeStarted = std::chrono::steady_clock::now();
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
 			[computeEncoder setTexture:sourceTexture atIndex:0];
 			[computeEncoder setTexture:occlusionTexture atIndex:1];
@@ -918,6 +925,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[computeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[computeEncoder endEncoding];
+			directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
 			if (measureGi)
 			{
 				id<MTLTexture> discardedPreviousIndirect = [metalDevice newTextureWithDescriptor:radianceDescriptor];
@@ -970,6 +978,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : directMeanTextures[0];
 						diagnosticDirectTexture = measureGi ? finalDirect : nil;
 						id<MTLComputeCommandEncoder> directEncoder = [commandBuffer computeCommandEncoder];
+						const auto directEncodeStarted = std::chrono::steady_clock::now();
 						[directEncoder setComputePipelineState:remasterIndirectPipelineState];
 						[directEncoder setTexture:sourceTexture atIndex:0];
 						[directEncoder setTexture:occlusionTexture atIndex:1];
@@ -987,6 +996,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 						[directEncoder endEncoding];
+						directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
 					}
 
 					// Direct is deterministic and need not be recomputed for each indirect sample.
@@ -998,6 +1008,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						const uint32_t previous = current ^ 1;
 						uniforms.passIndex = bounce + 1;
 						id<MTLComputeCommandEncoder> bounceEncoder = [commandBuffer computeCommandEncoder];
+						const auto indirectEncodeStarted = std::chrono::steady_clock::now();
 						[bounceEncoder setComputePipelineState:remasterIndirectPipelineState];
 						[bounceEncoder setTexture:sourceTexture atIndex:0];
 						[bounceEncoder setTexture:occlusionTexture atIndex:1];
@@ -1015,6 +1026,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 						[bounceEncoder endEncoding];
+						indirectEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - indirectEncodeStarted).count();
 						previousBounce = bounceTextures[current];
 						if (measureGi && sample == 0 && bounce < 16)
 						{
@@ -1038,6 +1050,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					{
 						const uint32_t current = sample & 1;
 						id<MTLComputeCommandEncoder> accumulationEncoder = [commandBuffer computeCommandEncoder];
+						const auto accumulationEncodeStarted = std::chrono::steady_clock::now();
 						[accumulationEncoder setComputePipelineState:remasterSampleAccumulationPipelineState];
 						[accumulationEncoder setTexture:finalIndirect atIndex:0];
 						[accumulationEncoder setTexture:sampleMeanTextures[current ^ 1] atIndex:1];
@@ -1046,6 +1059,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[accumulationEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 						[accumulationEncoder endEncoding];
+						accumulationEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - accumulationEncodeStarted).count();
 						finalIndirect = sampleMeanTextures[current];
 					}
 				}
@@ -1057,6 +1071,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					lightingView == RemasterLightingView::DirectAndIndirectContribution)
 				{
 					id<MTLComputeCommandEncoder> compositeEncoder = [commandBuffer computeCommandEncoder];
+					const auto compositeEncodeStarted = std::chrono::steady_clock::now();
 					[compositeEncoder setComputePipelineState:remasterCompositePipelineState];
 					[compositeEncoder setTexture:sourceTexture atIndex:0];
 					[compositeEncoder setTexture:directTexture atIndex:1];
@@ -1068,6 +1083,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[compositeEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 					[compositeEncoder endEncoding];
+					compositeEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compositeEncodeStarted).count();
 				}
 			}
 		}
@@ -1100,13 +1116,26 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			presentationTexture = highlightedTexture;
 		}
 
+		if (panelMetrics)
+		{
+			RemasterState &state = S9xRemasterState();
+			std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
+			state.performanceMetrics.lightingPreparationMs =
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lightingPreparationStarted).count();
+			state.performanceMetrics.directEncodeMs = directEncodeMs;
+			state.performanceMetrics.indirectEncodeMs = indirectEncodeMs;
+			state.performanceMetrics.accumulationEncodeMs = accumulationEncodeMs;
+			state.performanceMetrics.compositeEncodeMs = compositeEncodeMs;
+		}
+
 		// Only retained Metal objects and copied values cross this boundary. Frame
 		// pixels and temporary CPU fields have already been uploaded on the producer.
 		CAMetalLayer *presentationLayer = metalLayer;
 		id<MTLRenderPipelineState> presentationPipeline = metalPipelineState;
 		const int presentationVideoMode = videoMode;
 		const CGFloat presentationScale = metalLayer.contentsScale;
-		const bool measureFrames = std::getenv("S9X_REMASTER_FRAME_METRICS") != nullptr;
+		const bool logFrameMetrics = std::getenv("S9X_REMASTER_FRAME_METRICS") != nullptr;
+		const bool measureFrames = panelMetrics || logFrameMetrics;
 		const auto queuedAt = std::chrono::steady_clock::now();
 		bool (^present)(void) = ^bool {
 			@autoreleasepool {
@@ -1141,10 +1170,30 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					const double queuedMs = std::chrono::duration<double, std::milli>(drawableStart - queuedAt).count();
 					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
 					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+						double gpuMs = 0.0;
+						if (logFrameMetrics && @available(macOS 10.15, *))
+							gpuMs = (completed.GPUEndTime - completed.GPUStartTime) * 1000.0;
+						const uint64_t dropped = droppedRemasterPresentations.exchange(0);
+						if (panelMetrics)
+						{
+							RemasterState &state = S9xRemasterState();
+							const auto presentedAt = std::chrono::steady_clock::now();
+							std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
+							state.performanceMetrics.presentationQueueMs = queuedMs;
+							state.performanceMetrics.drawableMs = drawableMs;
+							state.performanceMetrics.gpuFrameMs = gpuMs;
+							state.performanceMetrics.droppedPresentations = dropped;
+							if (state.performanceLastPresented.time_since_epoch().count())
+							{
+								const double frameMs = std::chrono::duration<double, std::milli>(presentedAt - state.performanceLastPresented).count();
+								if (frameMs > 0.0)
+									state.performanceMetrics.presentedFps = 1000.0 / frameMs;
+							}
+							state.performanceLastPresented = presentedAt;
+						}
 						if (@available(macOS 10.15, *))
 							NSLog(@"Remaster frame: queued=%.3fms drawable=%.3fms gpu=%.3fms dropped=%llu",
-								queuedMs, drawableMs, (completed.GPUEndTime - completed.GPUStartTime) * 1000.0,
-								static_cast<unsigned long long>(droppedRemasterPresentations.exchange(0)));
+								queuedMs, drawableMs, gpuMs, static_cast<unsigned long long>(dropped));
 					}];
 				}
 				if (!waitForCompletion)

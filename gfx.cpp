@@ -587,6 +587,12 @@ static void S9xApplyMidLineRaster (void)
 
 void S9xStartScreenRefresh (void)
 {
+	if (S9xRemasterPerformanceMetricsEnabled())
+	{
+		RemasterState &state = S9xRemasterState();
+		std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
+		state.performanceFrameStarted = std::chrono::steady_clock::now();
+	}
 	if (GFX.DoInterlace)
 		GFX.DoInterlace--;
 
@@ -632,6 +638,17 @@ void S9xStartScreenRefresh (void)
 
 void S9xEndScreenRefresh (void)
 {
+	if (S9xRemasterPerformanceMetricsEnabled())
+	{
+		RemasterState &state = S9xRemasterState();
+		const auto now = std::chrono::steady_clock::now();
+		if (state.performanceFrameStarted.time_since_epoch().count())
+		{
+			std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
+			state.performanceMetrics.emulationFrameMs =
+				std::chrono::duration<double, std::milli>(now - state.performanceFrameStarted).count();
+		}
+	}
 	if (IPPU.RenderThisFrame)
 	{
 		FLUSH_REDRAW();

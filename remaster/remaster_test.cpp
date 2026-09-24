@@ -655,8 +655,26 @@ material = "missing"
 	assert(diagnostics.size() >= 3);
 
 	assert(S9xRemasterLoadProfile("alttp-profile.toml", profile, diagnostics));
-	assert(profile.materials.size() == 8);
-	assert(profile.assetGroups.size() == 8);
-	assert(profile.rules.size() == 8);
+	assert(profile.materials.size() == 9);
+	assert(profile.assetGroups.size() == 9);
+	assert(profile.rules.size() == 9);
+	context = {};
+	context.tileId = { UINT64_C(0x34eb3798eedfa0fc), 1, 4 };
+	context.source = RemasterSourceType::Background;
+	context.sourceIndex = 1;
+	match = S9xRemasterMatchProfile(profile, context);
+	assert(match.status == RemasterProfileMatchStatus::Matched);
+	assert(match.assetGroup && match.assetGroup->name == "torch_flame");
+	assert(match.material && match.material->name == "torch_flame");
+	assert(match.material->receivesGi);
+	context.tileId = { UINT64_C(0xc40518b112d0814e), 1, 4 };
+	match = S9xRemasterMatchProfile(profile, context);
+	assert(match.status == RemasterProfileMatchStatus::Matched);
+	assert(match.assetGroup && match.assetGroup->name == "dungeon_floor");
+	RemasterFrame profiledFrame;
+	S9xRemasterApplyProfileToFrame(profile, profiledFrame);
+	assert(S9xRemasterFrameAssetGroupVariants(profiledFrame, "torch_flame") ==
+		(std::vector<RemasterTileContentId> { { UINT64_C(0x34eb3798eedfa0fc), 1, 4 },
+			{ UINT64_C(0x9c36635bd77c6108), 1, 4 }, { UINT64_C(0xa8d1d0722ff1bda3), 1, 4 } }));
 	return 0;
 }

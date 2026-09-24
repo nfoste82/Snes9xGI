@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -32,6 +33,21 @@ extern uint32_t S9xRemasterCurrentOwner;
 
 struct RemasterState
 {
+	struct PerformanceMetrics
+	{
+		double emulationFrameMs = 0.0;
+		double lightingPreparationMs = 0.0;
+		double directEncodeMs = 0.0;
+		double indirectEncodeMs = 0.0;
+		double accumulationEncodeMs = 0.0;
+		double compositeEncodeMs = 0.0;
+		double presentationQueueMs = 0.0;
+		double drawableMs = 0.0;
+		double gpuFrameMs = 0.0;
+		double presentedFps = 0.0;
+		uint64_t droppedPresentations = 0;
+	};
+
 	struct ProfileMatchKey
 	{
 		RemasterTileContentId tileId;
@@ -97,6 +113,11 @@ struct RemasterState
 
 	std::atomic<RemasterDebugMode> requestedDebugMode { RemasterDebugMode::Original };
 	std::atomic<bool> requestedLiveFrames { false };
+	std::atomic<bool> performanceMetricsEnabled { false };
+	std::chrono::steady_clock::time_point performanceFrameStarted;
+	std::chrono::steady_clock::time_point performanceLastPresented;
+	PerformanceMetrics performanceMetrics;
+	std::mutex performanceMetricsMutex;
 	RemasterDebugMode activeDebugMode = RemasterDebugMode::Original;
 	std::vector<uint32_t> mainOwners;
 	std::vector<uint32_t> subOwners;
@@ -163,6 +184,31 @@ inline bool S9xRemasterFramePacketActive (void)
 {
 	const RemasterState &state = S9xRemasterState();
 	return state.frameCaptureActive || state.liveFramesActive;
+}
+
+inline void S9xRemasterSetPerformanceMetricsEnabled (bool enabled)
+{
+	RemasterState &state = S9xRemasterState();
+	state.performanceMetricsEnabled.store(enabled, std::memory_order_relaxed);
+	if (!enabled)
+	{
+		std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
+		state.performanceMetrics = {};
+		state.performanceFrameStarted = {};
+		state.performanceLastPresented = {};
+	}
+}
+
+inline bool S9xRemasterPerformanceMetricsEnabled (void)
+{
+	return S9xRemasterState().performanceMetricsEnabled.load(std::memory_order_relaxed);
+}
+
+inline RemasterState::PerformanceMetrics S9xRemasterGetPerformanceMetrics (void)
+{
+	RemasterState &state = S9xRemasterState();
+	std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
+	return state.performanceMetrics;
 }
 
 inline RemasterDebugMode S9xRemasterGetDebugMode (void)

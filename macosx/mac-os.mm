@@ -333,6 +333,9 @@ static NSSlider			*remasterSamplesSlider;
 static NSTextField		*remasterSamplesInput;
 static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
+static NSButton			*remasterMetricsButton;
+static NSTextField		*remasterMetricsText;
+static NSTimer			*remasterMetricsTimer;
 static NSTextView		*remasterInspectorText;
 static S9xRemasterTileView *remasterTilePreview;
 static S9xRemasterTileView *remasterNormalAxesView;
@@ -3682,6 +3685,8 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterNormalValue:(id)sender;
 - (void)fillRemasterTileNormal:(id)sender;
 - (void)applyRemasterNormalToAnimation:(id)sender;
+- (void)changeRemasterMetricsEnabled:(id)sender;
+- (void)refreshRemasterMetrics;
 - (void)setRemasterEmissionFromVisibleTile:(id)sender;
 - (void)setRemasterEmissionFromVisibleAnimation:(id)sender;
 - (void)changeRemasterPreviewLayers:(id)sender;
@@ -4905,7 +4910,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
 	remasterVariants.clear();
-	if (instance && instance->assetGroup.compare(0, 18, "capture_animation_") == 0)
+	if (instance && !instance->assetGroup.empty())
 	{
 		remasterVariants = S9xRemasterFrameAssetGroupVariants(remasterReplayFrame, instance->assetGroup);
 		if (remasterVariants.empty())
@@ -6585,7 +6590,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 600)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 740)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
@@ -6593,32 +6598,32 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
-		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 550, 220, 24)];
+		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 220, 24)];
 		originalTitle.stringValue = @"Original Scene RGB Contribution";
 		originalTitle.editable = NO;
 		originalTitle.bezeled = NO;
 		originalTitle.drawsBackground = NO;
 		[content addSubview:originalTitle];
-		remasterOriginalSceneSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 517, 300, 24)];
+		remasterOriginalSceneSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 657, 300, 24)];
 		remasterOriginalSceneSlider.minValue = 0;
 		remasterOriginalSceneSlider.maxValue = 1;
 		remasterOriginalSceneSlider.continuous = NO;
 		remasterOriginalSceneSlider.target = self;
 		remasterOriginalSceneSlider.action = @selector(changeRemasterOriginalSceneContribution:);
 		[content addSubview:remasterOriginalSceneSlider];
-		remasterOriginalSceneInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 517, 60, 24)];
+		remasterOriginalSceneInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 657, 60, 24)];
 		remasterOriginalSceneInput.alignment = NSTextAlignmentCenter;
 		remasterOriginalSceneInput.delegate = self;
 		remasterOriginalSceneInput.target = self;
 		remasterOriginalSceneInput.action = @selector(changeRemasterOriginalSceneContribution:);
 		[content addSubview:remasterOriginalSceneInput];
-		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 476, 180, 24)];
+		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 616, 180, 24)];
 		samplesTitle.stringValue = @"Samples Per Frame";
 		samplesTitle.editable = NO;
 		samplesTitle.bezeled = NO;
 		samplesTitle.drawsBackground = NO;
 		[content addSubview:samplesTitle];
-		remasterSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 443, 300, 24)];
+		remasterSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 583, 300, 24)];
 		remasterSamplesSlider.minValue = 1;
 		remasterSamplesSlider.maxValue = 16;
 		remasterSamplesSlider.numberOfTickMarks = 16;
@@ -6627,24 +6632,24 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesSlider.target = self;
 		remasterSamplesSlider.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesSlider];
-		remasterSamplesInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 443, 60, 24)];
+		remasterSamplesInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 583, 60, 24)];
 		remasterSamplesInput.alignment = NSTextAlignmentCenter;
 		remasterSamplesInput.target = self;
 		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesInput];
-		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 406, 300, 24)];
+		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 546, 300, 24)];
 		remasterSampleAccumulationButton.buttonType = NSButtonTypeSwitch;
 		remasterSampleAccumulationButton.title = @"Accumulate and average samples";
 		remasterSampleAccumulationButton.target = self;
 		remasterSampleAccumulationButton.action = @selector(changeRemasterSampleAccumulation:);
 		[content addSubview:remasterSampleAccumulationButton];
-		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 370, 180, 24)];
+		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 510, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
 		title.bezeled = NO;
 		title.drawsBackground = NO;
 		[content addSubview:title];
-		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 337, 300, 24)];
+		remasterBounceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 477, 300, 24)];
 		remasterBounceSlider.minValue = 0;
 		remasterBounceSlider.maxValue = 16;
 		remasterBounceSlider.numberOfTickMarks = 17;
@@ -6653,57 +6658,57 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceSlider.target = self;
 		remasterBounceSlider.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceSlider];
-		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 337, 60, 24)];
+		remasterBounceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 477, 60, 24)];
 		remasterBounceInput.alignment = NSTextAlignmentCenter;
 		remasterBounceInput.target = self;
 		remasterBounceInput.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceInput];
-		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 266, 180, 24)];
+		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 406, 180, 24)];
 		roughnessTitle.stringValue = @"Surface Roughness";
 		roughnessTitle.editable = NO;
 		roughnessTitle.bezeled = NO;
 		roughnessTitle.drawsBackground = NO;
 		[content addSubview:roughnessTitle];
-		remasterIndirectRoughnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 233, 300, 24)];
+		remasterIndirectRoughnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 373, 300, 24)];
 		remasterIndirectRoughnessSlider.minValue = 0;
 		remasterIndirectRoughnessSlider.maxValue = 1;
 		remasterIndirectRoughnessSlider.continuous = NO;
 		remasterIndirectRoughnessSlider.target = self;
 		remasterIndirectRoughnessSlider.action = @selector(changeRemasterIndirectRoughness:);
 		[content addSubview:remasterIndirectRoughnessSlider];
-		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 233, 60, 24)];
+		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 373, 60, 24)];
 		remasterIndirectRoughnessInput.alignment = NSTextAlignmentCenter;
 		remasterIndirectRoughnessInput.delegate = self;
 		remasterIndirectRoughnessInput.target = self;
 		remasterIndirectRoughnessInput.action = @selector(changeRemasterIndirectRoughness:);
 		[content addSubview:remasterIndirectRoughnessInput];
-		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 202, 180, 24)];
+		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 342, 180, 24)];
 		heightScaleTitle.stringValue = @"Height Scale";
 		heightScaleTitle.editable = NO;
 		heightScaleTitle.bezeled = NO;
 		heightScaleTitle.drawsBackground = NO;
 		[content addSubview:heightScaleTitle];
-		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 202, 60, 24)];
+		remasterHeightScaleInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 342, 60, 24)];
 		remasterHeightScaleInput.alignment = NSTextAlignmentCenter;
 		remasterHeightScaleInput.delegate = self;
 		remasterHeightScaleInput.target = self;
 		remasterHeightScaleInput.action = @selector(changeRemasterHeightScale:);
 		[content addSubview:remasterHeightScaleInput];
-		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 166, 300, 30)];
+		NSTextField *heightScaleDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 306, 300, 30)];
 		heightScaleDescription.stringValue = @"Maps height byte 255 to this many screen-space Z units.";
 		heightScaleDescription.editable = NO;
 		heightScaleDescription.bezeled = NO;
 		heightScaleDescription.drawsBackground = NO;
 		heightScaleDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:heightScaleDescription];
-		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 298, 390, 26)];
+		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 438, 390, 26)];
 		remasterBounceDescription.stringValue = @"Controls the global Oren-Nayar diffuse BRDF: 0 is Lambertian; 1 is maximally rough.";
 		remasterBounceDescription.editable = NO;
 		remasterBounceDescription.bezeled = NO;
 		remasterBounceDescription.drawsBackground = NO;
 		remasterBounceDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:remasterBounceDescription];
-		NSTextField *cameraDirectionTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 130, 180, 24)];
+		NSTextField *cameraDirectionTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 270, 180, 24)];
 		cameraDirectionTitle.stringValue = @"Camera Direction";
 		cameraDirectionTitle.editable = NO;
 		cameraDirectionTitle.bezeled = NO;
@@ -6713,21 +6718,36 @@ void QuitWithFatalError ( NSString *message)
 		for (NSInteger component = 0; component < 3; component++)
 		{
 			const CGFloat x = 20 + component * 125;
-			NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 96, 20, 24)];
+			NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(x, 236, 20, 24)];
 			label.stringValue = componentLabels[component];
 			label.alignment = NSTextAlignmentRight;
 			label.editable = NO;
 			label.bezeled = NO;
 			label.drawsBackground = NO;
 			[content addSubview:label];
-			remasterCameraDirectionInputs[component] = [[NSTextField alloc] initWithFrame:NSMakeRect(x + 25, 96, 85, 24)];
+			remasterCameraDirectionInputs[component] = [[NSTextField alloc] initWithFrame:NSMakeRect(x + 25, 236, 85, 24)];
 			remasterCameraDirectionInputs[component].alignment = NSTextAlignmentCenter;
 			remasterCameraDirectionInputs[component].delegate = self;
 			remasterCameraDirectionInputs[component].target = self;
 			remasterCameraDirectionInputs[component].action = @selector(changeRemasterCameraDirection:);
 			[content addSubview:remasterCameraDirectionInputs[component]];
 		}
-		remasterSettingsSaveButton = [[NSButton alloc] initWithFrame:NSMakeRect(300, 8, 110, 30)];
+		remasterMetricsButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 196, 250, 24)];
+		remasterMetricsButton.buttonType = NSButtonTypeSwitch;
+		remasterMetricsButton.title = @"Gather live performance metrics";
+		remasterMetricsButton.target = self;
+		remasterMetricsButton.action = @selector(changeRemasterMetricsEnabled:);
+		[content addSubview:remasterMetricsButton];
+		remasterMetricsText = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 48, 390, 142)];
+		remasterMetricsText.editable = NO;
+		remasterMetricsText.selectable = YES;
+		remasterMetricsText.bezeled = NO;
+		remasterMetricsText.drawsBackground = NO;
+		remasterMetricsText.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+		remasterMetricsText.alignment = NSTextAlignmentLeft;
+		remasterMetricsText.stringValue = @"Metrics are disabled.";
+		[content addSubview:remasterMetricsText];
+		remasterSettingsSaveButton = [[NSButton alloc] initWithFrame:NSMakeRect(300, 12, 110, 30)];
 		remasterSettingsSaveButton.title = @"Save Profile";
 		remasterSettingsSaveButton.bezelStyle = NSBezelStyleRounded;
 		remasterSettingsSaveButton.target = self;
@@ -6749,7 +6769,41 @@ void QuitWithFatalError ( NSString *message)
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
+	remasterMetricsButton.state = S9xRemasterPerformanceMetricsEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+	[self refreshRemasterMetrics];
+	if (!remasterMetricsTimer)
+		remasterMetricsTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:self
+			selector:@selector(refreshRemasterMetrics) userInfo:nil repeats:YES];
 	[remasterProfileSettingsPanel orderFront:nil];
+}
+
+- (void)changeRemasterMetricsEnabled:(id)sender
+{
+	S9xRemasterSetPerformanceMetricsEnabled(remasterMetricsButton.state == NSControlStateValueOn);
+	[self refreshRemasterMetrics];
+}
+
+- (void)refreshRemasterMetrics
+{
+	if (!remasterMetricsText)
+		return;
+	if (!S9xRemasterPerformanceMetricsEnabled())
+	{
+		remasterMetricsText.stringValue = @"Metrics are disabled.";
+		return;
+	}
+	const RemasterState::PerformanceMetrics metrics = S9xRemasterGetPerformanceMetrics();
+	remasterMetricsText.stringValue = [NSString stringWithFormat:
+		@"Presented: %.1f FPS  dropped: %llu\n"
+		 "Snes9x frame: %.2f ms\n"
+		 "Lighting CPU: %.2f ms  (field/upload/encode)\n"
+		 "  direct %.2f  indirect %.2f  accumulate %.2f  composite %.2f ms\n"
+		 "Presentation CPU: queue %.2f  drawable %.2f ms\n"
+		 "Lighting GPU total: %.2f ms  (whole command buffer)",
+		metrics.presentedFps, static_cast<unsigned long long>(metrics.droppedPresentations),
+		metrics.emulationFrameMs, metrics.lightingPreparationMs, metrics.directEncodeMs,
+		metrics.indirectEncodeMs, metrics.accumulationEncodeMs, metrics.compositeEncodeMs,
+		metrics.presentationQueueMs, metrics.drawableMs, metrics.gpuFrameMs];
 }
 
 - (void)changeRemasterHeightScale:(id)sender
