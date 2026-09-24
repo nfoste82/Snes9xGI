@@ -35,7 +35,10 @@ struct RemasterState
 {
 	struct PerformanceMetrics
 	{
+		double emulationFramePeriodMs = 0.0;
 		double emulationFrameMs = 0.0;
+		double pacingWaitMs = 0.0;
+		double lightingFieldMs = 0.0;
 		double lightingPreparationMs = 0.0;
 		double directEncodeMs = 0.0;
 		double indirectEncodeMs = 0.0;
@@ -115,7 +118,8 @@ struct RemasterState
 	std::atomic<bool> requestedLiveFrames { false };
 	std::atomic<bool> performanceMetricsEnabled { false };
 	std::chrono::steady_clock::time_point performanceFrameStarted;
-	std::chrono::steady_clock::time_point performanceLastPresented;
+	std::chrono::steady_clock::time_point performanceLastFrameStarted;
+	double performanceLastPresentedTime = 0.0;
 	PerformanceMetrics performanceMetrics;
 	std::mutex performanceMetricsMutex;
 	RemasterDebugMode activeDebugMode = RemasterDebugMode::Original;
@@ -190,12 +194,12 @@ inline void S9xRemasterSetPerformanceMetricsEnabled (bool enabled)
 {
 	RemasterState &state = S9xRemasterState();
 	state.performanceMetricsEnabled.store(enabled, std::memory_order_relaxed);
-	if (!enabled)
 	{
 		std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
 		state.performanceMetrics = {};
 		state.performanceFrameStarted = {};
-		state.performanceLastPresented = {};
+		state.performanceLastFrameStarted = {};
+		state.performanceLastPresentedTime = 0.0;
 	}
 }
 
@@ -603,6 +607,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.indirectBounceCount = state.activeProfile.indirectBounceCount;
 	result.indirectRoughness = state.activeProfile.indirectRoughness;
 	result.originalSceneContribution = state.activeProfile.originalSceneContribution;
+	result.heightPreviewMultiplier = state.activeProfile.heightPreviewMultiplier;
 	result.samplesPerFrame = state.activeProfile.samplesPerFrame;
 	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;

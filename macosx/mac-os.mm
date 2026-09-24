@@ -324,6 +324,8 @@ static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
 static NSTextField		*remasterHeightScaleInput;
+static NSSlider			*remasterHeightPreviewMultiplierSlider;
+static NSTextField		*remasterHeightPreviewMultiplierInput;
 static NSTextField		*remasterCameraDirectionInputs[3];
 static NSSlider			*remasterIndirectRoughnessSlider;
 static NSTextField		*remasterIndirectRoughnessInput;
@@ -338,6 +340,7 @@ static NSTextField		*remasterMetricsText;
 static NSTimer			*remasterMetricsTimer;
 static NSTextView		*remasterInspectorText;
 static S9xRemasterTileView *remasterTilePreview;
+static S9xRemasterTileView *remasterArtworkPreview;
 static S9xRemasterTileView *remasterNormalAxesView;
 static NSTextField		*remasterVariantLabel;
 static NSButton			*remasterPreviousVariantButton;
@@ -3100,6 +3103,8 @@ static void InitAutofire (void)
 void S9xSyncSpeed (void)
 {
 	long long	currentFrame, adjustment;
+	const bool measurePerformance = S9xRemasterPerformanceMetricsEnabled();
+	const auto pacingStarted = std::chrono::steady_clock::now();
 
 	if (Settings.SoundSync)
 	{
@@ -3179,6 +3184,13 @@ void S9xSyncSpeed (void)
 		lastFrame = currentFrame;
 
 		IPPU.RenderThisFrame = true;
+	}
+	if (measurePerformance)
+	{
+		RemasterState &state = S9xRemasterState();
+		std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
+		state.performanceMetrics.pacingWaitMs =
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pacingStarted).count();
 	}
 }
 
@@ -3701,6 +3713,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)showRemasterProfileSettings;
 - (void)changeRemasterBounceCount:(id)sender;
 - (void)changeRemasterHeightScale:(id)sender;
+- (void)changeRemasterHeightPreviewMultiplier:(id)sender;
 - (BOOL)commitRemasterHeightScale;
 - (void)changeRemasterCameraDirection:(id)sender;
 - (BOOL)commitRemasterCameraDirection;
@@ -4549,26 +4562,32 @@ void QuitWithFatalError ( NSString *message)
 
 	if (!remasterInspectorPanel)
 	{
-		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 420)
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 560)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
 		remasterInspectorPanel.floatingPanel = YES;
 		remasterInspectorPanel.hidesOnDeactivate = NO;
 		NSView *contentView = remasterInspectorPanel.contentView;
-		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 265, 128, 128)];
+		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 405, 128, 128)];
 		tilePreview.editor = self;
 		remasterTilePreview = tilePreview;
 		remasterTilePreview.imageFrameStyle = NSImageFrameGrayBezel;
 		remasterTilePreview.imageScaling = NSImageScaleAxesIndependently;
 		[contentView addSubview:remasterTilePreview];
-		remasterNormalAxesView = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(156, 292, 74, 100)];
+		remasterArtworkPreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 265, 128, 128)];
+		remasterArtworkPreview.editor = self;
+		remasterArtworkPreview.imageFrameStyle = NSImageFrameGrayBezel;
+		remasterArtworkPreview.imageScaling = NSImageScaleAxesIndependently;
+		remasterArtworkPreview.toolTip = @"Full-color artwork reference for the tile being edited above.";
+		[contentView addSubview:remasterArtworkPreview];
+		remasterNormalAxesView = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(156, 432, 74, 100)];
 		remasterNormalAxesView.imageFrameStyle = NSImageFrameNone;
 		remasterNormalAxesView.showsNormalAxes = YES;
 		remasterNormalAxesView.editor = self;
 		remasterNormalAxesView.hidden = YES;
 		[contentView addSubview:remasterNormalAxesView];
-		remasterNormalBackButton = [[NSButton alloc] initWithFrame:NSMakeRect(152, 266, 88, 24)];
+		remasterNormalBackButton = [[NSButton alloc] initWithFrame:NSMakeRect(152, 406, 88, 24)];
 		remasterNormalBackButton.title = @"Back (-Z)";
 		remasterNormalBackButton.font = [NSFont systemFontOfSize:10];
 		remasterNormalBackButton.buttonType = NSButtonTypeSwitch;
@@ -4929,6 +4948,7 @@ void QuitWithFatalError ( NSString *message)
 		else
 		{
 			remasterTilePreview.image = nil;
+			remasterArtworkPreview.image = nil;
 			remasterVariantLabel.stringValue = @"No decoded tile";
 			remasterPreviousVariantButton.enabled = NO;
 			remasterNextVariantButton.enabled = NO;
@@ -5005,6 +5025,10 @@ void QuitWithFatalError ( NSString *message)
 	if (canRender)
 	{
 		const NSInteger size = 128;
+		NSBitmapImageRep *artworkBitmap = [[NSBitmapImageRep alloc]
+			initWithBitmapDataPlanes:nil pixelsWide:size pixelsHigh:size bitsPerSample:8 samplesPerPixel:4
+			hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace bytesPerRow:size * 4 bitsPerPixel:32];
+		uint8_t *artworkPixels = artworkBitmap.bitmapData;
 		NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
 			initWithBitmapDataPlanes:nil pixelsWide:size pixelsHigh:size bitsPerSample:8 samplesPerPixel:4
 			hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace bytesPerRow:size * 4 bitsPerPixel:32];
@@ -5019,6 +5043,32 @@ void QuitWithFatalError ( NSString *message)
 				const uint8_t decodedArtwork = paletteIndex ?
 					static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
 					(((x / 8) + (y / 8)) & 1 ? 28 : 42);
+				uint8_t *artworkPixel = artworkPixels + (y * size + x) * 4;
+				for (size_t component = 0; component < 3; component++)
+					artworkPixel[component] = visibleColorCounts[source] ?
+						visibleColors[source * 3 + component] : decodedArtwork;
+				if (remasterTilePixelSelected && source == remasterSelectedTilePixel)
+				{
+					const NSInteger cellX = x % 16;
+					const NSInteger cellY = y % 16;
+					const bool outerEdge = cellX == 0 || cellX == 15 || cellY == 0 || cellY == 15;
+					const bool innerEdge = cellX == 1 || cellX == 14 || cellY == 1 || cellY == 14;
+					if (outerEdge)
+						artworkPixel[0] = artworkPixel[1] = artworkPixel[2] = 8;
+					else if (innerEdge)
+					{
+						artworkPixel[0] = 32;
+						artworkPixel[1] = 220;
+						artworkPixel[2] = 255;
+					}
+					else
+					{
+						artworkPixel[0] = static_cast<uint8_t>((artworkPixel[0] * 3 + 32) / 4);
+						artworkPixel[1] = static_cast<uint8_t>((artworkPixel[1] * 3 + 220) / 4);
+						artworkPixel[2] = static_cast<uint8_t>((artworkPixel[2] * 3 + 255) / 4);
+					}
+				}
+				artworkPixel[3] = 255;
 				uint8_t *pixel = pixels + (y * size + x) * 4;
 				if (layer == RemasterEditorMaterial && hasMaterials)
 				{
@@ -5040,22 +5090,29 @@ void QuitWithFatalError ( NSString *message)
 				}
 				else if (layer == RemasterEditorMaterial)
 				{
-					pixel[0] = pixel[1] = pixel[2] = decodedArtwork;
+					pixel[0] = ((x / 8) + (y / 8)) & 1 ? 48 : 72;
+					pixel[1] = 28;
+					pixel[2] = 28;
 				}
 				else if (layer == RemasterEditorOcclusion)
 				{
-					const uint8_t coverage = hasOcclusion ? (editableMetadata && editableMetadata->hasOcclusion ?
-						editableMetadata->occlusion[source] : capturedMetadata->occlusion[source]) : 0;
-					const bool hasArtworkColor = visibleColorCounts[source] != 0;
-					for (size_t component = 0; component < 3; component++)
+					if (hasOcclusion)
 					{
-						const uint8_t artwork = hasArtworkColor ? visibleColors[source * 3 + component] : decodedArtwork;
-						pixel[component] = static_cast<uint8_t>((artwork * (255 - coverage) + coverage * coverage) / 255);
+						const float coverage = (editableMetadata && editableMetadata->hasOcclusion ?
+							editableMetadata->occlusion[source] : capturedMetadata->occlusion[source]) / 255.0f;
+						pixel[0] = static_cast<uint8_t>(std::lround(coverage * 255.0f));
+						pixel[1] = static_cast<uint8_t>(std::lround((0.35f - coverage * 0.30f) * 255.0f));
+						pixel[2] = static_cast<uint8_t>(std::lround((0.05f - coverage * 0.05f) * 255.0f));
+					}
+					else
+					{
+						pixel[0] = 56;
+						pixel[1] = 0;
+						pixel[2] = 71;
 					}
 				}
 				else if (layer == RemasterEditorHeight)
 				{
-					const bool showArtwork = remasterHeightArtworkVisibleButton.state == NSControlStateValueOn && asset;
 					const bool showHeight = remasterHeightDataVisibleButton.state == NSControlStateValueOn && height;
 					uint8_t overlay[3] = {};
 					if (showHeight)
@@ -5078,65 +5135,68 @@ void QuitWithFatalError ( NSString *message)
 						{
 							const float value = preview == RemasterHeightPreviewRaw ? (*height)[source] / 255.0f :
 								SampleRemasterHeight(*height, sampling, sampleX, sampleY);
-							overlay[0] = overlay[1] = overlay[2] = static_cast<uint8_t>(std::lround(value * 255.0f));
+							const uint8_t debugValue = static_cast<uint8_t>(std::lround(std::min(1.0f,
+								value * remasterReplayFrame.heightPreviewMultiplier) * 255.0f));
+							overlay[0] = overlay[1] = overlay[2] = debugValue;
 						}
 					}
 					for (size_t component = 0; component < 3; component++)
+						pixel[component] = showHeight ? overlay[component] : 0;
+					if (!showHeight)
 					{
-						const uint8_t artwork = showArtwork ? (visibleColorCounts[source] ?
-							visibleColors[source * 3 + component] : decodedArtwork) : 0;
-						pixel[component] = showArtwork && showHeight ? static_cast<uint8_t>((artwork + overlay[component]) / 2) :
-							(showHeight ? overlay[component] : artwork);
-					}
-					if (!showArtwork && !showHeight)
-					{
-						pixel[0] = ((x / 8) + (y / 8)) & 1 ? 48 : 72;
-						pixel[1] = 28;
-						pixel[2] = 28;
+						pixel[0] = 56;
+						pixel[1] = 0;
+						pixel[2] = 71;
 					}
 				}
 				else if (layer == RemasterEditorNormal)
 				{
 					if (normals)
 					{
-						pixel[0] = (*normals)[source * 3];
-						pixel[1] = (*normals)[source * 3 + 1];
-						pixel[2] = (*normals)[source * 3 + 2];
-					}
-					else if (visibleColorCounts[source])
-					{
-						pixel[0] = visibleColors[source * 3];
-						pixel[1] = visibleColors[source * 3 + 1];
-						pixel[2] = visibleColors[source * 3 + 2];
+						float nx, ny, nz;
+						DecodeRemasterNormal(normals->data() + source * 3, nx, ny, nz);
+						pixel[0] = static_cast<uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
+						pixel[1] = static_cast<uint8_t>(std::lround((ny * 0.5f + 0.5f) * 255.0f));
+						pixel[2] = static_cast<uint8_t>(std::lround((nz * 0.5f + 0.5f) * 255.0f));
 					}
 					else
 					{
-						const uint8_t value = paletteIndex ? static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
-							(((x / 8) + (y / 8)) & 1 ? 28 : 42);
-						pixel[0] = pixel[1] = pixel[2] = value;
+						float nx = 0.0f;
+						float ny = 0.0f;
+						float nz = 1.0f;
+						if (height)
+						{
+							const size_t sourceX = source % 8;
+							const size_t sourceY = source / 8;
+							const size_t left = sourceY * 8 + (sourceX ? sourceX - 1 : sourceX);
+							const size_t right = sourceY * 8 + std::min<size_t>(7, sourceX + 1);
+							const size_t top = (sourceY ? sourceY - 1 : sourceY) * 8 + sourceX;
+							const size_t bottom = std::min<size_t>(7, sourceY + 1) * 8 + sourceX;
+							const float dx = ((*height)[right] - (*height)[left]) / 255.0f *
+								remasterReplayFrame.lightingCoordinateScale;
+							const float dy = ((*height)[bottom] - (*height)[top]) / 255.0f *
+								remasterReplayFrame.lightingCoordinateScale;
+							const float length = std::sqrt(dx * dx + dy * dy + 4.0f);
+							nx = -dx / length;
+							ny = -dy / length;
+							nz = 2.0f / length;
+						}
+						pixel[0] = static_cast<uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
+						pixel[1] = static_cast<uint8_t>(std::lround((ny * 0.5f + 0.5f) * 255.0f));
+						pixel[2] = static_cast<uint8_t>(std::lround((nz * 0.5f + 0.5f) * 255.0f));
 					}
 				}
 				else if (layer == RemasterEditorEmission)
 				{
-					const bool showArtwork = remasterArtworkVisibleButton.state == NSControlStateValueOn;
 					const bool showEmission = remasterEmissionVisibleButton.state == NSControlStateValueOn && hasEmission;
 					const std::array<uint8_t, 256> *emission = showEmission ?
 						(editableMetadata && editableMetadata->hasEmission ? &editableMetadata->emissionRgba : &capturedMetadata->emissionRgba) : nullptr;
 					const size_t emissionOffset = source * 4;
-					const bool hasArtworkColor = showArtwork && visibleColorCounts[source];
 					for (size_t component = 0; component < 3; component++)
 					{
-						const float artworkValue = hasArtworkColor ? visibleColors[source * 3 + component] :
-							(showArtwork && asset ? decodedArtwork : 0.0f);
-						const float emissionValue = emission ? (*emission)[emissionOffset + component] *
-							((*emission)[emissionOffset + 3] / 25.0f) : 0.0f;
-						pixel[component] = static_cast<uint8_t>(std::min(255.0f, artworkValue + emissionValue));
-					}
-					if (!hasArtworkColor && !(showArtwork && asset) && !emission)
-					{
-						pixel[0] = ((x / 8) + (y / 8)) & 1 ? 48 : 72;
-						pixel[1] = 28;
-						pixel[2] = 28;
+						const float scale = emission ? std::pow((*emission)[emissionOffset + 3] * 4.0f, 1.0f / 2.2f) : 0.0f;
+						pixel[component] = emission ? static_cast<uint8_t>(std::min(255.0f,
+							(*emission)[emissionOffset + component] * scale)) : 0;
 					}
 				}
 				else if (layer == RemasterEditorArtwork)
@@ -5176,10 +5236,14 @@ void QuitWithFatalError ( NSString *message)
 		NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
 		[image addRepresentation:bitmap];
 		remasterTilePreview.image = image;
+		NSImage *artworkImage = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
+		[artworkImage addRepresentation:artworkBitmap];
+		remasterArtworkPreview.image = artworkImage;
 	}
 	else
 	{
 		remasterTilePreview.image = nil;
+		remasterArtworkPreview.image = nil;
 	}
 
 	const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(remasterReplayFrame, remasterSelectedTile);
@@ -5529,7 +5593,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterOcclusionFillOpaqueButton.hidden = layer != RemasterEditorOcclusion;
 	remasterHeightSamplingSelector.hidden = layer != RemasterEditorHeight;
 	remasterHeightPreviewMode.hidden = layer != RemasterEditorHeight;
-	remasterHeightArtworkVisibleButton.hidden = layer != RemasterEditorHeight;
+	remasterHeightArtworkVisibleButton.hidden = YES;
 	remasterHeightDataVisibleButton.hidden = layer != RemasterEditorHeight;
 	remasterHeightApplyAnimationButton.hidden = layer != RemasterEditorHeight;
 	remasterHeightFillTileButton.hidden = layer != RemasterEditorHeight;
@@ -5549,11 +5613,12 @@ void QuitWithFatalError ( NSString *message)
 	remasterEmissionColorScope.hidden = layer != RemasterEditorEmission;
 	remasterEmissionFromTileButton.hidden = layer != RemasterEditorEmission;
 	remasterEmissionFromAnimationButton.hidden = layer != RemasterEditorEmission;
-	remasterArtworkVisibleButton.hidden = layer != RemasterEditorEmission;
+	remasterArtworkVisibleButton.hidden = YES;
 	remasterEmissionVisibleButton.hidden = layer != RemasterEditorEmission;
 	remasterResetLayerButton.hidden = layer == RemasterEditorArtwork;
 	remasterResetTileButton.hidden = false;
 	remasterTilePreview.enabled = !remasterVariants.empty();
+	remasterArtworkPreview.enabled = !remasterVariants.empty();
 	remasterMaterialBrush.enabled = editable;
 	remasterValueBrush.enabled = editable &&
 		(layer == RemasterEditorOcclusion || layer == RemasterEditorHeight || layer == RemasterEditorEmission || remasterTilePixelSelected);
@@ -6540,6 +6605,8 @@ void QuitWithFatalError ( NSString *message)
 		remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
 		remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.originalSceneContribution];
+		remasterHeightPreviewMultiplierSlider.integerValue = remasterEditingProfile.heightPreviewMultiplier;
+		remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 		remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
@@ -6590,7 +6657,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 740)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 815)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
@@ -6598,6 +6665,26 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
+		NSTextField *heightPreviewTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 765, 220, 24)];
+		heightPreviewTitle.stringValue = @"Height Preview Multiplier";
+		heightPreviewTitle.editable = NO;
+		heightPreviewTitle.bezeled = NO;
+		heightPreviewTitle.drawsBackground = NO;
+		[content addSubview:heightPreviewTitle];
+		remasterHeightPreviewMultiplierSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 732, 300, 24)];
+		remasterHeightPreviewMultiplierSlider.minValue = 1;
+		remasterHeightPreviewMultiplierSlider.maxValue = 20;
+		remasterHeightPreviewMultiplierSlider.numberOfTickMarks = 20;
+		remasterHeightPreviewMultiplierSlider.allowsTickMarkValuesOnly = YES;
+		remasterHeightPreviewMultiplierSlider.continuous = NO;
+		remasterHeightPreviewMultiplierSlider.target = self;
+		remasterHeightPreviewMultiplierSlider.action = @selector(changeRemasterHeightPreviewMultiplier:);
+		[content addSubview:remasterHeightPreviewMultiplierSlider];
+		remasterHeightPreviewMultiplierInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 732, 60, 24)];
+		remasterHeightPreviewMultiplierInput.alignment = NSTextAlignmentCenter;
+		remasterHeightPreviewMultiplierInput.target = self;
+		remasterHeightPreviewMultiplierInput.action = @selector(changeRemasterHeightPreviewMultiplier:);
+		[content addSubview:remasterHeightPreviewMultiplierInput];
 		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 220, 24)];
 		originalTitle.stringValue = @"Original Scene RGB Contribution";
 		originalTitle.editable = NO;
@@ -6765,6 +6852,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterIndirectRoughnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.indirectRoughness];
 	remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
 	remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.originalSceneContribution];
+	remasterHeightPreviewMultiplierSlider.integerValue = remasterEditingProfile.heightPreviewMultiplier;
+	remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
@@ -6794,14 +6883,16 @@ void QuitWithFatalError ( NSString *message)
 	}
 	const RemasterState::PerformanceMetrics metrics = S9xRemasterGetPerformanceMetrics();
 	remasterMetricsText.stringValue = [NSString stringWithFormat:
-		@"Presented: %.1f FPS  dropped: %llu\n"
-		 "Snes9x frame: %.2f ms\n"
-		 "Lighting CPU: %.2f ms  (field/upload/encode)\n"
+		@"Displayed: %.1f FPS  resource drops: %llu\n"
+		 "Emulation: %.2f ms period  %.2f ms visible phase  %.2f ms pacing\n"
+		 "Lighting CPU: %.2f ms  (field %.2f  upload/encode %.2f)\n"
 		 "  direct %.2f  indirect %.2f  accumulate %.2f  composite %.2f ms\n"
 		 "Presentation CPU: queue %.2f  drawable %.2f ms\n"
-		 "Lighting GPU total: %.2f ms  (whole command buffer)",
+		 "Metal GPU: %.2f ms  (whole command buffer)",
 		metrics.presentedFps, static_cast<unsigned long long>(metrics.droppedPresentations),
-		metrics.emulationFrameMs, metrics.lightingPreparationMs, metrics.directEncodeMs,
+		metrics.emulationFramePeriodMs, metrics.emulationFrameMs, metrics.pacingWaitMs,
+		metrics.lightingFieldMs + metrics.lightingPreparationMs, metrics.lightingFieldMs,
+		metrics.lightingPreparationMs, metrics.directEncodeMs,
 		metrics.indirectEncodeMs, metrics.accumulationEncodeMs, metrics.compositeEncodeMs,
 		metrics.presentationQueueMs, metrics.drawableMs, metrics.gpuFrameMs];
 }
@@ -6809,6 +6900,39 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterHeightScale:(id)sender
 {
 	[self commitRemasterHeightScale];
+}
+
+- (void)changeRemasterHeightPreviewMultiplier:(id)sender
+{
+	if (!remasterEditingProfileLoaded)
+		return;
+	const NSInteger requested = sender == remasterHeightPreviewMultiplierInput ?
+		remasterHeightPreviewMultiplierInput.integerValue : remasterHeightPreviewMultiplierSlider.integerValue;
+	const uint8_t multiplier = static_cast<uint8_t>(std::max<NSInteger>(1, std::min<NSInteger>(20, requested)));
+	remasterHeightPreviewMultiplierSlider.integerValue = multiplier;
+	remasterHeightPreviewMultiplierInput.integerValue = multiplier;
+	if (remasterEditingProfile.heightPreviewMultiplier == multiplier)
+		return;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	remasterEditingProfile.heightPreviewMultiplier = multiplier;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 10);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Height Preview Multiplier"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
+		remasterEditingProfileDirty = current != remasterSavedProfileText;
+	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 }
 
 - (void)changeRemasterCameraDirection:(id)sender
@@ -6902,6 +7026,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
@@ -6933,6 +7059,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
@@ -6958,6 +7086,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
@@ -7034,6 +7164,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
@@ -7064,6 +7196,8 @@ void QuitWithFatalError ( NSString *message)
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		remasterEditingProfileDirty = current != remasterSavedProfileText;
 	SyncRemasterEditingMetadataToFrame();
+	if (running)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
 			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);

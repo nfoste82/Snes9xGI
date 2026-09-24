@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 14;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 15;
 
 struct RemasterFramePixel
 {
@@ -127,6 +127,7 @@ struct RemasterFrame
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
 	float originalSceneContribution = 0.65f;
+	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
 	bool sampleAccumulation = true;
 	std::vector<uint16_t> originalRgb555;
@@ -149,6 +150,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.indirectBounceCount = profile.indirectBounceCount;
 	frame.indirectRoughness = profile.indirectRoughness;
 	frame.originalSceneContribution = profile.originalSceneContribution;
+	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
 	frame.sampleAccumulation = profile.sampleAccumulation;
 
@@ -554,6 +556,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			!input.ReadU8(result.samplesPerFrame) || !input.ReadU8(sampleAccumulation))) ||
 		(result.schemaVersion >= 14 && (!input.ReadFloat(result.cameraDirection[0]) ||
 			!input.ReadFloat(result.cameraDirection[1]) || !input.ReadFloat(result.cameraDirection[2]))) ||
+		(result.schemaVersion >= 15 && !input.ReadU8(result.heightPreviewMultiplier)) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
@@ -573,6 +576,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	if (!std::isfinite(result.originalSceneContribution) || result.originalSceneContribution < 0.0f ||
 		result.originalSceneContribution > 1.0f || result.samplesPerFrame < 1 || result.samplesPerFrame > 16 || sampleAccumulation > 1)
+		return false;
+	if (result.heightPreviewMultiplier < 1 || result.heightPreviewMultiplier > 20)
 		return false;
 	result.sampleAccumulation = sampleAccumulation != 0;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
@@ -1009,6 +1014,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			return false;
 		for (float component : frame.cameraDirection)
 			RemasterFrameSerialization::Float(bytes, component);
+	}
+	if (frame.schemaVersion >= 15)
+	{
+		if (frame.heightPreviewMultiplier < 1 || frame.heightPreviewMultiplier > 20)
+			return false;
+		RemasterFrameSerialization::U8(bytes, frame.heightPreviewMultiplier);
 	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||

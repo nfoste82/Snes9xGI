@@ -9,6 +9,30 @@
 		<dict>
 			<key>CFBundleTypeExtensions</key>
 			<array>
+				<string>toml</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Snes9x Remaster Profile</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSTypeIsPackage</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>s9xrmf</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Snes9x Remaster Frame</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSTypeIsPackage</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
 				<string>jma</string>
 			</array>
 			<key>CFBundleTypeName</key>

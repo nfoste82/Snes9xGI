@@ -132,6 +132,7 @@ struct RemasterProfile
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
 	float originalSceneContribution = 0.65f;
+	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
 	bool sampleAccumulation = true;
 	std::map<std::string, RemasterMaterial> materials;
@@ -434,6 +435,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	bool hasIndirectRoughness = false;
 	bool hasSceneSampling = false;
 	bool hasCameraDirection = false;
+	bool hasHeightPreviewMultiplier = false;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
@@ -600,6 +602,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				hasSceneSampling = true;
 				if (!ParseFloat(value, parsed.originalSceneContribution))
 					fail(lineNumber, "original_scene_contribution must be a number");
+			}
+			else if (key == "height_preview_multiplier")
+			{
+				hasHeightPreviewMultiplier = true;
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 20)
+					fail(lineNumber, "height_preview_multiplier must be an integer in [1, 20]");
+				else
+					parsed.heightPreviewMultiplier = static_cast<uint8_t>(unsignedValue);
 			}
 			else if (key == "samples_per_frame")
 			{
@@ -808,8 +818,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 9)
-		fail(0, "schema_version must be an integer in [1, 9]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 10)
+		fail(0, "schema_version must be an integer in [1, 10]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -832,6 +842,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		fail(0, "scene contribution and sampling controls require schema_version 8");
 	if (parsed.schemaVersion < 9 && hasCameraDirection)
 		fail(0, "camera_direction requires schema_version 9");
+	if (parsed.schemaVersion < 10 && hasHeightPreviewMultiplier)
+		fail(0, "height_preview_multiplier requires schema_version 10");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
@@ -1000,7 +1012,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 	}
-	const uint32_t requiredSchema = std::max<uint32_t>(9, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
+	const uint32_t requiredSchema = std::max<uint32_t>(10, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
@@ -1013,6 +1025,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output << "indirect_bounces = " << unsigned(profile.indirectBounceCount) << "\n";
 	output << "indirect_roughness = " << profile.indirectRoughness << "\n";
 	output << "original_scene_contribution = " << profile.originalSceneContribution << "\n";
+	output << "height_preview_multiplier = " << unsigned(profile.heightPreviewMultiplier) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.materials)

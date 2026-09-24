@@ -23,15 +23,16 @@ struct Light
 };
 struct Uniforms
 {
-    uint32_t width, height, view, lightCount, passIndex, diagnosticStage;
-    float indirectRoughness, originalSceneContribution;
-    uint32_t sampleIndex, sampleCount, randomSeed;
+	uint32_t width, height, view, lightCount, passIndex, diagnosticStage;
+	float indirectRoughness, originalSceneContribution;
+	float heightPreviewMultiplier, padding;
+	uint32_t sampleIndex, sampleCount, randomSeed;
     simd_float4 cameraDirection;
     simd_float4 debugPositionRadius;
     simd_float4 debugColorIntensity;
 };
 static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
-static_assert(sizeof(Uniforms) == 96 && offsetof(Uniforms, cameraDirection) == 48, "Metal uniforms ABI");
+static_assert(sizeof(Uniforms) == 112 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
 
 constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;
@@ -157,8 +158,8 @@ int main()
                         [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                             withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
-                Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
-                    indirectRoughness, 0.65f, sampleIndex, sampleCount, randomSeed,
+				Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
+					indirectRoughness, 0.65f, 8.0f, 0.0f, sampleIndex, sampleCount, randomSeed,
                     {cameraDirection.x, cameraDirection.y, cameraDirection.z, 0}, {}, {}};
                 if (debugLight)
                 {
@@ -290,7 +291,8 @@ int main()
                 id<MTLTexture> output = [device newTextureWithDescriptor:descriptor];
                 [sample replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&second bytesPerRow:sizeof(second)];
                 [previous replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&first bytesPerRow:sizeof(first)];
-                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 1, 2, 1, {0, 0, -1, 0}, {}, {}};
+                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 8.0f, 0.0f, 1, 2, 1,
+                    {0, 0, -1, 0}, {}, {}};
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 [encoder setComputePipelineState:accumulate];

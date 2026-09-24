@@ -42,6 +42,8 @@ typedef struct
 	uint diagnosticStage;
 	float indirectRoughness;
 	float originalSceneContribution;
+	float heightPreviewMultiplier;
+	float padding;
 	uint sampleIndex;
 	uint sampleCount;
 	uint randomSeed;
@@ -185,8 +187,8 @@ kernel void remasterDirectLighting(
 	if (uniforms.view == 5)
 	{
 		float2 field = heightField.read(pixel).rg;
-		float heightValue = saturate(field.r * 8.0);
-		output.write(float4(field.g > 0.5 ? mix(float3(0.0, 0.12, 0.35), float3(1.0, 0.9, 0.1), heightValue) :
+		float heightValue = saturate(field.r * uniforms.heightPreviewMultiplier);
+		output.write(float4(field.g > 0.5 ? float3(heightValue) :
 			float3(0.22, 0.0, 0.28), 1.0), pixel);
 	}
 	else if (uniforms.view == 1)

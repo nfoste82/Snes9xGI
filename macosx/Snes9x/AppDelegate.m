@@ -509,6 +509,44 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 - (BOOL)openURL:(NSURL *)url
 {
+	if ([url.pathExtension caseInsensitiveCompare:@"toml"] == NSOrderedSame)
+	{
+		NSString *error = [self.s9xEngine loadRemasterProfile:url];
+		if (!error)
+		{
+			[NSDocumentController.sharedDocumentController noteNewRecentDocumentURL:url];
+			NSLog(@"Remaster profile loaded: %@", url.path);
+			return YES;
+		}
+		if (error.length)
+		{
+			NSAlert *alert = [NSAlert new];
+			alert.messageText = @"Unable to Load Remaster Profile";
+			alert.informativeText = error;
+			[alert runModal];
+		}
+		return NO;
+	}
+
+	if ([url.pathExtension caseInsensitiveCompare:@"s9xrmf"] == NSOrderedSame)
+	{
+		NSString *error = [self.s9xEngine openRemasterFrame:url];
+		if (!error)
+		{
+			[NSDocumentController.sharedDocumentController noteNewRecentDocumentURL:url];
+			NSLog(@"Remaster frame opened: %@", url.path);
+			return YES;
+		}
+		if (error.length)
+		{
+			NSAlert *alert = [NSAlert new];
+			alert.messageText = @"Unable to Open Remaster Frame";
+			alert.informativeText = error;
+			[alert runModal];
+		}
+		return NO;
+	}
+
     if ([self.s9xEngine loadROM:url])
     {
         [self resetWindow];
@@ -716,19 +754,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if ([panel runModal] != NSModalResponseOK)
 		return;
 
-	NSString *error = [self.s9xEngine loadRemasterProfile:panel.URL];
-	if (error && error.length == 0)
-		return;
-	if (!error)
-	{
-		NSLog(@"Remaster profile loaded: %@", panel.URL.path);
-		return;
-	}
-
-	NSAlert *alert = [NSAlert new];
-	alert.messageText = @"Unable to Load Remaster Profile";
-	alert.informativeText = error;
-	[alert runModal];
+	[self openURL:panel.URL];
 }
 
 - (IBAction)openRemasterFrame:(id)sender
@@ -747,19 +773,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if ([panel runModal] != NSModalResponseOK)
 		return;
 
-	NSString *error = [self.s9xEngine openRemasterFrame:panel.URL];
-	if (error && error.length == 0)
-		return;
-	if (!error)
-	{
-		NSLog(@"Remaster frame opened: %@", panel.URL.path);
-		return;
-	}
-
-	NSAlert *alert = [NSAlert new];
-	alert.messageText = @"Unable to Open Remaster Frame";
-	alert.informativeText = error;
-	[alert runModal];
+	[self openURL:panel.URL];
 }
 
 - (IBAction)resume:(id)sender

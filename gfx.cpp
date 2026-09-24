@@ -591,7 +591,12 @@ void S9xStartScreenRefresh (void)
 	{
 		RemasterState &state = S9xRemasterState();
 		std::lock_guard<std::mutex> lock(state.performanceMetricsMutex);
-		state.performanceFrameStarted = std::chrono::steady_clock::now();
+		const auto now = std::chrono::steady_clock::now();
+		if (state.performanceLastFrameStarted.time_since_epoch().count())
+			state.performanceMetrics.emulationFramePeriodMs =
+				std::chrono::duration<double, std::milli>(now - state.performanceLastFrameStarted).count();
+		state.performanceLastFrameStarted = now;
+		state.performanceFrameStarted = now;
 	}
 	if (GFX.DoInterlace)
 		GFX.DoInterlace--;

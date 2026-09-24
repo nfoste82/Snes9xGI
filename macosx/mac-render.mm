@@ -62,6 +62,8 @@ typedef struct
 	uint32_t diagnosticStage;
 	float indirectRoughness;
 	float originalSceneContribution;
+	float heightPreviewMultiplier;
+	float padding;
 	uint32_t sampleIndex;
 	uint32_t sampleCount;
 	uint32_t randomSeed;
@@ -69,6 +71,9 @@ typedef struct
 	vector_float4 debugPositionRadius;
 	vector_float4 debugColorIntensity;
 } RemasterLightingUniforms;
+
+static_assert(sizeof(RemasterLightingUniforms) == 112 &&
+	offsetof(RemasterLightingUniforms, cameraDirection) == 64, "Metal uniform ABI");
 
 struct RemasterRadianceMetrics
 {
@@ -150,7 +155,7 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	const uint8_t * = nullptr,
 	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
-	float = 0.65f, uint8_t = 1, bool = true, const std::array<float, 3> * = nullptr, int = -1, bool = true);
+	float = 0.65f, float = 8.0f, uint8_t = 1, bool = true, const std::array<float, 3> * = nullptr, int = -1, bool = true);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -320,6 +325,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView,
 	bool asynchronous)
 {
+	const bool panelMetrics = S9xRemasterPerformanceMetricsEnabled();
+	const auto fieldPreparationStarted = std::chrono::steady_clock::now();
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
 	if (asynchronous && !liveRemasterPresentationEnabled.load(std::memory_order_relaxed))
 		return true;
@@ -436,6 +443,13 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				}
 			}
 	}
+	if (panelMetrics)
+	{
+		RemasterState &state = S9xRemasterState();
+		std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
+		state.performanceMetrics.lightingFieldMs =
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fieldPreparationStarted).count();
+	}
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
@@ -443,7 +457,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		oppositeFacingField.data(), nullptr,
 		lighting && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
-		frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection, resourceSlot, !asynchronous);
+		frame.heightPreviewMultiplier, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
+		resourceSlot, !asynchronous);
 }
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
@@ -681,7 +696,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const float *surfaceField, const uint8_t *participation, const uint8_t *oppositeFacing,
 	const std::vector<RemasterGpuLight> *lights, bool lighting,
 	RemasterLightingView lightingView, uint8_t indirectBounceCount, float indirectRoughness,
-	float originalSceneContribution, uint8_t samplesPerFrame, bool sampleAccumulation,
+	float originalSceneContribution, float heightPreviewMultiplier, uint8_t samplesPerFrame, bool sampleAccumulation,
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
@@ -896,7 +911,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				length:std::max<size_t>(1, emitterCount) * sizeof(uint32_t) options:MTLResourceStorageModeShared];
 			static uint32_t randomSeed = 0;
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
-				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution, 0,
+				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
+				heightPreviewMultiplier, 0.0f, 0,
 				std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, { normalizedCameraDirection.x,
 					normalizedCameraDirection.y, normalizedCameraDirection.z, 0.0f }, {}, {} };
 			const RemasterDebugLight light = GetRemasterDebugLight();
@@ -1171,30 +1187,39 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
 					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
 						double gpuMs = 0.0;
-						if (logFrameMetrics && @available(macOS 10.15, *))
-							gpuMs = (completed.GPUEndTime - completed.GPUStartTime) * 1000.0;
+						if (@available(macOS 10.15, *))
+							if (completed.GPUEndTime > completed.GPUStartTime)
+								gpuMs = (completed.GPUEndTime - completed.GPUStartTime) * 1000.0;
 						const uint64_t dropped = droppedRemasterPresentations.exchange(0);
 						if (panelMetrics)
 						{
 							RemasterState &state = S9xRemasterState();
-							const auto presentedAt = std::chrono::steady_clock::now();
 							std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
 							state.performanceMetrics.presentationQueueMs = queuedMs;
 							state.performanceMetrics.drawableMs = drawableMs;
 							state.performanceMetrics.gpuFrameMs = gpuMs;
 							state.performanceMetrics.droppedPresentations = dropped;
-							if (state.performanceLastPresented.time_since_epoch().count())
-							{
-								const double frameMs = std::chrono::duration<double, std::milli>(presentedAt - state.performanceLastPresented).count();
-								if (frameMs > 0.0)
-									state.performanceMetrics.presentedFps = 1000.0 / frameMs;
-							}
-							state.performanceLastPresented = presentedAt;
 						}
-						if (@available(macOS 10.15, *))
-							NSLog(@"Remaster frame: queued=%.3fms drawable=%.3fms gpu=%.3fms dropped=%llu",
-								queuedMs, drawableMs, gpuMs, static_cast<unsigned long long>(dropped));
+						if (logFrameMetrics)
+							if (@available(macOS 10.15, *))
+								NSLog(@"Remaster frame: queued=%.3fms drawable=%.3fms gpu=%.3fms dropped=%llu",
+									queuedMs, drawableMs, gpuMs, static_cast<unsigned long long>(dropped));
 					}];
+					if (panelMetrics)
+						if (@available(macOS 10.15.4, *))
+						{
+							[drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
+								const double presentedTime = presentedDrawable.presentedTime;
+								if (presentedTime <= 0.0)
+									return;
+								RemasterState &state = S9xRemasterState();
+								std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
+								if (state.performanceLastPresentedTime > 0.0 && presentedTime > state.performanceLastPresentedTime)
+									state.performanceMetrics.presentedFps =
+										1.0 / (presentedTime - state.performanceLastPresentedTime);
+								state.performanceLastPresentedTime = presentedTime;
+							}];
+						}
 				}
 				if (!waitForCompletion)
 				{
