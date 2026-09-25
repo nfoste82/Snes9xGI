@@ -35,6 +35,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <sys/time.h>
 #include <unordered_map>
@@ -371,9 +372,16 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	std::vector<float> reflectanceField(frame.mainPixels.size() * 4, 0.0f);
 	if (lighting && frame.schemaVersion >= 5)
 	{
+		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadataByTile;
+		for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+			metadataByTile.emplace(metadata.tileId, &metadata);
 		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size(), nullptr);
 		for (size_t i = 0; i < frame.tileInstances.size(); i++)
-			instanceMetadata[i] = S9xRemasterFrameMetadataForTile(frame, frame.tileInstances[i].tileId);
+		{
+			const auto found = metadataByTile.find(frame.tileInstances[i].tileId);
+			if (found != metadataByTile.end())
+				instanceMetadata[i] = found->second;
+		}
 		std::unordered_map<std::string, const RemasterFrameMaterial *> materials;
 		for (const RemasterFrameMaterial &material : frame.materials)
 			materials.emplace(material.name, &material);
@@ -411,9 +419,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			if (metadata && metadata->hasEmission)
 				std::copy(metadata->emissionRgba.begin() + pixel.tilePixel * 4,
 					metadata->emissionRgba.begin() + pixel.tilePixel * 4 + 4, emissionField.begin() + i * 4);
-			if (metadata && metadata->hasHeight)
+			if ((metadata && metadata->hasHeight) || instance.heightOffset)
 			{
-				heightField[i * 2] = metadata->height[pixel.tilePixel];
+				const unsigned baseHeight = metadata && metadata->hasHeight ?
+					metadata->height[pixel.tilePixel] : 0;
+				heightField[i * 2] = static_cast<uint8_t>(std::min(255u,
+					baseHeight + instance.heightOffset));
 				heightField[i * 2 + 1] = 255;
 			}
 		}

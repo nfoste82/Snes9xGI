@@ -136,6 +136,7 @@ struct RemasterProfile
 	float reflectanceBoost = 0.0f;
 	float originalSceneContribution = 0.65f;
 	uint8_t heightPreviewMultiplier = 8;
+	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	bool sampleAccumulation = true;
 	std::map<std::string, RemasterMaterial> materials;
@@ -143,6 +144,60 @@ struct RemasterProfile
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
 	std::vector<RemasterProfileRule> rules;
 };
+
+// Scene Controls change these small values without replacing the tile atlas.
+struct RemasterSceneSettings
+{
+	uint32_t schemaVersion = 0;
+	float lightingCoordinateScale = 16.0f;
+	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
+	uint8_t indirectBounceCount = 0;
+	float indirectRoughness = 1.0f;
+	float reflectanceBoost = 0.0f;
+	float originalSceneContribution = 0.65f;
+	uint8_t heightPreviewMultiplier = 8;
+	uint8_t upperFloorHeight = 0;
+	uint8_t samplesPerFrame = 1;
+	bool sampleAccumulation = true;
+};
+
+inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile &profile)
+{
+	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
+		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost,
+		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
+		profile.sampleAccumulation };
+}
+
+inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
+{
+	profile.schemaVersion = settings.schemaVersion;
+	profile.lightingCoordinateScale = settings.lightingCoordinateScale;
+	profile.cameraDirection = settings.cameraDirection;
+	profile.indirectBounceCount = settings.indirectBounceCount;
+	profile.indirectRoughness = settings.indirectRoughness;
+	profile.reflectanceBoost = settings.reflectanceBoost;
+	profile.originalSceneContribution = settings.originalSceneContribution;
+	profile.heightPreviewMultiplier = settings.heightPreviewMultiplier;
+	profile.upperFloorHeight = settings.upperFloorHeight;
+	profile.samplesPerFrame = settings.samplesPerFrame;
+	profile.sampleAccumulation = settings.sampleAccumulation;
+}
+
+inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const RemasterSceneSettings &b)
+{
+	return a.schemaVersion == b.schemaVersion &&
+		a.lightingCoordinateScale == b.lightingCoordinateScale &&
+		a.cameraDirection == b.cameraDirection &&
+		a.indirectBounceCount == b.indirectBounceCount &&
+		a.indirectRoughness == b.indirectRoughness &&
+		a.reflectanceBoost == b.reflectanceBoost &&
+		a.originalSceneContribution == b.originalSceneContribution &&
+		a.heightPreviewMultiplier == b.heightPreviewMultiplier &&
+		a.upperFloorHeight == b.upperFloorHeight &&
+		a.samplesPerFrame == b.samplesPerFrame &&
+		a.sampleAccumulation == b.sampleAccumulation;
+}
 
 struct RemasterProfileDiagnostic
 {
@@ -326,22 +381,29 @@ namespace RemasterProfileParsing
 		if (value.size() < 2 || value.front() != '[' || value.back() != ']')
 			return false;
 		parsed.clear();
-		std::string body = Trim(value.substr(1, value.size() - 2));
-		if (body.empty())
-			return true;
-		size_t offset = 0;
-		while (offset < body.size())
+		const char *cursor = value.c_str() + 1;
+		const char *end = value.c_str() + value.size() - 1;
+		auto skipSpace = [&cursor, end] {
+			while (cursor < end && (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n'))
+				cursor++;
+		};
+		skipSpace();
+		while (cursor < end)
 		{
-			size_t comma = body.find(',', offset);
-			std::string item = Trim(body.substr(offset, comma == std::string::npos ? comma : comma - offset));
-			uint32_t number = 0;
-			if (!ParseUnsigned(item, number) || number > 255)
+			char *numberEnd = nullptr;
+			errno = 0;
+			const unsigned long number = std::strtoul(cursor, &numberEnd, 10);
+			if (errno || numberEnd == cursor || number > 255 || numberEnd > end)
 				return false;
 			parsed.push_back(static_cast<uint8_t>(number));
-			if (comma == std::string::npos)
-				break;
-			offset = comma + 1;
-			if (Trim(body.substr(offset)).empty())
+			cursor = numberEnd;
+			skipSpace();
+			if (cursor == end)
+				return true;
+			if (*cursor++ != ',')
+				return false;
+			skipSpace();
+			if (cursor == end)
 				return false;
 		}
 		return true;
@@ -440,6 +502,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	bool hasReflectanceBoost = false;
 	bool hasCameraDirection = false;
 	bool hasHeightPreviewMultiplier = false;
+	bool hasUpperFloorHeight = false;
 	RemasterMaterial *material = nullptr;
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
@@ -620,6 +683,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					fail(lineNumber, "height_preview_multiplier must be an integer in [1, 20]");
 				else
 					parsed.heightPreviewMultiplier = static_cast<uint8_t>(unsignedValue);
+			}
+			else if (key == "upper_floor_height")
+			{
+				hasUpperFloorHeight = true;
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue > 255)
+					fail(lineNumber, "upper_floor_height must be an integer in [0, 255]");
+				else
+					parsed.upperFloorHeight = static_cast<uint8_t>(unsignedValue);
 			}
 			else if (key == "samples_per_frame")
 			{
@@ -833,8 +904,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 12)
-		fail(0, "schema_version must be an integer in [1, 12]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 13)
+		fail(0, "schema_version must be an integer in [1, 13]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -865,12 +936,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				fail(0, "diffuse_reflectance requires schema_version 11");
 	if (parsed.schemaVersion < 12 && hasReflectanceBoost)
 		fail(0, "reflectance_boost requires schema_version 12");
+	if (parsed.schemaVersion < 13 && hasUpperFloorHeight)
+		fail(0, "upper_floor_height requires schema_version 13");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
 		fail(0, "lighting_space.indirect_roughness must be finite and in [0, 1]");
-	if (!std::isfinite(parsed.reflectanceBoost) || parsed.reflectanceBoost < 0.0f || parsed.reflectanceBoost > 4.0f)
-		fail(0, "lighting_space.reflectance_boost must be finite and in [0, 4]");
+	if (!std::isfinite(parsed.reflectanceBoost) || parsed.reflectanceBoost < 0.0f || parsed.reflectanceBoost > 8.0f)
+		fail(0, "lighting_space.reflectance_boost must be finite and in [0, 8]");
 	const float cameraLengthSquared = parsed.cameraDirection[0] * parsed.cameraDirection[0] +
 		parsed.cameraDirection[1] * parsed.cameraDirection[1] + parsed.cameraDirection[2] * parsed.cameraDirection[2];
 	if (!std::isfinite(parsed.cameraDirection[0]) || !std::isfinite(parsed.cameraDirection[1]) ||
@@ -1024,7 +1097,7 @@ namespace RemasterProfileSerialization
 }
 
 inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::string &text,
-	std::vector<RemasterProfileDiagnostic> &diagnostics)
+	std::vector<RemasterProfileDiagnostic> &diagnostics, bool validate = true)
 {
 	using namespace RemasterProfileSerialization;
 	std::ostringstream output;
@@ -1042,7 +1115,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	}
 	for (const auto &entry : profile.materials)
 		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
-	const uint32_t requiredSchema = std::max<uint32_t>(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10),
+	const uint32_t requiredSchema = std::max<uint32_t>(profile.upperFloorHeight > 0 ? 13 :
+		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
@@ -1059,6 +1133,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "reflectance_boost = " << profile.reflectanceBoost << "\n";
 	output << "original_scene_contribution = " << profile.originalSceneContribution << "\n";
 	output << "height_preview_multiplier = " << unsigned(profile.heightPreviewMultiplier) << "\n";
+	if (profile.schemaVersion >= 13 || profile.upperFloorHeight)
+		output << "upper_floor_height = " << unsigned(profile.upperFloorHeight) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.materials)
@@ -1149,10 +1225,13 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "material = " << Quote(rule.material) << "\n";
 	}
 
-	RemasterProfile validated;
 	const std::string serialized = output.str();
-	if (!S9xRemasterParseProfile(serialized, validated, diagnostics))
-		return false;
+	if (validate)
+	{
+		RemasterProfile validated;
+		if (!S9xRemasterParseProfile(serialized, validated, diagnostics))
+			return false;
+	}
 	text = serialized;
 	return true;
 }

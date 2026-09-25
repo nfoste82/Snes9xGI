@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 17;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 19;
 
 struct RemasterFramePixel
 {
@@ -89,6 +89,9 @@ struct RemasterFrameTileInstance
 	uint16_t vramAddress = 0;
 	uint8_t sourceIndex = 0;
 	uint8_t palette = 0;
+	uint8_t ppuPriority = 0;
+	uint8_t heightOffset = 0;
+	int8_t normalYaw = 0;
 	bool hFlip = false;
 	bool vFlip = false;
 	RemasterProfileMatchStatus matchStatus = RemasterProfileMatchStatus::NoMatch;
@@ -103,7 +106,13 @@ inline void S9xRemasterTransformNormalForTileInstance (const RemasterFrameTileIn
 		x = -x;
 	if (instance.vFlip)
 		y = -y;
-	(void) z;
+	if (instance.normalYaw)
+	{
+		const float previousX = x;
+		const float turn = 0.5f * instance.normalYaw;
+		x = 0.8660254f * x + turn * z;
+		z = 0.8660254f * z - turn * previousX;
+	}
 }
 
 struct RemasterFrameLight
@@ -145,6 +154,141 @@ struct RemasterFrame
 	std::vector<RemasterFrameLight> lights;
 };
 
+struct RemasterDungeonFloorContext
+{
+	bool verifiedAlttpRom = false;
+	bool indoors = false;
+	uint8_t collisionMode = 0;
+	uint8_t linkFacing = 0xff;
+};
+
+inline void S9xRemasterApplyDungeonFloorHeight (RemasterFrame &frame,
+	const RemasterDungeonFloorContext &context, uint8_t upperFloorHeight)
+{
+	if (!context.verifiedAlttpRom || !context.indoors || !upperFloorHeight)
+		return;
+	for (RemasterFrameTileInstance &instance : frame.tileInstances)
+	{
+		// ALTTP uses OAM priority 2 for Link and ordinary sprites on the
+		// upper floor. The room's BG2 art contains both floors, so its layer
+		// number cannot be used to assign background height.
+		if (instance.source == RemasterSourceType::Object && instance.ppuPriority == 2)
+			instance.heightOffset = upperFloorHeight;
+	}
+}
+
+inline void S9xRemasterAlignGeneratedSpriteParts (RemasterFrame &frame,
+	const RemasterDungeonFloorContext *context = nullptr)
+{
+	// The ROM atlas gives each 8x8 silhouette a local height ramp. Align only
+	// those exact generated ramps to the bottom of their assembled OAM figure.
+	std::map<RemasterTileContentId, const RemasterFrameAsset *> art;
+	std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
+	for (const RemasterFrameAsset &asset : frame.assets)
+		art.emplace(asset.tileId, &asset);
+	for (const RemasterFrameAssetMetadata &asset : frame.assetMetadata)
+		metadata.emplace(asset.tileId, &asset);
+	std::vector<bool> generated(frame.tileInstances.size(), false);
+	for (size_t i = 0; i < frame.tileInstances.size(); i++)
+	{
+		const RemasterFrameTileInstance &instance = frame.tileInstances[i];
+		if (instance.source != RemasterSourceType::Object)
+			continue;
+		const auto a = art.find(instance.tileId);
+		const auto m = metadata.find(instance.tileId);
+		if (a == art.end() || m == metadata.end() || !m->second->hasHeight || !m->second->hasOcclusion)
+			continue;
+		unsigned visible = 0;
+		bool exactRamp = true;
+		for (size_t p = 0; p < 64; p++)
+		{
+			const bool ink = a->second->indices[p] != 0;
+			visible += ink;
+			if (m->second->height[p] != (ink ? 13 - p / 8 : 0) ||
+				m->second->occlusion[p] != (ink ? 255 : 0))
+			{
+				exactRamp = false;
+				break;
+			}
+		}
+		generated[i] = exactRamp && visible >= 4;
+		if (generated[i] && context && context->verifiedAlttpRom &&
+			instance.vramAddress >= 0x8000 && instance.vramAddress < 0x8400)
+		{
+			if (context->linkFacing == 4)
+				frame.tileInstances[i].normalYaw = -1;
+			else if (context->linkFacing == 6)
+				frame.tileInstances[i].normalYaw = 1;
+			else
+				frame.tileInstances[i].normalYaw = 0;
+		}
+	}
+	if (std::find(generated.begin(), generated.end(), true) == generated.end())
+		return;
+	struct Bounds { int x0 = 10000, y0 = 10000, x1 = -1, y1 = -1; };
+	std::vector<Bounds> parts(frame.tileInstances.size());
+	std::vector<int> partTileBottom(frame.tileInstances.size(), -10000);
+	Bounds slots[128];
+	int slotTileBottom[128];
+	for (int i = 0; i < 128; i++) slotTileBottom[i] = -10000;
+	uint8_t slotPriority[128] = {};
+	for (uint32_t y = 0; y < frame.height; y++)
+		for (uint32_t x = 0; x < frame.width; x++)
+		{
+			const RemasterFramePixel &pixel = frame.mainPixels[static_cast<size_t>(y) * frame.width + x];
+			if (!pixel.instanceId || pixel.instanceId > parts.size() || pixel.tilePixel >= 64 ||
+				!generated[pixel.instanceId - 1])
+				continue;
+			const size_t id = pixel.instanceId - 1;
+			const uint8_t slot = frame.tileInstances[id].sourceIndex;
+			if (slot >= 128)
+				continue;
+			Bounds &part = parts[id], &whole = slots[slot];
+			part.x0 = std::min(part.x0, static_cast<int>(x));
+			part.y0 = std::min(part.y0, static_cast<int>(y));
+			part.x1 = std::max(part.x1, static_cast<int>(x));
+			part.y1 = std::max(part.y1, static_cast<int>(y));
+			whole.x0 = std::min(whole.x0, static_cast<int>(x));
+			whole.y0 = std::min(whole.y0, static_cast<int>(y));
+			whole.x1 = std::max(whole.x1, static_cast<int>(x));
+			whole.y1 = std::max(whole.y1, static_cast<int>(y));
+			const int localY = frame.tileInstances[id].vFlip ?
+				7 - pixel.tilePixel / 8 : pixel.tilePixel / 8;
+			const int tileBottom = static_cast<int>(y) - localY + 7;
+			partTileBottom[id] = std::max(partTileBottom[id], tileBottom);
+			slotTileBottom[slot] = std::max(slotTileBottom[slot], tileBottom);
+			slotPriority[slot] = frame.tileInstances[id].ppuPriority;
+		}
+	uint8_t parent[128];
+	for (int i = 0; i < 128; i++) parent[i] = static_cast<uint8_t>(i);
+	auto root = [&parent] (int id) {
+		while (parent[id] != id) id = parent[id];
+		return id;
+	};
+	for (int i = 0; i < 128; i++)
+		for (int j = i + 1; j < std::min(i + 3, 128); j++)
+		{
+			if (slots[i].x1 < 0 || slots[j].x1 < 0 || slotPriority[i] != slotPriority[j])
+				continue;
+			const int overlap = std::min(slots[i].x1, slots[j].x1) - std::max(slots[i].x0, slots[j].x0) + 1;
+			const int gap = std::max(slots[i].y0, slots[j].y0) - std::min(slots[i].y1, slots[j].y1) - 1;
+			if (overlap >= 4 && gap <= 8)
+				parent[root(j)] = static_cast<uint8_t>(root(i));
+		}
+	int bottom[128];
+	for (int i = 0; i < 128; i++) bottom[i] = -1;
+	for (int i = 0; i < 128; i++)
+		if (slots[i].y1 >= 0)
+			bottom[root(i)] = std::max(bottom[root(i)], slotTileBottom[i]);
+	for (size_t i = 0; i < parts.size(); i++)
+	{
+		if (parts[i].y1 < 0 || !generated[i]) continue;
+		RemasterFrameTileInstance &instance = frame.tileInstances[i];
+		const int rise = bottom[root(instance.sourceIndex)] - partTileBottom[i];
+		instance.heightOffset = static_cast<uint8_t>(std::min(255, static_cast<int>(instance.heightOffset) + rise));
+	}
+}
+
 inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, RemasterFrame &frame)
 {
 	frame.profileRomSha256 = profile.romSha256;
@@ -167,10 +311,20 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		frame.assetGroups.push_back(group);
 	}
 
+	// A frame only needs metadata for artwork it contains. Keeping the entire
+	// profile here makes every live frame proportional to the game's full atlas.
+	std::set<RemasterTileContentId> frameTileIds;
+	for (const RemasterFrameAsset &asset : frame.assets)
+		frameTileIds.insert(asset.tileId);
+	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
+		frameTileIds.insert(instance.tileId);
 	frame.assetMetadata.clear();
-	for (const auto &entry : profile.assets)
+	for (const RemasterTileContentId &tileId : frameTileIds)
 	{
-		const RemasterAssetMetadata &source = entry.second;
+		const auto entry = profile.assets.find(tileId);
+		if (entry == profile.assets.end())
+			continue;
+		const RemasterAssetMetadata &source = entry->second;
 		RemasterFrameAssetMetadata metadata;
 		metadata.tileId = source.tileId;
 		metadata.materialSelectors = source.materialSelectors;
@@ -576,7 +730,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	if (!std::isfinite(result.indirectRoughness) || result.indirectRoughness < 0.0f || result.indirectRoughness > 1.0f)
 		return false;
-	if (!std::isfinite(result.reflectanceBoost) || result.reflectanceBoost < 0.0f || result.reflectanceBoost > 4.0f)
+	if (!std::isfinite(result.reflectanceBoost) || result.reflectanceBoost < 0.0f || result.reflectanceBoost > 8.0f)
 		return false;
 	const float cameraLengthSquared = result.cameraDirection[0] * result.cameraDirection[0] +
 		result.cameraDirection[1] * result.cameraDirection[1] + result.cameraDirection[2] * result.cameraDirection[2];
@@ -745,6 +899,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		uint8_t matchStatus = 0;
 		uint8_t hFlip = 0;
 		uint8_t vFlip = 0;
+		uint8_t normalYaw = 0;
 		if (!input.ReadTileId(instance.tileId) || !RemasterFrameSerialization::ValidTileId(instance.tileId) ||
 			!input.ReadU8(source) ||
 			source < static_cast<uint8_t>(RemasterSourceType::Backdrop) ||
@@ -755,11 +910,16 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			!input.ReadU8(matchStatus) ||
 			matchStatus > static_cast<uint8_t>(RemasterProfileMatchStatus::Ambiguous) ||
 			!input.ReadU32(instance.ruleLine) || !input.ReadString(instance.assetGroup) ||
-			!input.ReadString(instance.material))
+			!input.ReadString(instance.material) ||
+			(result.schemaVersion >= 18 && (!input.ReadU8(instance.ppuPriority) ||
+				instance.ppuPriority > 3 || !input.ReadU8(instance.heightOffset))) ||
+			(result.schemaVersion >= 19 && (!input.ReadU8(normalYaw) ||
+				(normalYaw != 0 && normalYaw != 1 && normalYaw != 255))))
 			return false;
 		instance.source = static_cast<RemasterSourceType>(source);
 		instance.hFlip = hFlip != 0;
 		instance.vFlip = vFlip != 0;
+		instance.normalYaw = normalYaw == 255 ? -1 : static_cast<int8_t>(normalYaw);
 		instance.matchStatus = static_cast<RemasterProfileMatchStatus>(matchStatus);
 	}
 	result.lights.resize(lightCount);
@@ -992,7 +1152,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			return false;
 	}
 	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
-		if (!RemasterFrameSerialization::ValidTileId(instance.tileId))
+		if (!RemasterFrameSerialization::ValidTileId(instance.tileId) || instance.ppuPriority > 3 ||
+			instance.normalYaw < -1 || instance.normalYaw > 1)
 			return false;
 	for (const RemasterFrameMaterial &material : frame.materials)
 		if (material.hasDiffuseReflectance)
@@ -1050,7 +1211,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	}
 	if (frame.schemaVersion >= 17)
 	{
-		if (!std::isfinite(frame.reflectanceBoost) || frame.reflectanceBoost < 0.0f || frame.reflectanceBoost > 4.0f)
+		if (!std::isfinite(frame.reflectanceBoost) || frame.reflectanceBoost < 0.0f || frame.reflectanceBoost > 8.0f)
 			return false;
 		RemasterFrameSerialization::Float(bytes, frame.reflectanceBoost);
 	}
@@ -1151,6 +1312,10 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		if (!RemasterFrameSerialization::String(bytes, instance.assetGroup) ||
 			!RemasterFrameSerialization::String(bytes, instance.material))
 			return false;
+		RemasterFrameSerialization::U8(bytes, instance.ppuPriority);
+		RemasterFrameSerialization::U8(bytes, instance.heightOffset);
+		RemasterFrameSerialization::U8(bytes, instance.normalYaw < 0 ? 255 :
+			static_cast<uint8_t>(instance.normalYaw));
 	}
 	for (const RemasterFrameLight &light : frame.lights)
 	{

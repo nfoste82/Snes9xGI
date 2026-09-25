@@ -18,6 +18,12 @@ uint32_t S9xRemasterCurrentOwner = REMASTER_OWNER_UNSUPPORTED;
 
 int main ()
 {
+	std::vector<uint8_t> bytes;
+	assert(RemasterProfileParsing::ParseByteArray("[0, 128, 255]", bytes));
+	assert((bytes == std::vector<uint8_t> { 0, 128, 255 }));
+	assert(!RemasterProfileParsing::ParseByteArray("[0,]", bytes));
+	assert(!RemasterProfileParsing::ParseByteArray("[0 1]", bytes));
+	assert(!RemasterProfileParsing::ParseByteArray("[256]", bytes));
 	uint8_t indices[64] = {};
 	for (size_t i = 0; i < 64; i++)
 		indices[i] = i & 15;
@@ -33,7 +39,7 @@ int main ()
 	frame.lightingCoordinateScale = 24.0f;
 	frame.cameraDirection = {{ 0.25f, -0.5f, -1.0f }};
 	frame.indirectBounceCount = 6;
-	frame.reflectanceBoost = 2.0f;
+	frame.reflectanceBoost = 8.0f;
 	frame.originalSceneContribution = 0.4f;
 	frame.heightPreviewMultiplier = 12;
 	frame.samplesPerFrame = 128;
@@ -104,7 +110,96 @@ int main ()
 	frameInstance.assetGroup = "animated_floor";
 	frameInstance.material = "stone";
 	frameInstance.hFlip = true;
+	frameInstance.ppuPriority = 2;
+	frameInstance.heightOffset = 48;
 	frame.tileInstances.push_back(frameInstance);
+	RemasterFrame floorFrame;
+	RemasterFrameTileInstance lowerBackground = frameInstance;
+	lowerBackground.sourceIndex = 0;
+	lowerBackground.heightOffset = 0;
+	RemasterFrameTileInstance raisedBackground = lowerBackground;
+	raisedBackground.sourceIndex = 1;
+	RemasterFrameTileInstance lowerSprite = lowerBackground;
+	lowerSprite.source = RemasterSourceType::Object;
+	lowerSprite.ppuPriority = 1;
+	RemasterFrameTileInstance raisedSprite = lowerSprite;
+	raisedSprite.ppuPriority = 2;
+	floorFrame.tileInstances = { lowerBackground, raisedBackground, lowerSprite, raisedSprite };
+	RemasterDungeonFloorContext floorContext;
+	floorContext.verifiedAlttpRom = true;
+	floorContext.indoors = true;
+	floorContext.collisionMode = 1;
+	S9xRemasterApplyDungeonFloorHeight(floorFrame, floorContext, 48);
+	assert(floorFrame.tileInstances[0].heightOffset == 0);
+	assert(floorFrame.tileInstances[1].heightOffset == 0);
+	assert(floorFrame.tileInstances[2].heightOffset == 0);
+	assert(floorFrame.tileInstances[3].heightOffset == 48);
+	floorFrame.tileInstances[3].heightOffset = 0;
+	floorContext.collisionMode = 0;
+	S9xRemasterApplyDungeonFloorHeight(floorFrame, floorContext, 48);
+	assert(floorFrame.tileInstances[1].heightOffset == 0);
+	assert(floorFrame.tileInstances[3].heightOffset == 48);
+	RemasterFrame assembledSprite;
+	assembledSprite.width = 8;
+	assembledSprite.height = 16;
+	assembledSprite.mainPixels.resize(128);
+	RemasterFrameAsset spriteArt;
+	std::fill(spriteArt.indices, spriteArt.indices + 64, 1);
+	spriteArt.tileId = { S9xRemasterHashTile(4, spriteArt.indices), 1, 4 };
+	assembledSprite.assets.push_back(spriteArt);
+	RemasterFrameAssetMetadata spriteMetadata;
+	spriteMetadata.tileId = spriteArt.tileId;
+	spriteMetadata.hasHeight = spriteMetadata.hasOcclusion = true;
+	for (size_t p = 0; p < 64; p++)
+	{
+		spriteMetadata.height[p] = static_cast<uint8_t>(13 - p / 8);
+		spriteMetadata.occlusion[p] = 255;
+	}
+	assembledSprite.assetMetadata.push_back(spriteMetadata);
+	RemasterFrameTileInstance spriteTop;
+	spriteTop.tileId = spriteArt.tileId;
+	spriteTop.source = RemasterSourceType::Object;
+	spriteTop.sourceIndex = 40;
+	spriteTop.ppuPriority = 2;
+	RemasterFrameTileInstance spriteBottom = spriteTop;
+	spriteBottom.sourceIndex = 41;
+	assembledSprite.tileInstances = { spriteTop, spriteBottom };
+	for (size_t y = 0; y < 16; y++)
+		for (size_t x = 0; x < 8; x++)
+		{
+			RemasterFramePixel &pixel = assembledSprite.mainPixels[y * 8 + x];
+			pixel.instanceId = y < 8 ? 1 : 2;
+			pixel.tilePixel = static_cast<uint8_t>((y % 8) * 8 + x);
+		}
+	S9xRemasterAlignGeneratedSpriteParts(assembledSprite);
+	assert(assembledSprite.tileInstances[0].heightOffset == 8);
+	assert(assembledSprite.tileInstances[1].heightOffset == 0);
+	RemasterFrame scanlineSprite = assembledSprite;
+	scanlineSprite.tileInstances.clear();
+	for (size_t y = 0; y < 16; y++)
+	{
+		RemasterFrameTileInstance scanline = y < 8 ? spriteTop : spriteBottom;
+		scanlineSprite.tileInstances.push_back(scanline);
+		for (size_t x = 0; x < 8; x++)
+			scanlineSprite.mainPixels[y * 8 + x].instanceId = static_cast<uint32_t>(y + 1);
+	}
+	S9xRemasterAlignGeneratedSpriteParts(scanlineSprite);
+	for (size_t y = 0; y < 16; y++)
+		assert(scanlineSprite.tileInstances[y].heightOffset == (y < 8 ? 8 : 0));
+	RemasterFrame sidewaysLink = assembledSprite;
+	for (RemasterFrameTileInstance &instance : sidewaysLink.tileInstances)
+		instance.vramAddress = 0x8000;
+	RemasterDungeonFloorContext linkContext;
+	linkContext.verifiedAlttpRom = true;
+	linkContext.linkFacing = 6;
+	S9xRemasterAlignGeneratedSpriteParts(sidewaysLink, &linkContext);
+	assert(sidewaysLink.tileInstances[0].normalYaw == 1);
+	float sideX = 0.0f, sideY = 0.0f, sideZ = 1.0f;
+	S9xRemasterTransformNormalForTileInstance(sidewaysLink.tileInstances[0], sideX, sideY, sideZ);
+	assert(std::abs(sideX - 0.5f) < 0.001f);
+	linkContext.linkFacing = 4;
+	S9xRemasterAlignGeneratedSpriteParts(sidewaysLink, &linkContext);
+	assert(sidewaysLink.tileInstances[0].normalYaw == -1);
 	std::vector<uint8_t> firstFrameBytes;
 	std::vector<uint8_t> secondFrameBytes;
 	assert(S9xSerializeRemasterFrame(frame, firstFrameBytes));
@@ -115,7 +210,7 @@ int main ()
 	std::vector<uint8_t> invalidSamplesFrameBytes;
 	assert(!S9xSerializeRemasterFrame(invalidSamplesFrame, invalidSamplesFrameBytes));
 	RemasterFrame invalidBoostFrame = frame;
-	invalidBoostFrame.reflectanceBoost = 4.1f;
+	invalidBoostFrame.reflectanceBoost = 8.1f;
 	std::vector<uint8_t> invalidBoostFrameBytes;
 	assert(!S9xSerializeRemasterFrame(invalidBoostFrame, invalidBoostFrameBytes));
 	assert(firstFrameBytes.size() > 8);
@@ -126,14 +221,17 @@ int main ()
 	assert(decodedFrame.lightingCoordinateScale == 24.0f);
 	assert(decodedFrame.cameraDirection == frame.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == 6);
-	assert(decodedFrame.reflectanceBoost == 2.0f);
+	assert(decodedFrame.reflectanceBoost == 8.0f);
 	assert(decodedFrame.originalSceneContribution == 0.4f);
 	assert(decodedFrame.heightPreviewMultiplier == 12);
 	assert(decodedFrame.samplesPerFrame == frame.samplesPerFrame);
 	assert(!decodedFrame.sampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
+	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
+	assert(decodedFrame.tileInstances[0].heightOffset == 48);
 	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
+	previousVersionBytes.erase(previousVersionBytes.end() - 3, previousVersionBytes.end());
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset,
 		previousVersionBytes.begin() + boostOffset + 4);
@@ -166,7 +264,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 17);
+	assert(decodedFrame.schemaVersion == 19);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -303,7 +401,7 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-		schema_version = 12
+		schema_version = 13
 
 [game]
 title = "Test Game"
@@ -314,9 +412,10 @@ rom_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		camera_direction = [0.25, -0.5, -1]
 		indirect_bounces = 6
 		indirect_roughness = 0.5
-		reflectance_boost = 2
+		reflectance_boost = 8
 		original_scene_contribution = 0.4
 		height_preview_multiplier = 12
+		upper_floor_height = 48
 		samples_per_frame = 128
 		sample_accumulation = false
 
@@ -374,11 +473,20 @@ material = "wet_stone"
 	assert(profile.cameraDirection == frame.cameraDirection);
 	assert(profile.indirectBounceCount == 6);
 	assert(profile.indirectRoughness == 0.5f);
-	assert(profile.reflectanceBoost == 2.0f);
+	assert(profile.reflectanceBoost == 8.0f);
 	assert(profile.originalSceneContribution == 0.4f);
 	assert(profile.heightPreviewMultiplier == 12);
+	assert(profile.upperFloorHeight == 48);
 	assert(profile.samplesPerFrame == 128);
 	assert(!profile.sampleAccumulation);
+	RemasterSceneSettings sceneSettings = S9xRemasterGetSceneSettings(profile);
+	sceneSettings.originalSceneContribution = 0.7f;
+	RemasterProfile sceneChangedProfile = profile;
+	S9xRemasterApplySceneSettings(sceneChangedProfile, sceneSettings);
+	assert(sceneChangedProfile.originalSceneContribution == 0.7f);
+	assert(sceneChangedProfile.upperFloorHeight == 48);
+	assert(sceneChangedProfile.assets.size() == profile.assets.size());
+	assert(sceneChangedProfile.assets.begin()->second.height == profile.assets.begin()->second.height);
 	assert(profile.assetGroups.at("animated_floor").tileIds.size() == 2);
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).materialSelectors[0] == "wet_stone");
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).occlusion[1] == 255);
@@ -398,7 +506,7 @@ material = "wet_stone"
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).normalXyz[2] == 255);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).directLightingOppositeFacing);
 	assert(roundTrippedProfile.indirectRoughness == 0.5f);
-	assert(roundTrippedProfile.reflectanceBoost == 2.0f);
+	assert(roundTrippedProfile.reflectanceBoost == 8.0f);
 	assert(roundTrippedProfile.cameraDirection == frame.cameraDirection);
 	assert(roundTrippedProfile.originalSceneContribution == 0.4f);
 	assert(roundTrippedProfile.heightPreviewMultiplier == 12);
@@ -410,16 +518,19 @@ material = "wet_stone"
 	invalidSamplesProfile.replace(samplesBegin, sizeof("samples_per_frame = 128") - 1, "samples_per_frame = 129");
 	assert(!S9xRemasterParseProfile(invalidSamplesProfile, roundTrippedProfile, diagnostics));
 	std::string invalidBoostProfile = serializedProfile;
-	const size_t boostBegin = invalidBoostProfile.find("reflectance_boost = 2");
+	const size_t boostBegin = invalidBoostProfile.find("reflectance_boost = 8");
 	assert(boostBegin != std::string::npos);
-	invalidBoostProfile.replace(boostBegin, sizeof("reflectance_boost = 2") - 1, "reflectance_boost = 4.1");
+	invalidBoostProfile.replace(boostBegin, sizeof("reflectance_boost = 8") - 1, "reflectance_boost = 8.1");
 	assert(!S9xRemasterParseProfile(invalidBoostProfile, roundTrippedProfile, diagnostics));
 	std::string legacyBoostProfile = serializedProfile;
-	legacyBoostProfile.replace(legacyBoostProfile.find("schema_version = 12"), 19, "schema_version = 11");
+	legacyBoostProfile.replace(legacyBoostProfile.find("schema_version = 13"), 19, "schema_version = 11");
 	assert(!S9xRemasterParseProfile(legacyBoostProfile, roundTrippedProfile, diagnostics));
 	const size_t legacyBoostBegin = legacyBoostProfile.find("reflectance_boost = ");
 	assert(legacyBoostBegin != std::string::npos);
 	legacyBoostProfile.erase(legacyBoostBegin, legacyBoostProfile.find('\n', legacyBoostBegin) - legacyBoostBegin + 1);
+	const size_t legacyFloorBegin = legacyBoostProfile.find("upper_floor_height = ");
+	assert(legacyFloorBegin != std::string::npos);
+	legacyBoostProfile.erase(legacyFloorBegin, legacyBoostProfile.find('\n', legacyFloorBegin) - legacyFloorBegin + 1);
 	assert(S9xRemasterParseProfile(legacyBoostProfile, roundTrippedProfile, diagnostics));
 	assert(roundTrippedProfile.reflectanceBoost == 0.0f);
 	const std::string savedProfilePath = "/tmp/snes9x-remaster-profile-test.toml";
@@ -433,10 +544,10 @@ material = "wet_stone"
 	invalidCameraProfile.replace(cameraBegin, cameraEnd - cameraBegin, "camera_direction = [0, 0, 0]");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	invalidCameraProfile = serializedProfile;
-	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 12"), 19, "schema_version = 8");
+	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 13"), 19, "schema_version = 8");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	std::string legacyReflectanceProfile = serializedProfile;
-	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 12"), 19, "schema_version = 10");
+	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 13"), 19, "schema_version = 10");
 	assert(!S9xRemasterParseProfile(legacyReflectanceProfile, roundTrippedProfile, diagnostics));
 	std::string invalidReflectanceProfile = serializedProfile;
 	const size_t reflectanceBegin = invalidReflectanceProfile.find("diffuse_reflectance = [");
@@ -471,6 +582,17 @@ material = "wet_stone"
 	assert(synchronizedFrame.profileRomSha256 == profile.romSha256);
 	assert(synchronizedFrame.assetGroups.size() == profile.assetGroups.size());
 	assert(synchronizedFrame.assetMetadata.size() == profile.assets.size());
+	RemasterProfile atlasProfile = profile;
+	for (uint64_t i = 1; i <= 1000; i++)
+	{
+		RemasterAssetMetadata distantTile;
+		distantTile.tileId = { UINT64_C(0x8000000000000000) + i, 1, 4 };
+		distantTile.hasHeight = true;
+		atlasProfile.assets.emplace(distantTile.tileId, distantTile);
+	}
+	S9xRemasterApplyProfileToFrame(atlasProfile, synchronizedFrame);
+	assert(synchronizedFrame.assetMetadata.size() == 1);
+	assert(S9xRemasterFrameMetadataForTile(synchronizedFrame, frameAsset.tileId));
 	assert(synchronizedFrame.materials.size() == profile.materials.size());
 	assert(synchronizedFrame.materials[0].hasDiffuseReflectance);
 	assert(synchronizedFrame.materials[0].diffuseReflectance == frameMaterial.diffuseReflectance);
@@ -495,6 +617,14 @@ material = "wet_stone"
 	assert(json.find("\"profile_unmatched_observations\": 0") != std::string::npos);
 	assert(json.find("\"profile_loaded\": true") != std::string::npos);
 	std::remove(profiledPath.c_str());
+	RemasterSceneSettings liveSettings = S9xRemasterGetSceneSettings(profile);
+	liveSettings.originalSceneContribution = 0.75f;
+	S9xRemasterSetSceneSettings(liveSettings);
+	S9xRemasterBeginFrame(1, 1, 1, 1);
+	assert(S9xRemasterState().activeProfile.originalSceneContribution == 0.75f);
+	assert(S9xRemasterState().activeProfile.assets.size() == profile.assets.size());
+	S9xRemasterEndFrame();
+	S9xRemasterSetProfile(profile);
 
 	const std::string framePath = "/tmp/snes9x-remaster-frame-test.s9xrmf";
 	S9xRemasterRequestFrameCapture(framePath);
@@ -519,7 +649,9 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 17);
+	assert(decodedFrame.schemaVersion == 19);
+	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
+	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.cameraDirection == profile.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
@@ -733,9 +865,23 @@ material = "missing"
 	assert(diagnostics.size() >= 3);
 
 	assert(S9xRemasterLoadProfile("alttp-profile.toml", profile, diagnostics));
-	assert(profile.materials.size() == 9);
-	assert(profile.assetGroups.size() == 9);
-	assert(profile.rules.size() == 9);
+	assert(profile.materials.size() == 10);
+	assert(profile.assetGroups.size() == 11);
+	assert(profile.rules.size() == 11);
+	context = {};
+	context.tileId = { UINT64_C(0xded4f16afe03288a), 1, 4 };
+	context.source = RemasterSourceType::Background;
+	context.sourceIndex = 1;
+	match = S9xRemasterMatchProfile(profile, context);
+	assert(match.status == RemasterProfileMatchStatus::Matched);
+	assert(match.assetGroup && match.assetGroup->name == "stair_treads");
+	assert(match.material && match.material->name == "dungeon_floor");
+	context.tileId = { UINT64_C(0x99863ac4c1bb8e68), 1, 4 };
+	match = S9xRemasterMatchProfile(profile, context);
+	assert(match.status == RemasterProfileMatchStatus::Matched);
+	assert(match.assetGroup && match.assetGroup->name == "stair_rails");
+	assert(match.material && match.material->name == "stair_rail");
+	assert(match.material->roughness < 0.5f);
 	context = {};
 	context.tileId = { UINT64_C(0x34eb3798eedfa0fc), 1, 4 };
 	context.source = RemasterSourceType::Background;

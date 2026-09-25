@@ -13,7 +13,10 @@
 #include "movie.h"
 #include "screenshot.h"
 #include "display.h"
+#include "memmap.h"
 #include "remaster/remaster.h"
+
+#include <cstring>
 
 extern struct SCheatData		Cheat;
 extern struct SLineData			LineData[240];
@@ -668,9 +671,24 @@ void S9xEndScreenRefresh (void)
 		}
 		else
 		{
+			static const unsigned char alttpUsSha256[32] = {
+				0x66, 0x87, 0x1d, 0x66, 0xbe, 0x19, 0xad, 0x2c,
+				0x34, 0xc9, 0x27, 0xd6, 0xb1, 0x4c, 0xd8, 0xeb,
+				0x6f, 0xc3, 0x18, 0x19, 0x65, 0xb6, 0xe5, 0x17,
+				0xcb, 0x36, 0x1f, 0x73, 0x16, 0x00, 0x9c, 0xfb
+			};
+			RemasterDungeonFloorContext dungeonFloor;
+			dungeonFloor.verifiedAlttpRom =
+				std::memcmp(Memory.ROMSHA256, alttpUsSha256, sizeof(alttpUsSha256)) == 0;
+			if (dungeonFloor.verifiedAlttpRom && Memory.RAM)
+			{
+				dungeonFloor.indoors = Memory.RAM[0x1b] != 0;
+				dungeonFloor.collisionMode = Memory.RAM[0x46c];
+				dungeonFloor.linkFacing = Memory.RAM[0x2f];
+			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
-				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
+				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];
@@ -1333,7 +1351,8 @@ static void DrawOBJS (int D)
 					{
 						if (DrawMode)
 						{
-							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX);
+							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX,
+								PPU.OBJ[S].Priority);
 							DrawTile(BaseTile | TileX, O, TileLine, 1);
 						}
 						x += 8;
@@ -1343,7 +1362,8 @@ static void DrawOBJS (int D)
 						int	w = (next_clip <= X + 8) ? next_clip - x : X + 8 - x;
 						if (DrawMode)
 						{
-							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX);
+							S9xRemasterSetDraw(RemasterSourceType::Object, S, BaseTile | TileX,
+								PPU.OBJ[S].Priority);
 							DrawClippedTile(BaseTile | TileX, O, x - X, w, TileLine, 1);
 						}
 						x += w;

@@ -136,6 +136,8 @@ struct RemasterState
 	RemasterProfile requestedProfile;
 	RemasterProfile activeProfile;
 	bool profilePending = false;
+	RemasterSceneSettings requestedSceneSettings;
+	bool sceneSettingsPending = false;
 	bool captureHasProfile = false;
 	std::string requestedInventoryPath;
 	std::string activeInventoryPath;
@@ -157,6 +159,7 @@ struct RemasterState
 	RemasterSourceType currentSource = RemasterSourceType::Backdrop;
 	uint16_t currentTile = 0;
 	uint8_t currentSourceIndex = 0;
+	uint8_t currentPpuPriority = 0;
 	bool inventoryActive = false;
 	bool frameCaptureActive = false;
 	bool liveFramesActive = false;
@@ -242,6 +245,11 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.activeProfile = std::move(state.requestedProfile);
 			state.profileMatchCache.clear();
 			state.profilePending = false;
+		}
+		if (state.sceneSettingsPending)
+		{
+			S9xRemasterApplySceneSettings(state.activeProfile, state.requestedSceneSettings);
+			state.sceneSettingsPending = false;
 		}
 		if (!state.requestedInventoryPath.empty())
 		{
@@ -357,13 +365,15 @@ inline uint32_t S9xRemasterOwner (RemasterSourceType source, uint8_t index, uint
 	return (static_cast<uint32_t>(source) << 24) | (static_cast<uint32_t>(index) << 16) | tile;
 }
 
-inline void S9xRemasterSetDraw (RemasterSourceType source, uint8_t index, uint16_t tile)
+inline void S9xRemasterSetDraw (RemasterSourceType source, uint8_t index, uint16_t tile,
+	uint8_t ppuPriority = 0)
 {
 	if (S9xRemasterObserving())
 	{
 		RemasterState &state = S9xRemasterState();
 		state.currentSource = source;
 		state.currentSourceIndex = index;
+		state.currentPpuPriority = ppuPriority;
 		state.currentTile = tile;
 		state.currentDrawSupported = true;
 		state.currentTileHashValid = false;
@@ -380,6 +390,7 @@ inline void S9xRemasterSetInventorySource (RemasterSourceType source, uint8_t in
 	{
 		state.currentSource = source;
 		state.currentSourceIndex = index;
+		state.currentPpuPriority = 0;
 		state.currentDrawSupported = true;
 		state.currentTileHashValid = false;
 	}
@@ -467,6 +478,7 @@ inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, ui
 		instance.sourceIndex = state.currentSourceIndex;
 		instance.tileNumber = tileWord & 0x3ff;
 		instance.palette = palette;
+		instance.ppuPriority = state.currentPpuPriority;
 		instance.hFlip = (tileWord & 0x4000) != 0;
 		instance.vFlip = (tileWord & 0x8000) != 0;
 		instance.vramAddress = vramAddress;
@@ -569,6 +581,15 @@ inline void S9xRemasterSetProfile (RemasterProfile profile)
 	std::lock_guard<std::mutex> lock(state.inventoryMutex);
 	state.requestedProfile = std::move(profile);
 	state.profilePending = true;
+	state.sceneSettingsPending = false;
+}
+
+inline void S9xRemasterSetSceneSettings (const RemasterSceneSettings &settings)
+{
+	RemasterState &state = S9xRemasterState();
+	std::lock_guard<std::mutex> lock(state.inventoryMutex);
+	state.requestedSceneSettings = settings;
+	state.sceneSettingsPending = true;
 }
 
 inline void S9xRemasterClearProfile (void)
@@ -640,49 +661,8 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		std::copy(entry.second.indices, entry.second.indices + 64, asset.indices);
 		result.assets.push_back(asset);
 	}
-	for (const auto &entry : state.activeProfile.assetGroups)
-	{
-		RemasterFrameAssetGroup group;
-		group.name = entry.second.name;
-		group.tileIds = entry.second.tileIds;
-		result.assetGroups.push_back(group);
-	}
-	for (const auto &entry : state.activeProfile.assets)
-	{
-		RemasterFrameAssetMetadata metadata;
-		metadata.tileId = entry.second.tileId;
-		metadata.materialSelectors = entry.second.materialSelectors;
-		metadata.occlusion = entry.second.occlusion;
-		metadata.height = entry.second.height;
-		metadata.normalXyz = entry.second.normalXyz;
-		metadata.emissionRgba = entry.second.emissionRgba;
-		metadata.hasMaterialSelectors = entry.second.hasMaterialSelectors;
-		metadata.hasOcclusion = entry.second.hasOcclusion;
-		metadata.hasHeight = entry.second.hasHeight;
-		metadata.hasNormals = entry.second.hasNormals;
-		metadata.hasEmission = entry.second.hasEmission;
-		metadata.directLightingOppositeFacing = entry.second.directLightingOppositeFacing;
-		metadata.heightSampling = entry.second.heightSampling;
-		result.assetMetadata.push_back(metadata);
-	}
-	for (const auto &entry : state.activeProfile.materials)
-	{
-		const RemasterMaterial &source = entry.second;
-		RemasterFrameMaterial material;
-		material.name = source.name;
-		material.surfaceClass = source.surfaceClass;
-		material.diffuseReflectance = source.diffuseReflectance;
-		material.roughness = source.roughness;
-		material.metalness = source.metalness;
-		material.specularLevel = source.specularLevel;
-		material.zMin = source.zMin;
-		material.zMax = source.zMax;
-		material.receivesGi = source.receivesGi;
-		material.castsShadow = source.castsShadow;
-		material.hasDiffuseReflectance = source.hasDiffuseReflectance;
-		result.materials.push_back(material);
-	}
 	result.tileInstances = state.tileInstances;
+	S9xRemasterApplyProfileToFrame(state.activeProfile, result);
 	struct ArtworkAccumulator
 	{
 		std::array<uint32_t, 64> red = {};
@@ -726,7 +706,8 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 }
 
 inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t screenPitch = 0,
-	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr)
+	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr,
+	const RemasterDungeonFloorContext *dungeonFloor = nullptr)
 {
 	RemasterState &state = S9xRemasterState();
 	uint8_t result = RemasterCaptureNone;
@@ -888,6 +869,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	const bool frameFinalized = S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight);
 	if (frameFinalized)
 	{
+		if (dungeonFloor)
+			S9xRemasterApplyDungeonFloorHeight(frame, *dungeonFloor,
+				state.activeProfile.upperFloorHeight);
+		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		if (state.frameCaptureActive)
 		{
 			S9xRemasterAddAnimationCaptureFrame(state.animationCapture, frame);
