@@ -33,9 +33,10 @@ int main ()
 	frame.lightingCoordinateScale = 24.0f;
 	frame.cameraDirection = {{ 0.25f, -0.5f, -1.0f }};
 	frame.indirectBounceCount = 6;
+	frame.reflectanceBoost = 2.0f;
 	frame.originalSceneContribution = 0.4f;
 	frame.heightPreviewMultiplier = 12;
-	frame.samplesPerFrame = 4;
+	frame.samplesPerFrame = 128;
 	frame.sampleAccumulation = false;
 	frame.originalRgb555 = { 0x001f, 0x03e0 };
 	frame.mainPixels.resize(2);
@@ -109,6 +110,14 @@ int main ()
 	assert(S9xSerializeRemasterFrame(frame, firstFrameBytes));
 	assert(S9xSerializeRemasterFrame(frame, secondFrameBytes));
 	assert(firstFrameBytes == secondFrameBytes);
+	RemasterFrame invalidSamplesFrame = frame;
+	invalidSamplesFrame.samplesPerFrame = 129;
+	std::vector<uint8_t> invalidSamplesFrameBytes;
+	assert(!S9xSerializeRemasterFrame(invalidSamplesFrame, invalidSamplesFrameBytes));
+	RemasterFrame invalidBoostFrame = frame;
+	invalidBoostFrame.reflectanceBoost = 4.1f;
+	std::vector<uint8_t> invalidBoostFrameBytes;
+	assert(!S9xSerializeRemasterFrame(invalidBoostFrame, invalidBoostFrameBytes));
 	assert(firstFrameBytes.size() > 8);
 	assert(std::string(firstFrameBytes.begin(), firstFrameBytes.begin() + 6) == "S9XRMF");
 	RemasterFrame decodedFrame;
@@ -117,12 +126,21 @@ int main ()
 	assert(decodedFrame.lightingCoordinateScale == 24.0f);
 	assert(decodedFrame.cameraDirection == frame.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == 6);
+	assert(decodedFrame.reflectanceBoost == 2.0f);
 	assert(decodedFrame.originalSceneContribution == 0.4f);
 	assert(decodedFrame.heightPreviewMultiplier == 12);
-	assert(decodedFrame.samplesPerFrame == 4);
+	assert(decodedFrame.samplesPerFrame == frame.samplesPerFrame);
 	assert(!decodedFrame.sampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
+	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
+	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
+	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset,
+		previousVersionBytes.begin() + boostOffset + 4);
+	previousVersionBytes[8] = 16;
+	RemasterFrame previousVersionFrame;
+	assert(S9xDeserializeRemasterFrame(previousVersionBytes, previousVersionFrame));
+	assert(previousVersionFrame.reflectanceBoost == 0.0f);
 	float normalX = 0.6f;
 	float normalY = -0.8f;
 	float normalZ = 0.25f;
@@ -148,7 +166,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 16);
+	assert(decodedFrame.schemaVersion == 17);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -219,6 +237,8 @@ int main ()
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
 	const size_t legacyScaleOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size();
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 28,
+		legacyBytes.begin() + legacyScaleOffset + 32);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 27);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 15, legacyBytes.begin() + legacyScaleOffset + 27);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 9, legacyBytes.begin() + legacyScaleOffset + 15);
@@ -283,7 +303,7 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-		schema_version = 11
+		schema_version = 12
 
 [game]
 title = "Test Game"
@@ -294,9 +314,10 @@ rom_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		camera_direction = [0.25, -0.5, -1]
 		indirect_bounces = 6
 		indirect_roughness = 0.5
+		reflectance_boost = 2
 		original_scene_contribution = 0.4
 		height_preview_multiplier = 12
-		samples_per_frame = 4
+		samples_per_frame = 128
 		sample_accumulation = false
 
 [materials.stone]
@@ -353,9 +374,10 @@ material = "wet_stone"
 	assert(profile.cameraDirection == frame.cameraDirection);
 	assert(profile.indirectBounceCount == 6);
 	assert(profile.indirectRoughness == 0.5f);
+	assert(profile.reflectanceBoost == 2.0f);
 	assert(profile.originalSceneContribution == 0.4f);
 	assert(profile.heightPreviewMultiplier == 12);
-	assert(profile.samplesPerFrame == 4);
+	assert(profile.samplesPerFrame == 128);
 	assert(!profile.sampleAccumulation);
 	assert(profile.assetGroups.at("animated_floor").tileIds.size() == 2);
 	assert(profile.assets.at(RemasterTileContentId { hash, 1, 4 }).materialSelectors[0] == "wet_stone");
@@ -376,11 +398,30 @@ material = "wet_stone"
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).normalXyz[2] == 255);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).directLightingOppositeFacing);
 	assert(roundTrippedProfile.indirectRoughness == 0.5f);
+	assert(roundTrippedProfile.reflectanceBoost == 2.0f);
 	assert(roundTrippedProfile.cameraDirection == frame.cameraDirection);
 	assert(roundTrippedProfile.originalSceneContribution == 0.4f);
 	assert(roundTrippedProfile.heightPreviewMultiplier == 12);
-	assert(roundTrippedProfile.samplesPerFrame == 4);
+	assert(roundTrippedProfile.samplesPerFrame == 128);
 	assert(!roundTrippedProfile.sampleAccumulation);
+	std::string invalidSamplesProfile = serializedProfile;
+	const size_t samplesBegin = invalidSamplesProfile.find("samples_per_frame = 128");
+	assert(samplesBegin != std::string::npos);
+	invalidSamplesProfile.replace(samplesBegin, sizeof("samples_per_frame = 128") - 1, "samples_per_frame = 129");
+	assert(!S9xRemasterParseProfile(invalidSamplesProfile, roundTrippedProfile, diagnostics));
+	std::string invalidBoostProfile = serializedProfile;
+	const size_t boostBegin = invalidBoostProfile.find("reflectance_boost = 2");
+	assert(boostBegin != std::string::npos);
+	invalidBoostProfile.replace(boostBegin, sizeof("reflectance_boost = 2") - 1, "reflectance_boost = 4.1");
+	assert(!S9xRemasterParseProfile(invalidBoostProfile, roundTrippedProfile, diagnostics));
+	std::string legacyBoostProfile = serializedProfile;
+	legacyBoostProfile.replace(legacyBoostProfile.find("schema_version = 12"), 19, "schema_version = 11");
+	assert(!S9xRemasterParseProfile(legacyBoostProfile, roundTrippedProfile, diagnostics));
+	const size_t legacyBoostBegin = legacyBoostProfile.find("reflectance_boost = ");
+	assert(legacyBoostBegin != std::string::npos);
+	legacyBoostProfile.erase(legacyBoostBegin, legacyBoostProfile.find('\n', legacyBoostBegin) - legacyBoostBegin + 1);
+	assert(S9xRemasterParseProfile(legacyBoostProfile, roundTrippedProfile, diagnostics));
+	assert(roundTrippedProfile.reflectanceBoost == 0.0f);
 	const std::string savedProfilePath = "/tmp/snes9x-remaster-profile-test.toml";
 	assert(S9xRemasterWriteProfile(profile, savedProfilePath, diagnostics));
 	assert(S9xRemasterLoadProfile(savedProfilePath, roundTrippedProfile, diagnostics));
@@ -392,10 +433,10 @@ material = "wet_stone"
 	invalidCameraProfile.replace(cameraBegin, cameraEnd - cameraBegin, "camera_direction = [0, 0, 0]");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	invalidCameraProfile = serializedProfile;
-	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 11"), 19, "schema_version = 8");
+	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 12"), 19, "schema_version = 8");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	std::string legacyReflectanceProfile = serializedProfile;
-	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 11"), 19, "schema_version = 10");
+	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 12"), 19, "schema_version = 10");
 	assert(!S9xRemasterParseProfile(legacyReflectanceProfile, roundTrippedProfile, diagnostics));
 	std::string invalidReflectanceProfile = serializedProfile;
 	const size_t reflectanceBegin = invalidReflectanceProfile.find("diffuse_reflectance = [");
@@ -478,11 +519,12 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 16);
+	assert(decodedFrame.schemaVersion == 17);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.cameraDirection == profile.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
 	assert(decodedFrame.indirectRoughness == profile.indirectRoughness);
+	assert(decodedFrame.reflectanceBoost == profile.reflectanceBoost);
 	assert(decodedFrame.originalSceneContribution == profile.originalSceneContribution);
 	assert(decodedFrame.heightPreviewMultiplier == profile.heightPreviewMultiplier);
 	assert(decodedFrame.samplesPerFrame == profile.samplesPerFrame);

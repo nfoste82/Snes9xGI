@@ -2,7 +2,8 @@
 // xcrun clang++ -std=c++17 -O2 -fobjc-arc -Wall -Wextra macosx/remaster-lighting-benchmark.mm \
 //   -framework Foundation -framework Metal -o <temporary-directory>/remaster-lighting-benchmark
 // Measures dense bounces and the complete sampled one-bounce pipeline, including
-// source and visibility updates. Scenes are synthetic, not captures.
+// source and visibility updates. Separately times each stage to locate bottlenecks.
+// Scenes are synthetic, not captures.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <simd/simd.h>
@@ -20,7 +21,8 @@ struct Uniforms
 {
     uint32_t width, height, view, lightCount, passIndex, diagnosticStage;
     float indirectRoughness, originalSceneContribution, heightPreviewMultiplier, padding;
-    uint32_t sampleIndex, sampleCount, randomSeed;
+	uint32_t sampleIndex, sampleCount, randomSeed;
+	float reflectanceBoost;
     simd_float4 cameraDirection, debugPositionRadius, debugColorIntensity;
 };
 static_assert(sizeof(Uniforms) == 112 && offsetof(Uniforms, cameraDirection) == 64,
@@ -33,6 +35,18 @@ static uint64_t checksum(const void *data, size_t size)
     for (size_t i = 0; i < size; ++i)
         hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
     return hash;
+}
+
+static void printGpuTimes(const char *scene, uint32_t connections, const char *stage,
+    std::vector<double> times)
+{
+    std::sort(times.begin(), times.end());
+    const auto percentile = [&](unsigned percentage) {
+        // Nearest-rank percentile, with the rank rounded up.
+        return times[(times.size() * percentage + 99) / 100 - 1];
+    };
+    std::printf("%-22s sampled connections=%u %-16s gpu_ms median=%.3f p95=%.3f p99=%.3f max=%.3f\n",
+        scene, connections, stage, times[times.size() / 2], percentile(95), percentile(99), times.back());
 }
 
 int main(int argc, const char *argv[])
@@ -86,9 +100,10 @@ int main(int argc, const char *argv[])
 
             constexpr unsigned width = 256, height = 224, pixels = width * height;
             constexpr unsigned warmups = 2, repeats = 9;
+            constexpr unsigned sampledWarmups = 3, sampledRepeats = 51;
             constexpr uint32_t seed = 0x5eed1234;
             Uniforms uniforms = {width, height, 0, 0, 1, 0, 1.0f, 0.65f, 8.0f, 0.0f,
-                0, 1, seed, {0, 0, -1, 0}, {}, {}};
+                0, 1, seed, 0.0f, {0, 0, -1, 0}, {}, {}};
             uint32_t zero = 0;
             id<MTLBuffer> constants = [device newBufferWithBytes:&uniforms length:sizeof(uniforms)
                 options:MTLResourceStorageModeShared];
@@ -99,12 +114,12 @@ int main(int argc, const char *argv[])
                 device.name.UTF8String, NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
                 path.UTF8String, static_cast<unsigned long long>(checksum(sourceBytes.bytes, sourceBytes.length)));
             std::printf("SYNTHETIC bowl scenes (not real captures); %ux%u; threads=8x8; passIndex=1; "
-                "dense sampleCount=1; sampled connections=4/8/16; seed=0x%08x; warmups=%u; repeats=%u\n",
-                width, height, seed, warmups, repeats);
+                "dense sampleCount=1; sampled connections=4/8/16; seed=0x%08x; dense=%u+%u; sampled=%u+%u\n",
+                width, height, seed, warmups, repeats, sampledWarmups, sampledRepeats);
             std::printf("Production formats: RGBA8Unorm source, RG8Unorm fields, RGBA32Float surface, "
                 "RGBA16Float radiance, R8Unorm facing, R32Float blocks; shared storage\n");
             std::printf("Reference macro REMASTER_REFERENCE_VISIBILITY=1; exact RGB comparison; "
-                "block build timed once per scene, separately from indirect medians\n");
+                "sampled stages timed in separate command buffers; complete pipeline remains authoritative\n");
             std::fflush(stdout);
 
             const char *names[] = {"open-long-paths", "known-low-blockers", "tall-opaque", "fractional-unknown"};
@@ -324,11 +339,9 @@ int main(int argc, const char *argv[])
                         sampledUniforms.sampleCount = connections;
                         id<MTLBuffer> sampledConstants = [device newBufferWithBytes:&sampledUniforms
                             length:sizeof(sampledUniforms) options:MTLResourceStorageModeShared];
-                        std::array<double, repeats> times;
-                        for (unsigned i = 0; i < warmups + repeats; ++i)
-                        {
-                            id<MTLCommandBuffer> command = [queue commandBuffer];
+                        const auto encodeBlocks = [&](id<MTLCommandBuffer> command) {
                             id<MTLComputeCommandEncoder> blockEncoder = [command computeCommandEncoder];
+                            require(blockEncoder != nil, @"Could not encode visibility blocks");
                             [blockEncoder setComputePipelineState:buildPipeline];
                             [blockEncoder setTexture:textures[1] atIndex:0];
                             [blockEncoder setTexture:textures[3] atIndex:1];
@@ -337,7 +350,10 @@ int main(int argc, const char *argv[])
                             [blockEncoder dispatchThreads:MTLSizeMake(blockWidth, blockHeight, 1)
                                 threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                             [blockEncoder endEncoding];
+                        };
+                        const auto encodeSource = [&](id<MTLCommandBuffer> command) {
                             id<MTLComputeCommandEncoder> leaves = [command computeCommandEncoder];
+                            require(leaves != nil, @"Could not encode source leaves");
                             [leaves setComputePipelineState:powerLeaves];
                             [leaves setTexture:textures[5] atIndex:0];
                             [leaves setTexture:textures[4] atIndex:1];
@@ -349,6 +365,7 @@ int main(int argc, const char *argv[])
                             for (uint32_t firstNode = leafCount / 2; firstNode; firstNode /= 2)
                             {
                                 id<MTLComputeCommandEncoder> reduce = [command computeCommandEncoder];
+                                require(reduce != nil, @"Could not encode source reduction");
                                 [reduce setComputePipelineState:powerReduce];
                                 [reduce setBuffer:sourcePower offset:0 atIndex:0];
                                 [reduce setBytes:&firstNode length:sizeof(firstNode) atIndex:1];
@@ -356,7 +373,10 @@ int main(int argc, const char *argv[])
                                     threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
                                 [reduce endEncoding];
                             }
+                        };
+                        const auto encodeBounce = [&](id<MTLCommandBuffer> command) {
                             id<MTLComputeCommandEncoder> bounceEncoder = [command computeCommandEncoder];
+                            require(bounceEncoder != nil, @"Could not encode sampled bounce");
                             [bounceEncoder setComputePipelineState:sampledPipeline];
                             for (unsigned binding = 0; binding < 9; ++binding)
                                 [bounceEncoder setTexture:textures[binding] atIndex:binding];
@@ -368,17 +388,39 @@ int main(int argc, const char *argv[])
                             [bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
                                 threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                             [bounceEncoder endEncoding];
-                            [command commit];
-                            [command waitUntilCompleted];
-                            require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
-                            double milliseconds = (command.GPUEndTime - command.GPUStartTime) * 1000.0;
-                            require(std::isfinite(milliseconds) && milliseconds > 0, @"Sampled GPU timestamp unavailable");
-                            if (i >= warmups)
-                                times[i - warmups] = milliseconds;
-                        }
-                        std::sort(times.begin(), times.end());
-                        std::printf("%-22s sampled connections=%u complete_gpu_ms median=%.3f min=%.3f max=%.3f\n",
-                            names[scene], connections, times[repeats / 2], times.front(), times.back());
+                        };
+                        const auto measureStage = [&](const char *label, unsigned stage) {
+                            std::vector<double> times;
+                            times.reserve(sampledRepeats);
+                            for (unsigned i = 0; i < sampledWarmups + sampledRepeats; ++i)
+                            {
+                                id<MTLCommandBuffer> command = [queue commandBuffer];
+                                require(command != nil, @"Could not create sampled command buffer");
+                                if (stage == 0 || stage == 1)
+                                    encodeBlocks(command);
+                                if (stage == 0 || stage == 2)
+                                    encodeSource(command);
+                                if (stage == 0 || stage == 3)
+                                    encodeBounce(command);
+                                [command commit];
+                                [command waitUntilCompleted];
+                                require(command.status == MTLCommandBufferStatusCompleted,
+                                    command.error.localizedDescription);
+                                double milliseconds = (command.GPUEndTime - command.GPUStartTime) * 1000.0;
+                                require(std::isfinite(milliseconds) && milliseconds > 0,
+                                    @"Sampled GPU timestamp unavailable");
+                                if (i >= sampledWarmups)
+                                    times.push_back(milliseconds);
+                            }
+                            printGpuTimes(names[scene], connections, label, std::move(times));
+                        };
+                        // Run the combined case first to populate blocks and source power.
+                        // Isolated stage timings include command-buffer overhead and need not add up
+                        // to the complete duration; only the combined case tests the 5 ms budget.
+                        measureStage("complete", 0);
+                        measureStage("visibility", 1);
+                        measureStage("source", 2);
+                        measureStage("transport+resolve", 3);
                     }
                     std::fflush(stdout);
                 }

@@ -67,6 +67,7 @@ typedef struct
 	uint32_t sampleIndex;
 	uint32_t sampleCount;
 	uint32_t randomSeed;
+	float reflectanceBoost;
 	vector_float4 cameraDirection;
 	vector_float4 debugPositionRadius;
 	vector_float4 debugColorIntensity;
@@ -155,7 +156,8 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	const uint8_t * = nullptr, const float * = nullptr,
 	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
-	float = 0.65f, float = 8.0f, uint8_t = 1, bool = true, const std::array<float, 3> * = nullptr, int = -1, bool = true);
+	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1, bool = true,
+	const std::array<float, 3> * = nullptr, int = -1, bool = true);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -470,7 +472,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
 		lighting && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
-		frame.heightPreviewMultiplier, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
+		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
 		resourceSlot, !asynchronous);
 }
 
@@ -720,7 +722,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const float *surfaceField, const uint8_t *participation, const uint8_t *oppositeFacing,
 	const float *reflectance, const std::vector<RemasterGpuLight> *lights, bool lighting,
 	RemasterLightingView lightingView, uint8_t indirectBounceCount, float indirectRoughness,
-	float originalSceneContribution, float heightPreviewMultiplier, uint8_t samplesPerFrame, bool sampleAccumulation,
+	float originalSceneContribution, float heightPreviewMultiplier, float reflectanceBoost,
+	uint8_t samplesPerFrame, bool sampleAccumulation,
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
@@ -967,7 +970,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
 				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
 				heightPreviewMultiplier, 0.0f, 0,
-				std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, { normalizedCameraDirection.x,
+				std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, reflectanceBoost, { normalizedCameraDirection.x,
 					normalizedCameraDirection.y, normalizedCameraDirection.z, 0.0f }, {}, {} };
 			const RemasterDebugLight light = GetRemasterDebugLight();
 			if (light.enabled)

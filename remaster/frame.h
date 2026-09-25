@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 16;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 17;
 
 struct RemasterFramePixel
 {
@@ -128,6 +128,7 @@ struct RemasterFrame
 	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
+	float reflectanceBoost = 0.0f;
 	float originalSceneContribution = 0.65f;
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
@@ -151,6 +152,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.cameraDirection = profile.cameraDirection;
 	frame.indirectBounceCount = profile.indirectBounceCount;
 	frame.indirectRoughness = profile.indirectRoughness;
+	frame.reflectanceBoost = profile.reflectanceBoost;
 	frame.originalSceneContribution = profile.originalSceneContribution;
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
@@ -561,6 +563,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		(result.schemaVersion >= 14 && (!input.ReadFloat(result.cameraDirection[0]) ||
 			!input.ReadFloat(result.cameraDirection[1]) || !input.ReadFloat(result.cameraDirection[2]))) ||
 		(result.schemaVersion >= 15 && !input.ReadU8(result.heightPreviewMultiplier)) ||
+		(result.schemaVersion >= 17 && !input.ReadFloat(result.reflectanceBoost)) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
@@ -573,13 +576,15 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	if (!std::isfinite(result.indirectRoughness) || result.indirectRoughness < 0.0f || result.indirectRoughness > 1.0f)
 		return false;
+	if (!std::isfinite(result.reflectanceBoost) || result.reflectanceBoost < 0.0f || result.reflectanceBoost > 4.0f)
+		return false;
 	const float cameraLengthSquared = result.cameraDirection[0] * result.cameraDirection[0] +
 		result.cameraDirection[1] * result.cameraDirection[1] + result.cameraDirection[2] * result.cameraDirection[2];
 	if (!std::isfinite(result.cameraDirection[0]) || !std::isfinite(result.cameraDirection[1]) ||
 		!std::isfinite(result.cameraDirection[2]) || !std::isfinite(cameraLengthSquared) || cameraLengthSquared <= 0.0f)
 		return false;
 	if (!std::isfinite(result.originalSceneContribution) || result.originalSceneContribution < 0.0f ||
-		result.originalSceneContribution > 1.0f || result.samplesPerFrame < 1 || result.samplesPerFrame > 16 || sampleAccumulation > 1)
+		result.originalSceneContribution > 1.0f || result.samplesPerFrame < 1 || result.samplesPerFrame > 128 || sampleAccumulation > 1)
 		return false;
 	if (result.heightPreviewMultiplier < 1 || result.heightPreviewMultiplier > 20)
 		return false;
@@ -1021,7 +1026,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	if (frame.schemaVersion >= 12)
 	{
 		if (!std::isfinite(frame.originalSceneContribution) || frame.originalSceneContribution < 0.0f ||
-			frame.originalSceneContribution > 1.0f || frame.samplesPerFrame < 1 || frame.samplesPerFrame > 16)
+			frame.originalSceneContribution > 1.0f || frame.samplesPerFrame < 1 || frame.samplesPerFrame > 128)
 			return false;
 		RemasterFrameSerialization::Float(bytes, frame.originalSceneContribution);
 		RemasterFrameSerialization::U8(bytes, frame.samplesPerFrame);
@@ -1042,6 +1047,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		if (frame.heightPreviewMultiplier < 1 || frame.heightPreviewMultiplier > 20)
 			return false;
 		RemasterFrameSerialization::U8(bytes, frame.heightPreviewMultiplier);
+	}
+	if (frame.schemaVersion >= 17)
+	{
+		if (!std::isfinite(frame.reflectanceBoost) || frame.reflectanceBoost < 0.0f || frame.reflectanceBoost > 4.0f)
+			return false;
+		RemasterFrameSerialization::Float(bytes, frame.reflectanceBoost);
 	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||

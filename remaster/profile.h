@@ -133,6 +133,7 @@ struct RemasterProfile
 	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
 	uint8_t indirectBounceCount = 0;
 	float indirectRoughness = 1.0f;
+	float reflectanceBoost = 0.0f;
 	float originalSceneContribution = 0.65f;
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
@@ -436,6 +437,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	bool hasLightingSpace = false;
 	bool hasIndirectRoughness = false;
 	bool hasSceneSampling = false;
+	bool hasReflectanceBoost = false;
 	bool hasCameraDirection = false;
 	bool hasHeightPreviewMultiplier = false;
 	RemasterMaterial *material = nullptr;
@@ -599,6 +601,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!ParseFloat(value, parsed.indirectRoughness))
 					fail(lineNumber, "indirect_roughness must be a number");
 			}
+			else if (key == "reflectance_boost")
+			{
+				hasReflectanceBoost = true;
+				if (!ParseFloat(value, parsed.reflectanceBoost))
+					fail(lineNumber, "reflectance_boost must be a number");
+			}
 			else if (key == "original_scene_contribution")
 			{
 				hasSceneSampling = true;
@@ -616,8 +624,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			else if (key == "samples_per_frame")
 			{
 				hasSceneSampling = true;
-				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 16)
-					fail(lineNumber, "samples_per_frame must be an integer in [1, 16]");
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 128)
+					fail(lineNumber, "samples_per_frame must be an integer in [1, 128]");
 				else
 					parsed.samplesPerFrame = static_cast<uint8_t>(unsignedValue);
 			}
@@ -825,8 +833,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 11)
-		fail(0, "schema_version must be an integer in [1, 11]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 12)
+		fail(0, "schema_version must be an integer in [1, 12]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -855,10 +863,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		for (const auto &entry : parsed.materials)
 			if (entry.second.hasDiffuseReflectance)
 				fail(0, "diffuse_reflectance requires schema_version 11");
+	if (parsed.schemaVersion < 12 && hasReflectanceBoost)
+		fail(0, "reflectance_boost requires schema_version 12");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
 		fail(0, "lighting_space.indirect_roughness must be finite and in [0, 1]");
+	if (!std::isfinite(parsed.reflectanceBoost) || parsed.reflectanceBoost < 0.0f || parsed.reflectanceBoost > 4.0f)
+		fail(0, "lighting_space.reflectance_boost must be finite and in [0, 4]");
 	const float cameraLengthSquared = parsed.cameraDirection[0] * parsed.cameraDirection[0] +
 		parsed.cameraDirection[1] * parsed.cameraDirection[1] + parsed.cameraDirection[2] * parsed.cameraDirection[2];
 	if (!std::isfinite(parsed.cameraDirection[0]) || !std::isfinite(parsed.cameraDirection[1]) ||
@@ -1030,7 +1042,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	}
 	for (const auto &entry : profile.materials)
 		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
-	const uint32_t requiredSchema = std::max<uint32_t>(hasDiffuseReflectance ? 11 : 10,
+	const uint32_t requiredSchema = std::max<uint32_t>(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
@@ -1043,6 +1055,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		profile.cameraDirection[2] << "]\n";
 	output << "indirect_bounces = " << unsigned(profile.indirectBounceCount) << "\n";
 	output << "indirect_roughness = " << profile.indirectRoughness << "\n";
+	if (profile.schemaVersion >= 12 || profile.reflectanceBoost > 0.0f)
+		output << "reflectance_boost = " << profile.reflectanceBoost << "\n";
 	output << "original_scene_contribution = " << profile.originalSceneContribution << "\n";
 	output << "height_preview_multiplier = " << unsigned(profile.heightPreviewMultiplier) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";

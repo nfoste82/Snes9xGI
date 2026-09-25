@@ -47,6 +47,7 @@ typedef struct
 	uint sampleIndex;
 	uint sampleCount;
 	uint randomSeed;
+	float reflectanceBoost;
 	float4 cameraDirection;
 	float4 debugPositionRadius;
 	float4 debugColorIntensity;
@@ -105,6 +106,17 @@ static float3 remasterAlbedo(float3 paintedColor)
 {
 	// Preserve artwork value and hue. Baked-shadow removal belongs in authored material data.
 	return saturate(remasterToLinear(paintedColor) * 0.9);
+}
+
+static float3 remasterBoostReflectance(float3 albedo, float strength)
+{
+	// A single scale preserves each painted pixel's hue. Darker pixels receive
+	// more lift, while black stays black and no channel reflects all incoming light.
+	float brightness = dot(albedo, float3(0.2126, 0.7152, 0.0722));
+	float darkness = 1.0 - saturate(brightness);
+	float scale = 1.0 + strength * darkness * darkness;
+	float largest = max(albedo.r, max(albedo.g, albedo.b));
+	return albedo * min(scale, 0.95 / max(largest, 0.000001));
 }
 
 static float remasterRayExitDistance(float2 origin, float2 ray, float2 bounds)
@@ -291,6 +303,7 @@ kernel void remasterSampledIndirectBounce(
 	float4 authoredReflectance = reflectanceField.read(pixel);
 	float3 albedo = authoredReflectance.a > 0.5 ? saturate(authoredReflectance.rgb) :
 		remasterAlbedo(source.read(pixel).rgb);
+	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
 	if (all(albedo <= 0.0))
 	{
 		nextBounce.write(float4(0.0), pixel);
@@ -611,6 +624,7 @@ kernel void remasterIndirectBounce(
 	float4 authoredReflectance = reflectanceField.read(pixel);
 	float3 albedo = authoredReflectance.a > 0.5 ? saturate(authoredReflectance.rgb) :
 		remasterAlbedo(source.read(pixel).rgb);
+	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
 	float3 bounced = albedo * incoming;
 	if (uniforms.diagnosticStage == 1)
 		bounced = distanceIncoming;

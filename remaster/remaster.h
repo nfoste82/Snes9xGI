@@ -606,6 +606,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.cameraDirection = state.activeProfile.cameraDirection;
 	result.indirectBounceCount = state.activeProfile.indirectBounceCount;
 	result.indirectRoughness = state.activeProfile.indirectRoughness;
+	result.reflectanceBoost = state.activeProfile.reflectanceBoost;
 	result.originalSceneContribution = state.activeProfile.originalSceneContribution;
 	result.heightPreviewMultiplier = state.activeProfile.heightPreviewMultiplier;
 	result.samplesPerFrame = state.activeProfile.samplesPerFrame;

@@ -12,6 +12,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include "../remaster/indirect_lighting_reference.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light
@@ -27,6 +28,7 @@ struct Uniforms
 	float indirectRoughness, originalSceneContribution;
 	float heightPreviewMultiplier, padding;
 	uint32_t sampleIndex, sampleCount, randomSeed;
+	float reflectanceBoost;
     simd_float4 cameraDirection;
     simd_float4 debugPositionRadius;
     simd_float4 debugColorIntensity;
@@ -140,7 +142,7 @@ int main()
                             unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1,
                              simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
                               const Light *debugLight = nullptr, bool referenceVisibility = false,
-                              bool sampled = false, bool lambertianDirect = false) {
+                              bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -177,7 +179,7 @@ int main()
                             withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
                 Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
-					indirectRoughness, 0.65f, 8.0f, lambertianDirect ? 1.0f : 0.0f, sampleIndex, sampleCount, randomSeed,
+					indirectRoughness, 0.65f, 8.0f, lambertianDirect ? 1.0f : 0.0f, sampleIndex, sampleCount, randomSeed, reflectanceBoost,
                     {cameraDirection.x, cameraDirection.y, cameraDirection.z, 0}, {}, {}};
                 if (debugLight)
                 {
@@ -367,7 +369,7 @@ int main()
                 id<MTLTexture> output = [device newTextureWithDescriptor:descriptor];
                 [sample replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&second bytesPerRow:sizeof(second)];
                 [previous replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&first bytesPerRow:sizeof(first)];
-                Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 8.0f, 0.0f, 1, 2, 1,
+				Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 8.0f, 0.0f, 1, 2, 1, 0.0f,
                     {0, 0, -1, 0}, {}, {}};
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
@@ -682,6 +684,36 @@ int main()
 				nullptr, false, 3).bounce, visibleStage.bounce);
 			s[Reflectance][receiver] = {0, 0, 0, 1};
 			near("authored black diffuse reflectance absorbs energy", run(s, true).bounce, {});
+			near("boosted black remains absorbing", run(s, true, 0, 8, -1, nullptr, false, 0,
+				1.0f, 0, 1, 1, simd_float3{0, 0, -1}, -1, nullptr, false, false, false, 4.0f).bounce, {});
+			s[Reflectance][receiver] = {0.1f, 0.2f, 0.4f, 1};
+			const Result lowBase = run(s, true);
+			const Result lowBoost = run(s, true, 0, 8, -1, nullptr, false, 0,
+				1.0f, 0, 1, 1, simd_float3{0, 0, -1}, -1, nullptr, false, false, false, 2.0f);
+			const float lowBrightness = 0.1f * 0.2126f + 0.2f * 0.7152f + 0.4f * 0.0722f;
+			const float lowScale = 1.0f + 2.0f * (1.0f - lowBrightness) * (1.0f - lowBrightness);
+			near("boost lifts dark receiver without changing RGB ratios", lowBoost.bounce, lowBase.bounce * lowScale);
+			const Result sampledBase = run(s, true, 0, 8, -1, nullptr, false, 0,
+				1.0f, 0, 64, 7, simd_float3{0, 0, -1}, -1, nullptr, false, true);
+			const Result sampledBoost = run(s, true, 0, 8, -1, nullptr, false, 0,
+				1.0f, 0, 64, 7, simd_float3{0, 0, -1}, -1, nullptr, false, true, false, 2.0f);
+			positive("sampled receiver has incoming light for boost test", sampledBase.bounce);
+			near("sampled bounce applies the same color-preserving lift", sampledBoost.bounce,
+				sampledBase.bounce * lowScale);
+			s[Reflectance][receiver] = {0.7f, 0.8f, 0.9f, 1};
+			const Result brightBase = run(s, true);
+			const Result brightBoost = run(s, true, 0, 8, -1, nullptr, false, 0,
+				1.0f, 0, 1, 1, simd_float3{0, 0, -1}, -1, nullptr, false, false, false, 2.0f);
+			check("bright receiver receives less relative lift", lowBoost.bounce.x / lowBase.bounce.x >
+				brightBoost.bounce.x / brightBase.bounce.x, lowBoost.bounce, brightBoost.bounce);
+			near("boost caps bright authored reflectance below full reflection", run(s, true, 0, 8, -1,
+				nullptr, false, 0, 1.0f, 0, 1, 1, simd_float3{0, 0, -1}, -1,
+				nullptr, false, false, false, 4.0f).bounce,
+				visibleStage.bounce * simd_float4{0.95f * 0.7f / 0.9f,
+					0.95f * 0.8f / 0.9f, 0.95f, 1});
+			s[Reflectance][receiver] = {1, 1, 1, 1};
+			near("authored white never reflects all incoming radiance at zero boost",
+				run(s, true).bounce, visibleStage.bounce * simd_float4{0.95f, 0.95f, 0.95f, 1});
 			s[Reflectance][receiver] = {};
 			s[PreviousBounce][emitter] *= 8.0f;
             near("indirect HDR input scales linearly without gamma decoding radiance", run(s, true).bounce,
@@ -707,6 +739,37 @@ int main()
                     expectedSampled[channel] * 0.06f;
             check("sampled mixture converges to finite-patch Lambertian exchange",
                 sampledConverges, sampledResult, expectedSampled);
+            Scene threeSources = sampledScene;
+            const unsigned secondSource = receiverY * width + 40;
+            const unsigned thirdSource = receiverY * width + 60;
+            threeSources[Surface][secondSource] = threeSources[Surface][thirdSource] =
+                {8, -0.98f, 0, 0.198997f};
+            threeSources[Participation][secondSource] = threeSources[Participation][thirdSource] = {1, 1, 0, 0};
+            threeSources[PreviousBounce][secondSource] = {0.25f, 1.0f, 0.1f, 1};
+            threeSources[PreviousBounce][thirdSource] = {0.1f, 0.2f, 1.5f, 1};
+            blocker(threeSources, 28, 0.5f, true, 16);
+            RemasterIndirectReference::Scene oracle;
+            oracle.width = width;
+            oracle.height = height;
+            oracle.patches.push_back({{receiverX + 0.5, receiverY + 0.5, 8},
+                {0.98, 0, 0.198997}, {0.8, 0.6, 0.4}, {}, 1, true, true});
+            for (unsigned sourceX : {26u, 40u, 60u})
+            {
+                const simd_float4 radiance = threeSources[PreviousBounce][receiverY * width + sourceX];
+                oracle.patches.push_back({{sourceX + 0.5, receiverY + 0.5, 8},
+                    {-0.98, 0, 0.198997}, {}, {radiance.x, radiance.y, radiance.z}, 1, true, true});
+            }
+            oracle.blockers.push_back({receiverX + 28, int(receiverY), 16, 0.5, true});
+            const RemasterIndirectReference::Rgb exact = RemasterIndirectReference::exhaustiveBounce(oracle)[0];
+            const simd_float4 threeSourceResult = run(threeSources, true, 1, 8, -1, nullptr, false, 0,
+                1.0f, 0, 16384, 17, simd_float3{0, 0, -1}, -1, nullptr, false, true).bounce;
+            const simd_float4 expectedThreeSources = {float(exact.r), float(exact.g), float(exact.b), 1};
+            bool threeSourcesConverge = true;
+            for (unsigned channel = 0; channel < 3; ++channel)
+                threeSourcesConverge &= std::fabs(threeSourceResult[channel] - expectedThreeSources[channel]) <
+                    expectedThreeSources[channel] * 0.08f;
+            check("sampled colored sources and fractional blocker match exhaustive oracle",
+                threeSourcesConverge, threeSourceResult, expectedThreeSources);
             near("sampled diffuse transport ignores camera direction", sampled(sampledScene, simd_float3{0, 0, 1}), sampledResult);
             const simd_float4 directForward = run(sampledScene, true, 0, 8, -1, nullptr, false, 0,
                 1.0f, 0, 1, 17, simd_float3{0, 0, -1}, -1, nullptr, false, false, true).bounce;
