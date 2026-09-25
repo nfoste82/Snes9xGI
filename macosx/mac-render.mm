@@ -187,6 +187,7 @@ id<MTLTexture>  			metalTexture = nil;
 id<MTLCommandQueue>			metalCommandQueue = nil;
 id<MTLRenderPipelineState>	metalPipelineState = nil;
 id<MTLComputePipelineState>	remasterLightingPipelineState = nil;
+id<MTLComputePipelineState>	remasterVisibilityBlocksPipelineState = nil;
 id<MTLComputePipelineState>	remasterIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterCompositePipelineState = nil;
 id<MTLComputePipelineState>	remasterSampleAccumulationPipelineState = nil;
@@ -221,6 +222,7 @@ struct RemasterMetalResources
 	id<MTLTexture> participation = nil;
 	id<MTLTexture> oppositeFacing = nil;
 	id<MTLTexture> surface = nil;
+	id<MTLTexture> visibilityBlocks = nil;
 	id<MTLTexture> output = nil;
 	id<MTLTexture> direct = nil;
 	id<MTLTexture> bounce[2] = {};
@@ -497,6 +499,8 @@ static void S9xInitMetal (void)
 	metalPipelineState = [metalDevice newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
 	id<MTLFunction> lightingFunction = [defaultLibrary newFunctionWithName:@"remasterDirectLighting"];
 	remasterLightingPipelineState = [metalDevice newComputePipelineStateWithFunction:lightingFunction error:&error];
+	id<MTLFunction> visibilityBlocksFunction = [defaultLibrary newFunctionWithName:@"remasterBuildVisibilityBlocks"];
+	remasterVisibilityBlocksPipelineState = [metalDevice newComputePipelineStateWithFunction:visibilityBlocksFunction error:&error];
 	id<MTLFunction> indirectFunction = [defaultLibrary newFunctionWithName:@"remasterIndirectBounce"];
 	remasterIndirectPipelineState = [metalDevice newComputePipelineStateWithFunction:indirectFunction error:&error];
 	id<MTLFunction> compositeFunction = [defaultLibrary newFunctionWithName:@"remasterCompositeLighting"];
@@ -527,6 +531,7 @@ static void S9xDeinitMetal (void)
 		resources.width = resources.height = 0;
 		resources.source = resources.occlusion = resources.emission = resources.heightField = nil;
 		resources.participation = resources.oppositeFacing = resources.surface = resources.output = nil;
+		resources.visibilityBlocks = nil;
 		resources.direct = resources.bounce[0] = resources.bounce[1] = nil;
 		resources.indirect[0] = resources.indirect[1] = nil;
 		resources.directMean[0] = resources.directMean[1] = nil;
@@ -538,6 +543,7 @@ static void S9xDeinitMetal (void)
 	metalDevice = nil;
 	metalTexture = nil;
 	remasterLightingPipelineState = nil;
+	remasterVisibilityBlocksPipelineState = nil;
 	remasterIndirectPipelineState = nil;
 	remasterCompositePipelineState = nil;
 	remasterSampleAccumulationPipelineState = nil;
@@ -832,11 +838,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		id<MTLTexture> diagnosticStageTextures[3] = {};
 		uint32_t diagnosticBounceCount = 0;
 		if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && remasterLightingPipelineState &&
-			remasterIndirectPipelineState && remasterCompositePipelineState && remasterSampleAccumulationPipelineState)
+			remasterVisibilityBlocksPipelineState && remasterIndirectPipelineState && remasterCompositePipelineState && remasterSampleAccumulationPipelineState)
 		{
 			if (!resources)
 				return false;
-			const bool rebuildTextures = resources->device != metalDevice ||
+			const bool rebuildTextures = !resources->visibilityBlocks || resources->device != metalDevice ||
 				resources->width != static_cast<NSUInteger>(width) ||
 				resources->height != static_cast<NSUInteger>(height);
 			if (rebuildTextures)
@@ -858,6 +864,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				MTLTextureDescriptor *surfaceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
 					width:width height:height mipmapped:NO];
 				resources->surface = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
+				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+					width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
+				visibilityBlocksDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+				resources->visibilityBlocks = [metalDevice newTextureWithDescriptor:visibilityBlocksDescriptor];
 				MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
 					width:width height:height mipmapped:NO];
 				outputDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
@@ -892,6 +902,21 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			id<MTLTexture> surfaceTexture = resources->surface;
 			[surfaceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:surfaceField bytesPerRow:width * sizeof(float) * 4];
+			id<MTLTexture> visibilityBlocksTexture = resources->visibilityBlocks;
+			if (!visibilityBlocksTexture)
+				return false;
+			id<MTLComputeCommandEncoder> visibilityBlocksEncoder = [commandBuffer computeCommandEncoder];
+			if (!visibilityBlocksEncoder)
+				return false;
+			[visibilityBlocksEncoder setComputePipelineState:remasterVisibilityBlocksPipelineState];
+			[visibilityBlocksEncoder setTexture:occlusionTexture atIndex:0];
+			[visibilityBlocksEncoder setTexture:heightTexture atIndex:1];
+			[visibilityBlocksEncoder setTexture:surfaceTexture atIndex:2];
+			[visibilityBlocksEncoder setTexture:visibilityBlocksTexture atIndex:3];
+			[visibilityBlocksEncoder dispatchThreadgroups:MTLSizeMake((visibilityBlocksTexture.width + 7) / 8,
+				(visibilityBlocksTexture.height + 7) / 8, 1)
+				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+			[visibilityBlocksEncoder endEncoding];
 			presentationTexture = resources->output;
 			MTLTextureDescriptor *radianceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
 				width:width height:height mipmapped:NO];
@@ -963,6 +988,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[diagnosticEncoder setTexture:diagnosticStageTextures[stage - 1] atIndex:7];
 					[diagnosticEncoder setTexture:discardedNextIndirect atIndex:8];
 					[diagnosticEncoder setTexture:oppositeFacingTexture atIndex:9];
+					[diagnosticEncoder setTexture:visibilityBlocksTexture atIndex:10];
 					[diagnosticEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 					[diagnosticEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
 					[diagnosticEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
@@ -1006,6 +1032,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directEncoder setTexture:finalDirect atIndex:7];
 						[directEncoder setTexture:indirectTextures[0] atIndex:8];
 						[directEncoder setTexture:oppositeFacingTexture atIndex:9];
+						[directEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[directEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[directEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
 						[directEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
@@ -1036,6 +1063,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[bounceEncoder setTexture:bounceTextures[current] atIndex:7];
 						[bounceEncoder setTexture:indirectTextures[current] atIndex:8];
 						[bounceEncoder setTexture:oppositeFacingTexture atIndex:9];
+						[bounceEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[bounceEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[bounceEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
 						[bounceEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];

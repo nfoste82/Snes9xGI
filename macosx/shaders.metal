@@ -107,10 +107,38 @@ static float3 remasterAlbedo(float3 paintedColor)
 	return saturate(remasterToLinear(paintedColor) * 0.9);
 }
 
+static float remasterRayExitDistance(float2 origin, float2 ray, float2 bounds)
+{
+	float xDistance = ray.x > 0.0 ? (bounds.x - origin.x) / ray.x :
+		(ray.x < 0.0 ? -origin.x / ray.x : INFINITY);
+	float yDistance = ray.y > 0.0 ? (bounds.y - origin.y) / ray.y :
+		(ray.y < 0.0 ? -origin.y / ray.y : INFINITY);
+	return min(xDistance, yDistance);
+}
+
+kernel void remasterBuildVisibilityBlocks(
+	texture2d<float, access::read> occlusion [[texture(0)]],
+	texture2d<float, access::read> heightField [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::write> blocks [[texture(3)]],
+	uint2 block [[thread_position_in_grid]])
+{
+	if (block.x >= blocks.get_width() || block.y >= blocks.get_height())
+		return;
+	float maximumHeight = -INFINITY;
+	for (uint y = block.y * 8; y < min((block.y + 1) * 8, occlusion.get_height()); y++)
+		for (uint x = block.x * 8; x < min((block.x + 1) * 8, occlusion.get_width()); x++)
+			if (occlusion.read(uint2(x, y)).r > 0.0)
+				maximumHeight = max(maximumHeight, heightField.read(uint2(x, y)).g < 0.5 ?
+					INFINITY : surfaceField.read(uint2(x, y)).r);
+	blocks.write(float4(maximumHeight), block);
+}
+
 static float remasterVisibility(float3 from, float3 to,
 	texture2d<float, access::read> occlusion,
 	texture2d<float, access::read> heightField,
-	texture2d<float, access::read> surfaceField)
+	texture2d<float, access::read> surfaceField,
+	texture2d<float, access::read> visibilityBlocks)
 {
 	float3 segment = to - from;
 	int2 cell = int2(floor(from.xy));
@@ -122,9 +150,52 @@ static float remasterVisibility(float3 from, float3 to,
 	float2 next = float2(segment.x != 0.0 ? (edge.x - from.x) / segment.x : INFINITY,
 		segment.y != 0.0 ? (edge.y - from.y) / segment.y : INFINITY);
 	float visibility = 1.0;
-	// Traverse every crossed pixel once; sparse radiance samples must not skip blockers.
+	int2 testedBlock = int2(-1);
+	bool emptyBlock = false;
+	float blockExit = 0.0;
+	// Retain pixel-exact traversal wherever a block might contain a blocker.
 	while (any(cell != endpoint))
 	{
+#ifndef REMASTER_REFERENCE_VISIBILITY
+		// Skip only blocks that cannot attenuate this segment. Fractional coverage
+		// and unknown heights fall back to the original per-pixel traversal.
+		int2 block = cell / 8;
+		if (any(block != testedBlock))
+		{
+			testedBlock = block;
+			int2 remaining = int2(step.x > 0 ? 7 - (cell.x & 7) : (cell.x & 7),
+				step.y > 0 ? 7 - (cell.y & 7) : (cell.y & 7));
+			float2 blockNext = next;
+			// Match repeated pixel steps even when a boundary is almost at t=1.
+			#pragma unroll
+			for (int i = 0; i < 7; i++)
+			{
+				if (i < remaining.x && step.x) blockNext.x += delta.x;
+				if (i < remaining.y && step.y) blockNext.y += delta.y;
+			}
+			blockExit = min(1.0, min(blockNext.x, blockNext.y));
+			float blockEntry = max(0.0, min(next.x, next.y));
+			float minimumHeight = min(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
+			// Stay conservatively inside the pixel test's 0.05 height tolerance.
+			emptyBlock = visibilityBlocks.read(uint2(block)).r < minimumHeight + 0.049;
+		}
+		if (emptyBlock)
+		{
+			if (blockExit >= 1.0)
+				break;
+			// Stop just before the block boundary, leaving boundary/corner handling
+			// to the same pixel DDA below.
+			int2 remaining = int2(step.x > 0 ? 7 - (cell.x & 7) : (cell.x & 7),
+				step.y > 0 ? 7 - (cell.y & 7) : (cell.y & 7));
+			// Preserve the reference DDA's rounding at pixel corners.
+			#pragma unroll
+			for (int i = 0; i < 7; i++)
+			{
+				if (i < remaining.x && next.x < blockExit) { cell.x += step.x; next.x += delta.x; }
+				if (i < remaining.y && next.y < blockExit) { cell.y += step.y; next.y += delta.y; }
+			}
+		}
+#endif
 		float entry = min(next.x, next.y);
 		if (entry >= 1.0)
 			break;
@@ -227,6 +298,7 @@ kernel void remasterIndirectBounce(
 	texture2d<float, access::write> nextBounce [[texture(7)]],
 	texture2d<float, access::write> nextIndirect [[texture(8)]],
 	texture2d<float, access::read> oppositeFacingField [[texture(9)]],
+	texture2d<float, access::read> visibilityBlocks [[texture(10)]],
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
 	const device uint *emitterPixels [[buffer(1)]],
 	constant uint &emitterCount [[buffer(2)]],
@@ -253,6 +325,7 @@ kernel void remasterIndirectBounce(
 	float3 cosineIncoming = 0.0;
 	float totalFormFactor = 0.0;
 	float maximumVisibility = 0.0;
+	float3 viewDirection = normalize(-uniforms.cameraDirection.xyz);
 	// Direct enumerates visible emissive pixels, not receiver-local quadrature cells.
 	bool directCollision = uniforms.passIndex == 0;
 	// Cover the farthest frame corner, including the final jittered radial cell.
@@ -264,7 +337,7 @@ kernel void remasterIndirectBounce(
 	uint diskSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
 	float diskHeightSquared = max(1.0, pow(uniforms.debugPositionRadius.z - receiverSurface.r, 2.0));
 	uint sampleTotal = directCollision ? emitterCount + diskSamples : 16 * radialSteps * 3;
-	uint directionStart = 0, nextDirectionSample = 0, randomBase = 0;
+	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
 	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
 	{
@@ -301,6 +374,21 @@ kernel void remasterIndirectBounce(
 				float angle = (float(directionIndex) + angularJitter) * angularStep;
 				direction = float2(cos(angle), sin(angle));
 				perpendicular = float2(-direction.y, direction.x);
+				float maximumDistance = 0.0;
+				for (uint lane = 0; lane < 3; lane++)
+				{
+					float lateralScale = (float(lane) - 1.0) * angularStep / 3.0;
+					maximumDistance = max(maximumDistance, remasterRayExitDistance(float2(pixel) + 0.5,
+						direction + perpendicular * lateralScale, float2(uniforms.width, uniforms.height)));
+				}
+				// Radial jitter is at least -distanceStep / 2, so later cells cannot re-enter the frame.
+				uint directionRadialSteps = min(radialSteps, uint(floor(maximumDistance / float(distanceStep))) + 1);
+				directionEnd = directionStart + directionRadialSteps * 3;
+			}
+			if (sampleIndex >= directionEnd)
+			{
+				sampleIndex = nextDirectionSample - 1;
+				continue;
 			}
 			uint distance = 2 + ((sampleIndex - directionStart) / 3) * distanceStep;
 			uint lane = sampleIndex % 3;
@@ -328,7 +416,7 @@ kernel void remasterIndirectBounce(
 			if (any(radiance > 0.0))
 				maximumVisibility = max(maximumVisibility, remasterVisibility(
 					float3(float2(pixel) + 0.5, receiverSurface.r),
-					float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField));
+					float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField, visibilityBlocks));
 			if (maximumVisibility == 1.0)
 				break;
 			continue;
@@ -338,7 +426,6 @@ kernel void remasterIndirectBounce(
 		float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
 		float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
-		float3 viewDirection = normalize(-uniforms.cameraDirection.xyz);
 		float receiverScattering = receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
 			viewDirection, uniforms.indirectRoughness);
 		if (oppositeFacing)
@@ -365,7 +452,7 @@ kernel void remasterIndirectBounce(
 		if (formFactor > 0.0 && any(radiance > 0.0))
 		{
 			float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiverSurface.r),
-				float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField);
+				float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField, visibilityBlocks);
 			incoming += radiance * formFactor * visibility;
 		}
 		totalFormFactor += formFactor;

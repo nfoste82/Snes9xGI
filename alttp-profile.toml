@@ -7,11 +7,11 @@ rom_sha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
 [lighting_space]
 coordinate_scale = 128
 camera_direction = [0, 0, -1]
-indirect_bounces = 1
+indirect_bounces = 0
 indirect_roughness = 0.139960006
-original_scene_contribution = 0.755420983
+original_scene_contribution = 0.579030991
 height_preview_multiplier = 20
-samples_per_frame = 2
+samples_per_frame = 1
 sample_accumulation = true
 
 [materials.dungeon_floor]

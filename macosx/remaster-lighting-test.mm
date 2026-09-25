@@ -83,6 +83,16 @@ int main()
             id<MTLComputePipelineState> indirect = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce"] error:&error];
             require(indirect != nil, error.localizedDescription);
+            id<MTLComputePipelineState> buildVisibilityBlocks = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterBuildVisibilityBlocks"] error:&error];
+            require(buildVisibilityBlocks != nil, error.localizedDescription);
+            MTLCompileOptions *referenceOptions = [MTLCompileOptions new];
+            referenceOptions.preprocessorMacros = @{@"REMASTER_REFERENCE_VISIBILITY": @1};
+            id<MTLLibrary> referenceLibrary = [device newLibraryWithSource:source options:referenceOptions error:&error];
+            require(referenceLibrary != nil, error.localizedDescription);
+            id<MTLComputePipelineState> indirectReference = [device newComputePipelineStateWithFunction:
+                [referenceLibrary newFunctionWithName:@"remasterIndirectBounce"] error:&error];
+            require(indirectReference != nil, error.localizedDescription);
             id<MTLComputePipelineState> composite = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterCompositeLighting"] error:&error];
             require(composite != nil, error.localizedDescription);
@@ -122,7 +132,7 @@ int main()
                             bool productionRadiance = false, unsigned diagnosticStage = 0, float indirectRoughness = 1.0f,
                             unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1,
                              simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
-                             const Light *debugLight = nullptr) {
+                              const Light *debugLight = nullptr, bool referenceVisibility = false) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
                 const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -175,11 +185,35 @@ int main()
                 light.intensity = 1;
                 light.color = {1, 0.5f, 0.25f};
                 id<MTLCommandBuffer> command = [queue commandBuffer];
+                id<MTLTexture> visibilityBlocks = nil;
+                if (bounce && !composing)
+                {
+                    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+                        width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
+                    descriptor.storageMode = MTLStorageModePrivate;
+                    descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+                    visibilityBlocks = [device newTextureWithDescriptor:descriptor];
+                    require(visibilityBlocks != nil, @"Visibility block texture unavailable");
+                    id<MTLComputeCommandEncoder> blocks = [command computeCommandEncoder];
+                    require(blocks != nil, @"Could not create visibility block encoder");
+                    [blocks setComputePipelineState:buildVisibilityBlocks];
+                    [blocks setTexture:textures[1] atIndex:0];
+                    [blocks setTexture:textures[3] atIndex:1];
+                    [blocks setTexture:textures[2] atIndex:2];
+                    [blocks setTexture:visibilityBlocks atIndex:3];
+                    [blocks dispatchThreads:MTLSizeMake((width + 7) / 8, (height + 7) / 8, 1)
+                        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                    [blocks endEncoding];
+                }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 require(encoder != nil, @"Could not create compute encoder");
-                [encoder setComputePipelineState:composing ? composite : bounce ? indirect : direct];
+                [encoder setComputePipelineState:composing ? composite :
+                    bounce ? (referenceVisibility ? indirectReference : indirect) : direct];
                 for (unsigned i = 0; i < count; ++i)
                     [encoder setTexture:textures[i] atIndex:i];
+                if (bounce && !composing)
+                    [encoder setTexture:visibilityBlocks atIndex:10];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
                 if (!bounce && !composing)
                     [encoder setBytes:&light length:sizeof(light) atIndex:1];
@@ -1024,6 +1058,136 @@ int main()
                     plain.accumulated);
             }
 
+            // Compare the entire frame against the original pixel DDA, including the
+            // partial block at y=16. Report the first differing pixel per dispatch.
+            auto compareVisibility = [&](const Scene &input, const char *label, unsigned pass,
+                                         unsigned stage, unsigned sample, unsigned samples, unsigned seed,
+                                         const Light *debugLight = nullptr) {
+                Scene optimized = input, reference = input;
+                run(input, true, pass, 8, -1, &optimized, false, stage, 1, sample, samples, seed,
+                    simd_float3{0, 0, -1}, -1, debugLight);
+                run(input, true, pass, 8, -1, &reference, false, stage, 1, sample, samples, seed,
+                    simd_float3{0, 0, -1}, -1, debugLight, true);
+                unsigned mismatch = width * height;
+                for (unsigned p = 0; p < width * height && mismatch == width * height; ++p)
+                    for (unsigned c = 0; c < 4; ++c)
+                    {
+                        const float actual = optimized[NextBounce][p][c], expected = reference[NextBounce][p][c];
+                        if (!std::isfinite(actual) || !std::isfinite(expected) ||
+                            std::fabs(actual - expected) > 1e-9f + std::fabs(expected) * 1e-5f)
+                            mismatch = p;
+                    }
+                char name[192];
+                std::snprintf(name, sizeof(name), "%s pass=%u stage=%u sample=%u/%u seed=%u pixel=(%u,%u)",
+                    label, pass, stage, sample, samples, seed, mismatch % width, mismatch / width);
+                const unsigned p = mismatch < width * height ? mismatch : receiver;
+                check(name, mismatch == width * height, optimized[NextBounce][p], reference[NextBounce][p]);
+            };
+            const unsigned visibilityChecks = checks;
+            // Both XY directions, axis-aligned rays, exact and near corners, and
+            // starts/ends on either side of an 8-pixel boundary.
+            const unsigned endpoints[][4] = {
+                {0, 0, 127, 0}, {127, 16, 0, 16}, {7, 0, 7, 16}, {8, 16, 8, 0},
+                {0, 0, 16, 16}, {16, 16, 0, 0}, {7, 16, 23, 0}, {23, 0, 7, 16},
+                {0, 0, 127, 16}, {127, 16, 0, 0}, {7, 7, 24, 16}, {24, 16, 7, 7}
+            };
+            for (unsigned ray = 0; ray < sizeof(endpoints) / sizeof(endpoints[0]); ++ray)
+                for (int slope : {-1, 0, 1})
+                    for (unsigned kind = 0; kind < 5; ++kind)
+                    {
+                        Scene fixture = scene();
+                        fixture[Participation].assign(width * height, simd_float4{});
+                        fixture[PreviousBounce].assign(width * height, simd_float4{});
+                        const auto &xy = endpoints[ray];
+                        const unsigned a = xy[1] * width + xy[0], b = xy[3] * width + xy[2];
+                        const simd_float3 normal = simd_normalize(simd_float3{
+                            float(int(xy[2]) - int(xy[0])), float(int(xy[3]) - int(xy[1])), 4});
+                        fixture[Surface][a] = {16, normal.x, normal.y, normal.z};
+                        fixture[Surface][b] = {16 + slope * 12.0f, -normal.x, -normal.y, normal.z};
+                        fixture[Participation][a] = fixture[Participation][b] = {1, 1, 0, 0};
+                        fixture[PreviousBounce][b] = {8, 4, 2, 1};
+                        for (unsigned y = 0; y < height; ++y)
+                            for (unsigned x = 0; x < width; ++x)
+                            {
+                                const unsigned p = y * width + x;
+                                if (p == a || p == b || kind == 0 ||
+                                    (x % 8 != 0 && x % 8 != 7 && y != 7 && y != 8 && y != 15 && y != 16))
+                                    continue;
+                                fixture[Occlusion][p] = {kind == 3 ? 0.25f : 1.0f, 1, 0, 0};
+                                fixture[Height][p] = {0, kind == 4 ? 0.0f : 1.0f, 0, 0};
+                                fixture[Surface][p].x = kind == 1 ? -0.25f : 16.125f;
+                            }
+                        char label[96];
+                        std::snprintf(label, sizeof(label), "visibility ray=%u z-slope=%d blocker=%u", ray, slope, kind);
+                        compareVisibility(fixture, label, 0, 4, 0, 1, 1);
+                        compareVisibility(fixture, label, 0, 0, 0, 1, 1);
+                    }
+            for (unsigned seed : {1u, 19u, 97u, 65537u})
+            {
+                Scene randomScene = scene();
+                uint32_t state = seed;
+                auto random = [&] {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    return state;
+                };
+                for (unsigned p = 0; p < width * height; ++p)
+                {
+                    const float z = float(int(random() % 161) - 32) * 0.25f;
+                    const simd_float3 normal = simd_normalize(simd_float3{
+                        float(int(random() % 201) - 100), float(int(random() % 201) - 100), 20});
+                    randomScene[Surface][p] = {z, normal.x, normal.y, normal.z};
+                    randomScene[Height][p] = {z, random() % 7 == 0 ? 0.0f : 1.0f, 0, 0};
+                    randomScene[Occlusion][p] = {random() % 9 == 0 ? float(1 + random() % 4) * 0.25f : 0, 1, 0, 0};
+                    randomScene[Participation][p] = {random() % 4 == 0 ? 1.0f : 0.0f, 1, 0, 0};
+                    randomScene[PreviousBounce][p] = random() % 3 == 0 ? simd_float4{8, 4, 2, 1} : simd_float4{};
+                }
+                for (unsigned pass : {0u, 1u})
+                    for (unsigned samples : {1u, 4u})
+                        for (unsigned sample = 0; sample < (samples == 1 ? 1u : 2u); ++sample)
+                            compareVisibility(randomScene, "randomized visibility", pass, 0, sample, samples, seed);
+                compareVisibility(randomScene, "randomized visibility diagnostic", 0, 4, 0, 1, seed);
+            }
+            // Disk samples retain fractional endpoints, including outside the frame.
+            const simd_float3 diskPositions[] = {
+                {64.125f, 8.375f, 16}, {-4.25f, 8.125f, 16}, {132.125f, 8.375f, 16},
+                {64.375f, -4.125f, 16}, {64.125f, 21.375f, 16}
+            };
+            for (unsigned position = 0; position < sizeof(diskPositions) / sizeof(diskPositions[0]); ++position)
+                for (int slope : {-1, 1})
+                    for (unsigned kind = 0; kind < 3; ++kind)
+                    {
+                        Scene disk = scene();
+                        disk[PreviousBounce].assign(width * height, simd_float4{});
+                        disk[Participation].assign(width * height, simd_float4{1, 1, 0, 0});
+                        const simd_float3 normal = simd_normalize(simd_float3{-slope * 0.25f, 0, 1});
+                        for (unsigned y = 0; y < height; ++y)
+                            for (unsigned x = 0; x < width; ++x)
+                            {
+                                const unsigned p = y * width + x;
+                                const float z = 16 + slope * (float(x) - 64) * 0.25f;
+                                disk[Surface][p] = {z, normal.x, normal.y, normal.z};
+                                disk[Height][p] = {z, 1, 0, 0};
+                                if (kind && (x == 7 || x == 64 || x == 120 || y == 7 || y == 16))
+                                {
+                                    disk[Occlusion][p] = {kind == 1 ? 0.25f : 1.0f, 1, 0, 0};
+                                    disk[Surface][p].x += 4.125f;
+                                    disk[Height][p].y = kind == 2 ? 0.0f : 1.0f;
+                                }
+                            }
+                        Light light = {};
+                        light.position = diskPositions[position];
+                        light.radius = 3.75f;
+                        light.intensity = 25;
+                        light.color = {1, 0.75f, 0.5f};
+                        char label[96];
+                        std::snprintf(label, sizeof(label), "disk visibility position=%u slope=%d blocker=%u",
+                            position, slope, kind);
+                        for (unsigned stage : {4u, 0u})
+                            compareVisibility(disk, label, 0, stage, 0, 1, 1, &light);
+                    }
+            std::printf("Visibility reference comparisons: %u\n", checks - visibilityChecks);
             std::printf("%u/%u checks passed; %u failed\n", checks - failures, checks, failures);
             return failures ? 1 : 0;
         }
