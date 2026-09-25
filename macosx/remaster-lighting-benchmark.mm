@@ -1,7 +1,8 @@
 // Standalone, run from the repository root; optional argv[1] selects shader source.
 // xcrun clang++ -std=c++17 -O2 -fobjc-arc -Wall -Wextra macosx/remaster-lighting-benchmark.mm \
 //   -framework Foundation -framework Metal -o <temporary-directory>/remaster-lighting-benchmark
-// Measures one indirect bounce, not total frame time. Scenes are synthetic, not captures.
+// Measures dense bounces and the complete sampled one-bounce pipeline, including
+// source and visibility updates. Scenes are synthetic, not captures.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <simd/simd.h>
@@ -73,6 +74,13 @@ int main(int argc, const char *argv[])
             require(buildFunction != nil, @"Missing remasterBuildVisibilityBlocks kernel");
             id<MTLComputePipelineState> buildPipeline = [device newComputePipelineStateWithFunction:buildFunction error:&error];
             require(buildPipeline != nil, error.localizedDescription);
+            id<MTLComputePipelineState> powerLeaves = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
+            id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterReduceSourcePower"] error:&error];
+            id<MTLComputePipelineState> sampledPipeline = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
+            require(powerLeaves && powerReduce && sampledPipeline, error.localizedDescription);
             id<MTLCommandQueue> queue = [device newCommandQueue];
             require(queue != nil, @"Could not create command queue");
 
@@ -91,7 +99,7 @@ int main(int argc, const char *argv[])
                 device.name.UTF8String, NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
                 path.UTF8String, static_cast<unsigned long long>(checksum(sourceBytes.bytes, sourceBytes.length)));
             std::printf("SYNTHETIC bowl scenes (not real captures); %ux%u; threads=8x8; passIndex=1; "
-                "sampleCount=1; seed=0x%08x; warmups=%u; repeats=%u\n",
+                "dense sampleCount=1; sampled connections=4/8/16; seed=0x%08x; warmups=%u; repeats=%u\n",
                 width, height, seed, warmups, repeats);
             std::printf("Production formats: RGBA8Unorm source, RG8Unorm fields, RGBA32Float surface, "
                 "RGBA16Float radiance, R8Unorm facing, R32Float blocks; shared storage\n");
@@ -105,10 +113,11 @@ int main(int argc, const char *argv[])
             {
                 @autoreleasepool
                 {
-                    std::vector<uint8_t> painted(pixels * 4), occlusion(pixels * 2), heights(pixels * 2),
-                        participation(pixels * 2, 255), facing(pixels, 0);
-                    std::vector<simd_float4> surfaces(pixels);
-                    std::vector<__fp16> radiance(pixels * 4), black(pixels * 4, 0);
+					std::vector<uint8_t> painted(pixels * 4), occlusion(pixels * 2), heights(pixels * 2),
+						participation(pixels * 2, 255), facing(pixels, 0);
+					std::vector<simd_float4> surfaces(pixels);
+					std::vector<__fp16> radiance(pixels * 4), black(pixels * 4, 0);
+					std::vector<float> reflectance(pixels * 4, 0.0f);
                     uint32_t random = seed;
                     unsigned covered = 0, unknown = 0;
                     for (unsigned y = 0; y < height; ++y)
@@ -179,8 +188,15 @@ int main(int argc, const char *argv[])
                         MTLPixelFormatR32Float width:blockWidth height:blockHeight mipmapped:NO];
                     blockDescriptor.storageMode = MTLStorageModeShared;
                     blockDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-                    id<MTLTexture> blocks = [device newTextureWithDescriptor:blockDescriptor];
-                    require(blocks != nil, @"Could not create visibility blocks");
+					id<MTLTexture> blocks = [device newTextureWithDescriptor:blockDescriptor];
+					require(blocks != nil, @"Could not create visibility blocks");
+					MTLTextureDescriptor *reflectanceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+						MTLPixelFormatRGBA32Float width:width height:height mipmapped:NO];
+					reflectanceDescriptor.storageMode = MTLStorageModeShared;
+					id<MTLTexture> reflectanceTexture = [device newTextureWithDescriptor:reflectanceDescriptor];
+					require(reflectanceTexture != nil, @"Could not create compatibility reflectance texture");
+					[reflectanceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+						withBytes:reflectance.data() bytesPerRow:width * sizeof(float) * 4];
                     id<MTLCommandBuffer> build = [queue commandBuffer];
                     id<MTLComputeCommandEncoder> builder = [build computeCommandEncoder];
                     require(builder != nil, @"Could not create block encoder");
@@ -214,7 +230,8 @@ int main(int argc, const char *argv[])
                         [encoder setComputePipelineState:pipelines[variant]];
                         for (unsigned binding = 0; binding < 10; ++binding)
                             [encoder setTexture:textures[binding] atIndex:binding];
-                        [encoder setTexture:blocks atIndex:10];
+						[encoder setTexture:blocks atIndex:10];
+						[encoder setTexture:reflectanceTexture atIndex:11];
                         [encoder setBuffer:constants offset:0 atIndex:0];
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:1];
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:2];
@@ -297,6 +314,73 @@ int main(int argc, const char *argv[])
                     }
                     std::fflush(stdout);
                     }
+                    constexpr uint32_t leafCount = 65536;
+                    id<MTLBuffer> sourcePower = [device newBufferWithLength:leafCount * 2 * sizeof(float)
+                        options:MTLResourceStorageModePrivate];
+                    require(sourcePower != nil, @"Could not allocate source distribution");
+                    for (uint32_t connections : {4u, 8u, 16u})
+                    {
+                        Uniforms sampledUniforms = uniforms;
+                        sampledUniforms.sampleCount = connections;
+                        id<MTLBuffer> sampledConstants = [device newBufferWithBytes:&sampledUniforms
+                            length:sizeof(sampledUniforms) options:MTLResourceStorageModeShared];
+                        std::array<double, repeats> times;
+                        for (unsigned i = 0; i < warmups + repeats; ++i)
+                        {
+                            id<MTLCommandBuffer> command = [queue commandBuffer];
+                            id<MTLComputeCommandEncoder> blockEncoder = [command computeCommandEncoder];
+                            [blockEncoder setComputePipelineState:buildPipeline];
+                            [blockEncoder setTexture:textures[1] atIndex:0];
+                            [blockEncoder setTexture:textures[3] atIndex:1];
+                            [blockEncoder setTexture:textures[2] atIndex:2];
+                            [blockEncoder setTexture:blocks atIndex:3];
+                            [blockEncoder dispatchThreads:MTLSizeMake(blockWidth, blockHeight, 1)
+                                threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                            [blockEncoder endEncoding];
+                            id<MTLComputeCommandEncoder> leaves = [command computeCommandEncoder];
+                            [leaves setComputePipelineState:powerLeaves];
+                            [leaves setTexture:textures[5] atIndex:0];
+                            [leaves setTexture:textures[4] atIndex:1];
+                            [leaves setBuffer:sourcePower offset:0 atIndex:0];
+                            [leaves setBytes:&leafCount length:sizeof(leafCount) atIndex:1];
+                            [leaves dispatchThreads:MTLSizeMake(leafCount, 1, 1)
+                                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                            [leaves endEncoding];
+                            for (uint32_t firstNode = leafCount / 2; firstNode; firstNode /= 2)
+                            {
+                                id<MTLComputeCommandEncoder> reduce = [command computeCommandEncoder];
+                                [reduce setComputePipelineState:powerReduce];
+                                [reduce setBuffer:sourcePower offset:0 atIndex:0];
+                                [reduce setBytes:&firstNode length:sizeof(firstNode) atIndex:1];
+                                [reduce dispatchThreads:MTLSizeMake(firstNode, 1, 1)
+                                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                                [reduce endEncoding];
+                            }
+                            id<MTLComputeCommandEncoder> bounceEncoder = [command computeCommandEncoder];
+                            [bounceEncoder setComputePipelineState:sampledPipeline];
+                            for (unsigned binding = 0; binding < 9; ++binding)
+                                [bounceEncoder setTexture:textures[binding] atIndex:binding];
+                            [bounceEncoder setTexture:blocks atIndex:10];
+                            [bounceEncoder setTexture:reflectanceTexture atIndex:11];
+                            [bounceEncoder setBuffer:sampledConstants offset:0 atIndex:0];
+                            [bounceEncoder setBuffer:sourcePower offset:0 atIndex:1];
+                            [bounceEncoder setBytes:&leafCount length:sizeof(leafCount) atIndex:2];
+                            [bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
+                                threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                            [bounceEncoder endEncoding];
+                            [command commit];
+                            [command waitUntilCompleted];
+                            require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
+                            double milliseconds = (command.GPUEndTime - command.GPUStartTime) * 1000.0;
+                            require(std::isfinite(milliseconds) && milliseconds > 0, @"Sampled GPU timestamp unavailable");
+                            if (i >= warmups)
+                                times[i - warmups] = milliseconds;
+                        }
+                        std::sort(times.begin(), times.end());
+                        std::printf("%-22s sampled connections=%u complete_gpu_ms median=%.3f min=%.3f max=%.3f\n",
+                            names[scene], connections, times[repeats / 2], times.front(), times.back());
+                    }
+                    std::fflush(stdout);
                 }
             }
             require(!mismatch, @"Reference/accelerated RGB mismatch (exact comparison required)");

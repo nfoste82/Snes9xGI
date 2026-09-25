@@ -223,6 +223,149 @@ static float remasterVisibility(float3 from, float3 to,
 	return visibility;
 }
 
+// Complete binary sum tree. Leaves start at leafCount; padding leaves have zero
+// power. The broad proposal below still reaches every represented pixel.
+kernel void remasterBuildSourcePowerLeaves(
+	texture2d<float, access::read> radiance [[texture(0)]],
+	texture2d<float, access::read> participation [[texture(1)]],
+	device float *tree [[buffer(0)]],
+	constant uint &leafCount [[buffer(1)]],
+	uint index [[thread_position_in_grid]])
+{
+	if (index >= leafCount)
+		return;
+	uint width = radiance.get_width();
+	uint count = width * radiance.get_height();
+	float power = 0.0;
+	if (index < count)
+	{
+		uint2 pixel = uint2(index % width, index / width);
+		if (participation.read(pixel).r > 0.5)
+		{
+			float3 value = max(radiance.read(pixel).rgb, 0.0);
+			power = max(value.r, max(value.g, value.b));
+		}
+	}
+	tree[leafCount + index] = isfinite(power) ? power : 0.0;
+}
+
+kernel void remasterReduceSourcePower(
+	device float *tree [[buffer(0)]],
+	constant uint &firstNode [[buffer(1)]],
+	uint index [[thread_position_in_grid]])
+{
+	uint node = firstNode + index;
+	if (node >= firstNode * 2)
+		return;
+	tree[node] = tree[node * 2] + tree[node * 2 + 1];
+}
+
+kernel void remasterSampledIndirectBounce(
+	texture2d<float, access::read> source [[texture(0)]],
+	texture2d<float, access::read> occlusion [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::read> heightField [[texture(3)]],
+	texture2d<float, access::read> participationField [[texture(4)]],
+	texture2d<float, access::read> previousBounce [[texture(5)]],
+	texture2d<float, access::read> previousIndirect [[texture(6)]],
+	texture2d<float, access::write> nextBounce [[texture(7)]],
+	texture2d<float, access::write> nextIndirect [[texture(8)]],
+	texture2d<float, access::read> visibilityBlocks [[texture(10)]],
+	texture2d<float, access::read> reflectanceField [[texture(11)]],
+	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	const device float *sourcePower [[buffer(1)]],
+	constant uint &leafCount [[buffer(2)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
+		return;
+	float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
+	float2 participation = participationField.read(pixel).rg;
+	if (participation.r < 0.5 || participation.g < 0.5 || sourcePower[1] <= 0.0)
+	{
+		nextBounce.write(float4(0.0), pixel);
+		nextIndirect.write(float4(accumulated, 1.0), pixel);
+		return;
+	}
+	float4 receiver = surfaceField.read(pixel);
+	float4 authoredReflectance = reflectanceField.read(pixel);
+	float3 albedo = authoredReflectance.a > 0.5 ? saturate(authoredReflectance.rgb) :
+		remasterAlbedo(source.read(pixel).rgb);
+	if (all(albedo <= 0.0))
+	{
+		nextBounce.write(float4(0.0), pixel);
+		nextIndirect.write(float4(accumulated, 1.0), pixel);
+		return;
+	}
+	uint count = uniforms.width * uniforms.height;
+	int2 low = max(int2(pixel) - 16, int2(0));
+	int2 high = min(int2(pixel) + 16, int2(uniforms.width - 1, uniforms.height - 1));
+	uint localCount = uint(high.x - low.x + 1) * uint(high.y - low.y + 1);
+	float3 incoming = 0.0;
+	uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^
+		(pixel.y * 0x85ebca6bu) ^ (uniforms.passIndex * 0xc2b2ae35u);
+	uint connectionCount = max(1u, uniforms.sampleCount);
+	for (uint connection = 0; connection < connectionCount; connection++)
+	{
+		uint random = remasterHash(randomBase ^ (connection * 0x27d4eb2du));
+		uint choice = random % 3;
+		uint sourceIndex;
+		if (choice == 0)
+		{
+			// Descend the power tree using one uniform variate. Every positive
+			// leaf is selected with exactly its power / root probability.
+			float target = remasterRandom(random ^ 0x68bc21ebu) * sourcePower[1];
+			uint node = 1;
+			while (node < leafCount)
+			{
+				float left = sourcePower[node * 2];
+				node = node * 2 + uint(target >= left);
+				if (target >= left)
+					target -= left;
+			}
+			sourceIndex = node - leafCount;
+		}
+		else if (choice == 1)
+			sourceIndex = min(uint(remasterRandom(random ^ 0x02e5be93u) * float(count)), count - 1);
+		else
+		{
+			uint localIndex = min(uint(remasterRandom(random ^ 0x9d6ef916u) * float(localCount)), localCount - 1);
+			uint localWidth = uint(high.x - low.x + 1);
+			uint2 localPixel = uint2(low) + uint2(localIndex % localWidth, localIndex / localWidth);
+			sourceIndex = localPixel.y * uniforms.width + localPixel.x;
+		}
+		if (sourceIndex >= count)
+			continue;
+		uint2 sourcePixel = uint2(sourceIndex % uniforms.width, sourceIndex / uniforms.width);
+		if (all(sourcePixel == pixel) || participationField.read(sourcePixel).r < 0.5)
+			continue;
+		float power = sourcePower[leafCount + sourceIndex];
+		if (power <= 0.0)
+			continue;
+		float localDensity = all(int2(sourcePixel) >= low) && all(int2(sourcePixel) <= high) ?
+			1.0 / float(localCount) : 0.0;
+		float probability = (power / sourcePower[1] + 1.0 / float(count) + localDensity) / 3.0;
+		float4 sourceSurface = surfaceField.read(sourcePixel);
+		float3 toSource = float3(float2(sourcePixel) - float2(pixel), sourceSurface.r - receiver.r);
+		float distanceSquared = dot(toSource, toSource);
+		if (distanceSquared <= 0.0)
+			continue;
+		float3 direction = toSource * rsqrt(distanceSquared);
+		float receiverCosine = saturate(dot(receiver.gba, direction));
+		float sourceCosine = saturate(dot(sourceSurface.gba, -direction));
+		if (receiverCosine <= 0.0 || sourceCosine <= 0.0)
+			continue;
+		float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiver.r),
+			float3(float2(sourcePixel) + 0.5, sourceSurface.r), occlusion, heightField,
+			surfaceField, visibilityBlocks);
+		float transfer = receiverCosine * sourceCosine * visibility / (M_PI_F * distanceSquared);
+		incoming += previousBounce.read(sourcePixel).rgb * (transfer / probability);
+	}
+	float3 bounced = albedo * (incoming / float(connectionCount));
+	nextBounce.write(float4(bounced, 1.0), pixel);
+	nextIndirect.write(float4(accumulated + bounced, 1.0), pixel);
+}
+
 kernel void remasterDirectLighting(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> occlusion [[texture(1)]],
@@ -299,6 +442,7 @@ kernel void remasterIndirectBounce(
 	texture2d<float, access::write> nextIndirect [[texture(8)]],
 	texture2d<float, access::read> oppositeFacingField [[texture(9)]],
 	texture2d<float, access::read> visibilityBlocks [[texture(10)]],
+	texture2d<float, access::read> reflectanceField [[texture(11)]],
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
 	const device uint *emitterPixels [[buffer(1)]],
 	constant uint &emitterCount [[buffer(2)]],
@@ -426,14 +570,17 @@ kernel void remasterIndirectBounce(
 		float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
 		float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
-		float receiverScattering = receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
-			viewDirection, uniforms.indirectRoughness);
+		float receiverScattering = directCollision && uniforms.padding > 0.5 ? receiverResponse :
+			receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
+				viewDirection, uniforms.indirectRoughness);
 		if (oppositeFacing)
 		{
 			// Reused wall artwork may receive direct light on either authored XY facing.
 			float3 alternateNormal = float3(-normal.xy, normal.z);
-			receiverScattering = max(receiverScattering, saturate(dot(alternateNormal, segmentDirection)) *
-				remasterRoughDiffuse(alternateNormal, segmentDirection, viewDirection, uniforms.indirectRoughness));
+			float alternateCosine = saturate(dot(alternateNormal, segmentDirection));
+			receiverScattering = max(receiverScattering, directCollision && uniforms.padding > 0.5 ?
+				alternateCosine : alternateCosine * remasterRoughDiffuse(alternateNormal,
+					segmentDirection, viewDirection, uniforms.indirectRoughness));
 		}
 		float sampleArea = directCollision ? 1.0 : planarDistance * float(distanceStep) * angularStep / 3.0;
 		if (debugSample)
@@ -461,7 +608,9 @@ kernel void remasterIndirectBounce(
 		incoming *= 0.95 / totalFormFactor;
 	// Previous radiance is already linear and includes the source's reflection.
 	// Apply only this receiver's RGB albedo, once for this collision.
-	float3 albedo = remasterAlbedo(source.read(pixel).rgb);
+	float4 authoredReflectance = reflectanceField.read(pixel);
+	float3 albedo = authoredReflectance.a > 0.5 ? saturate(authoredReflectance.rgb) :
+		remasterAlbedo(source.read(pixel).rgb);
 	float3 bounced = albedo * incoming;
 	if (uniforms.diagnosticStage == 1)
 		bounced = distanceIncoming;

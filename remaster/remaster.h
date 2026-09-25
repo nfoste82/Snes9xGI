@@ -670,6 +670,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		RemasterFrameMaterial material;
 		material.name = source.name;
 		material.surfaceClass = source.surfaceClass;
+		material.diffuseReflectance = source.diffuseReflectance;
 		material.roughness = source.roughness;
 		material.metalness = source.metalness;
 		material.specularLevel = source.specularLevel;
@@ -677,6 +678,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		material.zMax = source.zMax;
 		material.receivesGi = source.receivesGi;
 		material.castsShadow = source.castsShadow;
+		material.hasDiffuseReflectance = source.hasDiffuseReflectance;
 		result.materials.push_back(material);
 	}
 	result.tileInstances = state.tileInstances;

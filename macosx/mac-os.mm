@@ -6705,7 +6705,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterOriginalSceneInput.action = @selector(changeRemasterOriginalSceneContribution:);
 		[content addSubview:remasterOriginalSceneInput];
 		NSTextField *samplesTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 616, 180, 24)];
-		samplesTitle.stringValue = @"Samples Per Frame";
+		samplesTitle.stringValue = @"Connections Per Receiver";
 		samplesTitle.editable = NO;
 		samplesTitle.bezeled = NO;
 		samplesTitle.drawsBackground = NO;
@@ -6724,12 +6724,12 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesInput.target = self;
 		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesInput];
-		remasterSampleAccumulationButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 546, 300, 24)];
-		remasterSampleAccumulationButton.buttonType = NSButtonTypeSwitch;
-		remasterSampleAccumulationButton.title = @"Accumulate and average samples";
-		remasterSampleAccumulationButton.target = self;
-		remasterSampleAccumulationButton.action = @selector(changeRemasterSampleAccumulation:);
-		[content addSubview:remasterSampleAccumulationButton];
+		NSTextField *sampleNote = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 546, 300, 24)];
+		sampleNote.stringValue = @"Connections average within this frame";
+		sampleNote.editable = NO;
+		sampleNote.bezeled = NO;
+		sampleNote.drawsBackground = NO;
+		[content addSubview:sampleNote];
 		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 510, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
@@ -6750,8 +6750,8 @@ void QuitWithFatalError ( NSString *message)
 		remasterBounceInput.target = self;
 		remasterBounceInput.action = @selector(changeRemasterBounceCount:);
 		[content addSubview:remasterBounceInput];
-		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 406, 180, 24)];
-		roughnessTitle.stringValue = @"Surface Roughness";
+		NSTextField *roughnessTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 406, 260, 24)];
+		roughnessTitle.stringValue = @"Surface Roughness (future)";
 		roughnessTitle.editable = NO;
 		roughnessTitle.bezeled = NO;
 		roughnessTitle.drawsBackground = NO;
@@ -6762,12 +6762,14 @@ void QuitWithFatalError ( NSString *message)
 		remasterIndirectRoughnessSlider.continuous = NO;
 		remasterIndirectRoughnessSlider.target = self;
 		remasterIndirectRoughnessSlider.action = @selector(changeRemasterIndirectRoughness:);
+		remasterIndirectRoughnessSlider.enabled = NO;
 		[content addSubview:remasterIndirectRoughnessSlider];
 		remasterIndirectRoughnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 373, 60, 24)];
 		remasterIndirectRoughnessInput.alignment = NSTextAlignmentCenter;
 		remasterIndirectRoughnessInput.delegate = self;
 		remasterIndirectRoughnessInput.target = self;
 		remasterIndirectRoughnessInput.action = @selector(changeRemasterIndirectRoughness:);
+		remasterIndirectRoughnessInput.enabled = NO;
 		[content addSubview:remasterIndirectRoughnessInput];
 		NSTextField *heightScaleTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 342, 180, 24)];
 		heightScaleTitle.stringValue = @"Height Scale";
@@ -6789,14 +6791,14 @@ void QuitWithFatalError ( NSString *message)
 		heightScaleDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:heightScaleDescription];
 		remasterBounceDescription = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 438, 390, 26)];
-		remasterBounceDescription.stringValue = @"Controls the global Oren-Nayar diffuse BRDF: 0 is Lambertian; 1 is maximally rough.";
+		remasterBounceDescription.stringValue = @"Start with one bounce; each additional bounce adds GPU work.";
 		remasterBounceDescription.editable = NO;
 		remasterBounceDescription.bezeled = NO;
 		remasterBounceDescription.drawsBackground = NO;
 		remasterBounceDescription.font = [NSFont systemFontOfSize:11];
 		[content addSubview:remasterBounceDescription];
 		NSTextField *cameraDirectionTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 270, 180, 24)];
-		cameraDirectionTitle.stringValue = @"Camera Direction";
+		cameraDirectionTitle.stringValue = @"Camera Direction (future)";
 		cameraDirectionTitle.editable = NO;
 		cameraDirectionTitle.bezeled = NO;
 		cameraDirectionTitle.drawsBackground = NO;
@@ -6817,6 +6819,7 @@ void QuitWithFatalError ( NSString *message)
 			remasterCameraDirectionInputs[component].delegate = self;
 			remasterCameraDirectionInputs[component].target = self;
 			remasterCameraDirectionInputs[component].action = @selector(changeRemasterCameraDirection:);
+			remasterCameraDirectionInputs[component].enabled = NO;
 			[content addSubview:remasterCameraDirectionInputs[component]];
 		}
 		remasterMetricsButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 196, 250, 24)];

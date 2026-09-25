@@ -20,7 +20,7 @@
 #include <tuple>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 15;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 16;
 
 struct RemasterFramePixel
 {
@@ -69,6 +69,7 @@ struct RemasterFrameMaterial
 {
 	std::string name;
 	RemasterSurfaceClass surfaceClass = RemasterSurfaceClass::Unclassified;
+	std::array<float, 3> diffuseReflectance = {{ 0.0f, 0.0f, 0.0f }};
 	float roughness = 0.8f;
 	float metalness = 0.0f;
 	float specularLevel = 0.25f;
@@ -76,6 +77,7 @@ struct RemasterFrameMaterial
 	float zMax = 0.0f;
 	bool receivesGi = true;
 	bool castsShadow = false;
+	bool hasDiffuseReflectance = false;
 };
 
 struct RemasterFrameTileInstance
@@ -191,6 +193,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		RemasterFrameMaterial material;
 		material.name = source.name;
 		material.surfaceClass = source.surfaceClass;
+		material.diffuseReflectance = source.diffuseReflectance;
 		material.roughness = source.roughness;
 		material.metalness = source.metalness;
 		material.specularLevel = source.specularLevel;
@@ -198,6 +201,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		material.zMax = source.zMax;
 		material.receivesGi = source.receivesGi;
 		material.castsShadow = source.castsShadow;
+		material.hasDiffuseReflectance = source.hasDiffuseReflectance;
 		frame.materials.push_back(material);
 	}
 
@@ -705,6 +709,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		uint8_t surfaceClass = 0;
 		uint8_t receivesGi = 0;
 		uint8_t castsShadow = 0;
+		uint8_t hasDiffuseReflectance = 0;
 		if (!input.ReadString(material.name) || !input.ReadU8(surfaceClass) ||
 			surfaceClass > static_cast<uint8_t>(RemasterSurfaceClass::UserInterface) ||
 			!input.ReadFloat(material.roughness) || !input.ReadFloat(material.metalness) ||
@@ -715,6 +720,18 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		material.surfaceClass = static_cast<RemasterSurfaceClass>(surfaceClass);
 		material.receivesGi = receivesGi != 0;
 		material.castsShadow = castsShadow != 0;
+		if (result.schemaVersion >= 16)
+		{
+			if (!input.ReadU8(hasDiffuseReflectance) || hasDiffuseReflectance > 1)
+				return false;
+			material.hasDiffuseReflectance = hasDiffuseReflectance != 0;
+			if (material.hasDiffuseReflectance)
+			{
+				for (float &component : material.diffuseReflectance)
+					if (!input.ReadFloat(component) || !std::isfinite(component) || component < 0.0f || component > 1.0f)
+						return false;
+			}
+		}
 	}
 	result.tileInstances.resize(instanceCount);
 	for (RemasterFrameTileInstance &instance : result.tileInstances)
@@ -972,6 +989,11 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
 		if (!RemasterFrameSerialization::ValidTileId(instance.tileId))
 			return false;
+	for (const RemasterFrameMaterial &material : frame.materials)
+		if (material.hasDiffuseReflectance)
+			for (float component : material.diffuseReflectance)
+				if (!std::isfinite(component) || component < 0.0f || component > 1.0f)
+					return false;
 
 	bytes.clear();
 	const uint8_t magic[] = { 'S', '9', 'X', 'R', 'M', 'F', 0, 1 };
@@ -1098,6 +1120,10 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::Float(bytes, material.zMax);
 		RemasterFrameSerialization::U8(bytes, material.receivesGi ? 1 : 0);
 		RemasterFrameSerialization::U8(bytes, material.castsShadow ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, material.hasDiffuseReflectance ? 1 : 0);
+		if (material.hasDiffuseReflectance)
+			for (float component : material.diffuseReflectance)
+				RemasterFrameSerialization::Float(bytes, component);
 	}
 	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
 	{

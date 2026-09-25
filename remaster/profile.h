@@ -71,6 +71,7 @@ struct RemasterMaterial
 {
 	std::string name;
 	RemasterSurfaceClass surfaceClass = RemasterSurfaceClass::Unclassified;
+	std::array<float, 3> diffuseReflectance = {{ 0.0f, 0.0f, 0.0f }};
 	float roughness = 0.8f;
 	float metalness = 0.0f;
 	float specularLevel = 0.25f;
@@ -78,6 +79,7 @@ struct RemasterMaterial
 	float zMax = 0.0f;
 	bool receivesGi = true;
 	bool castsShadow = false;
+	bool hasDiffuseReflectance = false;
 };
 
 struct RemasterAssetGroup
@@ -637,6 +639,11 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					fail(lineNumber, "invalid surface_class");
 			}
 			else if (key == "roughness") valid = ParseFloat(value, material->roughness);
+			else if (key == "diffuse_reflectance")
+			{
+				valid = ParseFloat3(value, material->diffuseReflectance);
+				material->hasDiffuseReflectance = valid;
+			}
 			else if (key == "metalness") valid = ParseFloat(value, material->metalness);
 			else if (key == "specular_level") valid = ParseFloat(value, material->specularLevel);
 			else if (key == "z_min") valid = ParseFloat(value, material->zMin);
@@ -818,8 +825,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 10)
-		fail(0, "schema_version must be an integer in [1, 10]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 11)
+		fail(0, "schema_version must be an integer in [1, 11]");
 	if (parsed.schemaVersion == 1 && !parsed.assets.empty())
 		fail(0, "assets require schema_version 2");
 	if (parsed.schemaVersion < 3)
@@ -844,6 +851,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		fail(0, "camera_direction requires schema_version 9");
 	if (parsed.schemaVersion < 10 && hasHeightPreviewMultiplier)
 		fail(0, "height_preview_multiplier requires schema_version 10");
+	if (parsed.schemaVersion < 11)
+		for (const auto &entry : parsed.materials)
+			if (entry.second.hasDiffuseReflectance)
+				fail(0, "diffuse_reflectance requires schema_version 11");
 	if (!std::isfinite(parsed.lightingCoordinateScale) || parsed.lightingCoordinateScale <= 0.0f)
 		fail(0, "lighting_space.coordinate_scale must be finite and greater than zero");
 	if (!std::isfinite(parsed.indirectRoughness) || parsed.indirectRoughness < 0.0f || parsed.indirectRoughness > 1.0f)
@@ -866,6 +877,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (item.roughness < 0.0f || item.roughness > 1.0f || item.metalness < 0.0f || item.metalness > 1.0f ||
 			item.specularLevel < 0.0f || item.specularLevel > 1.0f)
 			fail(0, "material '" + item.name + "' has a value outside [0, 1]");
+		if (item.hasDiffuseReflectance)
+			for (float component : item.diffuseReflectance)
+				if (!std::isfinite(component) || component < 0.0f || component > 1.0f)
+					fail(0, "material '" + item.name + "' has diffuse_reflectance outside [0, 1]");
 		if (item.zMin > item.zMax)
 			fail(0, "material '" + item.name + "' has z_min greater than z_max");
 	}
@@ -1006,13 +1021,17 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	bool hasEmission = false;
 	bool hasNormals = false;
 	bool hasOppositeFacingDirectLighting = false;
+	bool hasDiffuseReflectance = false;
 	for (const auto &entry : profile.assets)
 	{
 		hasEmission |= entry.second.hasEmission;
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 	}
-	const uint32_t requiredSchema = std::max<uint32_t>(10, hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
+	for (const auto &entry : profile.materials)
+		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
+	const uint32_t requiredSchema = std::max<uint32_t>(hasDiffuseReflectance ? 11 : 10,
+		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	output << "schema_version = " << std::max(profile.schemaVersion, requiredSchema) << "\n\n";
 	output << "[game]\n";
@@ -1033,6 +1052,9 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		const RemasterMaterial &material = entry.second;
 		output << "\n[materials." << entry.first << "]\n";
 		output << "surface_class = " << Quote(SurfaceClass(material.surfaceClass)) << "\n";
+		if (material.hasDiffuseReflectance)
+			output << "diffuse_reflectance = [" << material.diffuseReflectance[0] << ", " <<
+				material.diffuseReflectance[1] << ", " << material.diffuseReflectance[2] << "]\n";
 		output << "roughness = " << material.roughness << "\n";
 		output << "metalness = " << material.metalness << "\n";
 		output << "specular_level = " << material.specularLevel << "\n";

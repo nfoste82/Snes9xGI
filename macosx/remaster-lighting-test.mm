@@ -38,8 +38,8 @@ constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;
 constexpr unsigned emitter = receiverY * width + 26;
 enum Field { Source, Occlusion, Surface, Height, Participation, PreviousBounce,
-             PreviousIndirect, NextBounce, NextIndirect, Emission, Output, Direct,
-             OppositeFacing, FieldCount };
+			 PreviousIndirect, NextBounce, NextIndirect, Emission, Output, Direct,
+			 OppositeFacing, Reflectance, FieldCount };
 using Image = std::vector<simd_float4>;
 using Scene = std::array<Image, FieldCount>;
 struct Result { simd_float4 bounce, accumulated; };
@@ -83,6 +83,13 @@ int main()
             id<MTLComputePipelineState> indirect = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce"] error:&error];
             require(indirect != nil, error.localizedDescription);
+            id<MTLComputePipelineState> powerLeaves = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
+            id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterReduceSourcePower"] error:&error];
+            id<MTLComputePipelineState> sampledIndirect = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
+            require(powerLeaves && powerReduce && sampledIndirect, error.localizedDescription);
             id<MTLComputePipelineState> buildVisibilityBlocks = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterBuildVisibilityBlocks"] error:&error];
             require(buildVisibilityBlocks != nil, error.localizedDescription);
@@ -132,17 +139,18 @@ int main()
                             bool productionRadiance = false, unsigned diagnosticStage = 0, float indirectRoughness = 1.0f,
                             unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1,
                              simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
-                              const Light *debugLight = nullptr, bool referenceVisibility = false) {
+                              const Light *debugLight = nullptr, bool referenceVisibility = false,
+                              bool sampled = false, bool lambertianDirect = false) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
-                const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
-                    Participation, PreviousBounce, PreviousIndirect, NextBounce, NextIndirect, OppositeFacing};
+				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
+					Participation, PreviousBounce, PreviousIndirect, NextBounce, NextIndirect, OppositeFacing, Reflectance};
                 // Direct holds the emission seed; NextBounce holds the saved first collision.
                 const Field compositeBindings[] = {Source, Direct, NextBounce, NextIndirect, Output, Surface};
                 const bool composing = compositeView >= 0;
                 const Field *bindings = composing ? compositeBindings : bounce ? indirectBindings : directBindings;
-                unsigned count = composing ? 6 : bounce ? 10 : 9;
-                id<MTLTexture> textures[10];
+				unsigned count = composing ? 6 : bounce ? 11 : 9;
+				id<MTLTexture> textures[11];
                 for (unsigned i = 0; i < count; ++i)
                 {
                     const bool radiance = bindings[i] == PreviousBounce || bindings[i] == PreviousIndirect ||
@@ -168,8 +176,8 @@ int main()
                         [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                             withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
-				Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
-					indirectRoughness, 0.65f, 8.0f, 0.0f, sampleIndex, sampleCount, randomSeed,
+                Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
+					indirectRoughness, 0.65f, 8.0f, lambertianDirect ? 1.0f : 0.0f, sampleIndex, sampleCount, randomSeed,
                     {cameraDirection.x, cameraDirection.y, cameraDirection.z, 0}, {}, {}};
                 if (debugLight)
                 {
@@ -186,6 +194,8 @@ int main()
                 light.color = {1, 0.5f, 0.25f};
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLTexture> visibilityBlocks = nil;
+                id<MTLBuffer> sourcePower = nil;
+                uint32_t leafCount = 1;
                 if (bounce && !composing)
                 {
                     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
@@ -206,18 +216,50 @@ int main()
                         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                     [blocks endEncoding];
                 }
+                if (bounce && sampled && !composing)
+                {
+                    while (leafCount < width * height)
+                        leafCount *= 2;
+                    sourcePower = [device newBufferWithLength:leafCount * 2 * sizeof(float)
+                        options:MTLResourceStorageModeShared];
+                    require(sourcePower != nil, @"Source power buffer unavailable");
+                    id<MTLComputeCommandEncoder> leaves = [command computeCommandEncoder];
+                    [leaves setComputePipelineState:powerLeaves];
+                    [leaves setTexture:textures[5] atIndex:0];
+                    [leaves setTexture:textures[4] atIndex:1];
+                    [leaves setBuffer:sourcePower offset:0 atIndex:0];
+                    [leaves setBytes:&leafCount length:sizeof(leafCount) atIndex:1];
+                    [leaves dispatchThreads:MTLSizeMake(leafCount, 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                    [leaves endEncoding];
+                    for (uint32_t firstNode = leafCount / 2; firstNode; firstNode /= 2)
+                    {
+                        id<MTLComputeCommandEncoder> reduce = [command computeCommandEncoder];
+                        [reduce setComputePipelineState:powerReduce];
+                        [reduce setBuffer:sourcePower offset:0 atIndex:0];
+                        [reduce setBytes:&firstNode length:sizeof(firstNode) atIndex:1];
+                        [reduce dispatchThreads:MTLSizeMake(firstNode, 1, 1)
+                            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                        [reduce endEncoding];
+                    }
+                }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
-                    bounce ? (referenceVisibility ? indirectReference : indirect) : direct];
-                for (unsigned i = 0; i < count; ++i)
-                    [encoder setTexture:textures[i] atIndex:i];
+                    bounce ? (sampled ? sampledIndirect : referenceVisibility ? indirectReference : indirect) : direct];
+				for (unsigned i = 0; i < count; ++i)
+					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
                 if (bounce && !composing)
                     [encoder setTexture:visibilityBlocks atIndex:10];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
                 if (!bounce && !composing)
                     [encoder setBytes:&light length:sizeof(light) atIndex:1];
-                if (bounce && !composing)
+                if (bounce && !composing && sampled)
+                {
+                    [encoder setBuffer:sourcePower offset:0 atIndex:1];
+                    [encoder setBytes:&leafCount length:sizeof(leafCount) atIndex:2];
+                }
+                else if (bounce && !composing)
                 {
                     std::vector<uint32_t> emitters;
                     for (uint32_t pixel = 0; pixel < width * height; ++pixel)
@@ -630,10 +672,18 @@ int main()
                 0.9f * std::pow(0.5f, 2.2f), 0.9f * std::pow(0.75f, 2.2f), 1};
             near("indirect applies linear RGB receiver albedo once", paintedReflectance.bounce,
                 visibleStage.bounce * reflectance);
-            s[Source][emitter] = {0, 0, 0, 1};
-            near("indirect does not reapply source albedo to outgoing radiance", run(s, true).bounce,
-                paintedReflectance.bounce);
-            s[PreviousBounce][emitter] *= 8.0f;
+			s[Source][emitter] = {0, 0, 0, 1};
+			near("indirect does not reapply source albedo to outgoing radiance", run(s, true).bounce,
+				paintedReflectance.bounce);
+			s[Reflectance][receiver] = {0.25f, 0.5f, 0.75f, 1};
+			near("authored diffuse reflectance is linear and overrides artwork", run(s, true).bounce,
+				visibleStage.bounce * simd_float4{0.25f, 0.5f, 0.75f, 1});
+			near("pre-albedo diagnostic ignores authored diffuse reflectance", run(s, true, 0, 8, -1,
+				nullptr, false, 3).bounce, visibleStage.bounce);
+			s[Reflectance][receiver] = {0, 0, 0, 1};
+			near("authored black diffuse reflectance absorbs energy", run(s, true).bounce, {});
+			s[Reflectance][receiver] = {};
+			s[PreviousBounce][emitter] *= 8.0f;
             near("indirect HDR input scales linearly without gamma decoding radiance", run(s, true).bounce,
                 paintedReflectance.bounce * 8.0f);
             s[PreviousBounce][emitter] *= 8192.0f;
@@ -642,6 +692,33 @@ int main()
                 paintedReflectance.bounce * 65536.0f);
             check("HDR regression exercises outgoing radiance above one", hdr.bounce.z > 1.0f,
                 hdr.bounce, {});
+            Scene sampledScene = scene();
+            sampledScene[Reflectance][receiver] = {0.8f, 0.6f, 0.4f, 1};
+            auto sampled = [&](const Scene &input, simd_float3 camera = {0, 0, -1}) {
+                return run(input, true, 1, 8, -1, nullptr, false, 0, 1.0f,
+                    0, 8192, 17, camera, -1, nullptr, false, true).bounce;
+            };
+            const simd_float4 sampledResult = sampled(sampledScene);
+            const float transfer = (0.98f * 0.98f) / (float(M_PI) * 22.0f * 22.0f);
+            const simd_float4 expectedSampled = {0.8f * transfer, 0.3f * transfer, 0.1f * transfer, 1};
+            bool sampledConverges = true;
+            for (unsigned channel = 0; channel < 3; ++channel)
+                sampledConverges &= std::fabs(sampledResult[channel] - expectedSampled[channel]) <
+                    expectedSampled[channel] * 0.06f;
+            check("sampled mixture converges to finite-patch Lambertian exchange",
+                sampledConverges, sampledResult, expectedSampled);
+            near("sampled diffuse transport ignores camera direction", sampled(sampledScene, simd_float3{0, 0, 1}), sampledResult);
+            const simd_float4 directForward = run(sampledScene, true, 0, 8, -1, nullptr, false, 0,
+                1.0f, 0, 1, 17, simd_float3{0, 0, -1}, -1, nullptr, false, false, true).bounce;
+            const simd_float4 directReverse = run(sampledScene, true, 0, 8, -1, nullptr, false, 0,
+                1.0f, 0, 1, 17, simd_float3{0, 0, 1}, -1, nullptr, false, false, true).bounce;
+            positive("Lambertian Direct source field receives light", directForward);
+            near("Lambertian Direct source field ignores camera direction", directReverse, directForward);
+            sampledScene[Reflectance][receiver] = {0, 0, 0, 1};
+            near("sampled authored black absorbs all incoming light", sampled(sampledScene), {});
+            sampledScene[Reflectance][receiver] = {0.8f, 0.6f, 0.4f, 1};
+            blocker(sampledScene, 7, 1, true, 16);
+            near("sampled connection respects opaque height-aware blocker", sampled(sampledScene), {});
             s = scene();
             s[PreviousBounce][emitter] = {1, 1, 1, 1};
             s[Source][receiver] = {1, 0, 0, 1};

@@ -88,6 +88,8 @@ int main ()
 	RemasterFrameMaterial frameMaterial;
 	frameMaterial.name = "stone";
 	frameMaterial.surfaceClass = RemasterSurfaceClass::Floor;
+	frameMaterial.diffuseReflectance = {{ 0.25f, 0.5f, 0.75f }};
+	frameMaterial.hasDiffuseReflectance = true;
 	frameMaterial.receivesGi = false;
 	frameMaterial.castsShadow = true;
 	frameMaterial.zMin = 2.0f;
@@ -146,7 +148,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 15);
+	assert(decodedFrame.schemaVersion == 16);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -167,6 +169,8 @@ int main ()
 	assert(resolvedMaterial && resolvedMaterial->surfaceClass == RemasterSurfaceClass::Floor);
 	assert(!resolvedMaterial->receivesGi && resolvedMaterial->castsShadow);
 	assert(resolvedMaterial->zMin == 2.0f && resolvedMaterial->zMax == 6.0f);
+	assert(resolvedMaterial->hasDiffuseReflectance &&
+		resolvedMaterial->diffuseReflectance == frameMaterial.diffuseReflectance);
 	decodedFrame.assetMetadata[0].materialSelectors[9] = "missing";
 	assert(!S9xRemasterFrameMaterialForPixel(decodedFrame, decodedFrame.mainPixels[0]));
 	decodedFrame.assetMetadata[0].materialSelectors[9].clear();
@@ -208,6 +212,7 @@ int main ()
 	legacyFrame.assetMetadata.clear();
 	legacyFrame.artworkColors.clear();
 	legacyFrame.assetGroups.clear();
+	legacyFrame.materials.clear();
 	legacyFrame.tileInstances.clear();
 	for (RemasterFramePixel &pixel : legacyFrame.mainPixels)
 		pixel.instanceId = 0;
@@ -278,7 +283,7 @@ int main ()
 
 	std::ostringstream profileSource;
 	profileSource << R"PROFILE(
-		schema_version = 10
+		schema_version = 11
 
 [game]
 title = "Test Game"
@@ -296,6 +301,7 @@ rom_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [materials.stone]
 surface_class = "floor"
+diffuse_reflectance = [0.25, 0.5, 0.75]
 roughness = 0.8
 
 [materials.wet_stone]
@@ -340,6 +346,9 @@ material = "wet_stone"
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	assert(S9xRemasterParseProfile(profileText, profile, diagnostics));
 	assert(profile.materials.size() == 2);
+	assert(profile.materials.at("stone").hasDiffuseReflectance);
+	assert(profile.materials.at("stone").diffuseReflectance == frameMaterial.diffuseReflectance);
+	assert(!profile.materials.at("wet_stone").hasDiffuseReflectance);
 	assert(profile.lightingCoordinateScale == 24.0f);
 	assert(profile.cameraDirection == frame.cameraDirection);
 	assert(profile.indirectBounceCount == 6);
@@ -362,6 +371,8 @@ material = "wet_stone"
 	RemasterProfile roundTrippedProfile;
 	assert(S9xRemasterParseProfile(serializedProfile, roundTrippedProfile, diagnostics));
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).height[2] == 128);
+	assert(roundTrippedProfile.materials.at("stone").hasDiffuseReflectance);
+	assert(roundTrippedProfile.materials.at("stone").diffuseReflectance == frameMaterial.diffuseReflectance);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).normalXyz[2] == 255);
 	assert(roundTrippedProfile.assets.at(RemasterTileContentId { hash, 1, 4 }).directLightingOppositeFacing);
 	assert(roundTrippedProfile.indirectRoughness == 0.5f);
@@ -381,8 +392,18 @@ material = "wet_stone"
 	invalidCameraProfile.replace(cameraBegin, cameraEnd - cameraBegin, "camera_direction = [0, 0, 0]");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	invalidCameraProfile = serializedProfile;
-	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 10"), 19, "schema_version = 8");
+	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 11"), 19, "schema_version = 8");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
+	std::string legacyReflectanceProfile = serializedProfile;
+	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 11"), 19, "schema_version = 10");
+	assert(!S9xRemasterParseProfile(legacyReflectanceProfile, roundTrippedProfile, diagnostics));
+	std::string invalidReflectanceProfile = serializedProfile;
+	const size_t reflectanceBegin = invalidReflectanceProfile.find("diffuse_reflectance = [");
+	assert(reflectanceBegin != std::string::npos);
+	const size_t reflectanceEnd = invalidReflectanceProfile.find('\n', reflectanceBegin);
+	invalidReflectanceProfile.replace(reflectanceBegin, reflectanceEnd - reflectanceBegin,
+		"diffuse_reflectance = [0, 1.1, 0]");
+	assert(!S9xRemasterParseProfile(invalidReflectanceProfile, roundTrippedProfile, diagnostics));
 
 	RemasterProfileMatchContext context;
 	context.tileId = { hash, 1, 4 };
@@ -410,6 +431,8 @@ material = "wet_stone"
 	assert(synchronizedFrame.assetGroups.size() == profile.assetGroups.size());
 	assert(synchronizedFrame.assetMetadata.size() == profile.assets.size());
 	assert(synchronizedFrame.materials.size() == profile.materials.size());
+	assert(synchronizedFrame.materials[0].hasDiffuseReflectance);
+	assert(synchronizedFrame.materials[0].diffuseReflectance == frameMaterial.diffuseReflectance);
 	assert(synchronizedFrame.tileInstances[0].matchStatus == RemasterProfileMatchStatus::Matched);
 	assert(synchronizedFrame.tileInstances[0].ruleLine == profile.rules[0].line);
 	assert(synchronizedFrame.tileInstances[0].assetGroup == "animated_floor");
@@ -455,7 +478,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 15);
+	assert(decodedFrame.schemaVersion == 16);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
 	assert(decodedFrame.cameraDirection == profile.cameraDirection);
 	assert(decodedFrame.indirectBounceCount == profile.indirectBounceCount);
@@ -464,6 +487,12 @@ material = "wet_stone"
 	assert(decodedFrame.heightPreviewMultiplier == profile.heightPreviewMultiplier);
 	assert(decodedFrame.samplesPerFrame == profile.samplesPerFrame);
 	assert(decodedFrame.sampleAccumulation == profile.sampleAccumulation);
+	const RemasterFrameMaterial *capturedStone = nullptr;
+	for (const RemasterFrameMaterial &material : decodedFrame.materials)
+		if (material.name == "stone")
+			capturedStone = &material;
+	assert(capturedStone && capturedStone->hasDiffuseReflectance &&
+		capturedStone->diffuseReflectance == frameMaterial.diffuseReflectance);
 	assert(decodedFrame.mainPixels[0].tilePixel == 0);
 	assert(decodedFrame.assetMetadata.size() == 1);
 	assert(decodedFrame.assetMetadata[0].materialSelectors[0] == "wet_stone");
