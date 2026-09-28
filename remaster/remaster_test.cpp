@@ -133,12 +133,208 @@ int main ()
 	assert(floorFrame.tileInstances[0].heightOffset == 0);
 	assert(floorFrame.tileInstances[1].heightOffset == 0);
 	assert(floorFrame.tileInstances[2].heightOffset == 0);
-	assert(floorFrame.tileInstances[3].heightOffset == 48);
+	assert(floorFrame.tileInstances[3].heightOffset == 0);
 	floorFrame.tileInstances[3].heightOffset = 0;
 	floorContext.collisionMode = 0;
 	S9xRemasterApplyDungeonFloorHeight(floorFrame, floorContext, 48);
 	assert(floorFrame.tileInstances[1].heightOffset == 0);
-	assert(floorFrame.tileInstances[3].heightOffset == 48);
+	assert(floorFrame.tileInstances[3].heightOffset == 0);
+	RemasterFrame room61Frame;
+	room61Frame.width = 256;
+	room61Frame.height = 224;
+	room61Frame.mainPixels.resize(256 * 224);
+	room61Frame.subPixels.resize(256 * 224);
+	RemasterFrameTileInstance roomBackground = lowerBackground;
+	roomBackground.sourceIndex = 1;
+	RemasterFrameTileInstance roomDoor = roomBackground;
+	RemasterFrameTileInstance roomFence = roomBackground;
+	RemasterFrameTileInstance roomStair = roomBackground;
+	roomStair.assetGroup = "stair_treads";
+	RemasterFrameTileInstance roomOtherLayer = roomBackground;
+	roomOtherLayer.sourceIndex = 0;
+	RemasterFrameTileInstance roomWall = roomBackground;
+	roomWall.tileId.hash = UINT64_C(0x83ff6d16868aaa72);
+	roomWall.assetGroup = "wall_faces";
+	room61Frame.tileInstances = { roomBackground, roomDoor, roomFence, roomStair,
+		roomOtherLayer, roomWall };
+	auto roomPixel = [&] (int x, int y, uint32_t id) {
+		room61Frame.mainPixels[y * 256 + x].instanceId = id;
+	};
+	roomPixel(80, 100, 1);  // Checkered upper landing.
+	roomPixel(175, 150, 1); // The same tile instance on the lower floor.
+	roomPixel(23, 112, 2);  // Raised doorway.
+	roomPixel(116, 100, 3); // Raised railing.
+	roomPixel(88, 138, 4);  // Stair geometry is already absolute.
+	roomPixel(80, 101, 5);  // The other background layer stays unchanged.
+	roomPixel(116, 110, 6); // This brick borders the upper floor.
+	roomPixel(135, 110, 1); // The eastern floor remains lower.
+	roomPixel(50, 190, 6);  // The same brick shape also occurs lower down.
+	RemasterDungeonFloorContext room61Context = floorContext;
+	room61Context.roomIndex = 0x61;
+	room61Context.backgroundScrollX = 0x200;
+	room61Context.backgroundScrollY = 0xc10;
+	S9xRemasterApplyDungeonFloorHeight(room61Frame, room61Context, 48);
+	assert(room61Frame.tileInstances.size() == 8);
+	assert(room61Frame.mainPixels[100 * 256 + 80].instanceId == 7);
+	assert(room61Frame.tileInstances[6].heightOffset == 48);
+	assert(room61Frame.mainPixels[110 * 256 + 116].instanceId == 8);
+	assert(room61Frame.tileInstances[7].heightOffset == 48);
+	assert(room61Frame.mainPixels[110 * 256 + 135].instanceId == 1);
+	assert(room61Frame.tileInstances[5].heightOffset == 0);
+	assert(room61Frame.tileInstances[0].heightOffset == 0);
+	assert(room61Frame.tileInstances[1].heightOffset == 48);
+	assert(room61Frame.tileInstances[2].heightOffset == 48);
+	assert(room61Frame.tileInstances[3].heightOffset == 0);
+	assert(room61Frame.tileInstances[4].heightOffset == 0);
+	assert(S9xRemasterUpperFloorAt(0x61, 200, 79));
+	assert(!S9xRemasterUpperFloorAt(0x61, 200, 80));
+	assert(S9xRemasterUpperFloorAt(0x61, 127, 120));
+	assert(!S9xRemasterUpperFloorAt(0x61, 128, 120));
+	assert(S9xRemasterUpperFloorAt(0x61, 20, 167));
+	assert(S9xRemasterUpperFloorAt(0x61, 71, 160));
+	assert(!S9xRemasterUpperFloorAt(0x61, 72, 160));
+	assert(S9xRemasterUpperFloorAt(0x61, 112, 160));
+	assert(!S9xRemasterUpperFloorAt(0x61, 20, 168));
+	RemasterFrame scrolledRoom = room61Frame;
+	scrolledRoom.tileInstances = { roomBackground };
+	scrolledRoom.mainPixels.assign(256 * 224, RemasterFramePixel());
+	scrolledRoom.mainPixels[92 * 256 + 72].instanceId = 1;
+	room61Context.backgroundScrollX += 8;
+	room61Context.backgroundScrollY += 8;
+	S9xRemasterApplyDungeonFloorHeight(scrolledRoom, room61Context, 48);
+	assert(scrolledRoom.tileInstances[0].heightOffset == 48);
+	scrolledRoom.tileInstances[0].heightOffset = 0;
+	room61Context.roomIndex = 0x62;
+	S9xRemasterApplyDungeonFloorHeight(scrolledRoom, room61Context, 48);
+	assert(scrolledRoom.tileInstances[0].heightOffset == 0);
+	RemasterFrame room60Frame;
+	room60Frame.width = 256;
+	room60Frame.height = 224;
+	room60Frame.mainPixels.resize(256 * 224);
+	room60Frame.subPixels.resize(256 * 224);
+	RemasterFrameTileInstance excludedFloor = roomBackground;
+	excludedFloor.tileId.hash = UINT64_C(0xc40518b112d0814e);
+	room60Frame.tileInstances = { roomBackground, roomDoor, roomWall,
+		roomStair, excludedFloor };
+	room60Frame.mainPixels[100 * 256 + 128].instanceId = 1; // Raised interior.
+	room60Frame.mainPixels[180 * 256 + 100].instanceId = 1; // Lower south floor.
+	room60Frame.mainPixels[55 * 256 + 128].instanceId = 2;  // Upper doorway.
+	room60Frame.mainPixels[110 * 256 + 95].instanceId = 3; // Raised wall brick.
+	room60Frame.mainPixels[190 * 256 + 50].instanceId = 3; // Lower reuse.
+	room60Frame.mainPixels[160 * 256 + 128].instanceId = 4; // Stair tread.
+	room60Frame.mainPixels[80 * 256 + 120].instanceId = 5; // Out-of-bounds tile.
+	room61Context.roomIndex = 0x60;
+	room61Context.backgroundScrollX = 0x100;
+	room61Context.backgroundScrollY = 0xc10;
+	S9xRemasterApplyDungeonFloorHeight(room60Frame, room61Context, 48);
+	assert(room60Frame.tileInstances.size() == 7);
+	assert(room60Frame.tileInstances[5].heightOffset == 48);
+	assert(room60Frame.tileInstances[6].heightOffset == 48);
+	assert(room60Frame.tileInstances[0].heightOffset == 0);
+	assert(room60Frame.tileInstances[1].heightOffset == 48);
+	assert(room60Frame.tileInstances[2].heightOffset == 0);
+	assert(room60Frame.tileInstances[3].heightOffset == 0);
+	assert(room60Frame.tileInstances[4].heightOffset == 0);
+	RemasterFrame room55Frame;
+	room55Frame.width = 256;
+	room55Frame.height = 224;
+	room55Frame.mainPixels.resize(256 * 224);
+	room55Frame.tileInstances = { roomBackground, roomDoor };
+	room55Frame.mainPixels[100 * 256 + 120].instanceId = 1; // Southwest landing.
+	room55Frame.mainPixels[100 * 256 + 220].instanceId = 1; // Lower east floor.
+	room55Frame.mainPixels[50 * 256 + 120].instanceId = 2; // Northern doorway.
+	room61Context.roomIndex = 0x55;
+	room61Context.backgroundScrollX = 0;
+	room61Context.backgroundScrollY = 288;
+	S9xRemasterApplyDungeonFloorHeight(room55Frame, room61Context, 50);
+	assert(room55Frame.tileInstances.size() == 3);
+	assert(room55Frame.tileInstances[0].heightOffset == 0);
+	assert(room55Frame.tileInstances[1].heightOffset == 50);
+	assert(room55Frame.tileInstances[2].heightOffset == 50);
+	assert(room55Frame.mainPixels[100 * 256 + 120].instanceId == 3);
+	assert(room55Frame.mainPixels[100 * 256 + 220].instanceId == 1);
+	assert(S9xRemasterUpperFloorAt(0x55, 120, 400)); // Western landing.
+	assert(S9xRemasterUpperFloorAt(0x55, 220, 352)); // Northern walkway.
+	assert(!S9xRemasterUpperFloorAt(0x55, 220, 400)); // Lower east floor.
+	assert(!S9xRemasterUpperFloorAt(0x55, 120, 470)); // Below the stairs.
+	std::array<uint8_t, 8192> runtimeAttributes;
+	runtimeAttributes.fill(1);
+	for (int y = 8; y < 20; y++)
+		for (int x = 8; x < 24; x++)
+			runtimeAttributes[y * 64 + x] = 0;
+	for (int y = 24; y < 36; y++)
+		for (int x = 8; x < 24; x++)
+			runtimeAttributes[y * 64 + x] = 0;
+	RemasterDungeonFloorContext runtimeContext = floorContext;
+	runtimeContext.roomIndex = 7;
+	runtimeContext.linkX = 80;
+	runtimeContext.linkY = 80;
+	runtimeContext.collisionAttributes = runtimeAttributes.data();
+	runtimeContext.stairCount = 1;
+	runtimeContext.stairs[0].x = 10;
+	runtimeContext.stairs[0].y = 20;
+	runtimeContext.stairs[0].highIsNorth = true;
+	RemasterDungeonHeightMap runtimeMap;
+	assert(S9xRemasterBuildDungeonHeightMap(runtimeContext, 50, runtimeMap));
+	assert(runtimeMap.offsets[10 * 64 + 10] == 50);
+	assert(runtimeMap.offsets[30 * 64 + 10] == 0);
+	assert(runtimeMap.offsets[4 * 64 + 4] == 255);
+	RemasterDungeonHeightMap reviewMap;
+	reviewMap.roomIndex = 0x55;
+	reviewMap.offsets.fill(255);
+	reviewMap.offsets[(400 / 8) * 64 + 120 / 8] = 50;
+	reviewMap.offsets[(400 / 8) * 64 + 220 / 8] = 0;
+	RemasterFrame reviewFrame;
+	reviewFrame.width = 256;
+	reviewFrame.height = 224;
+	reviewFrame.mainPixels.resize(256 * 224);
+	RemasterFrameTileInstance roomWallTop = roomBackground;
+	roomWallTop.material = "upper_wall_top";
+	RemasterFrameMaterial wallTopMaterial;
+	wallTopMaterial.name = "upper_wall_top";
+	wallTopMaterial.surfaceClass = RemasterSurfaceClass::WallTop;
+	reviewFrame.materials.push_back(wallTopMaterial);
+	RemasterFrameTileInstance roomWallFace = roomBackground;
+	roomWallFace.material = "transition_wall_face";
+	RemasterFrameMaterial wallFaceMaterial;
+	wallFaceMaterial.name = "transition_wall_face";
+	wallFaceMaterial.surfaceClass = RemasterSurfaceClass::WallFace;
+	reviewFrame.materials.push_back(wallFaceMaterial);
+	reviewFrame.tileInstances = { roomBackground, roomStair, raisedSprite, roomWallTop, roomWallFace };
+	reviewFrame.tileInstances[2].heightOffset = 0;
+	reviewFrame.mainPixels[112 * 256 + 120].instanceId = 1;
+	reviewFrame.mainPixels[112 * 256 + 220].instanceId = 1;
+	reviewFrame.mainPixels[112 * 256 + 121].instanceId = 2;
+	reviewFrame.mainPixels[113 * 256 + 120].instanceId = 4;
+	reviewFrame.mainPixels[114 * 256 + 120].instanceId = 5;
+	S9xRemasterApplyDungeonFloorHeight(reviewFrame, room61Context, 50, &reviewMap);
+	assert(reviewFrame.tileInstances.size() == 6);
+	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[112 * 256 + 120].instanceId - 1].heightOffset == 50);
+	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[112 * 256 + 220].instanceId - 1].heightOffset == 0);
+	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[112 * 256 + 121].instanceId - 1].heightOffset == 0);
+	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[113 * 256 + 120].instanceId - 1].heightOffset == 50);
+	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[114 * 256 + 120].instanceId - 1].heightOffset == 0);
+	assert(reviewFrame.tileInstances[2].heightOffset == 0); // Invisible OAM has no spatial support point.
+	RemasterFrame heightRangeFrame;
+	heightRangeFrame.width = 2;
+	heightRangeFrame.height = 1;
+	heightRangeFrame.tileInstances = { roomBackground, roomDoor };
+	heightRangeFrame.tileInstances[1].heightOffset = 50;
+	RemasterFrameAssetMetadata heightRangeMetadata;
+	heightRangeMetadata.tileId = roomBackground.tileId;
+	heightRangeMetadata.hasHeight = true;
+	heightRangeMetadata.height[0] = 5;
+	heightRangeMetadata.height[1] = 7;
+	heightRangeFrame.assetMetadata.push_back(heightRangeMetadata);
+	heightRangeFrame.mainPixels.resize(2);
+	heightRangeFrame.mainPixels[0].instanceId = 1;
+	heightRangeFrame.mainPixels[0].tilePixel = 0;
+	heightRangeFrame.mainPixels[1].instanceId = 2;
+	heightRangeFrame.mainPixels[1].tilePixel = 1;
+	assert(S9xRemasterFrameHeightRange(heightRangeFrame) == std::make_pair(5, 57));
+	assert(S9xRemasterHeightPreviewRangeValid(50, 100));
+	assert(!S9xRemasterHeightPreviewRangeValid(50, 50));
+	assert(!S9xRemasterHeightPreviewRangeValid(50, 49));
 	RemasterFrame assembledSprite;
 	assembledSprite.width = 8;
 	assembledSprite.height = 16;

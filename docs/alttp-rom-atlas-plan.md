@@ -1,10 +1,261 @@
 # ALTTP ROM atlas and profile generator
 
-Status: hash-keyed first-pass candidate profile working, 2026-09-25. This is the durable working document for
-the ROM-backed asset inventory and lighting-metadata generator. Update the
-evidence ledger and milestone status as implementation proceeds.
+Status: ROM atlas and first-pass candidate profile working; linked dungeon
+inspection and an offline elevation proposal prototype added, 2026-09-26.
+This is the durable working document for the ROM-backed inventory and
+lighting-metadata generator. Update the evidence ledger and milestone status
+as implementation proceeds.
+
+## Current state at a glance
+
+| Area | Available now | Still needed |
+| --- | --- | --- |
+| Artwork metadata | Candidate profile for 17,354 tile hashes, preserving 102 authored assets; frame-local lookup keeps the live profile workable | Review uncertain generated heights/normals/occlusion/emission in real usage contexts |
+| Dungeon inventory | All 320 room records scanned; reference gallery and linked BG inspection packets for selected rooms | Exhaustive graphics contexts, dynamic room states, and gameplay comparisons |
+| Elevation | Provenance-checked flat-surface solver, editable wall facings, wall/door offset proposals, proposed captures, and an opt-in live review map for `0x055`/`0x061` | Validate those proposals against matching gameplay, export collision and assembly data, and solve ambiguous wall transitions before replacing ordinary runtime masks |
+| Overworld | Both worlds' base Map32/Map8 data in the atlas | Stateful entered-area scenes, linked captures, and a separate elevation model |
+| Review UI | HTML room atlas and Snes9x's existing capture replay | Native scene browser, coverage catalog, and convenient provenance inspection |
+
+### Human-authored tile semantics atlas
+
+`tools/alttp_tile_semantic_atlas.py` is a local annotation workbench for the
+10,177 unique canonical tiles that occur in background graphics sources. It is
+deliberately not another classifier. It displays the atlas database's unflipped
+8x8 palette indices in ROM graphics-pack order and lets the reviewer assign one
+of these roles: `floor`, `wall`, `wall_corner`, `stair_top`, `stair_bottom`,
+`other`, or explicit `unknown`. A wall requires one compass normal in its
+default orientation: the four cardinal directions and the four diagonals are
+available. A corner requires two cardinal boundary normals plus an `inside` or
+`outside` corner type. Corner type is invariant under placement H/V flips;
+those flips transform only the canonical normals when the data is consumed
+later. Existing corner annotations made before this distinction are preserved
+as `corner_type: unknown` and remain incomplete until reviewed.
+
+Stairs are annotated as endpoint evidence rather than pretending one 8x8 tile
+describes an assembly. `stair_top` means the tile belongs to the high landing or
+top end and `stair_bottom` means the low landing or bottom end. A later
+room-placement pass must identify connected endpoint placements, apply their
+tile flips, and derive the assembly's travel direction. Tiles in the middle of
+a stair can remain unknown or be marked `other`; endpoint labels alone do not
+prove which nearby stair graphics belong to the same assembly.
+
+Run the workbench from the repository root:
+
+```sh
+python3 -B tools/alttp_tile_semantic_atlas.py \
+  --atlas build/remaster-geometry/alttp-atlas.sqlite --open
+```
+
+It binds only to `127.0.0.1` and defaults to
+`http://127.0.0.1:8765/`. Every completed edit autosaves atomically to
+`tools/alttp-tile-semantics-v1.json`; the page also has an Export JSON button.
+That checked-in sidecar is bound to the supported ROM SHA-256 and survives atlas
+database regeneration. The generated SQLite database is intentionally read-only
+because `tools/alttp_atlas.py` atomically replaces it during a rebuild.
+
+Ordinary background packs are stored as 3bpp source art. The game can convert
+the same source tile into either low-half 4bpp indices (`1..7`) or high-half
+indices (`9..15`) when loading VRAM. Since runtime tile identity hashes decoded
+indices, these are necessarily separate identities in the atlas and in linked
+captures; they cannot be removed from the database without losing runtime
+matching. They are not two independently authored pieces of art and no CGRAM
+palette has been baked into either hash. The workbench groups identities from
+the exact same ROM pack/tile slots as semantic aliases, hides low-half variants
+by default, and offers **Show low/grayscale variants** in the sidebar. Room
+lookup combines placements from the alias group, and each completed edit is
+atomically written to every identity in that group.
+
+Selecting a tile also shows a representative dungeon room using that exact
+canonical hash. The workbench outlines all matching 8x8 placements in the
+room, distinguishing BG1 and BG2, and offers every other indexed room containing
+the hash. The local occurrence cache is
+`build/remaster-geometry/tile-room-occurrences.sqlite`. When it is absent, the
+default linked renderer scans all 320 room IDs once and rebuilds it. The current
+renderer indexes 319 default room states; room `0x017` has no usable reference
+entry path and remains explicitly unsupported. The index covers 1,726 distinct
+hashes in those room states. Of all 10,177 background hashes, 2,071 additional
+hashes have confirmed placements only in the current overworld base-map index;
+the UI identifies those as used outdoors rather than unused. Another 309 hashes
+are loaded into dungeon BG VRAM but are not referenced by the default-state
+BG1/BG2 tilemaps. These can include dormant event or replacement art; for
+example `v1:4bpp:d7b52afe435d5906` is loaded in 201 indexed contexts but has no
+default placement. Of the remaining hashes, 4,060 are alternate low/high
+palette-half conversions of ROM pack/tile slots whose sibling conversion is
+known active. Only 2,012 currently lack placement, loaded-art, or active-sibling
+evidence. Even that is not proof they are unused: they can be available only in
+another room state or map system. The UI reports these distinctions rather than
+substituting an unrelated room.
+
+Highlights identify complete BG tilemap placements, including placements that
+another layer covers in the final composite. Cyan is BG1 and yellow is BG2. The
+room image and tilemaps use the reference renderer's selected default entrance
+and graphics context, so dynamic switches, water levels, opened objects, and
+other states remain outside this first context index.
+Room `0x01b` is sorted behind all other matching rooms because its stairs are
+obscured before an in-game event; it remains available only when it is the sole
+indexed placement context.
+
+One content hash can appear in multiple packs, source families, rooms, or
+unrelated semantic uses. The workbench shows reuse badges and provides a
+`context_dependent` flag. A hash-level annotation with that flag is a review
+finding, not permission to apply one role to every placement. The runtime will
+need stable placement/semantic usage IDs before incompatible contexts can use
+different metadata. The displayed colors are a diagnostic index palette, not
+the game's context-dependent CGRAM colors. Current dungeon placement provenance
+also remains incomplete; this atlas supplies trustworthy human labels for
+canonical artwork, not complete room assembly relationships by itself.
+
+The generated elevation map does not rewrite tile metadata in the TOML.
+Loading the local candidate profile with its `.geometry-review/` sidecar
+temporarily replaces the runtime BG2 mask for those test rooms. For the review
+workflow and exact accuracy boundary,
+see [ALTTP Elevation Reconstruction](alttp-elevation-reconstruction.md).
 
 ## 2026-09-25 in-game correction pass
+
+For the source-probed replacement of hand-authored floor rectangles, see
+[ALTTP Elevation Reconstruction](alttp-elevation-reconstruction.md). The
+earlier `platform_or_wall_objects` review clue was incorrect: subtype-0
+IDs `0x33`, `0x34`, `0x70`, and `0x71` are red carpet/floor trim handlers in
+the reference engine, and room `0x055` has none of them despite its upper
+platform. The scanner now reports those objects descriptively and does not
+use them as an elevation clue. Its former stair IDs also confused subtypes:
+the two subtype-2 `0x20` objects in `0x055` are torches, while subtype-1
+`0x1d` is a real in-room stair. Treat this inventory as a review queue only.
+
+### Finding every candidate elevated dungeon room
+
+The game's combat-plane state is real but is not a background geometry map.
+`link_is_on_lower_level` (`$7E:00EE`) and each sprite's `sprite_floor`
+(`$7E:0F20` onward) must agree for ordinary contact damage and Link's attacks. Dungeon sprite
+placements encode the initial floor in the high bit of their ROM Y byte.
+In-room stair handling can switch Link's level. The room header also stores
+BG2 and collision modes, and its object stream identifies stair and platform
+construction. No one room-header bit means "all upper-floor pixels are here."
+The two captured rooms (`0x60`, `0x61`) both have collision mode zero, BG2 mode
+six, and sprites only on combat plane zero, despite visibly showing two
+elevations. A scan restricted to special collision modes or mixed-level
+sprites would miss both.
+
+`tools/alttp_floor_rooms.py` now inventories all 320 ROM-derived dungeon room
+records from the SQLite atlas. Run:
+
+```sh
+python3 tools/alttp_floor_rooms.py \
+  --atlas build/remaster-geometry/alttp-atlas.sqlite \
+  --output build/remaster-geometry/floor-room-inventory.json
+```
+
+The corrected USA ROM scan flags 152 **review candidates**, not 152 confirmed
+rooms with upper floors. Signals overlap: 46 rooms use BG2 mode six; 14 have
+sprites placed on both combat planes; 15 have only lower-plane placements;
+59 contain in-room stair objects; 105 contain between-room stair objects; and
+six have a special collision mode. The output retains every room, its ROM
+address and all signals so the queue can be reprioritized without losing
+unflagged rooms.
+Only `0x60` and `0x61` have capture-validated pixel masks so far. Stair
+objects are broad leads and can occur without an elevated platform; rooms
+without a signal can still have unusual elevated art. This is an inventory,
+not an automatic height assignment.
+
+### Human review gallery
+
+`tools/alttp_room_gallery.py` turns that inventory into a local, browsable
+gallery. The current generated copy is
+`build/remaster-geometry/room-gallery/index.html`. It contains previews for
+all 320 dungeon room IDs, rendered at 512×512 from a headless adapter to the
+local `snesrev/zelda3` engine and the user's supported US ROM. The tracked
+repository contains only the adapter and build scripts; the reference engine,
+ROM bytes, and generated images stay in ignored local build directories.
+
+The gallery filters height review candidates, nonzero BG2 modes, sprites on
+both combat planes, stairs, water clues, and the ROM header's lights-out flag.
+The water clue combines room collision/effect fields with water-related object
+records. These filters are overlapping leads for review; they do not classify
+every visible pixel, and the ROM lights-out bit does not directly specify the
+remaster's ambient light value. Room cards show the full preview and a detail
+panel with provenance and flags. On desktop, the reviewer can drag the divider
+to enlarge the room image; the selected width persists locally, and the panel
+and room list scroll independently. A reviewer can mark a room Looks
+right, Needs work, or Skip, add a note, and export the review list as JSON.
+Reviews normally persist in the browser's local storage; export is the
+portable copy. A review mark does not alter the profile or runtime masks.
+
+For an image, the adapter enters the selected room through a ROM entrance,
+runs the reference engine's default state, and captures its background and
+sprites. When a room has no direct entrance, it borrows a nearby entrance's
+graphics context; the gallery labels that theme as inferred. Currently 214
+rooms use an inferred theme, so some palettes or sprite art can differ from a
+particular gameplay route. Rooms `0x60` and `0x61` now use their own ROM
+entrances 3 and 4. The earlier forced entrance 0 caused wrong or missing
+tiles in those two previews; palette changes were only part of the symptom.
+Five previews retain a scripted event or
+dialogue and are labeled. The adapter stitches several screen positions into
+one full-room view, so a live actor can appear more than once. Switches, water
+levels, opened doors, and other room states are not enumerated. This is a
+useful visual review tool, not a proof of complete room-state coverage or
+correct height geometry.
+
+The renderer now clears the room header's lights-out flag in its local asset
+copy so the original room artwork can be inspected. The ROM-derived flag is
+retained in the catalog and lit previews are labeled; they are not actual
+gameplay lighting captures. The atlas finds 264 room IDs with placed objects
+and 56 without. All IDs `0x128..0x13f` have no placed objects or sprites, so
+their plain floor/walls are default layouts rather than missing additional
+room IDs. See [the scene capture browser plan](alttp-scene-browser-plan.md) for
+the distinct room-state/viewport keys and the native Snes9x capture path.
+
+Regenerate the images and gallery after the atlas or preview code changes:
+
+```sh
+python3 tools/alttp_room_gallery.py \
+  --atlas build/remaster-geometry/alttp-atlas.sqlite \
+  --renderer build/remaster-geometry/room-preview-engine-v15/alttp-room-preview \
+  --output build/remaster-geometry/room-gallery
+```
+
+`tools/build_alttp_room_renderer.py` creates that renderer from a local
+`snesrev/zelda3` checkout, a user-supplied supported ROM, and a fresh ignored
+output directory. The reference source's asset extractor requires Python with
+PyYAML and Pillow; compilation requires `clang`, `make`, and SDL2. It refuses
+to overwrite an existing renderer directory. Open the resulting gallery HTML
+in a browser or serve its output directory locally; it makes no network
+requests.
+
+The reference renderer now exports per-cell BG1/BG2 last-writer provenance
+for each room object and door in a checked `ALTPRV1` sidecar. The offline
+geometry report uses those boundaries to separate repeated wall-top art and
+lists object-scoped wall and door height proposals. A separate, review-only
+`-proposed.s9xrmf` can display these offsets in Snes9x. Collision attribute
+export, object assembly relationships, and matching gameplay validation are
+still required before changing live app masks or the profile. See
+[the elevation reconstruction workflow](alttp-elevation-reconstruction.md#reproduce-and-inspect-one-proposed-room).
+
+The next implementation step is to export collision attributes and object
+assembly roles, validate current stair/floor and wall/door proposals, and
+extend the solver to platform edges, landings, and adjoining walls. Treat the game's
+collision planes as constraints, since a plane does not describe the shape
+or visual height of every object Link can touch. Use semantic floor/wall/stair
+roles, wall facing and high-side relationships, and wall assembly rise to
+solve heights when a room state is constructed.
+Start with canonical per-tile surface regions and facings transformed by the
+placed tile's H/V flips; a corner tile may have two wall-face regions and a
+top. Use object context or authored overrides where identical artwork and
+flip flags serve different wall faces. Compare those solved placements
+against the existing `0x60` and `0x61` masks, then review ambiguous room
+states (water, switches, opened doors). Store compact room-position regions
+and index them at runtime with the room number and BG scroll. Grounded Link
+and sprite visual heights must come from the surface at their feet, using
+their runtime combat plane as a cross-check for overlapping surfaces. Shared
+tile metadata remains unchanged. Sprite combat-plane membership alone cannot
+place upper wall faces or choose a height for a shared brick tile.
+
+Primary reference points: `snesrev/zelda3` `src/sprite.c` around
+`Sprite_CheckDamageToLink_same_layer` and `Dungeon_LoadSingleSprite`,
+`src/dungeon.c` around `Dungeon_LoadHeader`, `Dungeon_LoadAttributeTable`, and
+the in-room staircase handlers, plus `src/player.c` for the temporary collision
+plane switches. This also explains why reading `$7E:00EE` at an arbitrary
+instant during a collision routine is not necessarily a stable display state.
 
 The first candidate exposed four distinct failures: generated sprite parts
 restarted their height ramp per 8×8 tile; Link side poses could inherit a
@@ -88,13 +339,164 @@ samples the expected heights and normals on both rails and all four treads.
 `build/remaster-geometry/stair-geometry-preview.png` shows the captured art,
 height, and normals side by side for this 32×32 stair crop.
 The geometry is global by tile hash for this first pass. The upper landing,
-door, and fence still require a spatial floor mask so their heights connect
-to the staircase consistently.
+door, and fence require a spatial floor mask so their heights connect to the
+staircase consistently; the first room-specific pass is recorded below.
 The app's selected generated profile path,
 `build/remaster-geometry/alttp-profile-candidate.toml`, was updated to this
 v4 candidate after confirming all 102 source-authored asset fields matched the
 prior file. The earlier selected candidate is retained as
 `build/remaster-geometry/alttp-profile-candidate-before-stairs.toml`.
+
+### Room 0x61 spatial height pass, 2026-09-25
+
+The next app build, `build/Snes9x-Geometry-v6.app`, applies a room-local BG2
+height region for the captured room `0x61`. It reads the room number from
+`$7E:00A0` and BG2 scroll from the PPU, so the mask follows the room when the
+camera moves. It adds the profile's `upper_floor_height` to the upper landing,
+left doorway, near railing, and back rail. The lower main floor remains at its
+base height. The eight stair hashes retain their existing absolute height
+ramp, preventing a second 48-unit offset. Link and other upper-priority sprites
+retain the prior per-instance rule. The region is intentionally bounded to the
+captured northwest part of room `0x61`; it is a first validated room mapping,
+not a general dungeon floor detector.
+
+The frame applicator splits a BG tile instance if its visible pixels span both
+floor regions, preserving the shared tile hash while giving each placement its
+own height offset. The captured frame increased from 2,021 to 2,085 instances
+(64 splits). Replay against the supplied pre-change frame and the selected v4
+profile produced height offset 48 on a checkered-floor sample `(80,100)`, door
+`(23,112)`, railing `(116,100)`, and back rail `(190,40)`; the lower main floor
+`(175,150)` and stair tread `(88,150)` remained at offset 0. See
+`build/remaster-geometry/room61-height-mask-preview.png` for the original frame
+and selected raised BG pixels side by side. The room adjustment averaged
+0.348 ms over 100 replay runs on this machine, excluding frame/profile copies.
+The portable test and full arm64 macOS app build passed. A live in-game visual
+check has not yet been performed, so the outer mask edges may need tuning.
+
+### Two-room correction from new captures, 2026-09-25
+
+The user supplied two schema-19 frames after the v6 build. The first capture,
+`frame_missing_2nd_floor.s9xrmf`, has 55,322 BG2 pixels at offset zero while
+Link's priority-2 parts already have offset 48. Its upper rocky walkway and
+northern doorway also need 48. The frame packet lacks room identity and scroll;
+the ROM object coordinates strongly match room `0x60`, using its southeast
+quadrant (BG2 scroll approximately `$0100,$0C10`). Room `0x61` is the second
+capture and has 14,819 BG2 pixels raised by v6, but misses portions of the
+surrounding wall faces and the eastward top walkway.
+
+The v7 app, `build/Snes9x-Geometry-v7.app`, extends the placement-height map to
+room `0x60` and widens the `0x61` map to include those walls. The two room maps
+remain scoped to the verified US ROM. Stair treads and rails retain their
+absolute ramps, and the authored height-50 out-of-bounds hash
+`v1:4bpp:c40518b112d0814e` stays at its base height. The authored brick hash
+`v1:4bpp:83ff6d16868aaa72` retains its 7-to-0 horizontal height shape; its
+upper placements receive a 48-unit instance offset and lower placements do
+not. In room `0x61`, the corrected frame has 840 visible pixels of this hash at
+offset 48 and 512 at offset zero. A single 8×8 placement that crosses the
+region boundary is split at the pixel level by the frame applicator.
+
+Replay of the first capture now gives offset 48 at `(128,100)` on the upper
+walkway, `(128,55)` on its doorway, and `(95,110)` on a surrounding wall;
+the lower south floor `(100,180)` and tread `(128,160)` remain at zero. Replay
+of room `0x61` gives offset 48 to the upper wall brick at `(135,110)` and zero
+to lower brick placements. The replay snapshots are
+`build/remaster-geometry/frame-missing-floor-v7.s9xrmf` and
+`build/remaster-geometry/frame-room61-v7.s9xrmf`; they can be opened directly in
+the app. `build/remaster-geometry/rooms-height-mask-v7-preview.png` shows each
+original frame beside its raised BG region. The portable test and arm64 app
+build passed. The room pass averaged 0.327 ms for `0x60` and 0.503 ms for
+`0x61` across 100 replay runs on this machine, excluding frame copies. Live
+gameplay verification remains to be done. Other rooms need their own height
+regions until ROM room-object geometry can be expanded and classified.
+
+### Room 0x61 inspection correction, 2026-09-25
+
+The linked inspection capture exposed three issues in the older room atlas:
+entrance 0 loaded another room's graphics theme; direct camera positioning
+left an offscreen tilemap quadrant unstreamed; and the room `0x61` spatial
+height region extended east over lower-floor pixels and south past the stair
+landing. The atlas and linked capture now use the room's own entrance 4 and
+publish the complete expanded BG1/BG2 room maps to the reference PPU before
+drawing. `S9xRemasterUpperFloorAt` bounds the northern walkway to y<80,
+the landing to x<128, and the stair opening to y<168, including a short wall
+face that descends to the lower level. The portable fixture was updated for
+these boundaries, and the full arm64 macOS app build passed. The corrected
+bundle is `build/Snes9x-Room61-Corrected.app`.
+
+Comparing the corrected upper-left packet with the user's Snes9x gameplay
+capture, all 54,951 BG pixels linked in both packets have matching tile
+identities, effective heights, height offsets, and BG layers. The old
+inspection packet had 6,365 matching-tile pixels with an extra 48-unit
+offset. The corrected local packet
+library is `build/remaster-geometry/inspection-room-061-full/`. This
+comparison validates that captured viewport and context; the other room
+viewports and room states still need gameplay references.
+
+The direct-camera tilemap issue was systemic. A decoded RGB comparison of all
+320 gallery images from the otherwise identical renderer before and after
+publishing the complete BG1/BG2 maps found changed pixels in 319 images
+(2,074,613 pixels total). All changes were in rows 0..46 or row 511 of the
+512×512 stitched images; none occurred in rows 47..510. Room `0x80` was the
+only unchanged image. The corrected renderer was used to rebuild all 320
+gallery images. This comparison measures the stale-VRAM problem, not total
+accuracy against gameplay. The two forced wrong entrance contexts were
+specific to rooms `0x60` and `0x61`; 214 other rooms still borrow an entrance
+from a different room and therefore have unverified graphics contexts. Only
+`0x60` and `0x61` currently have hand-checked background height regions,
+although the corrected ROM inventory flags 152 rooms for height review. The gallery
+images do not feed the ROM-atlas profile generator, so correcting a preview
+does not rewrite shared tile metadata in the profile.
+
+### Room 0x55 and preview-range correction, 2026-09-25
+
+The supplied pre-change frame for room `0x55` contained no raised background
+pixels, although its southwest landing, nearby wall and doorway are on the
+upper level. A room-local BG2 region now covers that landing. It uses the same
+per-instance height offset mechanism as rooms `0x60` and `0x61`; the shared
+tile hashes and their authored pixel heights are unchanged. A replay using the
+inferred captured scroll (`x=96, y=256`) raised approximately 20,000 visible
+background pixels. The capture format does not store room ID or scroll, so
+fresh in-game captures remain the reliable check for the exact mask boundary.
+
+`build/remaster-geometry/alttp-profile-v5-candidate.toml` sets
+`upper_floor_height = 50`. The generator preserves all 102 authored assets
+and adds pixel heights of 17–24 to three upper guard-rail tiles that were
+previously flat. Comparing to v4 found exactly seven changed profile lines:
+the floor-height setting plus height and occlusion layers for those three
+tiles. The selected candidate path points to the same v5 contents. The
+runtime still adds the room-local offset to each placement's own pixel height;
+for example, a door pixel authored at 40–47 becomes 90–97 upstairs. Tiles
+with zero authored height remain at exactly 50 until they are authored.
+
+Scene Controls now exposes Height range min/max alongside the existing
+multiplier. Opening a capture initializes those limits from visible effective
+pixel heights, including placement offsets. The max must exceed the min.
+With multiplier 8, 50–100 maps height 50 to black and 100 to white. The tile
+inspector no longer serializes the full 37 MB profile on a pixel selection or
+each paint stroke; strokes keep only the touched asset metadata for undo and
+refresh scene metadata once at stroke end. Portable tests, candidate-profile
+validation, and the arm64 macOS app build pass. The packaged build is
+`build/Snes9x-RoomHeight-v6.app`.
+
+### Room 0x55 mask placement correction, 2026-09-25
+
+The next gameplay screenshot showed that the v6 room `0x55` mask raised the
+right side of the southwest viewport, while Link's upper platform remained
+low. Replaying the earlier `frame_OLD_4.s9xrmf` with local scroll `(0,288)`
+reproduced the screenshot's height pattern. The earlier `(96,256)` scroll
+inference was wrong. The room region is now L-shaped: the north walkway uses
+room coordinates `80<=x<256, 320<=y<384`; the western landing and adjacent
+wall use `72<=x<176, 384<=y<464`. Stair hashes retain their absolute ramps,
+and the floor east of the landing or below the stairs receives no offset.
+The pre-change capture replay with the corrected map raised 18,275 visible BG
+pixels. Sample windows in that replay had 1,981/1,981 raised BG pixels on the
+western landing and 2,100/2,100 on the northern walkway; the east floor and
+area below the stairs had 0/2,750 and 0/2,250 raised BG pixels. The portable fixture
+checks raised landing, raised walkway, east lower floor, and south lower floor.
+The six linked inspection viewports for room `0x55` place raised instances only
+in the two overlapping southwest views; the other four have none.
+This correction changes runtime placement offsets only; the v5 candidate
+profile remains valid. The packaged app is `build/Snes9x-RoomHeight-v7.app`.
 
 ## Goal
 
@@ -670,3 +1072,44 @@ that with the same room and metrics panel after rebuilding the app.
   scalar settings with small undo records; load avoids redundant parse during
   saved-snapshot creation, and byte-array parsing is linear in the pixel data.
   Portable tests and the macOS app build pass.
+- 2026-09-25: Scanned all 320 dungeon room records for multi-level, water, and
+  lights-out review clues. Built a local gallery with 320 reference-engine
+  previews, filters, review notes, and JSON export; the corrected stair
+  classifier now flags 152 rooms for height review. The original scan found
+  37 water clues and 28 ROM lights-out flags.
+- 2026-09-26: Added the first offline room geometry solver. It decodes full
+  linked BG tilemaps, transforms per-pixel wall-face regions through tile
+  flips, groups candidate flat art, and uses ROM stair objects plus authored
+  tread-height order to solve relative floor heights. Room `0x055` resolves
+  271 flat tiles from one stair; room `0x061` resolves 1,554 from three.
+  These are historical counts from the initial artwork-only join. The later
+  provenance-constrained counts below supersede them. Wall offsets,
+  collision export, and runtime integration were still open at that stage.
+- 2026-09-26: Added full BG1/BG2 room-object and door last-writer provenance
+  from the reference loader. The solver now requires that checked export,
+  blocks flat-art joins across distinct structural writers, and checks the
+  game handler's stair direction against the authored tread ramp. This reduces
+  the proposed flat placements to 170 in `0x055` and 1,380 in `0x061`.
+  Wall/door offset proposals compare flipped per-pixel height profiles along
+  floor seams; door thresholds have a labeled spatial fallback. These remain
+  review data until validated against matching gameplay captures. The linked
+  inspection producer can now emit a second `-proposed.s9xrmf` using a compact
+  64×64 BG2 placement-offset map, so the suggestion can be examined with
+  Snes9x's Height preview without changing the live profile.
+- 2026-09-26: Added an opt-in live review path for the same compact room maps.
+  A `.geometry-review/` directory beside the candidate profile contains
+  maps for rooms `0x055` and `0x061`; loading that profile in the test app
+  applies their BG2 placement offsets during gameplay. The original profile
+  has no stair height/normal arrays, while the candidate has authored tread
+  heights 1–39 and rail heights 2–48. Stair tiles retain those local ramps
+  without an extra room offset. This enables in-game validation; the map
+  remains unverified and the TOML's shared tile metadata is unchanged.
+- 2026-09-26: A live check found that room `0x061`'s top wall columns and
+  crest still appeared black with front-facing normals. Their later room
+  objects covered the raised base wall. The solver now classifies those
+  object handlers as wall overlays and attaches each to one nearby solved
+  landing. A new local `alttp-profile-wall-review.toml` adds wall geometry
+  and normals for 15 previously neutral decoration hashes, preserving all
+  authored source assets. The corrected room sidecar raises 88 additional
+  BG2 cells. A linked capture of the horizontal wall strip has no BG2 pixel
+  below height 50; matching gameplay comparison is still required.

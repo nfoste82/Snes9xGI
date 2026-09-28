@@ -135,6 +135,12 @@ struct RemasterState
 	std::mutex inventoryMutex;
 	RemasterProfile requestedProfile;
 	RemasterProfile activeProfile;
+	std::vector<RemasterDungeonHeightMap> activeDungeonHeightMaps;
+	std::vector<RemasterDungeonHeightMap> requestedDungeonHeightMaps;
+	RemasterDungeonHeightMap runtimeDungeonHeightMap;
+	uint64_t runtimeDungeonHeightKey = 0;
+	bool runtimeDungeonHeightValid = false;
+	bool dungeonHeightMapsPending = false;
 	bool profilePending = false;
 	RemasterSceneSettings requestedSceneSettings;
 	bool sceneSettingsPending = false;
@@ -245,6 +251,11 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.activeProfile = std::move(state.requestedProfile);
 			state.profileMatchCache.clear();
 			state.profilePending = false;
+		}
+		if (state.dungeonHeightMapsPending)
+		{
+			state.activeDungeonHeightMaps = std::move(state.requestedDungeonHeightMaps);
+			state.dungeonHeightMapsPending = false;
 		}
 		if (state.sceneSettingsPending)
 		{
@@ -584,6 +595,14 @@ inline void S9xRemasterSetProfile (RemasterProfile profile)
 	state.sceneSettingsPending = false;
 }
 
+inline void S9xRemasterSetDungeonHeightMaps (std::vector<RemasterDungeonHeightMap> maps)
+{
+	RemasterState &state = S9xRemasterState();
+	std::lock_guard<std::mutex> lock(state.inventoryMutex);
+	state.requestedDungeonHeightMaps = std::move(maps);
+	state.dungeonHeightMapsPending = true;
+}
+
 inline void S9xRemasterSetSceneSettings (const RemasterSceneSettings &settings)
 {
 	RemasterState &state = S9xRemasterState();
@@ -595,6 +614,7 @@ inline void S9xRemasterSetSceneSettings (const RemasterSceneSettings &settings)
 inline void S9xRemasterClearProfile (void)
 {
 	S9xRemasterSetProfile(RemasterProfile());
+	S9xRemasterSetDungeonHeightMaps({});
 }
 
 enum RemasterCaptureResult
@@ -870,8 +890,37 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	if (frameFinalized)
 	{
 		if (dungeonFloor)
+		{
+			const RemasterDungeonHeightMap *reviewMap = nullptr;
+			for (const RemasterDungeonHeightMap &map : state.activeDungeonHeightMaps)
+				if (map.roomIndex == dungeonFloor->roomIndex)
+				{
+					reviewMap = &map;
+					break;
+				}
+			if (!reviewMap && dungeonFloor->collisionAttributes)
+			{
+				uint64_t key = UINT64_C(1469598103934665603);
+				auto mix = [&key] (uint8_t value) { key = (key ^ value) * UINT64_C(1099511628211); };
+				mix(dungeonFloor->roomIndex & 255); mix(dungeonFloor->roomIndex >> 8);
+				mix(dungeonFloor->collisionMode); mix(state.activeProfile.upperFloorHeight);
+				for (size_t i = 0; i < 8192; i++) mix(dungeonFloor->collisionAttributes[i]);
+				for (uint8_t i = 0; i < dungeonFloor->stairCount; i++)
+				{
+					const auto &stair = dungeonFloor->stairs[i];
+					mix(stair.x); mix(stair.y); mix(stair.highIsNorth); mix(stair.changesPlane);
+				}
+				if (key != state.runtimeDungeonHeightKey)
+				{
+					state.runtimeDungeonHeightKey = key;
+					state.runtimeDungeonHeightValid = S9xRemasterBuildDungeonHeightMap(*dungeonFloor,
+						state.activeProfile.upperFloorHeight, state.runtimeDungeonHeightMap);
+				}
+				if (state.runtimeDungeonHeightValid) reviewMap = &state.runtimeDungeonHeightMap;
+			}
 			S9xRemasterApplyDungeonFloorHeight(frame, *dungeonFloor,
-				state.activeProfile.upperFloorHeight);
+				state.activeProfile.upperFloorHeight, reviewMap);
+		}
 		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		if (state.frameCaptureActive)
 		{

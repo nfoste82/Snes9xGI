@@ -680,11 +680,36 @@ void S9xEndScreenRefresh (void)
 			RemasterDungeonFloorContext dungeonFloor;
 			dungeonFloor.verifiedAlttpRom =
 				std::memcmp(Memory.ROMSHA256, alttpUsSha256, sizeof(alttpUsSha256)) == 0;
-			if (dungeonFloor.verifiedAlttpRom && Memory.RAM)
+			if (dungeonFloor.verifiedAlttpRom)
 			{
 				dungeonFloor.indoors = Memory.RAM[0x1b] != 0;
 				dungeonFloor.collisionMode = Memory.RAM[0x46c];
 				dungeonFloor.linkFacing = Memory.RAM[0x2f];
+				dungeonFloor.linkPlane = Memory.RAM[0xee] & 1;
+				dungeonFloor.linkY = Memory.RAM[0x20] | (Memory.RAM[0x21] << 8);
+				dungeonFloor.linkX = Memory.RAM[0x22] | (Memory.RAM[0x23] << 8);
+				dungeonFloor.roomIndex = Memory.RAM[0xa0] | (Memory.RAM[0xa1] << 8);
+				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
+				dungeonFloor.backgroundScrollY = PPU.BG[1].VOffset;
+				dungeonFloor.collisionAttributes = Memory.RAM + 0x12000;
+				auto word = [&] (int address) {
+					return Memory.RAM[address] | (Memory.RAM[address + 1] << 8);
+				};
+				auto addStairs = [&] (int table, int firstEnd, int secondEnd, int thirdEnd) {
+					const int base = table ? 0x6ec : 0x6b8;
+					for (int i = 0; i < thirdEnd && dungeonFloor.stairCount < dungeonFloor.stairs.size(); i += 2)
+					{
+						const int position = word(base + i);
+						RemasterDungeonFloorContext::Stair &stair =
+							dungeonFloor.stairs[dungeonFloor.stairCount++];
+						stair.x = position & 63;
+						stair.y = (position >> 6) & 63;
+						stair.changesPlane = i < secondEnd;
+						stair.highIsNorth = i < firstEnd || (!table && i >= secondEnd);
+					}
+				};
+				addStairs(0, word(0x43c), word(0x43e), word(0x440));
+				addStairs(1, word(0x49a), word(0x49c), word(0x49e));
 			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,

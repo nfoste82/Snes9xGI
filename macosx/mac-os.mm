@@ -326,6 +326,10 @@ static NSTextField		*remasterBounceDescription;
 static NSTextField		*remasterHeightScaleInput;
 static NSSlider			*remasterHeightPreviewMultiplierSlider;
 static NSTextField		*remasterHeightPreviewMultiplierInput;
+static NSTextField		*remasterHeightPreviewMinInput;
+static NSTextField		*remasterHeightPreviewMaxInput;
+static NSInteger		remasterHeightPreviewMin = 0;
+static NSInteger		remasterHeightPreviewMax = 32;
 static NSTextField		*remasterCameraDirectionInputs[3];
 static NSSlider			*remasterIndirectRoughnessSlider;
 static NSTextField		*remasterIndirectRoughnessInput;
@@ -396,13 +400,24 @@ static RemasterProfile	remasterEditingProfile;
 static NSURL			*remasterEditingProfileURL;
 static bool			remasterEditingProfileLoaded = false;
 static bool			remasterEditingProfileDirty = false;
+static bool			remasterMetadataNeedsSync = true;
 static bool			remasterTilePixelSelected = false;
 static size_t		remasterSelectedTilePixel = 0;
 static NSUndoManager	*remasterUndoManager;
 static std::string	remasterSavedProfileText;
 static RemasterSceneSettings remasterSavedSceneSettings;
 static bool			remasterNonSceneDirty = false;
-static std::string	remasterStrokeProfileText;
+@interface S9xRemasterAssetUndoSnapshot : NSObject
+{
+@public
+	std::map<RemasterTileContentId, RemasterAssetMetadata> values;
+	std::set<RemasterTileContentId> missing;
+	uint32_t schemaVersion;
+}
+@end
+@implementation S9xRemasterAssetUndoSnapshot
+@end
+static S9xRemasterAssetUndoSnapshot *remasterStrokeSnapshot;
 static uint64_t		remasterStrokeVisited = 0;
 static bool			remasterStrokeChanged = false;
 static bool			remasterStrokeDragging = false;
@@ -421,10 +436,27 @@ static size_t RemasterNonSceneProfileOffset (const std::string &text)
 
 static void UpdateRemasterEditingProfileDirty (const std::string &current)
 {
+	remasterMetadataNeedsSync = true;
 	remasterNonSceneDirty = current.compare(RemasterNonSceneProfileOffset(current), std::string::npos,
 		remasterSavedProfileText, RemasterNonSceneProfileOffset(remasterSavedProfileText), std::string::npos) != 0;
 	remasterEditingProfileDirty = remasterNonSceneDirty || !S9xRemasterSceneSettingsEqual(
 		S9xRemasterGetSceneSettings(remasterEditingProfile), remasterSavedSceneSettings);
+}
+
+static S9xRemasterAssetUndoSnapshot *CaptureRemasterAssetSnapshot (
+	const std::set<RemasterTileContentId> &tileIds)
+{
+	S9xRemasterAssetUndoSnapshot *snapshot = [S9xRemasterAssetUndoSnapshot new];
+	snapshot->schemaVersion = remasterEditingProfile.schemaVersion;
+	for (const RemasterTileContentId &tileId : tileIds)
+	{
+		const auto found = remasterEditingProfile.assets.find(tileId);
+		if (found == remasterEditingProfile.assets.end())
+			snapshot->missing.insert(tileId);
+		else
+			snapshot->values.emplace(tileId, found->second);
+	}
+	return snapshot;
 }
 static NSPoint		remasterStrokeStartPoint;
 static uint8_t		remasterStrokeValue = 0;
@@ -761,11 +793,16 @@ static std::array<bool, 64> RemasterVisibleTileColors (const RemasterFrame &fram
 	return visible;
 }
 
-static void SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterReplayFrame)
+static bool SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterReplayFrame)
 {
 	if (!remasterEditingProfileLoaded)
-		return;
+		return false;
+	if (&frame == &remasterReplayFrame && !remasterMetadataNeedsSync)
+		return false;
 	S9xRemasterApplyProfileToFrame(remasterEditingProfile, frame);
+	if (&frame == &remasterReplayFrame)
+		remasterMetadataNeedsSync = false;
+	return true;
 }
 
 static uint16			changeAuto[2] = { 0x0000, 0x0000 };
@@ -3710,6 +3747,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)beginRemasterTileStrokeAtPoint:(NSPoint)point;
 - (void)continueRemasterTileStrokeAtPoint:(NSPoint)point;
 - (void)endRemasterTileStroke;
+- (void)restoreRemasterAssetSnapshot:(S9xRemasterAssetUndoSnapshot *)snapshot;
 - (void)changeRemasterPixelValue:(id)sender;
 - (void)stepRemasterPixelValue:(id)sender;
 - (void)fillRemasterOpaqueOcclusion:(id)sender;
@@ -3738,6 +3776,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterBounceCount:(id)sender;
 - (void)changeRemasterHeightScale:(id)sender;
 - (void)changeRemasterHeightPreviewMultiplier:(id)sender;
+- (void)changeRemasterHeightPreviewRange:(id)sender;
 - (BOOL)commitRemasterHeightScale;
 - (void)changeRemasterCameraDirection:(id)sender;
 - (BOOL)commitRemasterCameraDirection;
@@ -4325,6 +4364,16 @@ void QuitWithFatalError ( NSString *message)
 		return @"";
 	if (!incompatibleProfile)
 		SyncRemasterEditingMetadataToFrame(frame);
+	const std::pair<int, int> heightRange = S9xRemasterFrameHeightRange(frame);
+	remasterHeightPreviewMin = heightRange.first;
+	remasterHeightPreviewMax = heightRange.second;
+	SetRemasterHeightPreviewRange(static_cast<uint16_t>(remasterHeightPreviewMin),
+		static_cast<uint16_t>(remasterHeightPreviewMax));
+	if (remasterHeightPreviewMinInput)
+	{
+		remasterHeightPreviewMinInput.integerValue = remasterHeightPreviewMin;
+		remasterHeightPreviewMaxInput.integerValue = remasterHeightPreviewMax;
+	}
 	const RemasterDebugLight previousLight = GetRemasterDebugLight();
 	ClearRemasterDebugLightRedraw();
 	SetRemasterDebugLight(RemasterDebugLight());
@@ -4346,6 +4395,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 
 	remasterReplayFrame = std::move(frame);
+	remasterMetadataNeedsSync = false;
 	remasterReplayDebugMode = RemasterDebugMode::Original;
 	remasterFramePresenting = true;
 	remasterSelectionValid = false;
@@ -4993,6 +5043,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (index >= remasterVariants.size())
 		return;
+	const std::vector<RemasterTileContentId> previousSelection = remasterSelectedTiles;
 	if (!(remasterSelectedTile == remasterVariants[index]))
 		remasterTilePixelSelected = false;
 	remasterVariantIndex = index;
@@ -5010,9 +5061,10 @@ void QuitWithFatalError ( NSString *message)
 	}
 	else if (std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), remasterSelectedTile) == remasterSelectedTiles.end())
 		remasterSelectedTiles.push_back(remasterSelectedTile);
-	SyncRemasterEditingMetadataToFrame();
-	DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode, &remasterSelectedTiles,
-		remasterLightingEnabled, remasterLightingView);
+	const bool metadataChanged = remasterStrokeDragging ? false : SyncRemasterEditingMetadataToFrame();
+	if (!remasterStrokeDragging && (metadataChanged || previousSelection != remasterSelectedTiles))
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode, &remasterSelectedTiles,
+			remasterLightingEnabled, remasterLightingView);
 
 	const RemasterFrameAsset *asset = S9xRemasterFrameAssetForTile(remasterReplayFrame, remasterSelectedTile);
 	const RemasterFrameAssetMetadata *capturedMetadata = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
@@ -5879,12 +5931,7 @@ void QuitWithFatalError ( NSString *message)
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (remasterVariants.empty() || layer == RemasterEditorArtwork)
 		return;
-	remasterStrokeProfileText.clear();
-	if (remasterEditingProfileLoaded)
-	{
-		std::vector<RemasterProfileDiagnostic> diagnostics;
-		S9xRemasterSerializeProfile(remasterEditingProfile, remasterStrokeProfileText, diagnostics);
-	}
+	remasterStrokeSnapshot = nil;
 	remasterStrokeVisited = 0;
 	remasterStrokeChanged = false;
 	remasterStrokeDragging = false;
@@ -5937,6 +5984,12 @@ void QuitWithFatalError ( NSString *message)
 	if (remasterStrokeVisited & pixelBit)
 		return;
 	remasterStrokeVisited |= pixelBit;
+	if (!remasterStrokeSnapshot)
+	{
+		std::set<RemasterTileContentId> touched(remasterSelectedTiles.begin(), remasterSelectedTiles.end());
+		touched.insert(remasterSelectedTile);
+		remasterStrokeSnapshot = CaptureRemasterAssetSnapshot(touched);
+	}
 	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
 	metadata.tileId = remasterSelectedTile;
 	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
@@ -6018,6 +6071,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion,
 		layer == RemasterEditorNormal ? 5 : (layer == RemasterEditorEmission ? 3 : 2));
+	remasterMetadataNeedsSync |= remasterStrokeChanged;
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
@@ -6029,22 +6083,42 @@ void QuitWithFatalError ( NSString *message)
 		remasterStrokeDragging = true;
 		[self continueRemasterTileStrokeAtPoint:remasterStrokeStartPoint];
 	}
-	if (!remasterStrokeProfileText.empty() && remasterStrokeChanged)
+	if (remasterStrokeSnapshot && remasterStrokeChanged)
 	{
-		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
-			object:[NSString stringWithUTF8String:remasterStrokeProfileText.c_str()]];
+		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:)
+			object:remasterStrokeSnapshot];
 		[remasterUndoManager setActionName:layer == RemasterEditorMaterial ? @"Paint Material" :
 			(layer == RemasterEditorOcclusion ? @"Paint Occlusion" :
 			(layer == RemasterEditorHeight ? @"Paint Height" :
 			(layer == RemasterEditorNormal ? @"Paint Normal" : @"Paint Emission")))];
+		remasterNonSceneDirty = true;
+		remasterEditingProfileDirty = true;
 	}
+	remasterStrokeSnapshot = nil;
+	remasterStrokeDragging = false;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)restoreRemasterAssetSnapshot:(S9xRemasterAssetUndoSnapshot *)snapshot
+{
+	std::set<RemasterTileContentId> touched = snapshot->missing;
+	for (const auto &entry : snapshot->values)
+		touched.insert(entry.first);
+	S9xRemasterAssetUndoSnapshot *inverse = CaptureRemasterAssetSnapshot(touched);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:)
+		object:inverse];
+	for (const RemasterTileContentId &tileId : snapshot->missing)
+		remasterEditingProfile.assets.erase(tileId);
+	for (const auto &entry : snapshot->values)
+		remasterEditingProfile.assets[entry.first] = entry.second;
+	remasterEditingProfile.schemaVersion = snapshot->schemaVersion;
 	std::string current;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		UpdateRemasterEditingProfileDirty(current);
-	remasterStrokeProfileText.clear();
-	remasterStrokeDragging = false;
-	[self showRemasterVariantAtIndex:remasterVariantIndex];
+	remasterMetadataNeedsSync = true;
+	if (!remasterVariants.empty())
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
 - (void)changeRemasterPixelValue:(id)sender
@@ -6697,7 +6771,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 920)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 980)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
@@ -6705,39 +6779,39 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
-		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 870, 300, 24)];
+		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 930, 300, 24)];
 		reflectanceTitle.stringValue = @"Reflected Light Boost (0–8)";
 		reflectanceTitle.editable = NO;
 		reflectanceTitle.bezeled = NO;
 		reflectanceTitle.drawsBackground = NO;
 		[content addSubview:reflectanceTitle];
-		remasterReflectanceBoostSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 837, 300, 24)];
+		remasterReflectanceBoostSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 897, 300, 24)];
 		remasterReflectanceBoostSlider.minValue = 0;
 		remasterReflectanceBoostSlider.maxValue = 8;
 		remasterReflectanceBoostSlider.continuous = NO;
 		remasterReflectanceBoostSlider.target = self;
 		remasterReflectanceBoostSlider.action = @selector(changeRemasterReflectanceBoost:);
 		[content addSubview:remasterReflectanceBoostSlider];
-		remasterReflectanceBoostInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 837, 60, 24)];
+		remasterReflectanceBoostInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 897, 60, 24)];
 		remasterReflectanceBoostInput.alignment = NSTextAlignmentCenter;
 		remasterReflectanceBoostInput.delegate = self;
 		remasterReflectanceBoostInput.target = self;
 		remasterReflectanceBoostInput.action = @selector(changeRemasterReflectanceBoost:);
 		[content addSubview:remasterReflectanceBoostInput];
-		NSTextField *reflectanceNote = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 802, 390, 24)];
+		NSTextField *reflectanceNote = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 862, 390, 24)];
 		reflectanceNote.stringValue = @"Lifts dark colors more; each bounce reflects less than it receives.";
 		reflectanceNote.editable = NO;
 		reflectanceNote.bezeled = NO;
 		reflectanceNote.drawsBackground = NO;
 		reflectanceNote.font = [NSFont systemFontOfSize:11];
 		[content addSubview:reflectanceNote];
-		NSTextField *heightPreviewTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 765, 220, 24)];
+		NSTextField *heightPreviewTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 825, 220, 24)];
 		heightPreviewTitle.stringValue = @"Height Preview Multiplier";
 		heightPreviewTitle.editable = NO;
 		heightPreviewTitle.bezeled = NO;
 		heightPreviewTitle.drawsBackground = NO;
 		[content addSubview:heightPreviewTitle];
-		remasterHeightPreviewMultiplierSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 732, 300, 24)];
+		remasterHeightPreviewMultiplierSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 792, 300, 24)];
 		remasterHeightPreviewMultiplierSlider.minValue = 1;
 		remasterHeightPreviewMultiplierSlider.maxValue = 20;
 		remasterHeightPreviewMultiplierSlider.numberOfTickMarks = 20;
@@ -6746,11 +6820,35 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMultiplierSlider.target = self;
 		remasterHeightPreviewMultiplierSlider.action = @selector(changeRemasterHeightPreviewMultiplier:);
 		[content addSubview:remasterHeightPreviewMultiplierSlider];
-		remasterHeightPreviewMultiplierInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 732, 60, 24)];
+		remasterHeightPreviewMultiplierInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 792, 60, 24)];
 		remasterHeightPreviewMultiplierInput.alignment = NSTextAlignmentCenter;
 		remasterHeightPreviewMultiplierInput.target = self;
 		remasterHeightPreviewMultiplierInput.action = @selector(changeRemasterHeightPreviewMultiplier:);
 		[content addSubview:remasterHeightPreviewMultiplierInput];
+		NSTextField *heightMinTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 749, 110, 24)];
+		heightMinTitle.stringValue = @"Height range min";
+		heightMinTitle.editable = NO;
+		heightMinTitle.bezeled = NO;
+		heightMinTitle.drawsBackground = NO;
+		[content addSubview:heightMinTitle];
+		remasterHeightPreviewMinInput = [[NSTextField alloc] initWithFrame:NSMakeRect(135, 749, 55, 24)];
+		remasterHeightPreviewMinInput.alignment = NSTextAlignmentCenter;
+		remasterHeightPreviewMinInput.delegate = self;
+		remasterHeightPreviewMinInput.target = self;
+		remasterHeightPreviewMinInput.action = @selector(changeRemasterHeightPreviewRange:);
+		[content addSubview:remasterHeightPreviewMinInput];
+		NSTextField *heightMaxTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(220, 749, 110, 24)];
+		heightMaxTitle.stringValue = @"Height range max";
+		heightMaxTitle.editable = NO;
+		heightMaxTitle.bezeled = NO;
+		heightMaxTitle.drawsBackground = NO;
+		[content addSubview:heightMaxTitle];
+		remasterHeightPreviewMaxInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 749, 60, 24)];
+		remasterHeightPreviewMaxInput.alignment = NSTextAlignmentCenter;
+		remasterHeightPreviewMaxInput.delegate = self;
+		remasterHeightPreviewMaxInput.target = self;
+		remasterHeightPreviewMaxInput.action = @selector(changeRemasterHeightPreviewRange:);
+		[content addSubview:remasterHeightPreviewMaxInput];
 		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 220, 24)];
 		originalTitle.stringValue = @"Original Scene RGB Contribution";
 		originalTitle.editable = NO;
@@ -6925,6 +7023,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterReflectanceBoostInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.reflectanceBoost];
 	remasterHeightPreviewMultiplierSlider.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 	remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
+	remasterHeightPreviewMinInput.integerValue = remasterHeightPreviewMin;
+	remasterHeightPreviewMaxInput.integerValue = remasterHeightPreviewMax;
 	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
@@ -6974,6 +7074,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)finishRemasterSceneSettingsChangeFrom:(NSData *)snapshot actionName:(NSString *)name
 {
+	remasterMetadataNeedsSync = true;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterSceneSettings:)
 		object:snapshot];
 	[remasterUndoManager setActionName:name];
@@ -7044,6 +7145,31 @@ void QuitWithFatalError ( NSString *message)
 		actionName:@"Change Height Preview Multiplier"];
 	if (!remasterVariants.empty())
 		[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)changeRemasterHeightPreviewRange:(id)sender
+{
+	NSInteger requestedMin = 0, requestedMax = 0;
+	NSScanner *minScanner = [NSScanner scannerWithString:remasterHeightPreviewMinInput.stringValue];
+	NSScanner *maxScanner = [NSScanner scannerWithString:remasterHeightPreviewMaxInput.stringValue];
+	if (![minScanner scanInteger:&requestedMin] || !minScanner.isAtEnd ||
+		![maxScanner scanInteger:&requestedMax] || !maxScanner.isAtEnd ||
+		!S9xRemasterHeightPreviewRangeValid(static_cast<int>(requestedMin),
+			static_cast<int>(requestedMax)))
+	{
+		remasterHeightPreviewMinInput.integerValue = remasterHeightPreviewMin;
+		remasterHeightPreviewMaxInput.integerValue = remasterHeightPreviewMax;
+		NSBeep();
+		return;
+	}
+	if (requestedMin == remasterHeightPreviewMin && requestedMax == remasterHeightPreviewMax)
+		return;
+	remasterHeightPreviewMin = requestedMin;
+	remasterHeightPreviewMax = requestedMax;
+	SetRemasterHeightPreviewRange(static_cast<uint16_t>(requestedMin), static_cast<uint16_t>(requestedMax));
+	if (remasterFramePresenting)
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
 }
 
 - (void)changeRemasterCameraDirection:(id)sender
@@ -7304,12 +7430,45 @@ void QuitWithFatalError ( NSString *message)
 			@"This frame was captured without an active remaster profile. Load the profile while the game is running, then make a new capture." :
 			remasterFramePresenting ? @"Profile ROM SHA-256 does not match the captured frame." :
 			@"Profile ROM SHA-256 does not match the running game.";
+	std::vector<RemasterDungeonHeightMap> reviewMaps;
+	NSString *reviewDirectory = [fileURL.path stringByAppendingString:@".geometry-review"];
+	BOOL isDirectory = NO;
+	if ([[NSFileManager defaultManager] fileExistsAtPath:reviewDirectory isDirectory:&isDirectory])
+	{
+		if (!isDirectory)
+			return @"The profile's geometry-review path must be a directory.";
+		NSError *listError = nil;
+		NSArray<NSString *> *names = [[NSFileManager defaultManager]
+			contentsOfDirectoryAtPath:reviewDirectory error:&listError];
+		if (!names)
+			return @"Could not read the profile's geometry-review directory.";
+		std::set<unsigned> seenRooms;
+		for (NSString *name in names)
+		{
+			if (![name hasSuffix:@".bin"])
+				continue;
+			unsigned expectedRoom = 0;
+			if (name.length != 12 || ![name hasPrefix:@"room-"])
+				return [NSString stringWithFormat:@"Invalid geometry-review map name: %@", name];
+			NSScanner *scanner = [NSScanner scannerWithString:[name substringWithRange:NSMakeRange(5, 3)]];
+			if (![scanner scanHexInt:&expectedRoom] || !scanner.isAtEnd || expectedRoom >= 320)
+				return [NSString stringWithFormat:@"Invalid geometry-review map name: %@", name];
+			RemasterDungeonHeightMap map;
+			NSString *path = [reviewDirectory stringByAppendingPathComponent:name];
+			if (!S9xRemasterReadDungeonHeightMap(path.UTF8String, map) ||
+				map.roomIndex != expectedRoom || !seenRooms.insert(expectedRoom).second)
+				return [NSString stringWithFormat:@"Invalid geometry-review map: %@", name];
+			reviewMaps.push_back(std::move(map));
+		}
+	}
 	if (remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
 		return @"";
+	const NSUInteger reviewMapCount = reviewMaps.size();
 
 	remasterEditingProfile = std::move(profile);
 	remasterEditingProfileURL = fileURL;
 	remasterEditingProfileLoaded = true;
+	remasterMetadataNeedsSync = true;
 	remasterEditingProfileDirty = false;
 	remasterSavedSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 	remasterNonSceneDirty = false;
@@ -7319,6 +7478,7 @@ void QuitWithFatalError ( NSString *message)
 	if (running)
 	{
 		S9xRemasterSetProfile(remasterEditingProfile);
+		S9xRemasterSetDungeonHeightMaps(std::move(reviewMaps));
 		SetLiveRemasterPresentation(remasterLightingEnabled, remasterLightingView);
 	}
 	if (remasterMaterialBrush)
@@ -7340,6 +7500,9 @@ void QuitWithFatalError ( NSString *message)
 		[self refreshRemasterEditingControls];
 	}
 	[self showRemasterProfileSettings];
+	remasterProfileSettingsPanel.title = running && reviewMapCount ?
+		[NSString stringWithFormat:@"Remaster Scene Controls — Geometry Review (%lu rooms)",
+			static_cast<unsigned long>(reviewMapCount)] : @"Remaster Scene Controls";
 	return nil;
 }
 

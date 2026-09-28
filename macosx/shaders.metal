@@ -51,6 +51,7 @@ typedef struct
 	float4 cameraDirection;
 	float4 debugPositionRadius;
 	float4 debugColorIntensity;
+	float4 heightPreviewRange;
 } RemasterLightingUniforms;
 
 // Radiance calibration: byte 25 is 100 linear radiance units, not display white.
@@ -414,7 +415,10 @@ kernel void remasterDirectLighting(
 	if (uniforms.view == 5)
 	{
 		float2 field = heightField.read(pixel).rg;
-		float heightValue = saturate(field.r * uniforms.heightPreviewMultiplier);
+		float heightByte = field.r * 255.0;
+		float heightValue = saturate((heightByte - uniforms.heightPreviewRange.x) /
+			max(1.0, uniforms.heightPreviewRange.y - uniforms.heightPreviewRange.x) *
+			uniforms.heightPreviewMultiplier / 8.0);
 		output.write(float4(field.g > 0.5 ? float3(heightValue) :
 			float3(0.22, 0.0, 0.28), 1.0), pixel);
 	}

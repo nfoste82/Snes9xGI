@@ -32,9 +32,10 @@ struct Uniforms
     simd_float4 cameraDirection;
     simd_float4 debugPositionRadius;
     simd_float4 debugColorIntensity;
+	simd_float4 heightPreviewRange;
 };
 static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
-static_assert(sizeof(Uniforms) == 112 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
+static_assert(sizeof(Uniforms) == 128 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
 
 constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;

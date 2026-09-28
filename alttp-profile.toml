@@ -1,4 +1,4 @@
-schema_version = 11
+schema_version = 13
 
 [game]
 title = "The Legend of Zelda: A Link to the Past"
@@ -11,6 +11,7 @@ indirect_bounces = 1
 indirect_roughness = 0.139960006
 original_scene_contribution = 0.579030991
 height_preview_multiplier = 20
+upper_floor_height = 50
 samples_per_frame = 16
 sample_accumulation = true
 

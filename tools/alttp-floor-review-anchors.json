@@ -1,0 +1,17 @@
+{
+  "format": "alttp-floor-review-anchors-v1",
+  "rooms": {
+    "0x055": [
+      {
+        "at": [18, 15],
+        "level": "lower",
+        "evidence": "user-reviewed northern walkway in room 0x055 image; no connecting stair"
+      },
+      {
+        "at": [45, 42],
+        "level": "lower",
+        "evidence": "user-reviewed chest-side walkable platform in room 0x055 image"
+      }
+    ]
+  }
+}

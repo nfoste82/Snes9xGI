@@ -72,9 +72,10 @@ typedef struct
 	vector_float4 cameraDirection;
 	vector_float4 debugPositionRadius;
 	vector_float4 debugColorIntensity;
+	vector_float4 heightPreviewRange;
 } RemasterLightingUniforms;
 
-static_assert(sizeof(RemasterLightingUniforms) == 112 &&
+static_assert(sizeof(RemasterLightingUniforms) == 128 &&
 	offsetof(RemasterLightingUniforms, cameraDirection) == 64, "Metal uniform ABI");
 
 struct RemasterRadianceMetrics
@@ -199,6 +200,7 @@ id<MTLComputePipelineState>	remasterCompositePipelineState = nil;
 id<MTLComputePipelineState>	remasterHighlightPipelineState = nil;
 static std::atomic<bool> liveRemasterPresentationEnabled(false);
 static std::atomic<RemasterLightingView> liveRemasterLightingView(RemasterLightingView::Composite);
+static std::atomic<uint32_t> remasterHeightPreviewRange { (32u << 16) };
 static std::mutex debugLightMutex;
 static RemasterDebugLight debugLight;
 
@@ -493,6 +495,13 @@ void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingVie
 	liveRemasterLightingView.store(lightingView, std::memory_order_relaxed);
 	liveRemasterPresentationEnabled.store(enabled, std::memory_order_relaxed);
 	S9xRemasterSetLiveFramesEnabled(enabled);
+}
+
+void SetRemasterHeightPreviewRange (uint16_t minimum, uint16_t maximum)
+{
+	const uint32_t low = std::min<uint32_t>(255, minimum);
+	const uint32_t high = std::min<uint32_t>(256, std::max<uint32_t>(low + 1, maximum));
+	remasterHeightPreviewRange.store((high << 16) | low, std::memory_order_relaxed);
 }
 
 static void S9xInitMetal (void)
@@ -981,8 +990,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
 				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
 				heightPreviewMultiplier, 0.0f, 0,
-				std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, reflectanceBoost, { normalizedCameraDirection.x,
+					std::max<uint32_t>(1, samplesPerFrame), ++randomSeed, reflectanceBoost, { normalizedCameraDirection.x,
 					normalizedCameraDirection.y, normalizedCameraDirection.z, 0.0f }, {}, {} };
+			const uint32_t previewRange = remasterHeightPreviewRange.load(std::memory_order_relaxed);
+			uniforms.heightPreviewRange = { static_cast<float>(previewRange & 0xffff),
+				static_cast<float>(previewRange >> 16), 0.0f, 0.0f };
 			const RemasterDebugLight light = GetRemasterDebugLight();
 			if (light.enabled)
 			{

@@ -40,6 +40,33 @@ STAIR_RAIL_SEGMENT = {
     "v1:4bpp:865232fba7b0c36c": 2,
     "v1:4bpp:dd29a2e039ea282b": 3,
 }
+UPPER_GUARD_RAIL_TILES = {
+    "v1:4bpp:856f1117785093af",
+    "v1:4bpp:810d672fdabc4677",
+    "v1:4bpp:a60be53f5ef57310",
+}
+
+# Horizontal dungeon-wall decorations above a landing. The four repeated
+# column rows and the three crest rows are identifiable artwork, so their
+# local vertical geometry can be shared across rooms. Room placement supplies
+# the separate lower/upper-floor offset.
+WALL_OVERLAY_SEGMENTS = {
+    "v1:4bpp:2ad3233860fffd3b": ("column", 0),
+    "v1:4bpp:25b414f2340a85a6": ("column", 1),
+    "v1:4bpp:ba4694946b93ee92": ("column", 2),
+    "v1:4bpp:abe85623ae3f8007": ("column", 3),
+    "v1:4bpp:f1555212da242c3e": ("crest", 0),
+    "v1:4bpp:7518595e103dbf40": ("crest", 0),
+    "v1:4bpp:4c4a9006dd7fa38c": ("crest", 1),
+    "v1:4bpp:0c9662bf9776eaff": ("crest", 1),
+    "v1:4bpp:2760aea1a605832c": ("crest", 2),
+    "v1:4bpp:3a8e21ad63732905": ("crest", 2),
+    "v1:4bpp:28159eebb8b262ac": ("crest", 0),
+    "v1:4bpp:134e16174f315211": ("crest", 0),
+    "v1:4bpp:3387dad63461e82a": ("crest", 1),
+    "v1:4bpp:482a1674f4994ba7": ("crest", 2),
+    "v1:4bpp:8dbdd042fb53c3ac": ("crest", 2),
+}
 
 
 class ProfileGenerationError(ValueError):
@@ -85,6 +112,16 @@ def _neutral_layers() -> dict[str, tuple[int, ...]]:
             "occlusion": (0,) * 64, "emission_rgba": ZERO_EMISSION}
 
 
+def _upper_guard_rail_layers(indices: bytes) -> dict[str, tuple[int, ...]]:
+    # The dark index 9 is the surrounding wall/air; the painted rail stands
+    # above the landing, with its lower rows closer to the landing surface.
+    height = tuple(0 if value == 9 else 24 - pixel // 8
+                   for pixel, value in enumerate(indices))
+    occlusion = tuple(0 if value == 9 else 255 for value in indices)
+    return {"height": height, "normal_xyz": FRONT * 64,
+            "occlusion": occlusion, "emission_rgba": ZERO_EMISSION}
+
+
 def _stair_layers(content_id: str, indices: bytes) -> dict[str, tuple[int, ...]]:
     """Model the four visible treads and their smooth paired railings."""
     result = _neutral_layers()
@@ -120,6 +157,27 @@ def _stair_layers(content_id: str, indices: bytes) -> dict[str, tuple[int, ...]]
     result["height"] = tuple(heights)
     result["normal_xyz"] = tuple(normals)
     return result
+
+
+def _wall_overlay_layers(content_id: str) -> dict[str, tuple[int, ...]]:
+    kind, segment = WALL_OVERLAY_SEGMENTS[content_id]
+    heights = []
+    normals = []
+    for y in range(8):
+        for _x in range(8):
+            if segment == 0:
+                height = 55 - y
+            else:
+                height = max(0, 63 - segment * 16 - 2 * y)
+            heights.append(height)
+            if kind == "column" and segment == 0 and y < 5:
+                normals.extend(FRONT)  # Flat top of the column capital.
+            elif kind == "crest":
+                normals.extend((128, 218, 218))  # Shallow relief on the +Y wall.
+            else:
+                normals.extend((128, 255, 128))
+    return {"height": tuple(heights), "normal_xyz": tuple(normals),
+            "occlusion": (255,) * 64, "emission_rgba": ZERO_EMISSION}
 
 
 def _link_references(connection: sqlite3.Connection, authored: dict[str, dict]) -> list[tuple[bytes, dict]]:
@@ -279,8 +337,13 @@ def _complete_hud_group(source_text: str, profile: dict,
 def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, int]:
     existing = profile.get("lighting_space", {}).get("upper_floor_height")
     if existing is not None:
-        return source_text, existing
-    height = 48  # Just above this profile's tallest authored room wall (47).
+        height = 50
+        updated, count = re.subn(r"(?m)^upper_floor_height\s*=\s*\d+\s*$",
+                                 f"upper_floor_height = {height}", source_text, count=1)
+        if count != 1:
+            raise ProfileGenerationError("could not update upper-floor height")
+        return updated, height
+    height = 50  # Leave room above the tallest authored wall (47).
     updated, count = re.subn(r"(?m)^schema_version\s*=\s*\d+\s*$",
                              "schema_version = 13", source_text, count=1)
     if count != 1:
@@ -330,6 +393,12 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
                     content_id in STAIR_TREAD_HEIGHT or content_id in STAIR_RAIL_SEGMENT):
                 method = ("stair_tread" if content_id in STAIR_TREAD_HEIGHT else "stair_rail")
                 proposal = _stair_layers(content_id, indices)
+            elif families == {"background"} and content_id in UPPER_GUARD_RAIL_TILES:
+                method = "upper_guard_rail"
+                proposal = _upper_guard_rail_layers(indices)
+            elif families == {"background"} and content_id in WALL_OVERLAY_SEGMENTS:
+                method = "wall_overlay"
+                proposal = _wall_overlay_layers(content_id)
             elif len(families) > 1:
                 method = "shared_family_neutral"
                 proposal = _neutral_layers()
@@ -364,7 +433,7 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
     for key, value in profile.items():
         if key == "schema_version" and upper_floor_height and value < 13:
             value = 13
-        if key == "lighting_space" and upper_floor_height and "upper_floor_height" not in value:
+        if key == "lighting_space" and upper_floor_height:
             value = {**value, "upper_floor_height": upper_floor_height}
         if key == "asset_groups" and new_hud_ids:
             expected = {name: dict(group) for name, group in value.items()}
