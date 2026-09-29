@@ -414,6 +414,8 @@ def generate_profile(database: Path, source: Path, output: Path,
     source_text = source.read_text()
     profile = tomllib.loads(source_text)
     authored = {asset["tile_hash"]: asset for asset in profile.get("assets", [])}
+    declared_floor_ids = set(profile.get("asset_groups", {}).get(
+        "dungeon_floor", {}).get("tile_hashes", []))
     if len(authored) != len(profile.get("assets", [])):
         raise ProfileGenerationError("input profile has duplicate asset hashes")
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
@@ -500,6 +502,12 @@ def generate_profile(database: Path, source: Path, output: Path,
             if "height" in existing and "normal_xyz" not in existing:
                 proposal["normal_xyz"] = _normal_from_height(existing["height"])
                 methods["normal_from_authored_height"] += 1
+            semantic_floor = (content_id in semantics and semantics[content_id]["role"] == "floor" and
+                              not semantics[content_id]["context_dependent"])
+            if semantic_floor or content_id in declared_floor_ids:
+                proposal["height"] = (0,) * 64
+                proposal["normal_xyz"] = FRONT * 64
+                methods["semantic_floor_override"] += 1
             generated[content_id] = proposal
     finally:
         connection.close()
@@ -534,7 +542,12 @@ def generate_profile(database: Path, source: Path, output: Path,
         if any(name not in asset for name in LAYERS):
             raise ProfileGenerationError(f"candidate {asset['tile_hash']} lacks a layer")
         original = authored.get(asset["tile_hash"])
-        if original and any(asset.get(name) != value for name, value in original.items()):
+        allowed_floor_override = (original and (asset["tile_hash"] in declared_floor_ids or
+                                  (asset["tile_hash"] in semantics and
+                                   semantics[asset["tile_hash"]]["role"] == "floor" and
+                                   not semantics[asset["tile_hash"]]["context_dependent"])))
+        if original and any(asset.get(name) != value for name, value in original.items()
+                            if not allowed_floor_override or name not in ("height", "normal_xyz")):
             raise ProfileGenerationError(f"authored asset changed: {asset['tile_hash']}")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + ".tmp")

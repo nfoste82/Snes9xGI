@@ -682,6 +682,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:99d5e2b8667860ca": {
+      "role": "stair_top",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:9a0d6f70c687e95c": {
       "role": "wall_corner",
       "normals": [
@@ -1038,6 +1044,12 @@
     },
     "v1:4bpp:dd29a2e039ea282b": {
       "role": "stair_bottom",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ded4f16afe03288a": {
+      "role": "stair_top",
       "normals": [],
       "context_dependent": false,
       "note": ""

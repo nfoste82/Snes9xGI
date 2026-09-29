@@ -278,7 +278,229 @@ int main ()
 	assert(S9xRemasterBuildDungeonHeightMap(runtimeContext, 50, runtimeMap));
 	assert(runtimeMap.offsets[10 * 64 + 10] == 50);
 	assert(runtimeMap.offsets[30 * 64 + 10] == 0);
+	// The complete body projection includes interior cells, not just the four
+	// collision-body corners sampled by the movement predicate.
+	assert(runtimeMap.offsets[10 * 64 + 11] == 50);
+	assert(runtimeMap.offsets[30 * 64 + 11] == 0);
 	assert(runtimeMap.offsets[4 * 64 + 4] == 255);
+	assert(runtimeMap.hasPlaneOffsets);
+	std::array<uint8_t, 8192> overlapAttributes;
+	overlapAttributes.fill(1);
+	for (int plane = 0; plane < 2; plane++)
+		for (int y = 8; y < 36; y++)
+			for (int x = 8; x < 24; x++)
+				overlapAttributes[plane * 4096 + y * 64 + x] = 0;
+	RemasterDungeonFloorContext overlapContext = runtimeContext;
+	overlapContext.collisionAttributes = overlapAttributes.data();
+	overlapContext.stairs[0].changesPlane = true;
+	RemasterDungeonHeightMap overlapMap;
+	assert(S9xRemasterBuildDungeonHeightMap(overlapContext, 50, overlapMap));
+	const int overlapCell = 15 * 64 + 10;
+	assert(overlapMap.planeOffsets[0][overlapCell] == 50);
+	assert(overlapMap.planeOffsets[1][overlapCell] == 0);
+	assert(overlapMap.offsets[overlapCell] == 50);
+	// A room-local solution must not depend on the doorway/camera from which the
+	// room was entered.  Model room 0x060's essential topology: an upper H on
+	// plane 0, a lower north/south underpass on plane 1, and the oriented
+	// plane-changing stair that relates them.  Rebuilding from an upper-H seed
+	// or a lower-underpass seed must produce the same placement bases.
+	std::array<uint8_t, 8192> room60Attributes;
+	room60Attributes.fill(1);
+	auto openRoom60 = [&] (int plane, int x, int y) {
+		room60Attributes[plane * 4096 + y * 64 + x] = 0;
+	};
+	for (int y = 8; y <= 48; y++)
+	{
+		for (int x = 36; x <= 39; x++) openRoom60(0, x, y);
+		for (int x = 47; x <= 50; x++) openRoom60(0, x, y);
+	}
+	for (int y = 17; y <= 20; y++)
+		for (int x = 36; x <= 50; x++) openRoom60(0, x, y);
+	for (int y = 8; y <= 41; y++)
+		for (int x = 46; x <= 49; x++) openRoom60(1, x, y);
+	RemasterDungeonFloorContext room60UpperEntry = runtimeContext;
+	room60UpperEntry.roomIndex = 0x60;
+	room60UpperEntry.collisionAttributes = room60Attributes.data();
+	room60UpperEntry.linkPlane = 0;
+	room60UpperEntry.linkX = 37 * 8;
+	room60UpperEntry.linkY = 10 * 8;
+	room60UpperEntry.stairs[0].x = 46;
+	room60UpperEntry.stairs[0].y = 42;
+	room60UpperEntry.stairs[0].highIsNorth = false;
+	room60UpperEntry.stairs[0].changesPlane = true;
+	RemasterDungeonFloorContext room60LowerEntry = room60UpperEntry;
+	room60LowerEntry.linkPlane = 1;
+	room60LowerEntry.linkX = 47 * 8;
+	room60LowerEntry.linkY = 18 * 8;
+	RemasterDungeonHeightMap room60UpperMap, room60LowerMap;
+	assert(S9xRemasterBuildDungeonHeightMap(room60UpperEntry, 50, room60UpperMap));
+	assert(S9xRemasterBuildDungeonHeightMap(room60LowerEntry, 50, room60LowerMap));
+	assert(room60UpperMap.planeOffsets == room60LowerMap.planeOffsets);
+	assert(room60UpperMap.offsets == room60LowerMap.offsets);
+	for (const auto &cell : { std::array<int, 2>{37, 10}, {37, 18}, {43, 18},
+		{49, 18}, {49, 30} })
+		assert(room60UpperMap.planeOffsets[0][cell[1] * 64 + cell[0]] == 50);
+	assert(room60UpperMap.planeOffsets[1][18 * 64 + 47] == 0);
+	assert(room60UpperMap.planeOffsets[0][18 * 64 + 47] == 50);
+	assert(room60UpperMap.offsets[18 * 64 + 47] == 50);
+	// Geometry identity excludes viewport scroll. A scroll changes only which
+	// room-local cells are visible, never the complete room map cache key.
+	const uint64_t room60Key = S9xRemasterDungeonHeightInputKey(room60UpperEntry, 50);
+	room60UpperEntry.backgroundScrollX = 500;
+	room60UpperEntry.backgroundScrollY = 3000;
+	assert(S9xRemasterDungeonHeightInputKey(room60UpperEntry, 50) == room60Key);
+	// Trace line 33's lifecycle: $A0 already names room 0x060 while WRAM still
+	// holds room 0x061's three table-0 stairs. Reject publication until current
+	// room tables arrive; keep the prior valid map independently available.
+	RemasterDungeonFloorContext staleTransition = room60UpperEntry;
+	staleTransition.previousRoomIndex = 0x61;
+	staleTransition.submodule = 2;
+	staleTransition.stairCount = 3;
+	for (int i = 0; i < 3; i++)
+	{
+		staleTransition.stairs[i].table = 0;
+		staleTransition.stairs[i].tableEntry = i;
+		staleTransition.stairs[i].highIsNorth = true;
+		staleTransition.stairs[i].changesPlane = false;
+	}
+	assert(!S9xRemasterDungeonHeightInputsPublishable(staleTransition, 0x61));
+	staleTransition.stairCount = 0;
+	assert(!S9xRemasterDungeonHeightInputsPublishable(staleTransition, 0x61));
+	staleTransition.submodule = 0;
+	assert(!S9xRemasterDungeonHeightInputsPublishable(staleTransition, 0x61));
+	staleTransition.stairCount = 1;
+	staleTransition.stairs[0] = room60UpperEntry.stairs[0];
+	staleTransition.stairs[0].table = 1;
+	staleTransition.stairs[0].tableEntry = 0;
+	assert(S9xRemasterDungeonHeightInputsPublishable(staleTransition, 0x61));
+	assert(!staleTransition.stairs[0].highIsNorth && staleTransition.stairs[0].changesPlane);
+	// Replay the observed publication sequence through the same policy: the
+	// line-33 stale room-0x061 tables and subsequent empty tables cannot replace
+	// either cached map. The eventual table-1 south-high record publishes 0x060.
+	RemasterDungeonHeightMap cached61 = room60UpperMap;
+	cached61.roomIndex = 0x61;
+	RemasterDungeonHeightMap cached60;
+	cached60.roomIndex = 0xffff;
+	uint64_t publishedKey = 0;
+	auto publishTraceState = [&] (RemasterDungeonFloorContext state) {
+		if (!S9xRemasterDungeonHeightInputsPublishable(state,
+			cached60.roomIndex == state.roomIndex ? cached60.roomIndex : cached61.roomIndex)) return false;
+		RemasterDungeonHeightMap candidate;
+		if (!S9xRemasterBuildDungeonHeightMap(state, 50, candidate) || candidate.roomIndex != state.roomIndex)
+			return false;
+		cached60 = std::move(candidate);
+		publishedKey = S9xRemasterDungeonHeightInputKey(state, 50);
+		return true;
+	};
+	RemasterDungeonFloorContext replay = staleTransition;
+	replay.submodule = 2;
+	replay.stairCount = 3;
+	for (int i = 0; i < 3; i++) replay.stairs[i] = staleTransition.stairs[0];
+	assert(!publishTraceState(replay));
+	assert(cached61.roomIndex == 0x61 && cached60.roomIndex == 0xffff);
+	replay.stairCount = 0;
+	for (int scroll = 512; scroll >= 256; scroll -= 12)
+	{
+		replay.backgroundScrollX = static_cast<uint16_t>(scroll);
+		assert(!publishTraceState(replay));
+	}
+	assert(publishedKey == 0 && cached61.roomIndex == 0x61);
+	replay.submodule = 0;
+	assert(!publishTraceState(replay));
+	replay.stairCount = 1;
+	replay.stairs[0] = staleTransition.stairs[0];
+	assert(publishTraceState(replay));
+	assert(cached60.roomIndex == 0x60 && cached60.planeOffsets[0][18 * 64 + 47] == 50 &&
+		cached60.planeOffsets[1][18 * 64 + 47] == 0);
+	// The validated compiled format carries the visible maximum and both actor
+	// planes, so a settled room remains correct even after Zelda clears stairs.
+	const std::string compiledMapPath = "/tmp/snes9x-remaster-height-map-v2.bin";
+	{
+		std::ofstream output(compiledMapPath, std::ios::binary);
+		output.write("ALTPHM2\0", 8);
+		const char roomBytes[2] = { 0x60, 0 };
+		output.write(roomBytes, 2);
+		output.write(reinterpret_cast<const char *>(cached60.offsets.data()), cached60.offsets.size());
+		for (const auto &plane : cached60.planeOffsets)
+			output.write(reinterpret_cast<const char *>(plane.data()), plane.size());
+	}
+	RemasterDungeonHeightMap compiledMap;
+	assert(S9xRemasterReadDungeonHeightMap(compiledMapPath, compiledMap));
+	assert(compiledMap.roomIndex == 0x60 && compiledMap.hasPlaneOffsets);
+	assert(compiledMap.offsets[18 * 64 + 47] == 50);
+	assert(compiledMap.planeOffsets[0][18 * 64 + 47] == 50);
+	assert(compiledMap.planeOffsets[1][18 * 64 + 47] == 0);
+	std::remove(compiledMapPath.c_str());
+	// Live room scrolling updates the destination room before all source-room
+	// pixels leave the viewport. Verify the actual $A2/$EF lifecycle fields keep
+	// destination geometry off the still-visible source half.
+	RemasterDungeonFloorContext westScroll = room60UpperEntry;
+	westScroll.previousRoomIndex = 0x61;
+	westScroll.submodule = 2;
+	westScroll.backgroundScrollX = 400;
+	assert(S9xRemasterDungeonRoomForScreenPosition(westScroll, 20, 100) == 0x60);
+	assert(S9xRemasterDungeonRoomForScreenPosition(westScroll, 120, 100) == 0x61);
+	RemasterFrame mixedRoomFrame;
+	mixedRoomFrame.width = 256;
+	mixedRoomFrame.height = 1;
+	mixedRoomFrame.mainPixels.resize(256);
+	mixedRoomFrame.tileInstances = { roomBackground };
+	mixedRoomFrame.mainPixels[20].instanceId = mixedRoomFrame.mainPixels[120].instanceId = 1;
+	RemasterDungeonHeightMap mixedRoomMap;
+	mixedRoomMap.roomIndex = 0x60;
+	mixedRoomMap.offsets.fill(50);
+	RemasterDungeonHeightMap sourceRoomMap;
+	sourceRoomMap.roomIndex = 0x61;
+	sourceRoomMap.offsets.fill(0);
+	sourceRoomMap.offsets[((westScroll.backgroundScrollX + 120) & 511) / 8 + 12 * 64] = 50;
+	S9xRemasterApplyDungeonHeightMap(mixedRoomFrame, westScroll, mixedRoomMap, &sourceRoomMap);
+	assert(mixedRoomFrame.tileInstances[mixedRoomFrame.mainPixels[20].instanceId - 1].heightOffset == 50);
+	assert(mixedRoomFrame.tileInstances[mixedRoomFrame.mainPixels[120].instanceId - 1].heightOffset == 0);
+	RemasterFrame borderFrame;
+	borderFrame.width = 8;
+	borderFrame.height = 8;
+	borderFrame.mainPixels.resize(64);
+	borderFrame.tileInstances = { roomBackground };
+	for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++)
+	{
+		borderFrame.mainPixels[y * 8 + x].instanceId = 1;
+		borderFrame.mainPixels[y * 8 + x].tilePixel = static_cast<uint8_t>(y * 8 + x);
+	}
+	std::array<uint8_t, 8192> borderAttributes;
+	borderAttributes.fill(1);
+	borderAttributes[1] = 0;
+	borderAttributes[4096] = borderAttributes[4096 + 1] = 3;
+	RemasterDungeonFloorContext borderContext = runtimeContext;
+	borderContext.linkX = borderContext.linkY = 0;
+	borderContext.backgroundScrollX = borderContext.backgroundScrollY = 0;
+	borderContext.collisionAttributes = borderAttributes.data();
+	RemasterDungeonHeightMap borderMap;
+	borderMap.roomIndex = runtimeContext.roomIndex;
+	borderMap.offsets.fill(255);
+	for (auto &plane : borderMap.planeOffsets) plane.fill(255);
+	borderMap.offsets[1] = 50;
+	borderMap.planeOffsets[0][1] = 50;
+	borderMap.hasPlaneOffsets = true;
+	S9xRemasterApplyDungeonHeightMap(borderFrame, borderContext, borderMap);
+	assert(borderFrame.tileInstances[0].heightOffset == 50);
+	assert(borderFrame.tileInstances[0].hasPlacementHeight);
+	// The instance is H-flipped, so the canonical profile is mirrored while the
+	// displayed ramp still rises away from its eastern support contact.
+	assert(borderFrame.tileInstances[0].placementHeight[0] == 0);
+	assert(borderFrame.tileInstances[0].placementHeight[7] == 7);
+	// Same-floor contacts from two directions compose an outside-corner profile
+	// using the minimum of both outward ramps.
+	borderFrame.tileInstances[0].heightOffset = 0;
+	borderFrame.tileInstances[0].hasPlacementHeight = false;
+	borderAttributes[64] = 0;
+	borderMap.offsets[64] = 50;
+	borderMap.planeOffsets[0][64] = borderMap.planeOffsets[1][64] = 50;
+	S9xRemasterApplyDungeonHeightMap(borderFrame, borderContext, borderMap);
+	assert(borderFrame.tileInstances[0].hasPlacementHeight);
+	assert(borderFrame.tileInstances[0].placementHeight[0] == 0);
+	assert(borderFrame.tileInstances[0].placementHeight[7] == 7);
+	assert(borderFrame.tileInstances[0].placementHeight[56] == 0);
+	assert(borderFrame.tileInstances[0].placementHeight[63] == 0);
 	RemasterDungeonHeightMap reviewMap;
 	reviewMap.roomIndex = 0x55;
 	reviewMap.offsets.fill(255);
@@ -364,6 +586,26 @@ int main ()
 	doorwayContext.collisionAttributes = doorwayAttributes.data();
 	S9xRemasterApplyDungeonHeightMap(doorwayFrame, doorwayContext, doorwayMap);
 	assert(doorwayFrame.tileInstances[0].heightOffset == 50);
+	RemasterFrame visualFloorFrame;
+	visualFloorFrame.width = 24;
+	visualFloorFrame.height = 8;
+	visualFloorFrame.mainPixels.resize(24 * 8);
+	RemasterFrameMaterial floorMaterial;
+	floorMaterial.name = "visual_floor";
+	floorMaterial.surfaceClass = RemasterSurfaceClass::Floor;
+	visualFloorFrame.materials.push_back(floorMaterial);
+	RemasterFrameTileInstance visualFloor = roomBackground;
+	visualFloor.material = "visual_floor";
+	visualFloor.assetGroup = "dungeon_floor";
+	visualFloorFrame.tileInstances = { visualFloor };
+	for (int cell = 0; cell < 3; cell++) visualFloorFrame.mainPixels[cell * 8].instanceId = 1;
+	RemasterDungeonHeightMap visualFloorMap;
+	visualFloorMap.roomIndex = 0x55;
+	visualFloorMap.offsets.fill(255);
+	visualFloorMap.offsets[3] = 50; // Outside the captured viewport.
+	S9xRemasterApplyDungeonHeightMap(visualFloorFrame, wallDistanceContext, visualFloorMap);
+	for (int cell = 0; cell < 3; cell++)
+		assert(visualFloorFrame.tileInstances[visualFloorFrame.mainPixels[cell * 8].instanceId - 1].heightOffset == 0);
 	RemasterFrame heightRangeFrame;
 	heightRangeFrame.width = 2;
 	heightRangeFrame.height = 1;
@@ -476,7 +718,7 @@ int main ()
 	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
 	assert(decodedFrame.tileInstances[0].heightOffset == 48);
 	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
-	previousVersionBytes.erase(previousVersionBytes.end() - 3, previousVersionBytes.end());
+	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end());
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset,
 		previousVersionBytes.begin() + boostOffset + 4);
@@ -509,7 +751,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 19);
+	assert(decodedFrame.schemaVersion == 20);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -525,6 +767,18 @@ int main ()
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0));
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0)->material == "stone");
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0)->hFlip);
+	RemasterFrame colorMathFrame = decodedFrame;
+	colorMathFrame.mainPixels[0].owner = S9xRemasterOwner(RemasterSourceType::Backdrop, 0, 0);
+	colorMathFrame.mainPixels[0].instanceId = 0;
+	colorMathFrame.mainPixels[0].tilePixel = 0xff;
+	colorMathFrame.subPixels[0] = decodedFrame.mainPixels[0];
+	bool visibleFromSubscreen = false;
+	assert(S9xRemasterFrameVisibleTilePixelAt(colorMathFrame, 0, 0, &visibleFromSubscreen) ==
+		&colorMathFrame.subPixels[0]);
+	assert(visibleFromSubscreen);
+	assert(S9xRemasterFrameVisibleInstanceAt(colorMathFrame, 0, 0)->material == "stone");
+	colorMathFrame.mainPixels[0].owner = REMASTER_OWNER_UNSUPPORTED;
+	assert(!S9xRemasterFrameVisibleTilePixelAt(colorMathFrame, 0, 0));
 	const RemasterFrameMaterial *resolvedMaterial = S9xRemasterFrameMaterialForPixel(decodedFrame,
 		decodedFrame.mainPixels[0]);
 	assert(resolvedMaterial && resolvedMaterial->surfaceClass == RemasterSurfaceClass::Floor);
@@ -894,7 +1148,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 19);
+	assert(decodedFrame.schemaVersion == 20);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
 	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);

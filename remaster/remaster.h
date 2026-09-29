@@ -138,7 +138,11 @@ struct RemasterState
 	std::vector<RemasterDungeonHeightMap> activeDungeonHeightMaps;
 	std::vector<RemasterDungeonHeightMap> requestedDungeonHeightMaps;
 	RemasterDungeonHeightMap runtimeDungeonHeightMap;
+	RemasterDungeonHeightMap previousRuntimeDungeonHeightMap;
+	uint16_t runtimeDungeonObservedRoom = 0xffff;
 	uint64_t runtimeDungeonHeightKey = 0;
+	uint64_t runtimeDungeonObservedInputKey = 0;
+	uint64_t runtimeDungeonHeightEpoch = 0;
 	bool runtimeDungeonHeightValid = false;
 	bool dungeonHeightMapsPending = false;
 	bool profilePending = false;
@@ -185,6 +189,31 @@ inline RemasterState &S9xRemasterState (void)
 inline bool S9xRemasterEnabled (void)
 {
 	return S9xRemasterState().activeDebugMode != RemasterDebugMode::Original;
+}
+
+inline uint64_t S9xRemasterDungeonHeightInputKey (const RemasterDungeonFloorContext &context,
+	uint8_t floorRise)
+{
+	uint64_t key = UINT64_C(1469598103934665603);
+	auto mix = [&key] (uint8_t value) { key = (key ^ value) * UINT64_C(1099511628211); };
+	mix(context.roomIndex & 255); mix(context.roomIndex >> 8);
+	mix(context.collisionMode); mix(floorRise);
+	if (context.collisionAttributes)
+		for (size_t i = 0; i < 8192; i++) mix(context.collisionAttributes[i]);
+	for (uint8_t i = 0; i < context.stairCount; i++)
+	{
+		const auto &stair = context.stairs[i];
+		mix(stair.x); mix(stair.y); mix(stair.table); mix(stair.tableEntry);
+		mix(stair.highIsNorth); mix(stair.changesPlane);
+	}
+	return key;
+}
+
+inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloorContext &context,
+	uint16_t publishedRoom)
+{
+	return context.collisionAttributes && context.collisionMode == 0 && context.stairCount != 0 &&
+		(!context.submodule || context.roomIndex == publishedRoom);
 }
 
 inline bool S9xRemasterObserving (void)
@@ -889,8 +918,19 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	const bool frameFinalized = S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight);
 	if (frameFinalized)
 	{
+		RemasterDungeonHeightApplyDiagnostics dungeonHeightDiagnostics;
+		bool runtimeInputsPublishable = false;
+		const RemasterDungeonHeightMap *appliedDungeonHeightMap = nullptr;
 		if (dungeonFloor)
 		{
+			const bool roomChanged = state.runtimeDungeonObservedRoom != dungeonFloor->roomIndex;
+			if (roomChanged)
+			{
+				if (state.runtimeDungeonHeightValid &&
+					state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->previousRoomIndex)
+					state.previousRuntimeDungeonHeightMap = state.runtimeDungeonHeightMap;
+				state.runtimeDungeonObservedRoom = dungeonFloor->roomIndex;
+			}
 			const RemasterDungeonHeightMap *reviewMap = nullptr;
 			for (const RemasterDungeonHeightMap &map : state.activeDungeonHeightMaps)
 				if (map.roomIndex == dungeonFloor->roomIndex)
@@ -898,28 +938,101 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 					reviewMap = &map;
 					break;
 				}
-			if (!reviewMap && dungeonFloor->collisionAttributes)
+			runtimeInputsPublishable = S9xRemasterDungeonHeightInputsPublishable(*dungeonFloor,
+				state.runtimeDungeonHeightValid ? state.runtimeDungeonHeightMap.roomIndex : 0xffff);
+			state.runtimeDungeonObservedInputKey = S9xRemasterDungeonHeightInputKey(*dungeonFloor,
+				state.activeProfile.upperFloorHeight);
+			if (!reviewMap && runtimeInputsPublishable)
 			{
-				uint64_t key = UINT64_C(1469598103934665603);
-				auto mix = [&key] (uint8_t value) { key = (key ^ value) * UINT64_C(1099511628211); };
-				mix(dungeonFloor->roomIndex & 255); mix(dungeonFloor->roomIndex >> 8);
-				mix(dungeonFloor->collisionMode); mix(state.activeProfile.upperFloorHeight);
-				for (size_t i = 0; i < 8192; i++) mix(dungeonFloor->collisionAttributes[i]);
-				for (uint8_t i = 0; i < dungeonFloor->stairCount; i++)
-				{
-					const auto &stair = dungeonFloor->stairs[i];
-					mix(stair.x); mix(stair.y); mix(stair.highIsNorth); mix(stair.changesPlane);
-				}
+				const uint64_t key = state.runtimeDungeonObservedInputKey;
 				if (key != state.runtimeDungeonHeightKey)
 				{
-					state.runtimeDungeonHeightKey = key;
-					state.runtimeDungeonHeightValid = S9xRemasterBuildDungeonHeightMap(*dungeonFloor,
-						state.activeProfile.upperFloorHeight, state.runtimeDungeonHeightMap);
+					RemasterDungeonHeightMap candidate;
+					if (S9xRemasterBuildDungeonHeightMap(*dungeonFloor,
+						state.activeProfile.upperFloorHeight, candidate) &&
+						candidate.roomIndex == dungeonFloor->roomIndex)
+					{
+						state.runtimeDungeonHeightMap = std::move(candidate);
+						state.runtimeDungeonHeightKey = key;
+						state.runtimeDungeonHeightEpoch++;
+						state.runtimeDungeonHeightValid = true;
+					}
 				}
-				if (state.runtimeDungeonHeightValid) reviewMap = &state.runtimeDungeonHeightMap;
 			}
-			S9xRemasterApplyDungeonFloorHeight(frame, *dungeonFloor,
-				state.activeProfile.upperFloorHeight, reviewMap);
+			if (!reviewMap && state.runtimeDungeonHeightValid &&
+				state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->roomIndex)
+				reviewMap = &state.runtimeDungeonHeightMap;
+			const RemasterDungeonHeightMap *sourceRoomMap = nullptr;
+			for (const RemasterDungeonHeightMap &map : state.activeDungeonHeightMaps)
+				if (map.roomIndex == dungeonFloor->previousRoomIndex) sourceRoomMap = &map;
+			if (!sourceRoomMap && state.previousRuntimeDungeonHeightMap.roomIndex == dungeonFloor->previousRoomIndex)
+				sourceRoomMap = &state.previousRuntimeDungeonHeightMap;
+			if (reviewMap && reviewMap->roomIndex == dungeonFloor->roomIndex)
+			{
+				appliedDungeonHeightMap = reviewMap;
+				S9xRemasterApplyDungeonHeightMap(frame, *dungeonFloor, *reviewMap, sourceRoomMap,
+					&dungeonHeightDiagnostics);
+			}
+			else
+				S9xRemasterApplyDungeonFloorHeight(frame, *dungeonFloor,
+					state.activeProfile.upperFloorHeight, nullptr);
+		}
+		if (dungeonFloor)
+		{
+			const char *tracePath = std::getenv("S9X_REMASTER_DUNGEON_HEIGHT_TRACE");
+			if (tracePath && *tracePath)
+			{
+				std::ofstream trace(tracePath, std::ios::app);
+				if (trace)
+				{
+					const RemasterDungeonHeightMap &map = appliedDungeonHeightMap ?
+						*appliedDungeonHeightMap : state.runtimeDungeonHeightMap;
+					trace << "{\"room\":" << dungeonFloor->roomIndex
+						<< ",\"previous_room\":" << dungeonFloor->previousRoomIndex
+						<< ",\"submodule\":" << unsigned(dungeonFloor->submodule)
+						<< ",\"transition_flags\":" << unsigned(dungeonFloor->roomTransitionFlags)
+						<< ",\"scroll\":[" << dungeonFloor->backgroundScrollX << ',' << dungeonFloor->backgroundScrollY << ']'
+						<< ",\"link\":[" << dungeonFloor->linkX << ',' << dungeonFloor->linkY << ','
+						<< unsigned(dungeonFloor->linkPlane) << ']'
+						<< ",\"collision_mode\":" << unsigned(dungeonFloor->collisionMode)
+						<< ",\"collision_pointer_present\":" << (dungeonFloor->collisionAttributes ? "true" : "false")
+						<< ",\"room_inputs_publishable\":" << (runtimeInputsPublishable ? "true" : "false")
+						<< ",\"rise\":" << unsigned(state.activeProfile.upperFloorHeight)
+						<< ",\"observed_input_key\":" << state.runtimeDungeonObservedInputKey
+						<< ",\"published_map_key\":" << state.runtimeDungeonHeightKey
+						<< ",\"map_epoch\":" << state.runtimeDungeonHeightEpoch
+						<< ",\"map_valid\":" << (state.runtimeDungeonHeightValid ? "true" : "false")
+						<< ",\"map_room\":" << map.roomIndex
+						<< ",\"published_runtime_map_room\":" << state.runtimeDungeonHeightMap.roomIndex
+						<< ",\"geometry_source\":\"" << (appliedDungeonHeightMap &&
+							appliedDungeonHeightMap != &state.runtimeDungeonHeightMap ? "compiled_profile_map" :
+							appliedDungeonHeightMap ? "runtime_complete_tables" : "legacy_fallback") << "\""
+						<< ",\"components\":" << map.componentCount
+						<< ",\"constraints\":" << map.constraintCount
+						<< ",\"conflicting_components\":" << map.conflictingComponentCount
+						<< ",\"solved_plane_cells\":[" << map.solvedPlaneCells[0] << ',' << map.solvedPlaneCells[1] << ']'
+						<< ",\"applied\":{\"destination_pixels\":" << dungeonHeightDiagnostics.destinationPixels
+						<< ",\"source_pixels\":" << dungeonHeightDiagnostics.sourcePixels
+						<< ",\"destination_raised\":" << dungeonHeightDiagnostics.destinationRaisedPixels
+						<< ",\"source_raised\":" << dungeonHeightDiagnostics.sourceRaisedPixels
+						<< ",\"destination_unknown\":" << dungeonHeightDiagnostics.destinationUnknownPixels
+						<< ",\"source_unknown\":" << dungeonHeightDiagnostics.sourceUnknownPixels << "}"
+						<< ",\"stairs\":[";
+					for (uint8_t i = 0; i < dungeonFloor->stairCount; i++)
+					{
+						if (i) trace << ',';
+						const auto &stair = dungeonFloor->stairs[i];
+						trace << "{\"xy\":[" << unsigned(stair.x) << ',' << unsigned(stair.y)
+							<< "],\"table\":" << unsigned(stair.table)
+							<< ",\"entry\":" << unsigned(stair.tableEntry)
+							<< ",\"raw_high_side\":\"" << (stair.highIsNorth ? "north" : "south")
+							<< "\",\"transformed_high_side\":\"" << (stair.highIsNorth ? "north" : "south")
+							<< "\",\"orientation_transform\":\"none_runtime_table_is_displayed_handler\""
+							<< ",\"changes_plane\":" << (stair.changesPlane ? "true" : "false") << '}';
+					}
+					trace << "]}\n";
+				}
+			}
 		}
 		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		if (state.frameCaptureActive)

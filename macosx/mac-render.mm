@@ -389,7 +389,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			materials.emplace(material.name, &material);
 		for (size_t i = 0; i < frame.mainPixels.size(); i++)
 		{
-			const RemasterFramePixel &pixel = frame.mainPixels[i];
+			const RemasterFramePixel &mainPixel = frame.mainPixels[i];
+			const bool useSubscreen = !mainPixel.instanceId &&
+				static_cast<uint8_t>(mainPixel.owner >> 24) == static_cast<uint8_t>(RemasterSourceType::Backdrop);
+			const RemasterFramePixel &pixel = useSubscreen ? frame.subPixels[i] : mainPixel;
 			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
 				continue;
 			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
@@ -421,10 +424,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			if (metadata && metadata->hasEmission)
 				std::copy(metadata->emissionRgba.begin() + pixel.tilePixel * 4,
 					metadata->emissionRgba.begin() + pixel.tilePixel * 4 + 4, emissionField.begin() + i * 4);
-			if ((metadata && metadata->hasHeight) || instance.heightOffset)
+			if ((metadata && metadata->hasHeight) || instance.hasPlacementHeight || instance.heightOffset)
 			{
-				const unsigned baseHeight = metadata && metadata->hasHeight ?
-					metadata->height[pixel.tilePixel] : 0;
+				const unsigned baseHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
+					(metadata && metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
 				heightField[i * 2] = static_cast<uint8_t>(std::min(255u,
 					baseHeight + instance.heightOffset));
 				heightField[i * 2 + 1] = 255;
@@ -443,7 +446,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				const float dy = (heightField[bottom * 2] - heightField[top * 2]) / 255.0f * frame.lightingCoordinateScale;
 				const float length = std::sqrt(dx * dx + dy * dy + 4.0f);
 				surfaceField[i * 4] = center;
-				const RemasterFramePixel &pixel = frame.mainPixels[i];
+				const RemasterFramePixel &mainPixel = frame.mainPixels[i];
+				const bool useSubscreen = !mainPixel.instanceId &&
+					static_cast<uint8_t>(mainPixel.owner >> 24) == static_cast<uint8_t>(RemasterSourceType::Backdrop);
+				const RemasterFramePixel &pixel = useSubscreen ? frame.subPixels[i] : mainPixel;
 				const RemasterFrameAssetMetadata *metadata = nullptr;
 				const RemasterFrameTileInstance *instance = nullptr;
 				if (pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64)

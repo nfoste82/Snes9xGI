@@ -689,6 +689,9 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.linkY = Memory.RAM[0x20] | (Memory.RAM[0x21] << 8);
 				dungeonFloor.linkX = Memory.RAM[0x22] | (Memory.RAM[0x23] << 8);
 				dungeonFloor.roomIndex = Memory.RAM[0xa0] | (Memory.RAM[0xa1] << 8);
+				dungeonFloor.previousRoomIndex = Memory.RAM[0xa2] | (Memory.RAM[0xa3] << 8);
+				dungeonFloor.submodule = Memory.RAM[0x11];
+				dungeonFloor.roomTransitionFlags = Memory.RAM[0xef];
 				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
 				dungeonFloor.backgroundScrollY = PPU.BG[1].VOffset;
 				dungeonFloor.collisionAttributes = Memory.RAM + 0x12000;
@@ -704,6 +707,8 @@ void S9xEndScreenRefresh (void)
 							dungeonFloor.stairs[dungeonFloor.stairCount++];
 						stair.x = position & 63;
 						stair.y = (position >> 6) & 63;
+						stair.table = static_cast<uint8_t>(table);
+						stair.tableEntry = static_cast<uint8_t>(i / 2);
 						stair.changesPlane = i < secondEnd;
 						stair.highIsNorth = i < firstEnd || (!table && i >= secondEnd);
 					}

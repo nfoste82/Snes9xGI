@@ -4602,8 +4602,11 @@ void QuitWithFatalError ( NSString *message)
 	const uint32_t x = static_cast<uint32_t>(normalizedX * remasterReplayFrame.width);
 	const uint32_t y = static_cast<uint32_t>(normalizedY * remasterReplayFrame.height);
 	const size_t offset = static_cast<size_t>(y) * remasterReplayFrame.width + x;
-	const RemasterFramePixel &pixel = remasterReplayFrame.mainPixels[offset];
-	const RemasterFrameTileInstance *instance = S9xRemasterFrameInstanceAt(remasterReplayFrame, x, y);
+	const RemasterFramePixel &mainPixel = remasterReplayFrame.mainPixels[offset];
+	const RemasterFramePixel &subPixel = remasterReplayFrame.subPixels[offset];
+	bool instanceFromSubscreen = false;
+	const RemasterFrameTileInstance *instance = S9xRemasterFrameVisibleInstanceAt(remasterReplayFrame, x, y,
+		&instanceFromSubscreen);
 
 	if (instance)
 	{
@@ -4981,18 +4984,23 @@ void QuitWithFatalError ( NSString *message)
 	text << "Pixel       (" << x << ", " << y << ")\n";
 	text << "RGB555      $" << std::hex << std::setfill('0') << std::setw(4) << color
 		<< "  (" << std::dec << ((color >> 10) & 31) << ", " << ((color >> 5) & 31) << ", " << (color & 31) << ")\n";
-	text << "Owner       $" << std::hex << std::setw(8) << pixel.owner << std::dec
-		<< "  instance " << pixel.instanceId << "\n";
+	text << "Main owner  $" << std::hex << std::setw(8) << mainPixel.owner << std::dec
+		<< "  instance " << mainPixel.instanceId << "\n";
+	text << "Sub owner   $" << std::hex << std::setw(8) << subPixel.owner << std::dec
+		<< "  instance " << subPixel.instanceId << "\n";
+	text << "Tile path   " << (instanceFromSubscreen ? "Subscreen color-math contributor" : "Main screen") << "\n";
 	if (instance)
 	{
 		const char *source = instance->source == RemasterSourceType::Background ? "Background" :
 			instance->source == RemasterSourceType::Object ? "Object" : "Backdrop";
 		const char *match = instance->matchStatus == RemasterProfileMatchStatus::Matched ? "Matched" :
 			instance->matchStatus == RemasterProfileMatchStatus::Ambiguous ? "Ambiguous" : "No match";
-		const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(remasterReplayFrame, instance->tileId);
+		const std::vector<uint32_t> occurrences = S9xRemasterFrameOccurrences(remasterReplayFrame, instance->tileId,
+			instanceFromSubscreen);
 		std::set<uint32_t> occurrenceInstances;
 		for (uint32_t occurrence : occurrences)
-			occurrenceInstances.insert(remasterReplayFrame.mainPixels[occurrence].instanceId);
+			occurrenceInstances.insert((instanceFromSubscreen ? remasterReplayFrame.subPixels :
+				remasterReplayFrame.mainPixels)[occurrence].instanceId);
 		text << "Tile hash   v" << unsigned(instance->tileId.hashVersion) << ':' << unsigned(instance->tileId.bitDepth)
 			<< "bpp:" << std::hex << std::setw(16) << instance->tileId.hash << std::dec << "\n";
 		text << "Source      " << source << " / " << unsigned(instance->sourceIndex) << "\n";

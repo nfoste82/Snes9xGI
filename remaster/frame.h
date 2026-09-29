@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 19;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 20;
 
 struct RemasterFramePixel
 {
@@ -92,9 +92,11 @@ struct RemasterFrameTileInstance
 	uint8_t palette = 0;
 	uint8_t ppuPriority = 0;
 	uint8_t heightOffset = 0;
+	std::array<uint8_t, 64> placementHeight = {};
 	int8_t normalYaw = 0;
 	bool hFlip = false;
 	bool vFlip = false;
+	bool hasPlacementHeight = false;
 	RemasterProfileMatchStatus matchStatus = RemasterProfileMatchStatus::NoMatch;
 	std::string assetGroup;
 	std::string material;
@@ -161,6 +163,8 @@ struct RemasterDungeonFloorContext
 	{
 		uint8_t x = 0;
 		uint8_t y = 0;
+		uint8_t table = 0;
+		uint8_t tableEntry = 0;
 		bool highIsNorth = false;
 		bool changesPlane = false;
 	};
@@ -172,6 +176,9 @@ struct RemasterDungeonFloorContext
 	uint16_t linkX = 0;
 	uint16_t linkY = 0;
 	uint16_t roomIndex = 0xffff;
+	uint16_t previousRoomIndex = 0xffff;
+	uint8_t submodule = 0;
+	uint8_t roomTransitionFlags = 0;
 	uint16_t backgroundScrollX = 0;
 	uint16_t backgroundScrollY = 0;
 	const uint8_t *collisionAttributes = nullptr;
@@ -179,25 +186,76 @@ struct RemasterDungeonFloorContext
 	uint8_t stairCount = 0;
 };
 
+inline uint16_t S9xRemasterDungeonRoomForScreenPosition (const RemasterDungeonFloorContext &context,
+	uint32_t x, uint32_t y)
+{
+	if (!context.submodule || context.previousRoomIndex == 0xffff ||
+		context.previousRoomIndex == context.roomIndex)
+		return context.roomIndex;
+	// During an intra-dungeon scroll Zelda updates $A0 to the destination while
+	// the source room is still present on the opposite side of the viewport.
+	// $A2 and the room-grid delta record the source and direction. $EF cannot be
+	// used here: it is a door layer-toggle bitfield and is cleared as scrolling
+	// starts. Submodule zero is the settled-room lifecycle boundary.
+	// The source/destination split is the room boundary in unwrapped BG2 space;
+	// do not modulo first or destination geometry leaks onto source-room pixels.
+	const int worldX = static_cast<int>(context.backgroundScrollX) + static_cast<int>(x);
+	const int worldY = static_cast<int>(context.backgroundScrollY) + static_cast<int>(y);
+	const int currentColumn = context.roomIndex & 15, previousColumn = context.previousRoomIndex & 15;
+	const int currentRow = (context.roomIndex >> 4) & 15, previousRow = (context.previousRoomIndex >> 4) & 15;
+	if (currentColumn < previousColumn && worldX >= 512) return context.previousRoomIndex;
+	if (currentColumn > previousColumn && worldX < 512) return context.previousRoomIndex;
+	if (currentRow < previousRow && worldY >= 512) return context.previousRoomIndex;
+	if (currentRow > previousRow && worldY < 512) return context.previousRoomIndex;
+	return context.roomIndex;
+}
+
 struct RemasterDungeonHeightMap
 {
 	uint16_t roomIndex = 0xffff;
 	std::array<uint8_t, 64 * 64> offsets = {};
+	std::array<std::array<uint8_t, 64 * 64>, 2> planeOffsets = {};
+	uint16_t componentCount = 0;
+	uint16_t constraintCount = 0;
+	uint16_t conflictingComponentCount = 0;
+	std::array<uint16_t, 2> solvedPlaneCells = {};
+	bool hasPlaneOffsets = false;
+};
+
+struct RemasterDungeonHeightApplyDiagnostics
+{
+	uint32_t destinationPixels = 0;
+	uint32_t sourcePixels = 0;
+	uint32_t destinationRaisedPixels = 0;
+	uint32_t sourceRaisedPixels = 0;
+	uint32_t destinationUnknownPixels = 0;
+	uint32_t sourceUnknownPixels = 0;
 };
 
 inline bool S9xRemasterReadDungeonHeightMap (const std::string &path,
 	RemasterDungeonHeightMap &result)
 {
 	std::ifstream input(path, std::ios::binary);
-	std::array<uint8_t, 8 + 2 + 64 * 64> bytes = {};
-	if (!input.read(reinterpret_cast<char *>(bytes.data()), bytes.size()) || input.get() != EOF ||
-		std::memcmp(bytes.data(), "ALTPHM1\0", 8) != 0)
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+	const bool v1 = bytes.size() == 8 + 2 + 64 * 64 &&
+		std::memcmp(bytes.data(), "ALTPHM1\0", 8) == 0;
+	const bool v2 = bytes.size() == 8 + 2 + 3 * 64 * 64 &&
+		std::memcmp(bytes.data(), "ALTPHM2\0", 8) == 0;
+	if ((!input.eof() && input.fail()) || (!v1 && !v2))
 		return false;
 	const uint16_t room = static_cast<uint16_t>(bytes[8] | (bytes[9] << 8));
 	if (room >= 320)
 		return false;
 	result.roomIndex = room;
-	std::copy(bytes.begin() + 10, bytes.end(), result.offsets.begin());
+	std::copy(bytes.begin() + 10, bytes.begin() + 10 + 4096, result.offsets.begin());
+	result.hasPlaneOffsets = v2;
+	if (v2)
+		for (int plane = 0; plane < 2; plane++)
+		{
+			std::copy(bytes.begin() + 10 + (plane + 1) * 4096,
+				bytes.begin() + 10 + (plane + 2) * 4096, result.planeOffsets[plane].begin());
+			for (uint8_t value : result.planeOffsets[plane]) if (value != 255) result.solvedPlaneCells[plane]++;
+		}
 	return true;
 }
 
@@ -206,6 +264,10 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 {
 	result.roomIndex = context.roomIndex;
 	result.offsets.fill(255);
+	for (auto &plane : result.planeOffsets) plane.fill(255);
+	result.componentCount = result.constraintCount = result.conflictingComponentCount = 0;
+	result.solvedPlaneCells.fill(0);
+	result.hasPlaneOffsets = false;
 	if (!context.verifiedAlttpRom || !context.indoors || !floorRise ||
 		!context.collisionAttributes || context.collisionMode != 0)
 		return false;
@@ -248,16 +310,21 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		{
 			const uint32_t node = queue[cursor];
 			const int x = node % 497, row = node / 497, plane = row / 488, y = row % 488;
-			for (int px : { x, x + 15 }) for (int py : { y + 8, y + 23 })
-			{
-				const int index = (py / 8) * 64 + px / 8;
-				if (context.collisionAttributes[plane * 4096 + index] == 0 &&
-					components[plane * 4096 + index] < 0)
+			// Project the complete 16x16 collision body onto support cells.  Using
+			// only its four corners erodes ordinary floors and leaves most visible
+			// placements unknown; filling those gaps later from the composited
+			// viewport can incorrectly join an upper bridge to its underpass.
+			for (int cellY = (y + 8) / 8; cellY <= (y + 23) / 8; cellY++)
+				for (int cellX = x / 8; cellX <= (x + 15) / 8; cellX++)
 				{
-					components[plane * 4096 + index] = id;
-					cells[id].push_back(static_cast<uint16_t>(index));
+					const int index = cellY * 64 + cellX;
+					if (context.collisionAttributes[plane * 4096 + index] == 0 &&
+						components[plane * 4096 + index] < 0)
+					{
+						components[plane * 4096 + index] = id;
+						cells[id].push_back(static_cast<uint16_t>(plane * 4096 + index));
+					}
 				}
-			}
 			static const int dx[4] = { 0, 0, -1, 1 }, dy[4] = { -1, 1, 0, 0 };
 			for (int direction = 0; direction < 4; direction++)
 			{
@@ -306,6 +373,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	}
 	if (constraints.empty())
 		return false;
+	result.componentCount = static_cast<uint16_t>(std::min<size_t>(UINT16_MAX, cells.size()));
+	result.constraintCount = static_cast<uint16_t>(std::min<size_t>(UINT16_MAX, constraints.size()));
 
 	std::vector<int16_t> levels(cells.size(), INT16_MIN);
 	std::vector<bool> conflict(cells.size(), false);
@@ -344,30 +413,35 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		for (int16_t item : group) levels[item] -= base;
 	}
 	bool solved = false;
+	for (bool value : conflict) if (value) result.conflictingComponentCount++;
 	for (size_t component = 0; component < cells.size(); component++)
 		if (levels[component] != INT16_MIN && !conflict[component])
-			for (uint16_t index : cells[component])
+			for (uint16_t encoded : cells[component])
 			{
+				const int plane = encoded / 4096;
+				const uint16_t index = encoded % 4096;
 				const int value = std::min(254, levels[component] * floorRise);
+				result.planeOffsets[plane][index] = static_cast<uint8_t>(value);
+				result.solvedPlaneCells[plane]++;
 				uint8_t &output = result.offsets[index];
-				if (output == 255 || output == value)
-				{
-					output = static_cast<uint8_t>(value);
-					solved = true;
-				}
-				else
-					output = 255;
+				// BG2 is the upper visible support at bridge/underpass overlap.
+				if (output == 255 || value > output) output = static_cast<uint8_t>(value);
+				solved = true;
 			}
+	result.hasPlaneOffsets = solved;
 	return solved;
 }
 
 inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
-	const RemasterDungeonFloorContext &context, const RemasterDungeonHeightMap &map)
+	const RemasterDungeonFloorContext &context, const RemasterDungeonHeightMap &map,
+	const RemasterDungeonHeightMap *sourceRoomMap = nullptr,
+	RemasterDungeonHeightApplyDiagnostics *diagnostics = nullptr)
 {
 	if (map.roomIndex != context.roomIndex)
 		return;
 	const size_t originalCount = frame.tileInstances.size();
 	std::vector<uint8_t> firstOffset(originalCount, 255);
+	std::vector<uint8_t> firstBorderDirections(originalCount, 255);
 	std::set<std::string> wallFaceMaterials;
 	for (const RemasterFrameMaterial &material : frame.materials)
 		if (material.surfaceClass == RemasterSurfaceClass::WallFace)
@@ -401,6 +475,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 				if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
 					!wallFaceMaterials.count(instance.material)) continue;
+				if (S9xRemasterDungeonRoomForScreenPosition(context, x, y) != context.roomIndex) continue;
 				const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
 				if (!metadata) continue;
 				int north = 0, south = 0, west = 0, east = 0;
@@ -454,6 +529,9 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	};
 	observeWalls(frame.mainPixels);
 	observeWalls(frame.subPixels);
+	std::array<bool, 64 * 64> visibleWalls = {};
+	for (int index = 0; index < 64 * 64; index++)
+		visibleWalls[index] = walls[index].directions != 0;
 	for (int index = 0; index < 64 * 64; index++)
 	{
 		const WallCell &wall = walls[index];
@@ -487,6 +565,52 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		}
 		if (!conflict && proposed >= 0) placementOffsets[index] = static_cast<uint8_t>(proposed);
 	}
+	// Placement-local fallback for one ordinary collidable tile immediately
+	// outside a solved support. Every plane/contact must agree on both the floor
+	// base and displayed outward direction. Wall faces and special attributes
+	// retain their dedicated assembly rules.
+	struct BorderCell
+	{
+		uint8_t offset = 255;
+		uint8_t directions = 0;
+		uint8_t plane = 255;
+		bool candidate = false;
+		bool conflict = false;
+	};
+	std::array<BorderCell, 64 * 64> borders = {};
+	if (context.collisionAttributes && map.hasPlaneOffsets)
+		for (int index = 0; index < 64 * 64; index++)
+		{
+			if (visibleWalls[index]) continue;
+			const int x = index % 64, y = index / 64;
+			static const int dx[4] = { 0, 0, -1, 1 };
+			static const int dy[4] = { -1, 1, 0, 0 };
+			BorderCell &border = borders[index];
+			for (int plane = 0; plane < 2; plane++)
+			{
+				const uint8_t attribute = context.collisionAttributes[plane * 4096 + index];
+				if (attribute != 1 && attribute != 2) continue;
+				for (int direction = 0; direction < 4; direction++)
+				{
+					const int xx = x - dx[direction], yy = y - dy[direction];
+					if (xx < 0 || xx >= 64 || yy < 0 || yy >= 64) continue;
+					const int contact = yy * 64 + xx;
+					if (context.collisionAttributes[plane * 4096 + contact] != 0) continue;
+					const uint8_t value = map.planeOffsets[plane][contact];
+					if (value == 255) continue;
+					if (border.candidate && (border.offset != value || border.plane != plane))
+						border.conflict = true;
+					else
+					{
+						border.candidate = true;
+						border.offset = value;
+						border.plane = static_cast<uint8_t>(plane);
+						border.directions |= static_cast<uint8_t>(1 << direction);
+					}
+				}
+			}
+			if (border.candidate && !border.conflict) placementOffsets[index] = border.offset;
+		}
 	// Completed collision tables mark axis-aligned door thresholds as 80..8f.
 	// Carry a floor base through the doorway only when both gameplay planes and
 	// every solved sample on its movement axis agree.
@@ -527,16 +651,53 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
 			instance.assetGroup == "stair_treads" || instance.assetGroup == "stair_rails")
 			return 0;
+		const uint16_t pixelRoom = S9xRemasterDungeonRoomForScreenPosition(context, x, y);
 		const uint32_t roomX = (context.backgroundScrollX + x) & 511;
 		const uint32_t roomY = (context.backgroundScrollY + y) & 511;
 		const size_t cell = (roomY / 8) * 64 + roomX / 8;
+		if (pixelRoom != context.roomIndex)
+		{
+			if (!sourceRoomMap || sourceRoomMap->roomIndex != pixelRoom) return 0;
+			const uint8_t sourceValue = sourceRoomMap->offsets[cell];
+			return sourceValue == 255 ? 0 : sourceValue;
+		}
 		if (wallFaceMaterials.count(instance.material) && !walls[cell].directions)
 			return 0;
 		const uint8_t value = placementOffsets[cell];
 		return value == 255 ? 0 : value;
 	};
+	auto borderAt = [&] (const RemasterFramePixel &pixel, uint32_t x, uint32_t y) -> const BorderCell * {
+		if (!pixel.instanceId || pixel.instanceId > originalCount) return nullptr;
+		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
+			instance.assetGroup == "stair_treads" || instance.assetGroup == "stair_rails") return nullptr;
+		if (S9xRemasterDungeonRoomForScreenPosition(context, x, y) != context.roomIndex) return nullptr;
+		const uint32_t roomX = (context.backgroundScrollX + x) & 511;
+		const uint32_t roomY = (context.backgroundScrollY + y) & 511;
+		const BorderCell &border = borders[(roomY / 8) * 64 + roomX / 8];
+		return border.candidate && !border.conflict ? &border : nullptr;
+	};
+	auto assignBorderHeight = [] (RemasterFrameTileInstance &instance, uint8_t directions) {
+		instance.hasPlacementHeight = true;
+		instance.placementHeight.fill(7);
+		static const int dx[4] = { 0, 0, -1, 1 };
+		static const int dy[4] = { -1, 1, 0, 0 };
+		for (int direction = 0; direction < 4; direction++)
+			if (directions & (1 << direction))
+			{
+				int transformedDx = instance.hFlip ? -dx[direction] : dx[direction];
+				int transformedDy = instance.vFlip ? -dy[direction] : dy[direction];
+				for (int yy = 0; yy < 8; yy++) for (int xx = 0; xx < 8; xx++)
+				{
+					const uint8_t ramp = static_cast<uint8_t>(transformedDx > 0 ? xx :
+						transformedDx < 0 ? 7 - xx : transformedDy > 0 ? yy : 7 - yy);
+					instance.placementHeight[yy * 8 + xx] =
+						std::min(instance.placementHeight[yy * 8 + xx], ramp);
+				}
+			}
+	};
 	auto visit = [&] (std::vector<RemasterFramePixel> &pixels, bool assign,
-		std::map<std::pair<uint32_t, uint8_t>, uint32_t> &copies) {
+		std::map<std::tuple<uint32_t, uint8_t, uint8_t>, uint32_t> &copies) {
 		if (pixels.size() != static_cast<size_t>(frame.width) * frame.height)
 			return;
 		for (uint32_t y = 0; y < frame.height; y++)
@@ -547,37 +708,62 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				continue;
 			const uint32_t originalId = pixel.instanceId;
 			const uint8_t offset = offsetAt(pixel, x, y);
+			if (!assign && diagnostics)
+			{
+				const uint16_t pixelRoom = S9xRemasterDungeonRoomForScreenPosition(context, x, y);
+				const bool source = pixelRoom != context.roomIndex;
+				const uint32_t roomX = (context.backgroundScrollX + x) & 511;
+				const uint32_t roomY = (context.backgroundScrollY + y) & 511;
+				const size_t cell = (roomY / 8) * 64 + roomX / 8;
+				const uint8_t raw = source ?
+					(sourceRoomMap && sourceRoomMap->roomIndex == pixelRoom ? sourceRoomMap->offsets[cell] : 255) :
+					placementOffsets[cell];
+				(source ? diagnostics->sourcePixels : diagnostics->destinationPixels)++;
+				if (raw == 255) (source ? diagnostics->sourceUnknownPixels : diagnostics->destinationUnknownPixels)++;
+				else if (offset) (source ? diagnostics->sourceRaisedPixels : diagnostics->destinationRaisedPixels)++;
+			}
+			const BorderCell *border = borderAt(pixel, x, y);
+			const uint8_t borderDirections = border ? border->directions : 0;
 			uint8_t &first = firstOffset[originalId - 1];
 			if (!assign)
 			{
 				if (first == 255)
+				{
 					first = offset;
+					firstBorderDirections[originalId - 1] = borderDirections;
+				}
 				continue;
 			}
-			if (offset == first)
+			if (offset == first && borderDirections == firstBorderDirections[originalId - 1])
 				continue;
-			const auto key = std::make_pair(originalId, offset);
+			const auto key = std::make_tuple(originalId, offset, borderDirections);
 			auto found = copies.find(key);
 			if (found == copies.end())
 			{
 				RemasterFrameTileInstance copy = frame.tileInstances[originalId - 1];
+				copy.hasPlacementHeight = false;
 				copy.heightOffset = static_cast<uint8_t>(std::min(255,
 					static_cast<int>(copy.heightOffset) + offset));
+				if (border) assignBorderHeight(copy, borderDirections);
 				frame.tileInstances.push_back(copy);
 				found = copies.emplace(key, static_cast<uint32_t>(frame.tileInstances.size())).first;
 			}
 			pixel.instanceId = found->second;
 			}
 	};
-	std::map<std::pair<uint32_t, uint8_t>, uint32_t> copies;
+	std::map<std::tuple<uint32_t, uint8_t, uint8_t>, uint32_t> copies;
 	visit(frame.mainPixels, false, copies);
 	visit(frame.subPixels, false, copies);
 	visit(frame.mainPixels, true, copies);
 	visit(frame.subPixels, true, copies);
 	for (size_t i = 0; i < originalCount; i++)
 		if (firstOffset[i] != 255)
+		{
 			frame.tileInstances[i].heightOffset = static_cast<uint8_t>(std::min(255,
 					static_cast<int>(frame.tileInstances[i].heightOffset) + firstOffset[i]));
+			if (firstBorderDirections[i] != 255 && firstBorderDirections[i])
+				assignBorderHeight(frame.tileInstances[i], firstBorderDirections[i]);
+		}
 
 	// Ground-supported OAM art follows the solved cell beneath the assembled
 	// visible object. This is spatial rather than priority-based: ALTTP reuses
@@ -613,7 +799,9 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 			const Bounds &bounds = slots[frame.tileInstances[i].sourceIndex];
 			const uint32_t roomX = (context.backgroundScrollX + (bounds.x0 + bounds.x1) / 2) & 511;
 			const uint32_t roomY = (context.backgroundScrollY + bounds.y1) & 511;
-			const uint8_t offset = map.offsets[(roomY / 8) * 64 + roomX / 8];
+			const size_t support = (roomY / 8) * 64 + roomX / 8;
+			const uint8_t offset = map.hasPlaneOffsets ?
+				map.planeOffsets[context.linkPlane & 1][support] : map.offsets[support];
 			if (offset != 255)
 				frame.tileInstances[i].heightOffset = static_cast<uint8_t>(std::min(255,
 					static_cast<int>(frame.tileInstances[i].heightOffset) + offset));
@@ -1468,6 +1656,19 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		instance.hFlip = hFlip != 0;
 		instance.vFlip = vFlip != 0;
 		instance.normalYaw = normalYaw == 255 ? -1 : static_cast<int8_t>(normalYaw);
+		if (result.schemaVersion >= 20)
+		{
+			uint8_t hasPlacementHeight = 0;
+			if (!input.ReadU8(hasPlacementHeight) || hasPlacementHeight > 1) return false;
+			instance.hasPlacementHeight = hasPlacementHeight != 0;
+			if (instance.hasPlacementHeight)
+			{
+				if (input.offset + instance.placementHeight.size() > bytes.size()) return false;
+				std::copy(bytes.begin() + input.offset, bytes.begin() + input.offset + instance.placementHeight.size(),
+					instance.placementHeight.begin());
+				input.offset += instance.placementHeight.size();
+			}
+		}
 		instance.matchStatus = static_cast<RemasterProfileMatchStatus>(matchStatus);
 	}
 	result.lights.resize(lightCount);
@@ -1511,6 +1712,39 @@ inline const RemasterFrameTileInstance *S9xRemasterFrameInstanceAt (
 		pixels[offset].instanceId > frame.tileInstances.size())
 		return nullptr;
 	return &frame.tileInstances[pixels[offset].instanceId - 1];
+}
+
+// Return the first decoded PPU tile contributing to the composed pixel.  Main
+// screen wins when it has a tile; a backdrop-only main pixel may still be
+// colored by a real subscreen BG/OBJ through PPU color math.
+inline const RemasterFramePixel *S9xRemasterFrameVisibleTilePixelAt (
+	const RemasterFrame &frame, uint32_t x, uint32_t y, bool *subscreen = nullptr)
+{
+	if (x >= frame.width || y >= frame.height)
+		return nullptr;
+	const size_t offset = static_cast<size_t>(y) * frame.width + x;
+	if (offset >= frame.mainPixels.size() || offset >= frame.subPixels.size())
+		return nullptr;
+	const RemasterFramePixel *pixel = &frame.mainPixels[offset];
+	bool sub = false;
+	const bool mainBackdrop = static_cast<uint8_t>(pixel->owner >> 24) ==
+		static_cast<uint8_t>(RemasterSourceType::Backdrop);
+	if (mainBackdrop && (!pixel->instanceId || pixel->instanceId > frame.tileInstances.size()))
+	{
+		pixel = &frame.subPixels[offset];
+		sub = true;
+	}
+	if (!pixel->instanceId || pixel->instanceId > frame.tileInstances.size())
+		return nullptr;
+	if (subscreen) *subscreen = sub;
+	return pixel;
+}
+
+inline const RemasterFrameTileInstance *S9xRemasterFrameVisibleInstanceAt (
+	const RemasterFrame &frame, uint32_t x, uint32_t y, bool *subscreen = nullptr)
+{
+	const RemasterFramePixel *pixel = S9xRemasterFrameVisibleTilePixelAt(frame, x, y, subscreen);
+	return pixel ? &frame.tileInstances[pixel->instanceId - 1] : nullptr;
 }
 
 inline std::vector<uint32_t> S9xRemasterFrameOccurrences (
@@ -1575,10 +1809,11 @@ inline std::pair<int, int> S9xRemasterFrameHeightRange (const RemasterFrame &fra
 			continue;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 		const RemasterFrameAssetMetadata *metadata = byInstance[pixel.instanceId - 1];
-		if ((!metadata || !metadata->hasHeight) && !instance.heightOffset)
+		if ((!metadata || !metadata->hasHeight) && !instance.hasPlacementHeight && !instance.heightOffset)
 			continue;
-		const int height = std::min(255, static_cast<int>(instance.heightOffset) +
-			(metadata && metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0));
+		const int localHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
+			(metadata && metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
+		const int height = std::min(255, static_cast<int>(instance.heightOffset) + localHeight);
 		minimum = std::min(minimum, height);
 		maximum = std::max(maximum, height);
 		foundHeight = true;
@@ -1661,7 +1896,9 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		accumulator.red += std::pow(metadata->emissionRgba[emissionOffset] / 255.0f, 2.2f) * intensity / 8.0f;
 		accumulator.green += std::pow(metadata->emissionRgba[emissionOffset + 1] / 255.0f, 2.2f) * intensity / 8.0f;
 		accumulator.blue += std::pow(metadata->emissionRgba[emissionOffset + 2] / 255.0f, 2.2f) * intensity / 8.0f;
-		accumulator.z += (metadata->hasHeight ? metadata->height[pixel.tilePixel] / 255.0f : 0.0f) * intensity;
+		const uint8_t localHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
+			(metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
+		accumulator.z += localHeight / 255.0f * intensity;
 		accumulator.weight += intensity;
 		accumulator.emissive = true;
 	}
@@ -1902,6 +2139,9 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U8(bytes, instance.heightOffset);
 		RemasterFrameSerialization::U8(bytes, instance.normalYaw < 0 ? 255 :
 			static_cast<uint8_t>(instance.normalYaw));
+		RemasterFrameSerialization::U8(bytes, instance.hasPlacementHeight ? 1 : 0);
+		if (instance.hasPlacementHeight)
+			bytes.insert(bytes.end(), instance.placementHeight.begin(), instance.placementHeight.end());
 	}
 	for (const RemasterFrameLight &light : frame.lights)
 	{
