@@ -488,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, required=True, help="local JSON coverage report")
     parser.add_argument("--output-profile", type=Path,
                         help="write a first-pass hash-keyed candidate profile")
+    parser.add_argument("--tile-semantics", type=Path,
+                        help="ROM-bound authored floor and wall semantics for the candidate profile")
     parser.add_argument("--inventory", type=Path, help="optional Snes9x tile-inventory.json")
     options = parser.parse_args(argv)
     try:
@@ -512,7 +514,8 @@ def main(argv: list[str] | None = None) -> int:
         counts = write_atlas(rom, profile, options.database, options.inventory)
         if options.output_profile:
             counts["profile_generation"] = generate_profile(
-                options.database, options.profile, options.output_profile)
+                options.database, options.profile, options.output_profile,
+                options.tile_semantics)
             counts["coverage_gates"]["metadata_proposals"] = (
                 "first-pass hash-keyed layers for all decoded tiles; in-game review needed")
             counts["coverage_gates"]["profile_output"] = "candidate profile written"

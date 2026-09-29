@@ -17,6 +17,8 @@ import re
 import sqlite3
 import tomllib
 
+from alttp_tile_semantic_atlas import AnnotationStore, TileCatalog
+
 
 LAYERS = ("height", "normal_xyz", "occlusion", "emission_rgba")
 FRONT = (128, 128, 255)
@@ -258,6 +260,30 @@ def _normal_from_height(heights: list[int] | tuple[int, ...]) -> tuple[int, ...]
     return tuple(result)
 
 
+def _semantic_wall_layers(annotation: dict) -> dict[str, tuple[int, ...]]:
+    """Build the canonical one-unit-per-pixel wall segment."""
+    ramps = {
+        "north": [y for y in range(8) for _x in range(8)],
+        "south": [7 - y for y in range(8) for _x in range(8)],
+        "west": [x for _y in range(8) for x in range(8)],
+        "east": [7 - x for _y in range(8) for x in range(8)],
+        "north_west": [round((x + y) / 2) for y in range(8) for x in range(8)],
+        "north_east": [round(((7 - x) + y) / 2) for y in range(8) for x in range(8)],
+        "south_west": [round((x + (7 - y)) / 2) for y in range(8) for x in range(8)],
+        "south_east": [round(((7 - x) + (7 - y)) / 2) for y in range(8) for x in range(8)],
+    }
+    normals = annotation["normals"]
+    if annotation["role"] == "wall":
+        heights = ramps[normals[0]]
+    else:
+        if annotation.get("corner_type") not in ("inside", "outside"):
+            raise ProfileGenerationError("incomplete wall corner cannot generate height")
+        combine = max if annotation["corner_type"] == "inside" else min
+        heights = [combine(a, b) for a, b in zip(ramps[normals[0]], ramps[normals[1]])]
+    return {"height": tuple(heights), "normal_xyz": _normal_from_height(heights),
+            "occlusion": (255,) * 64, "emission_rgba": ZERO_EMISSION}
+
+
 def _format_layer(name: str, values: tuple[int, ...]) -> str:
     expected = {"height": 64, "normal_xyz": 192,
                 "occlusion": 64, "emission_rgba": 256}[name]
@@ -334,6 +360,32 @@ def _complete_hud_group(source_text: str, profile: dict,
     return updated, len(rom_hud - existing)
 
 
+def _complete_semantic_groups(source_text: str, profile: dict,
+                              semantics: dict[str, dict]) -> tuple[str, dict[str, int]]:
+    additions = {}
+    roles = {"dungeon_floor": {"floor"},
+             "wall_faces": {"wall", "wall_corner"}}
+    for group_name, accepted in roles.items():
+        group = profile.get("asset_groups", {}).get(group_name)
+        if group is None:
+            raise ProfileGenerationError(f"profile lacks {group_name} asset group")
+        existing = set(group["tile_hashes"])
+        semantic_ids = {content_id for content_id, annotation in semantics.items()
+                        if annotation["role"] in accepted and
+                        not annotation["context_dependent"] and
+                        annotation.get("corner_type") != "unknown"}
+        combined = existing | semantic_ids
+        pattern = re.compile(rf'(?ms)^(\[asset_groups\.{re.escape(group_name)}\]\n)'
+                             r'tile_hashes\s*=\s*\[[^\n]*\]')
+        line = "tile_hashes = [" + ", ".join(json.dumps(item) for item in sorted(combined)) + "]"
+        source_text, count = pattern.subn(lambda match: match.group(1) + line,
+                                          source_text, count=1)
+        if count != 1:
+            raise ProfileGenerationError(f"could not locate {group_name} asset group")
+        additions[group_name] = len(combined - existing)
+    return source_text, additions
+
+
 def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, int]:
     existing = profile.get("lighting_space", {}).get("upper_floor_height")
     if existing is not None:
@@ -355,7 +407,8 @@ def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, in
     return updated, height
 
 
-def generate_profile(database: Path, source: Path, output: Path) -> dict:
+def generate_profile(database: Path, source: Path, output: Path,
+                     semantics_path: Path | None = None) -> dict:
     if output.resolve() in {database.resolve(), source.resolve()}:
         raise ProfileGenerationError("candidate profile must be distinct from inputs")
     source_text = source.read_text()
@@ -368,11 +421,24 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
         run = dict(connection.execute("SELECT key, value FROM run_info"))
         if run.get("rom_sha256") != profile.get("game", {}).get("rom_sha256"):
             raise ProfileGenerationError("atlas ROM hash differs from profile")
+        semantics = {}
+        if semantics_path:
+            authored_semantics = AnnotationStore(semantics_path, run["rom_sha256"]).tiles
+            catalog = TileCatalog(database)
+            for content_id, annotation in authored_semantics.items():
+                for alias in catalog.semantic_group(content_id):
+                    existing = semantics.get(alias)
+                    if existing is not None and existing != annotation:
+                        raise ProfileGenerationError(
+                            f"conflicting exact-source semantics for {content_id} and {alias}")
+                    semantics[alias] = annotation
         rows = list(connection.execute(
             "SELECT d.content_id, d.indices, GROUP_CONCAT(DISTINCT s.source_kind) "
             "FROM decoded_tile d JOIN graphics_source s USING(content_id) "
             "GROUP BY d.content_id ORDER BY d.content_id"))
         source_text, new_hud_ids = _complete_hud_group(source_text, profile, connection)
+        source_text, semantic_group_additions = _complete_semantic_groups(
+            source_text, profile, semantics) if semantics else (source_text, {})
         source_text, upper_floor_height = _enable_upper_floor_height(source_text, profile)
         references = _link_references(connection, authored)
         generated: dict[str, dict[str, tuple[int, ...]]] = {}
@@ -399,6 +465,17 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
             elif families == {"background"} and content_id in WALL_OVERLAY_SEGMENTS:
                 method = "wall_overlay"
                 proposal = _wall_overlay_layers(content_id)
+            elif (families == {"background"} and content_id in semantics and
+                  semantics[content_id]["role"] in ("wall", "wall_corner") and
+                  not semantics[content_id]["context_dependent"] and
+                  semantics[content_id].get("corner_type") != "unknown"):
+                method = "semantic_" + semantics[content_id]["role"]
+                proposal = _semantic_wall_layers(semantics[content_id])
+            elif (families == {"background"} and content_id in semantics and
+                  semantics[content_id]["role"] == "floor" and
+                  not semantics[content_id]["context_dependent"]):
+                method = "semantic_floor"
+                proposal = _neutral_layers()
             elif len(families) > 1:
                 method = "shared_family_neutral"
                 proposal = _neutral_layers()
@@ -438,6 +515,13 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
         if key == "asset_groups" and new_hud_ids:
             expected = {name: dict(group) for name, group in value.items()}
             expected["hud_tiles"]["tile_hashes"] = parsed[key]["hud_tiles"]["tile_hashes"]
+            for name in semantic_group_additions:
+                expected[name]["tile_hashes"] = parsed[key][name]["tile_hashes"]
+            value = expected
+        elif key == "asset_groups" and semantic_group_additions:
+            expected = {name: dict(group) for name, group in value.items()}
+            for name in semantic_group_additions:
+                expected[name]["tile_hashes"] = parsed[key][name]["tile_hashes"]
             value = expected
         if key != "assets" and parsed.get(key) != value:
             raise ProfileGenerationError(f"non-asset profile section changed: {key}")
@@ -467,5 +551,7 @@ def generate_profile(database: Path, source: Path, output: Path) -> dict:
             "generated_methods": dict(methods), "ambiguous_shared_family_ids": ambiguous,
             "generated_layer_coverage": {name: len(generated) for name in LAYERS},
             "new_hud_hashes": new_hud_ids,
-            "upper_floor_height": upper_floor_height,
-            "confidence": "first-pass visual heuristics; review in game"}
+             "upper_floor_height": upper_floor_height,
+             "semantic_annotations": len(semantics),
+             "semantic_group_additions": semantic_group_additions,
+             "confidence": "first-pass visual heuristics; review in game"}

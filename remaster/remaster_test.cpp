@@ -315,6 +315,55 @@ int main ()
 	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[113 * 256 + 120].instanceId - 1].heightOffset == 50);
 	assert(reviewFrame.tileInstances[reviewFrame.mainPixels[114 * 256 + 120].instanceId - 1].heightOffset == 0);
 	assert(reviewFrame.tileInstances[2].heightOffset == 0); // Invisible OAM has no spatial support point.
+	RemasterFrame wallDistanceFrame;
+	wallDistanceFrame.width = 32;
+	wallDistanceFrame.height = 8;
+	wallDistanceFrame.mainPixels.resize(32 * 8);
+	wallDistanceFrame.materials.push_back(wallFaceMaterial);
+	roomWallFace.tileId = roomBackground.tileId;
+	roomWallFace.hFlip = false;
+	wallDistanceFrame.tileInstances = { roomWallFace };
+	RemasterFrameAssetMetadata wallDistanceMetadata;
+	wallDistanceMetadata.tileId = roomWallFace.tileId;
+	wallDistanceMetadata.hasHeight = true;
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++)
+			wallDistanceMetadata.height[y * 8 + x] = static_cast<uint8_t>(7 - x);
+	wallDistanceFrame.assetMetadata.push_back(wallDistanceMetadata);
+	for (int cell = 0; cell < 3; cell++)
+	{
+		wallDistanceFrame.mainPixels[cell * 8].instanceId = 1;
+		wallDistanceFrame.mainPixels[cell * 8].tilePixel = 0;
+	}
+	RemasterDungeonHeightMap wallDistanceMap;
+	wallDistanceMap.roomIndex = 0x55;
+	wallDistanceMap.offsets.fill(255);
+	wallDistanceMap.offsets[3] = 0;
+	RemasterDungeonFloorContext wallDistanceContext = floorContext;
+	wallDistanceContext.roomIndex = 0x55;
+	wallDistanceContext.backgroundScrollX = 0;
+	wallDistanceContext.backgroundScrollY = 0;
+	S9xRemasterApplyDungeonHeightMap(wallDistanceFrame, wallDistanceContext, wallDistanceMap);
+	assert(wallDistanceFrame.tileInstances[wallDistanceFrame.mainPixels[0].instanceId - 1].heightOffset == 16);
+	assert(wallDistanceFrame.tileInstances[wallDistanceFrame.mainPixels[8].instanceId - 1].heightOffset == 8);
+	assert(wallDistanceFrame.tileInstances[wallDistanceFrame.mainPixels[16].instanceId - 1].heightOffset == 0);
+	RemasterFrame doorwayFrame;
+	doorwayFrame.width = 8;
+	doorwayFrame.height = 8;
+	doorwayFrame.mainPixels.resize(64);
+	doorwayFrame.tileInstances = { roomBackground };
+	doorwayFrame.mainPixels[0].instanceId = 1;
+	RemasterDungeonHeightMap doorwayMap;
+	doorwayMap.roomIndex = 0x55;
+	doorwayMap.offsets.fill(255);
+	doorwayMap.offsets[1] = 50;
+	std::array<uint8_t, 8192> doorwayAttributes = {};
+	doorwayAttributes[0] = 0x81;
+	doorwayAttributes[4096] = 0x81;
+	RemasterDungeonFloorContext doorwayContext = wallDistanceContext;
+	doorwayContext.collisionAttributes = doorwayAttributes.data();
+	S9xRemasterApplyDungeonHeightMap(doorwayFrame, doorwayContext, doorwayMap);
+	assert(doorwayFrame.tileInstances[0].heightOffset == 50);
 	RemasterFrame heightRangeFrame;
 	heightRangeFrame.width = 2;
 	heightRangeFrame.height = 1;

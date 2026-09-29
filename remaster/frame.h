@@ -368,10 +368,158 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		return;
 	const size_t originalCount = frame.tileInstances.size();
 	std::vector<uint8_t> firstOffset(originalCount, 255);
-	std::set<std::string> fixedHeightMaterials;
+	std::set<std::string> wallFaceMaterials;
 	for (const RemasterFrameMaterial &material : frame.materials)
 		if (material.surfaceClass == RemasterSurfaceClass::WallFace)
-			fixedHeightMaterials.insert(material.name);
+			wallFaceMaterials.insert(material.name);
+	std::array<uint8_t, 64 * 64> placementOffsets = map.offsets;
+	struct WallCell
+	{
+		int8_t dx[2] = {};
+		int8_t dy[2] = {};
+		uint8_t directions = 0;
+		uint8_t localMinimum = 0;
+		bool conflict = false;
+	};
+	std::array<WallCell, 64 * 64> walls = {};
+	std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(originalCount, nullptr);
+	for (size_t instanceId = 0; instanceId < originalCount; instanceId++)
+		for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
+			if (metadata.tileId == frame.tileInstances[instanceId].tileId && metadata.hasHeight)
+			{
+				instanceMetadata[instanceId] = &metadata;
+				break;
+			}
+	auto observeWalls = [&] (const std::vector<RemasterFramePixel> &pixels) {
+		if (pixels.size() != static_cast<size_t>(frame.width) * frame.height)
+			return;
+		for (uint32_t y = 0; y < frame.height; y++)
+			for (uint32_t x = 0; x < frame.width; x++)
+			{
+				const RemasterFramePixel &pixel = pixels[static_cast<size_t>(y) * frame.width + x];
+				if (!pixel.instanceId || pixel.instanceId > originalCount) continue;
+				const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+				if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
+					!wallFaceMaterials.count(instance.material)) continue;
+				const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
+				if (!metadata) continue;
+				int north = 0, south = 0, west = 0, east = 0;
+				uint8_t minimum = 255;
+				for (int i = 0; i < 8; i++)
+				{
+					north += metadata->height[i];
+					south += metadata->height[56 + i];
+					west += metadata->height[i * 8];
+					east += metadata->height[i * 8 + 7];
+				}
+				for (uint8_t value : metadata->height) minimum = std::min(minimum, value);
+				WallCell candidate;
+				auto direction = [&] (int dx, int dy) {
+					if (instance.hFlip) dx = -dx;
+					if (instance.vFlip) dy = -dy;
+					candidate.dx[candidate.directions] = static_cast<int8_t>(dx);
+					candidate.dy[candidate.directions++] = static_cast<int8_t>(dy);
+				};
+				if (east < west) direction(1, 0); else if (west < east) direction(-1, 0);
+				if (south < north) direction(0, 1); else if (north < south) direction(0, -1);
+				if (candidate.directions == 2)
+				{
+					bool planar = true;
+					for (int yy = 0; yy < 8; yy++)
+						for (int xx = 0; xx < 8; xx++)
+						{
+							const int expected = metadata->height[yy * 8] + metadata->height[xx] - metadata->height[0];
+							if (std::abs(static_cast<int>(metadata->height[yy * 8 + xx]) - expected) > 1)
+								planar = false;
+						}
+					if (planar)
+					{
+						candidate.dx[0] += candidate.dx[1];
+						candidate.dy[0] += candidate.dy[1];
+						candidate.directions = 1;
+					}
+				}
+				if (!candidate.directions) continue;
+				candidate.localMinimum = minimum;
+				const uint32_t roomX = (context.backgroundScrollX + x) & 511;
+				const uint32_t roomY = (context.backgroundScrollY + y) & 511;
+				WallCell &cell = walls[(roomY / 8) * 64 + roomX / 8];
+				if (!cell.directions)
+					cell = candidate;
+				else if (cell.directions != candidate.directions || cell.localMinimum != candidate.localMinimum ||
+					cell.dx[0] != candidate.dx[0] || cell.dy[0] != candidate.dy[0] ||
+					(cell.directions == 2 && (cell.dx[1] != candidate.dx[1] || cell.dy[1] != candidate.dy[1])))
+					cell.conflict = true;
+			}
+	};
+	observeWalls(frame.mainPixels);
+	observeWalls(frame.subPixels);
+	for (int index = 0; index < 64 * 64; index++)
+	{
+		const WallCell &wall = walls[index];
+		if (!wall.directions || wall.conflict) continue;
+		placementOffsets[index] = 255;
+		const int x = index % 64, y = index / 64;
+		int proposed = -1;
+		bool conflict = false;
+		for (uint8_t direction = 0; direction < wall.directions; direction++)
+		{
+			int xx = x, yy = y;
+			for (int steps = 1; steps < 64; steps++)
+			{
+				xx += wall.dx[direction]; yy += wall.dy[direction];
+				if (xx < 0 || xx >= 64 || yy < 0 || yy >= 64) break;
+				const int target = yy * 64 + xx;
+				if (map.offsets[target] != 255)
+				{
+					const int value = static_cast<int>(map.offsets[target]) + (steps - 1) * 8 - wall.localMinimum;
+					if (value < 0 || value > 254 || (proposed >= 0 && proposed != value)) conflict = true;
+					else proposed = value;
+					break;
+				}
+				if (!walls[target].directions || walls[target].conflict) break;
+				bool continuation = false;
+				for (uint8_t other = 0; other < walls[target].directions; other++)
+					if (walls[target].dx[other] == wall.dx[direction] &&
+						walls[target].dy[other] == wall.dy[direction]) continuation = true;
+				if (!continuation) break;
+			}
+		}
+		if (!conflict && proposed >= 0) placementOffsets[index] = static_cast<uint8_t>(proposed);
+	}
+	// Completed collision tables mark axis-aligned door thresholds as 80..8f.
+	// Carry a floor base through the doorway only when both gameplay planes and
+	// every solved sample on its movement axis agree.
+	for (int index = 0; index < 64 * 64; index++)
+	{
+		int axis = -1;
+		for (int plane = 0; plane < 2; plane++)
+		{
+			const uint8_t attribute = context.collisionAttributes ?
+				context.collisionAttributes[plane * 4096 + index] : 0;
+			if (attribute < 0x80 || attribute > 0x8f) continue;
+			const int candidate = (attribute & 1) ? 0 : 1; // W/E doors use X; N/S use Y.
+			if (axis >= 0 && axis != candidate) axis = -2;
+			else if (axis != -2) axis = candidate;
+		}
+		if (axis < 0) continue;
+		const int x = index % 64, y = index / 64;
+		int proposed = -1;
+		bool conflict = false;
+		for (int sign : {-1, 1})
+			for (int distance = 1; distance <= 3; distance++)
+			{
+				const int xx = x + (axis == 0 ? sign * distance : 0);
+				const int yy = y + (axis == 1 ? sign * distance : 0);
+				if (xx < 0 || xx >= 64 || yy < 0 || yy >= 64) break;
+				const uint8_t value = map.offsets[yy * 64 + xx];
+				if (value == 255) continue;
+				if (proposed >= 0 && proposed != value) conflict = true;
+				else proposed = value;
+				break;
+			}
+		if (!conflict && proposed >= 0) placementOffsets[index] = static_cast<uint8_t>(proposed);
+	}
 	auto offsetAt = [&] (const RemasterFramePixel &pixel, uint32_t x, uint32_t y) -> uint8_t {
 		if (!pixel.instanceId || pixel.instanceId > originalCount)
 			return 0;
@@ -379,11 +527,12 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
 			instance.assetGroup == "stair_treads" || instance.assetGroup == "stair_rails")
 			return 0;
-		if (fixedHeightMaterials.count(instance.material))
-			return 0;
 		const uint32_t roomX = (context.backgroundScrollX + x) & 511;
 		const uint32_t roomY = (context.backgroundScrollY + y) & 511;
-		const uint8_t value = map.offsets[(roomY / 8) * 64 + roomX / 8];
+		const size_t cell = (roomY / 8) * 64 + roomX / 8;
+		if (wallFaceMaterials.count(instance.material) && !walls[cell].directions)
+			return 0;
+		const uint8_t value = placementOffsets[cell];
 		return value == 255 ? 0 : value;
 	};
 	auto visit = [&] (std::vector<RemasterFramePixel> &pixels, bool assign,
