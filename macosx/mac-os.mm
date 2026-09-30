@@ -3317,6 +3317,7 @@ void QuitWithFatalError ( NSString *message)
 @property (nonatomic) BOOL remasterRightDown;
 @property (nonatomic) BOOL remasterRightDragged;
 @property (nonatomic) NSPoint remasterRightDownPoint;
+@property (nonatomic) NSPoint remasterRightLastPoint;
 - (void)cancelRemasterDebugLightGesture;
 @end
 
@@ -3532,6 +3533,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)rightMouseDown:(NSEvent *)event
 {
 	self.remasterRightDownPoint = [self convertPoint:event.locationInWindow fromView:nil];
+	self.remasterRightLastPoint = self.remasterRightDownPoint;
 	self.remasterRightDragged = NO;
 	self.remasterRightConsumed = !useMouse &&
 		[self.emulationDelegate respondsToSelector:@selector(canBeginRemasterDebugLightAtViewPoint:)] &&
@@ -3639,9 +3641,18 @@ void QuitWithFatalError ( NSString *message)
 		const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
 		if (std::hypot(point.x - self.remasterRightDownPoint.x, point.y - self.remasterRightDownPoint.y) >= 3.0)
 			self.remasterRightDragged = YES;
-		if (self.remasterRightDragged &&
-			[self.emulationDelegate respondsToSelector:@selector(updateRemasterDebugLightAtViewPoint:toggle:)])
-			[self.emulationDelegate updateRemasterDebugLightAtViewPoint:point toggle:NO];
+		if (self.remasterRightDragged)
+		{
+			if (event.modifierFlags & NSEventModifierFlagCommand)
+			{
+				if ([self.emulationDelegate respondsToSelector:@selector(adjustRemasterDebugLightHeightByViewDelta:)])
+					[self.emulationDelegate adjustRemasterDebugLightHeightByViewDelta:
+						(point.y - self.remasterRightLastPoint.y) * (self.isFlipped ? -1 : 1)];
+			}
+			else if ([self.emulationDelegate respondsToSelector:@selector(updateRemasterDebugLightAtViewPoint:toggle:)])
+				[self.emulationDelegate updateRemasterDebugLightAtViewPoint:point toggle:NO];
+		}
+		self.remasterRightLastPoint = point;
 		return;
 	}
 	[self mouseMoved:event];
@@ -4449,6 +4460,18 @@ void QuitWithFatalError ( NSString *message)
 		[self showRemasterDebugLight];
 }
 
+- (void)adjustRemasterDebugLightHeightByViewDelta:(CGFloat)delta
+{
+	if (useMouse || ![self hasRemasterDebugLightContext] || !std::isfinite(delta) || NSHeight(s9xView.bounds) <= 0)
+		return;
+	const unsigned sourceHeight = remasterFramePresenting ? remasterReplayFrame.height : IPPU.RenderedScreenHeight;
+	RemasterDebugLight light = GetRemasterDebugLight();
+	light.height = std::max<CGFloat>(0, std::min<CGFloat>(4096,
+		light.height + delta * sourceHeight / NSHeight(s9xView.bounds)));
+	[self publishRemasterDebugLight:light];
+	remasterDebugLightInputs[1].stringValue = [NSString stringWithFormat:@"%.6g", light.height];
+}
+
 - (void)publishRemasterDebugLight:(const RemasterDebugLight &)light
 {
 	SetRemasterDebugLight(light);
@@ -4501,7 +4524,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterDebugLightEnabledButton.target = self;
 		remasterDebugLightEnabledButton.action = @selector(changeRemasterDebugLight:);
 		[content addSubview:remasterDebugLightEnabledButton];
-		NSArray<NSString *> *labels = @[ @"Disk Radius (source pixels)", @"Height (source pixels)", @"Intensity (emission units)", @"Color (RGB)" ];
+		NSArray<NSString *> *labels = @[ @"Sphere Radius (source pixels)", @"Center Height (source pixels)", @"Intensity (emission units)", @"Color (RGB)" ];
 		for (NSInteger i = 0; i < 4; i++)
 		{
 			const CGFloat y = 252 - i * 36;
@@ -4532,7 +4555,7 @@ void QuitWithFatalError ( NSString *message)
 			}
 		}
 		NSTextField *hint = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 14, 390, 114)];
-		hint.stringValue = @"Right-click the scene to toggle at that position.\nRight-drag to move (3-point threshold); dragging keeps the enabled state. Emulated mouse controls take priority.\nRadius is physical disk extent, not a range cutoff.\nRadius/height: 0-4096 source pixels. Intensity: 0-10000.\nSession only; not saved in profiles. Closing keeps the light.";
+		hint.stringValue = @"Right-click the scene to toggle at that position.\nRight-drag to move; Cmd-right-drag up/down raises/lowers center height. Dragging keeps the enabled state.\nRadius is sphere extent; height is its center. Emits in all directions.\nRadius/height: 0-4096 source pixels. Intensity: 0-10000.\nSession only; not saved in profiles. Closing keeps the light.";
 		hint.editable = NO;
 		hint.bezeled = NO;
 		hint.drawsBackground = NO;
@@ -4650,7 +4673,6 @@ void QuitWithFatalError ( NSString *message)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
-		remasterInspectorPanel.floatingPanel = YES;
 		remasterInspectorPanel.hidesOnDeactivate = NO;
 		NSView *contentView = remasterInspectorPanel.contentView;
 		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 405, 128, 128)];
@@ -5187,20 +5209,12 @@ void QuitWithFatalError ( NSString *message)
 				}
 				else if (layer == RemasterEditorOcclusion)
 				{
-					if (hasOcclusion)
-					{
-						const float coverage = (editableMetadata && editableMetadata->hasOcclusion ?
-							editableMetadata->occlusion[source] : capturedMetadata->occlusion[source]) / 255.0f;
-						pixel[0] = static_cast<uint8_t>(std::lround(coverage * 255.0f));
-						pixel[1] = static_cast<uint8_t>(std::lround((0.35f - coverage * 0.30f) * 255.0f));
-						pixel[2] = static_cast<uint8_t>(std::lround((0.05f - coverage * 0.05f) * 255.0f));
-					}
-					else
-					{
-						pixel[0] = 56;
-						pixel[1] = 0;
-						pixel[2] = 71;
-					}
+					const float coverage = (editableMetadata && editableMetadata->hasOcclusion ?
+						editableMetadata->occlusion[source] : capturedMetadata && capturedMetadata->hasOcclusion ?
+						capturedMetadata->occlusion[source] : 255) / 255.0f;
+					pixel[0] = static_cast<uint8_t>(std::lround(coverage * 255.0f));
+					pixel[1] = static_cast<uint8_t>(std::lround((0.35f - coverage * 0.30f) * 255.0f));
+					pixel[2] = static_cast<uint8_t>(std::lround((0.05f - coverage * 0.05f) * 255.0f));
 				}
 				else if (layer == RemasterEditorHeight)
 				{
@@ -5352,7 +5366,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterOppositeFacingDirectButton.state = oppositeFacingMixed ? NSControlStateValueMixed :
 		(oppositeFacingDirect ? NSControlStateValueOn : NSControlStateValueOff);
 	NSString *layerStatus = [NSString stringWithFormat:@"metadata: material %@, occlusion %@, height %@ (%@), normal %@, emission %@%@%@",
-		hasMaterials ? @"yes" : @"no", hasOcclusion ? @"yes" : @"no", hasHeight ? @"yes" : @"no",
+		hasMaterials ? @"yes" : @"no", hasOcclusion ? @"yes" : @"default 255", hasHeight ? @"yes" : @"no",
 		sampling == RemasterHeightSampling::Linear ? @"linear" : @"nearest", hasNormals ? @"yes" : @"no",
 		hasEmission ? @"yes" : @"no",
 		remasterEditingProfileDirty ? @", unsaved" : @"",
@@ -5436,7 +5450,10 @@ void QuitWithFatalError ( NSString *message)
 	if (layer == RemasterEditorMaterial)
 		found->second.hasMaterialSelectors = false;
 	else if (layer == RemasterEditorOcclusion)
+	{
 		found->second.hasOcclusion = false;
+		found->second.occlusion.fill(255);
+	}
 	else if (layer == RemasterEditorHeight)
 	{
 		found->second.hasHeight = false;
@@ -5763,7 +5780,7 @@ void QuitWithFatalError ( NSString *message)
 			remasterValueLabel.stringValue = @"Select a pixel";
 		else
 		{
-			uint8_t value = 0;
+			uint8_t value = layer == RemasterEditorOcclusion ? 255 : 0;
 			auto editableMetadata = remasterEditingProfile.assets.find(remasterSelectedTile);
 			if (editableMetadata != remasterEditingProfile.assets.end() &&
 				(layer == RemasterEditorOcclusion ? editableMetadata->second.hasOcclusion : editableMetadata->second.hasHeight))
@@ -5773,7 +5790,7 @@ void QuitWithFatalError ( NSString *message)
 			{
 				const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(
 					remasterReplayFrame, remasterSelectedTile);
-				if (captured)
+				if (captured && (layer != RemasterEditorOcclusion || captured->hasOcclusion))
 					value = layer == RemasterEditorOcclusion ? captured->occlusion[remasterSelectedTilePixel] :
 						captured->height[remasterSelectedTilePixel];
 			}
@@ -6015,8 +6032,8 @@ void QuitWithFatalError ( NSString *message)
 	else if (layer == RemasterEditorOcclusion)
 	{
 		const bool hadLayer = metadata.hasOcclusion;
-		if (!metadata.hasOcclusion && captured && captured->hasOcclusion)
-			metadata.occlusion = captured->occlusion;
+		if (!metadata.hasOcclusion)
+			metadata.occlusion = captured && captured->hasOcclusion ? captured->occlusion : S9xRemasterDefaultOcclusion();
 		metadata.hasOcclusion = true;
 		const uint8_t value = remasterStrokeValue;
 		remasterStrokeChanged |= !hadLayer || metadata.occlusion[pixel] != value;
@@ -6148,8 +6165,8 @@ void QuitWithFatalError ( NSString *message)
 	if (layer == RemasterEditorOcclusion)
 	{
 		const bool hadLayer = metadata.hasOcclusion;
-		if (!metadata.hasOcclusion && captured && captured->hasOcclusion)
-			metadata.occlusion = captured->occlusion;
+		if (!metadata.hasOcclusion)
+			metadata.occlusion = captured && captured->hasOcclusion ? captured->occlusion : S9xRemasterDefaultOcclusion();
 		metadata.hasOcclusion = true;
 		if (hadLayer && metadata.occlusion[remasterSelectedTilePixel] == value)
 			return;
@@ -6783,7 +6800,6 @@ void QuitWithFatalError ( NSString *message)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
-		remasterProfileSettingsPanel.floatingPanel = YES;
 		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;

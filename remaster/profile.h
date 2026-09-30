@@ -89,11 +89,23 @@ struct RemasterAssetGroup
 	std::string material;
 };
 
+inline std::array<uint8_t, 64> S9xRemasterDefaultOcclusion ()
+{
+	std::array<uint8_t, 64> coverage;
+	coverage.fill(255);
+	return coverage;
+}
+
+inline bool S9xRemasterOcclusionNeedsStorage (bool hasOcclusion, const std::array<uint8_t, 64> &coverage)
+{
+	return hasOcclusion && std::any_of(coverage.begin(), coverage.end(), [](uint8_t value) { return value < 255; });
+}
+
 struct RemasterAssetMetadata
 {
 	RemasterTileContentId tileId;
 	std::array<std::string, 64> materialSelectors;
-	std::array<uint8_t, 64> occlusion = {};
+	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
 	std::array<uint8_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
@@ -1167,6 +1179,11 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	for (const auto &entry : profile.assets)
 	{
 		const RemasterAssetMetadata &asset = entry.second;
+		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(asset.hasOcclusion, asset.occlusion);
+		// A tile with only default coverage needs no asset table at all.
+		if (asset.hasOcclusion && !storeOcclusion && !asset.hasMaterialSelectors && !asset.hasHeight &&
+			!asset.hasNormals && !asset.hasEmission && !asset.directLightingOppositeFacing)
+			continue;
 		output << "\n[[assets]]\n";
 		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
 		if (asset.hasMaterialSelectors)
@@ -1176,7 +1193,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 				output << (i ? ", " : "") << Quote(asset.materialSelectors[i]);
 			output << "]\n";
 		}
-		if (asset.hasOcclusion)
+		if (storeOcclusion)
 		{
 			output << "occlusion = [";
 			for (size_t i = 0; i < asset.occlusion.size(); i++)

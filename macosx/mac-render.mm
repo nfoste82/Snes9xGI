@@ -414,11 +414,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 					reflectanceField.begin() + i * 4);
 				reflectanceField[i * 4 + 3] = 1.0f;
 			}
-			if (metadata && metadata->hasOcclusion)
-			{
-				lightingField[i * 2] = metadata->occlusion[pixel.tilePixel];
-				lightingField[i * 2 + 1] = 255;
-			}
+			lightingField[i * 2] = metadata && metadata->hasOcclusion ? metadata->occlusion[pixel.tilePixel] : 255;
+			lightingField[i * 2 + 1] = 255;
 			if (metadata && metadata->directLightingOppositeFacing)
 				oppositeFacingField[i] = 255;
 			if (metadata && metadata->hasEmission)
@@ -920,7 +917,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					width:width height:height mipmapped:NO];
 				resources->surface = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
 				resources->reflectance = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
-				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
 					width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
 				visibilityBlocksDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 				resources->visibilityBlocks = [metalDevice newTextureWithDescriptor:visibilityBlocksDescriptor];

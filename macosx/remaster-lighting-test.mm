@@ -202,7 +202,7 @@ int main()
                 if (bounce && !composing)
                 {
                     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
-                        texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
                         width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
                     descriptor.storageMode = MTLStorageModePrivate;
                     descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
@@ -510,11 +510,11 @@ int main()
                 visibility[Source][receiver] = {0, 0, 0, 1};
                 visibility[Participation][receiver].y = 0;
                 near("visibility ignores albedo and receivesGi", visible().bounce, simd_float4{1, 1, 1, 1});
-                blocker(visibility, 7, 1, true, 16);
-                near("opaque high blocker has zero visibility", visible().bounce, {});
+                blocker(visibility, 7, 1, true, 8);
+                near("opaque intersecting voxel has zero visibility", visible().bounce, {});
                 blocker(visibility, 7, 1, true, 0);
                 near("visibility passes over low authored blocker", visible().bounce, simd_float4{1, 1, 1, 1});
-                blocker(visibility, 7, 0.5f, true, 16);
+                blocker(visibility, 7, 0.5f, true, 8);
                 near("fractional blocker preserves half visibility", visible().bounce, simd_float4{0.5f, 0.5f, 0.5f, 1});
                 const Result presented = run(visibility, false, 0, 8, -1, nullptr, half,
                     0, 1, 0, 1, 1, simd_float3{0, 0, -1}, 2);
@@ -526,7 +526,8 @@ int main()
                     run(visibility, false, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1, simd_float3{0, 0, -1}, 2).accumulated,
                     visibility[Source][receiver]);
                 blocker(visibility, 7, 1, false, 0);
-                near("missing-height blocker remains opaque in visibility", visible().bounce, {});
+                near("missing-height blocker does not occlude in visibility", visible().bounce,
+                    simd_float4{1, 1, 1, 1});
                 blocker(visibility, 7, 0, false, 0);
                 visibility[Participation][emitter].x = 0;
                 near("visibility excludes UI emitters", visible().bounce, {});
@@ -553,7 +554,7 @@ int main()
                     simd_float4{1, 1, 1, 1});
                 near("direct enumeration is independent of jitter seed", run(distant, true, 0, 8, -1, nullptr,
                     half, 0, 0, 3, 8, 97).bounce, far.bounce);
-                blocker(distant, 80, 1, false, 0);
+                blocker(distant, 80, 1, true, 8);
                 near("visibility traverses blockers beyond old range", run(distant, true, 0, 8, -1, nullptr, half, 4).bounce, {});
                 near("far blocker shadows direct", run(distant, true, 0, 8, -1, nullptr, half).bounce, {});
                 blocker(distant, 80, 0, false, 0);
@@ -588,19 +589,19 @@ int main()
                 positive("indirect reaches radiance near frame edge beyond 64 pixels", clearFar.bounce);
                 near("distant indirect accumulates once", clearFar.accumulated, clearFar.bounce);
                 blocker(distant, 80, 1, false, 0);
-                near("distant indirect respects missing-height blocker",
-                    run(distant, true, 1, 8, -1, nullptr, half).bounce, {});
-                blocker(distant, 80, 1, true, 16);
-                near("distant indirect respects high authored blocker",
+                near("distant indirect passes missing-height blocker",
+                    run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce, clearFar.bounce);
+                blocker(distant, 80, 1, true, 8);
+                near("distant indirect respects intersecting authored voxel",
                     run(distant, true, 1, 8, -1, nullptr, half).bounce, {});
                 blocker(distant, 80, 1, true, 0);
                 near("distant indirect passes over low blocker",
                     run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce, clearFar.bounce);
-                blocker(distant, 80, 0.5f, true, 16);
+                blocker(distant, 80, 0.5f, true, 8);
                 dimmed("distant indirect retains fractional transmittance",
                     run(distant, true, 1, 8, -1, nullptr, half, 0, 0).bounce, clearFar.bounce);
                 // A farther endpoint may clear a blocker that hides a nearer, lower one.
-                blocker(distant, 80, 1, true, 16);
+                blocker(distant, 80, 1, true, 8);
                 constexpr unsigned hiddenPatch = receiver + 90;
                 distant[Participation][hiddenPatch] = {1, 1, 0, 0};
                 distant[Surface][hiddenPatch] = distant[Surface][emitter];
@@ -748,7 +749,7 @@ int main()
             threeSources[Participation][secondSource] = threeSources[Participation][thirdSource] = {1, 1, 0, 0};
             threeSources[PreviousBounce][secondSource] = {0.25f, 1.0f, 0.1f, 1};
             threeSources[PreviousBounce][thirdSource] = {0.1f, 0.2f, 1.5f, 1};
-            blocker(threeSources, 28, 0.5f, true, 16);
+            blocker(threeSources, 28, 0.5f, true, 8);
             RemasterIndirectReference::Scene oracle;
             oracle.width = width;
             oracle.height = height;
@@ -760,7 +761,7 @@ int main()
                 oracle.patches.push_back({{sourceX + 0.5, receiverY + 0.5, 8},
                     {-0.98, 0, 0.198997}, {}, {radiance.x, radiance.y, radiance.z}, 1, true, true});
             }
-            oracle.blockers.push_back({receiverX + 28, int(receiverY), 16, 0.5, true});
+            oracle.blockers.push_back({receiverX + 28, int(receiverY), 8, 0.5, true});
             const RemasterIndirectReference::Rgb exact = RemasterIndirectReference::exhaustiveBounce(oracle)[0];
             const simd_float4 threeSourceResult = run(threeSources, true, 1, 8, -1, nullptr, false, 0,
                 1.0f, 0, 16384, 17, simd_float3{0, 0, -1}, -1, nullptr, false, true).bounce;
@@ -781,7 +782,7 @@ int main()
             sampledScene[Reflectance][receiver] = {0, 0, 0, 1};
             near("sampled authored black absorbs all incoming light", sampled(sampledScene), {});
             sampledScene[Reflectance][receiver] = {0.8f, 0.6f, 0.4f, 1};
-            blocker(sampledScene, 7, 1, true, 16);
+            blocker(sampledScene, 7, 1, true, 8);
             near("sampled connection respects opaque height-aware blocker", sampled(sampledScene), {});
             s = scene();
             s[PreviousBounce][emitter] = {1, 1, 1, 1};
@@ -812,6 +813,107 @@ int main()
             edgeWall[Surface][receiver] = {8, 0.98f, 0, -0.198997f};
             near("actual camera backface remains rejected", run(edgeWall, true).bounce, {});
 
+            // Real floors are opaque continuous voxel sheets, not isolated
+            // non-occluding receiver points. Shallow rays must escape their face.
+            for (bool half : {false, true})
+            {
+                Scene floor = scene();
+                floor[PreviousBounce][emitter] = {};
+                for (unsigned p = 0; p < width * height; p++)
+                {
+                    floor[Surface][p] = {0, 0, 0, 1};
+                    floor[Height][p] = {0, 1, 0, 0};
+                    floor[Occlusion][p] = {1, 1, 0, 0};
+                    floor[Participation][p] = {1, 1, 0, 0};
+                }
+                Light light = {};
+                light.position = {90.5f, receiverY + 0.5f, 15};
+                light.radius = 5;
+                light.intensity = 25;
+                light.color = {1, 1, 1};
+                auto illuminate = [&](const Scene &s, const Light *debug, unsigned stage = 0, bool reference = false,
+                                      bool sampled = false) {
+                    return run(s, true, sampled ? 1 : 0, 8, -1, nullptr, half, stage, 0,
+                        0, sampled ? 4096 : 1, 1, simd_float3{0, 0, -1}, -1, debug, reference, sampled, true);
+                };
+                Scene transparent = floor;
+                transparent[Occlusion].assign(width * height, {});
+                const simd_float4 sphereClear = illuminate(transparent, &light).bounce;
+                positive("distant sphere illuminates opaque continuous floor", illuminate(floor, &light).bounce);
+                near("opaque floor does not shadow its own sphere illumination", illuminate(floor, &light).bounce, sphereClear);
+                near("unaccelerated opaque floor sphere illumination agrees", illuminate(floor, &light, 0, true).bounce, sphereClear);
+                near("floor sphere visibility diagnostic stays clear", illuminate(floor, &light, 4).bounce,
+                    simd_float4{1, 1, 1, 1});
+                // A downward-facing authored emitter also sits within a sheet
+                // of its own opaque voxels: both connection endpoints must exit.
+                const unsigned torch = receiverY * width + 90;
+                for (unsigned y = receiverY - 1; y <= receiverY + 1; y++)
+                    for (unsigned x = 89; x <= 91; x++)
+                    {
+                        const unsigned p = y * width + x;
+                        floor[Surface][p] = {15, 0, 0, -1};
+                        floor[Height][p] = {15, 1, 0, 0};
+                    }
+                floor[PreviousBounce][torch] = {100, 50, 25, 1};
+                transparent = floor;
+                transparent[Occlusion].assign(width * height, {});
+                const simd_float4 torchClear = illuminate(transparent, nullptr).bounce;
+                positive("authored elevated emitter illuminates opaque continuous floor", illuminate(floor, nullptr).bounce);
+                near("floor and emitter sheets do not self-shadow Direct", illuminate(floor, nullptr).bounce, torchClear);
+                near("floor and emitter sheets do not self-shadow indirect", illuminate(floor, nullptr, 0, false, true).bounce,
+                    illuminate(transparent, nullptr, 0, false, true).bounce);
+                // A separate raised sheet really intersects the shallow path.
+                for (unsigned y = 0; y < height; y++)
+                {
+                    const unsigned p = y * width + 45;
+                    floor[Surface][p] = {7.5f, 0, 0, 1};
+                    floor[Height][p] = {7.5f, 1, 0, 0};
+                }
+                near("raised blocker still shadows authored floor illumination", illuminate(floor, nullptr).bounce, {});
+                dimmed("raised blocker still shadows sphere floor illumination", illuminate(floor, &light).bounce, sphereClear);
+            }
+            for (bool half : {false, true})
+            {
+                Scene sphere = scene();
+                sphere[PreviousBounce][emitter] = {};
+                Light light = {};
+                light.position = {26.5f, receiverY + 0.5f, 8};
+                light.radius = 12;
+                light.intensity = 25;
+                light.color = {1, 1, 1};
+                auto illuminate = [&](int view = -1) {
+                    return run(sphere, view < 0, 0, 8, -1, nullptr, half, 0, 0,
+                        0, 1, 1, simd_float3{0, 0, -1}, view, &light, false, false, true);
+                };
+                sphere[Surface][receiver] = {16, 0, 0, 1};
+                positive("sphere upper extent lights receiver above center", illuminate().bounce);
+                light.radius = 2;
+                near("sphere entirely below upward receiver cannot illuminate it", illuminate().bounce, {});
+                light.radius = 12;
+                sphere[Surface][receiver] = {8, 1, 0, 0};
+                positive("sphere emits sideways at center height", illuminate().bounce);
+                sphere[Surface][receiver] = {24, 0, 0, -1};
+                positive("sphere emits upward onto downward receiver", illuminate().bounce);
+                sphere[Surface][receiver] = {-8, 0, 0, 1};
+                positive("sphere emits downward onto upward receiver", illuminate().bounce);
+                light.position = {receiverX + 0.5f, receiverY + 0.5f, 8};
+                light.radius = 4;
+                sphere[Surface][receiver] = {10, 0, 0, 1};
+                sphere[Direct][receiver] = {0, 0, 0, 1};
+                check("sphere front surface remains visible above center height",
+                    illuminate(0).accumulated.x > 1, illuminate(0).accumulated, {});
+                sphere[Surface][receiver].x = 13;
+                const float ambient = std::pow(0.65f, 1.0f / 2.2f);
+                near("geometry above sphere front surface hides glow", illuminate(0).accumulated,
+                    simd_float4{ambient, ambient, ambient, 1});
+                sphere[Surface][receiver] = {8, 0, 0, 1};
+                const simd_float4 centered = illuminate().bounce;
+                positive("receiver at sphere center has finite illumination", centered);
+                check("sphere center illumination is bounded", centered.x <= 85.6f, centered, {});
+                light.radius = 0.05f;
+                light.position = {26.5f, receiverY + 0.5f, 24};
+                positive("tiny distant sphere is not lost by area sampling", illuminate().bounce);
+            }
             for (bool half : {false, true})
             {
                 Scene disk = scene();
@@ -827,16 +929,16 @@ int main()
                         0, 1, 1, simd_float3{0, 0, -1}, view, &light);
                 };
                 const simd_float4 clearDisk = illuminate().bounce;
-                positive("debug disk lights floor beyond 64 pixels", clearDisk);
+                positive("debug sphere lights floor beyond 64 pixels", clearDisk);
                 const float d2 = 100 * 100 + 24 * 24;
-                const float analytic = 0.9f * 100 * 16 * 24 * 24 / (d2 * (d2 + 1));
-                check("small distant disk matches area and inverse-square cosine reference",
+                const float analytic = 0.9f * 100 * 16 * 24 / std::pow(d2, 1.5f);
+                check("small distant sphere matches solid-angle cosine reference",
                     std::fabs(clearDisk.x - analytic) < analytic * 0.02f, clearDisk, simd_float4{analytic, analytic, analytic, 1});
                 light.intensity = 200;
                 near("debug intensity is linear and calibrated like authored emission", illuminate().bounce, clearDisk * 8);
                 light.intensity = 25;
                 light.radius = 2;
-                dimmed("smaller physical disk emits less power", illuminate().bounce, clearDisk);
+                dimmed("smaller physical sphere emits less power", illuminate().bounce, clearDisk);
                 light.radius = 4;
                 for (unsigned y = 0; y < height; y++)
                 {
@@ -845,21 +947,27 @@ int main()
                     disk[Height][p] = {40, 1, 0, 0};
                     disk[Surface][p] = {40, 0, 0, 1};
                 }
-                near("debug disk respects full-height wall", illuminate().bounce, {});
+                near("debug sphere passes beneath raised opaque rail", illuminate().bounce, clearDisk);
+                for (unsigned y = 0; y < height; y++)
+                    disk[Surface][y * width + 80].x = 18.12f;
+                dimmed("debug sphere is shadowed by intersecting opaque voxels", illuminate().bounce, clearDisk);
+                light.radius = 0.1f;
+                near("small debug sphere is fully blocked by intersecting rail", illuminate().bounce, {});
+                light.radius = 4;
                 for (unsigned y = 0; y < height; y++)
                     disk[Surface][y * width + 80].x = 0;
-                near("debug disk clears low wall", illuminate().bounce, clearDisk);
+                near("debug sphere clears low wall", illuminate().bounce, clearDisk);
                 light.color = {1, 0, 0};
-                near("debug disk preserves light color", illuminate().bounce, simd_float4{clearDisk.x, 0, 0, 1});
+                near("debug sphere preserves light color", illuminate().bounce, simd_float4{clearDisk.x, 0, 0, 1});
                 light.color = {1, 1, 1};
                 disk[Surface][receiver].x = 50;
-                near("debug disk does not light higher out-of-bounds surface", illuminate().bounce, {});
+                near("debug sphere does not light higher out-of-bounds surface", illuminate().bounce, {});
                 disk[Surface][receiver].x = 0;
                 disk[Participation][receiver].y = 0;
-                near("debug disk honors receives GI", illuminate().bounce, {});
+                near("debug sphere honors receives GI", illuminate().bounce, {});
                 near("debug visibility ignores receives GI", illuminate(0, 4).bounce, simd_float4{1, 1, 1, 1});
                 disk[Participation][receiver].x = 0;
-                near("debug disk excludes UI", illuminate().bounce, {});
+                near("debug sphere excludes UI", illuminate().bounce, {});
                 disk[Participation][receiver] = {1, 1, 0, 0};
                 near("debug light is not reinjected into later bounces", illuminate(1).bounce, {});
                 light.intensity = 0;
@@ -871,11 +979,11 @@ int main()
                 light.position.x = receiverX + 0.5f;
                 disk[Direct][receiver] = {0, 0, 0, 1};
                 const auto glow = illuminate(0, 0, 0).accumulated;
-                check("composite displays debug disk without altering scene pixels", glow.x > 1, glow, {});
-                near("Direct diagnostic excludes disk self-emission", illuminate(0, 0, 3).accumulated, {});
+                check("composite displays debug sphere without altering scene pixels", glow.x > 1, glow, {});
+                near("Direct diagnostic excludes sphere self-emission", illuminate(0, 0, 3).accumulated, {});
                 disk[Surface][receiver].x = 50;
                 const float ambient = std::pow(0.65f, 1.0f / 2.2f);
-                near("higher geometry hides debug disk glow", illuminate(0, 0, 0).accumulated, simd_float4{ambient, ambient, ambient, 1});
+                near("higher geometry hides debug sphere glow", illuminate(0, 0, 0).accumulated, simd_float4{ambient, ambient, ambient, 1});
                 disk[Surface][receiver].x = 0;
                 light.radius = 0;
                 near("zero radius also removes visible glow", illuminate(0, 0, 0).accumulated, simd_float4{ambient, ambient, ambient, 1});
@@ -884,14 +992,14 @@ int main()
                 light.radius = 4096;
                 const auto largeDisk = illuminate().bounce;
                 const float capped = 0.9f * 100 * 0.95f;
-                check("large overhead disk approaches capped hemisphere irradiance",
+                check("receiver inside sphere approaches capped hemisphere irradiance",
                     std::fabs(largeDisk.x - capped) < capped * 0.03f, largeDisk, simd_float4{capped, capped, capped, 1});
                 for (float radius : {4.0f, 24.0f, 64.0f, 256.0f})
                 {
                     light.radius = radius;
-                    const float reference = 90 * std::min(0.95f, radius * radius / (radius * radius + 24 * 24));
+                    const float reference = 90 * std::min(0.95f, radius >= 24 ? 1.0f : radius * radius / (24 * 24));
                     const auto actual = illuminate().bounce;
-                    check("overhead disk tracks analytic irradiance across sizes",
+                    check("overhead sphere tracks analytic irradiance across sizes",
                         std::fabs(actual.x - reference) < reference * 0.04f, actual,
                         simd_float4{reference, reference, reference, 1});
                 }
@@ -901,10 +1009,10 @@ int main()
                 relayDisk[PreviousBounce][emitter] = {};
                 run(relayDisk, true, 0, 8, -1, &relayDisk, half, 0, 0,
                     0, 1, 1, simd_float3{0, 0, -1}, -1, &light);
-                positive("debug disk produces Direct on reflecting surfaces", relayDisk[NextBounce][receiver]);
+                positive("debug sphere produces Direct on reflecting surfaces", relayDisk[NextBounce][receiver]);
                 relayDisk[PreviousBounce] = relayDisk[NextBounce];
                 const auto secondary = run(relayDisk, true, 1, 8, -1, nullptr, half, 0, 0).bounce;
-                positive("debug disk Direct seeds secondary reflected light", secondary);
+                positive("debug sphere Direct seeds secondary reflected light", secondary);
                 near("secondary light does not reinject enabled debug emitter",
                     run(relayDisk, true, 1, 8, -1, nullptr, half, 0, 0, 0, 1, 1,
                         simd_float3{0, 0, -1}, -1, &light).bounce, secondary);
@@ -1144,20 +1252,20 @@ int main()
             for (unsigned distance : {3u, 7u, 11u, 15u, 19u})
             {
                 s = scene();
-                blocker(s, distance, 1, false, 0);
+                blocker(s, distance, 1, true, 8);
                 char name[96];
-                std::snprintf(name, sizeof(name), "indirect thin missing-height blocker at distance %u", distance);
+                std::snprintf(name, sizeof(name), "indirect thin authored blocker at distance %u", distance);
                 near(name, run(s, true).bounce, {});
             }
             s = scene();
             blocker(s, 7, 1, true, 0);
             near("indirect passes over low authored blocker", run(s, true).bounce, clear.bounce);
-            blocker(s, 7, 1, true, 16);
-            near("indirect high authored blocker shadows", run(s, true).bounce, {});
-            blocker(s, 7, 0.5f, true, 16);
+            blocker(s, 7, 1, true, 8);
+            near("indirect intersecting authored voxel shadows", run(s, true).bounce, {});
+            blocker(s, 7, 0.5f, true, 8);
             dimmed("indirect partial blocker between samples dims", run(s, true).bounce, clear.bounce);
             s = scene();
-            blocker(s, 6, 0.5f, false, 0);
+            blocker(s, 6, 0.5f, true, 8);
             dimmed("indirect partial blocker at a distance sample dims", run(s, true).bounce, clear.bounce);
 
             s = scene();
@@ -1175,7 +1283,7 @@ int main()
             s[Surface][receiver] = {0, 0, 0, 1};
             s[Surface][emitter] = {8, -1, 0, 0};
             positive("elevated inward-facing wall bounces onto lower floor", run(s, true).bounce);
-            blocker(s, 7, 1, true, 16);
+            blocker(s, 7, 1, true, 8.0f * 7 / 22);
             near("intervening wall blocks wall-to-floor indirect", run(s, true).bounce, {});
 
             s = scene();
@@ -1199,7 +1307,65 @@ int main()
                     plain.accumulated);
             }
 
-            // Compare the entire frame against the original pixel DDA, including the
+            // Finite voxel semantics, independent of normal and albedo response.
+            for (bool half : {false, true})
+                for (bool reference : {false, true})
+                {
+                    Scene voxels = scene();
+                    auto visible = [&] {
+                        return run(voxels, true, 0, 8, -1, nullptr, half, 4, 1,
+                            0, 1, 1, simd_float3{0, 0, -1}, -1, nullptr, reference).bounce;
+                    };
+                    const simd_float4 full = {1, 1, 1, 1};
+                    blocker(voxels, 7, 1, true, 8);
+                    near("ray intersects opaque voxel center", visible(), {});
+                    blocker(voxels, 7, 1, true, 16);
+                    near("ray passes below opaque voxel", visible(), full);
+                    blocker(voxels, 7, 1, true, 0);
+                    near("ray passes above opaque voxel", visible(), full);
+                    blocker(voxels, 7, 1, true, 8.5f);
+                    near("ray tangent to voxel bottom does not block", visible(), full);
+                    blocker(voxels, 7, 1, true, 7.5f);
+                    near("ray tangent to voxel top does not block", visible(), full);
+                    blocker(voxels, 7, 1, true, 8.49f);
+                    near("ray just inside voxel blocks", visible(), {});
+                    blocker(voxels, 7, 0.5f, true, 8);
+                    near("fractional voxel coverage attenuates once", visible(), simd_float4{0.5f, 0.5f, 0.5f, 1});
+                    blocker(voxels, 7, 1, false, 8);
+                    near("missing-height voxel does not block", visible(), full);
+                    blocker(voxels, 7, 0, true, 8);
+                    near("transparent voxel does not block", visible(), full);
+                    blocker(voxels, 0, 1, true, 8);
+                    blocker(voxels, 22, 1, true, 8);
+                    near("endpoint voxels do not self-shadow", visible(), full);
+                    blocker(voxels, 7, 1, true, 7);
+                    voxels[Surface][receiver].x = 0;
+                    voxels[Surface][emitter].x = 22;
+                    near("ascending ray crosses finite Z slab", visible(), {});
+                    blocker(voxels, 7, 1, true, 9);
+                    voxels[Surface][receiver].x = 16;
+                    voxels[Surface][emitter].x = -6;
+                    near("descending ray crosses finite Z slab", visible(), {});
+                    blocker(voxels, 7, 1, true, 8);
+                    voxels[Surface][receiver].x = 8;
+                    voxels[Surface][emitter].x = 30;
+                    near("Z crossing outside voxel XY is clear", visible(), full);
+                    voxels = scene();
+                    blocker(voxels, 6, 1, true, 0);
+                    blocker(voxels, 7, 1, true, 16);
+                    near("block height envelope is not solid geometry", visible(), full);
+                    // A horizontal rail and a vertical bar both block their own
+                    // intersections; the gap between them remains transmissive.
+                    blocker(voxels, 10, 1, true, 8);
+                    near("opaque grid rail casts a shadow", visible(), {});
+                    blocker(voxels, 10, 0, true, 8);
+                    blocker(voxels, 12, 1, true, 8);
+                    near("opaque grid bar casts a shadow", visible(), {});
+                    blocker(voxels, 12, 0, true, 8);
+                    near("grid opening transmits light", visible(), full);
+                }
+
+            // Compare the entire frame against the unaccelerated pixel DDA, including the
             // partial block at y=16. Report the first differing pixel per dispatch.
             auto compareVisibility = [&](const Scene &input, const char *label, unsigned pass,
                                          unsigned stage, unsigned sample, unsigned samples, unsigned seed,
@@ -1290,7 +1456,7 @@ int main()
                             compareVisibility(randomScene, "randomized visibility", pass, 0, sample, samples, seed);
                 compareVisibility(randomScene, "randomized visibility diagnostic", 0, 4, 0, 1, seed);
             }
-            // Disk samples retain fractional endpoints, including outside the frame.
+            // Sphere samples retain fractional XYZ endpoints, including outside the frame.
             const simd_float3 diskPositions[] = {
                 {64.125f, 8.375f, 16}, {-4.25f, 8.125f, 16}, {132.125f, 8.375f, 16},
                 {64.375f, -4.125f, 16}, {64.125f, 21.375f, 16}
@@ -1323,7 +1489,7 @@ int main()
                         light.intensity = 25;
                         light.color = {1, 0.75f, 0.5f};
                         char label[96];
-                        std::snprintf(label, sizeof(label), "disk visibility position=%u slope=%d blocker=%u",
+                        std::snprintf(label, sizeof(label), "sphere visibility position=%u slope=%d blocker=%u",
                             position, slope, kind);
                         for (unsigned stage : {4u, 0u})
                             compareVisibility(disk, label, 0, stage, 0, 1, 1, &light);

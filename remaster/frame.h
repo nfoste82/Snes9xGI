@@ -53,7 +53,7 @@ struct RemasterFrameAssetMetadata
 {
 	RemasterTileContentId tileId;
 	std::array<std::string, 64> materialSelectors;
-	std::array<uint8_t, 64> occlusion = {};
+	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
 	std::array<uint8_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
@@ -932,7 +932,7 @@ inline void S9xRemasterAlignGeneratedSpriteParts (RemasterFrame &frame,
 			continue;
 		const auto a = art.find(instance.tileId);
 		const auto m = metadata.find(instance.tileId);
-		if (a == art.end() || m == metadata.end() || !m->second->hasHeight || !m->second->hasOcclusion)
+		if (a == art.end() || m == metadata.end() || !m->second->hasHeight)
 			continue;
 		unsigned visible = 0;
 		bool exactRamp = true;
@@ -941,7 +941,7 @@ inline void S9xRemasterAlignGeneratedSpriteParts (RemasterFrame &frame,
 			const bool ink = a->second->indices[p] != 0;
 			visible += ink;
 			if (m->second->height[p] != (ink ? 13 - p / 8 : 0) ||
-				m->second->occlusion[p] != (ink ? 255 : 0))
+				(m->second->hasOcclusion ? m->second->occlusion[p] : 255) != (ink ? 255 : 0))
 			{
 				exactRamp = false;
 				break;
@@ -2082,9 +2082,10 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	}
 	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
 	{
+		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(metadata.hasOcclusion, metadata.occlusion);
 		RemasterFrameSerialization::TileId(bytes, metadata.tileId);
 		RemasterFrameSerialization::U8(bytes, metadata.hasMaterialSelectors ? 1 : 0);
-		RemasterFrameSerialization::U8(bytes, metadata.hasOcclusion ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, storeOcclusion ? 1 : 0);
 		RemasterFrameSerialization::U8(bytes, metadata.hasHeight ? 1 : 0);
 		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(metadata.heightSampling));
 		RemasterFrameSerialization::U8(bytes, metadata.hasEmission ? 1 : 0);
@@ -2094,7 +2095,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			for (const std::string &name : metadata.materialSelectors)
 				if (!RemasterFrameSerialization::String(bytes, name))
 					return false;
-		if (metadata.hasOcclusion)
+		if (storeOcclusion)
 			bytes.insert(bytes.end(), metadata.occlusion.begin(), metadata.occlusion.end());
 		if (metadata.hasHeight)
 			bytes.insert(bytes.end(), metadata.height.begin(), metadata.height.end());

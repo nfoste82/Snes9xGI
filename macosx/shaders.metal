@@ -129,6 +129,14 @@ static float remasterRayExitDistance(float2 origin, float2 ray, float2 bounds)
 	return min(xDistance, yDistance);
 }
 
+// Orthographic camera-facing sphere surface. Presentation never seeds transport.
+static bool remasterDebugSphereVisible(float2 point, float height, float4 sphere)
+{
+	float radialSquared = dot(point - sphere.xy, point - sphere.xy);
+	return sphere.w > 0.0 && radialSquared <= sphere.w * sphere.w &&
+		height <= sphere.z + sqrt(max(0.0, sphere.w * sphere.w - radialSquared));
+}
+
 kernel void remasterBuildVisibilityBlocks(
 	texture2d<float, access::read> occlusion [[texture(0)]],
 	texture2d<float, access::read> heightField [[texture(1)]],
@@ -138,13 +146,32 @@ kernel void remasterBuildVisibilityBlocks(
 {
 	if (block.x >= blocks.get_width() || block.y >= blocks.get_height())
 		return;
+	float minimumHeight = INFINITY;
 	float maximumHeight = -INFINITY;
 	for (uint y = block.y * 8; y < min((block.y + 1) * 8, occlusion.get_height()); y++)
 		for (uint x = block.x * 8; x < min((block.x + 1) * 8, occlusion.get_width()); x++)
-			if (occlusion.read(uint2(x, y)).r > 0.0)
-				maximumHeight = max(maximumHeight, heightField.read(uint2(x, y)).g < 0.5 ?
-					INFINITY : surfaceField.read(uint2(x, y)).r);
-	blocks.write(float4(maximumHeight), block);
+			if (occlusion.read(uint2(x, y)).r > 0.0 && heightField.read(uint2(x, y)).g >= 0.5)
+			{
+				float center = surfaceField.read(uint2(x, y)).r;
+				minimumHeight = min(minimumHeight, center - 0.5);
+				maximumHeight = max(maximumHeight, center + 0.5);
+			}
+	blocks.write(float4(minimumHeight, maximumHeight, 0.0, 0.0), block);
+}
+
+// Transport positions describe voxel centers for shading. Visibility must
+// originate on the outward face instead: otherwise a shallow ray immediately
+// hits the adjacent voxels of its own continuous floor/wall/emitter sheet.
+// Bias only represented opaque geometry; analytic lights keep exact endpoints.
+static float3 remasterSurfaceRayEndpoint(uint2 pixel, float4 surface,
+	texture2d<float, access::read> occlusion,
+	texture2d<float, access::read> heightField)
+{
+	float3 point = float3(float2(pixel) + 0.5, surface.r);
+	float dominant = max(abs(surface.g), max(abs(surface.b), abs(surface.a)));
+	if (dominant > 0.0 && occlusion.read(pixel).r > 0.0 && heightField.read(pixel).g >= 0.5)
+		point += surface.gba * (0.5001 / dominant);
+	return point;
 }
 
 static float remasterVisibility(float3 from, float3 to,
@@ -170,8 +197,8 @@ static float remasterVisibility(float3 from, float3 to,
 	while (any(cell != endpoint))
 	{
 #ifndef REMASTER_REFERENCE_VISIBILITY
-		// Skip only blocks that cannot attenuate this segment. Fractional coverage
-		// and unknown heights fall back to the original per-pixel traversal.
+		// The envelope is acceleration only: pixels occupy finite unit voxels,
+		// not solid columns beneath their authored height.
 		int2 block = cell / 8;
 		if (any(block != testedBlock))
 		{
@@ -189,8 +216,9 @@ static float remasterVisibility(float3 from, float3 to,
 			blockExit = min(1.0, min(blockNext.x, blockNext.y));
 			float blockEntry = max(0.0, min(next.x, next.y));
 			float minimumHeight = min(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
-			// Stay conservatively inside the pixel test's 0.05 height tolerance.
-			emptyBlock = visibilityBlocks.read(uint2(block)).r < minimumHeight + 0.049;
+			float maximumHeight = max(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
+			float2 bounds = visibilityBlocks.read(uint2(block)).rg;
+			emptyBlock = bounds.x > maximumHeight || bounds.y < minimumHeight;
 		}
 		if (emptyBlock)
 		{
@@ -225,8 +253,25 @@ static float remasterVisibility(float3 from, float3 to,
 		if (coverage <= 0.0)
 			continue;
 		float exit = min(1.0, min(next.x, next.y));
-		float rayHeight = min(from.z + segment.z * entry, from.z + segment.z * exit);
-		if (heightField.read(sample).g < 0.5 || surfaceField.read(sample).r > rayHeight + 0.05)
+		if (heightField.read(sample).g < 0.5)
+			continue;
+		// DDA supplies the segment's XY slab interval. Intersect it with the
+		// unit Z slab centered on the effective physical height. Tangencies
+		// have no positive-length intersection and do not attenuate.
+		float center = surfaceField.read(sample).r;
+		if (segment.z == 0.0)
+		{
+			if (from.z <= center - 0.5 || from.z >= center + 0.5)
+				continue;
+		}
+		else
+		{
+			float bottom = (center - 0.5 - from.z) / segment.z;
+			float top = (center + 0.5 - from.z) / segment.z;
+			entry = max(entry, min(bottom, top));
+			exit = min(exit, max(bottom, top));
+		}
+		if (exit - entry > 0.000001)
 		{
 			visibility *= 1.0 - coverage;
 			if (visibility < 0.01)
@@ -369,8 +414,8 @@ kernel void remasterSampledIndirectBounce(
 		float sourceCosine = saturate(dot(sourceSurface.gba, -direction));
 		if (receiverCosine <= 0.0 || sourceCosine <= 0.0)
 			continue;
-		float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiver.r),
-			float3(float2(sourcePixel) + 0.5, sourceSurface.r), occlusion, heightField,
+		float visibility = remasterVisibility(remasterSurfaceRayEndpoint(pixel, receiver, occlusion, heightField),
+			remasterSurfaceRayEndpoint(sourcePixel, sourceSurface, occlusion, heightField), occlusion, heightField,
 			surfaceField, visibilityBlocks);
 		float transfer = receiverCosine * sourceCosine * visibility / (M_PI_F * distanceSquared);
 		incoming += previousBounce.read(sourcePixel).rgb * (transfer / probability);
@@ -439,8 +484,8 @@ kernel void remasterDirectLighting(
 		output.write(float4(normal * 0.5 + 0.5, 1.0), pixel);
 	else if (uniforms.view == 9)
 	{
-		float3 debugEmission = uniforms.debugPositionRadius.w > 0.0 && distance(float2(pixel) + 0.5, uniforms.debugPositionRadius.xy) <= uniforms.debugPositionRadius.w &&
-			uniforms.debugPositionRadius.z >= surface.r ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : float3(0.0);
+		float3 debugEmission = remasterDebugSphereVisible(float2(pixel) + 0.5, surface.r, uniforms.debugPositionRadius) ?
+			uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : float3(0.0);
 		output.write(float4(remasterToDisplay(selfEmission + debugEmission), 1.0), pixel);
 	}
 	else
@@ -493,28 +538,46 @@ kernel void remasterIndirectBounce(
 	float2 cornerDistance = max(float2(pixel) + 0.5,
 		float2(uniforms.width, uniforms.height) - (float2(pixel) + 0.5));
 	uint radialSteps = uint(ceil(length(cornerDistance) / float(distanceStep))) + 1;
-	// Mix uniform disk samples with receiver-centered projected-solid-angle samples.
-	// The latter resolve nearby energy even when the disk is much larger than its height.
-	uint diskSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
-	float diskHeightSquared = max(1.0, pow(uniforms.debugPositionRadius.z - receiverSurface.r, 2.0));
-	uint sampleTotal = directCollision ? emitterCount + diskSamples : 16 * radialSteps * 3;
+	// Sample the sphere's subtended solid angle, avoiding missed tiny emitters
+	// and unstable near-surface area/distance weights. Interior receivers see
+	// an enclosing emissive boundary (the session light is two-sided).
+	uint sphereSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
+	float3 receiverPosition = float3(float2(pixel) + 0.5, receiverSurface.r);
+	float3 receiverRayEndpoint = remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField);
+	float3 sphereDelta = uniforms.debugPositionRadius.xyz - receiverPosition;
+	float sphereDistanceSquared = dot(sphereDelta, sphereDelta);
+	float sphereRadiusSquared = uniforms.debugPositionRadius.w * uniforms.debugPositionRadius.w;
+	bool insideSphere = sphereDistanceSquared < sphereRadiusSquared;
+	float3 sphereAxis = sphereDistanceSquared > 0.000001 ? sphereDelta * rsqrt(sphereDistanceSquared) : float3(0.0, 0.0, 1.0);
+	float3 sphereTangent = normalize(cross(abs(sphereAxis.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0), sphereAxis));
+	float3 sphereBitangent = cross(sphereAxis, sphereTangent);
+	float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
+	float coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
+	uint sampleTotal = directCollision ? emitterCount + sphereSamples : 16 * radialSteps * 3;
 	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
 	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
 	{
 		float2 samplePoint;
+		float3 debugPoint = 0.0;
+		float3 debugDirection = 0.0;
 		bool debugSample = directCollision && sampleIndex >= emitterCount;
 		if (debugSample)
 		{
-			uint diskIndex = sampleIndex - emitterCount;
-			float index = float(diskIndex % 64) + 0.5;
-			float fraction = index / 64.0;
-			float radius = diskIndex < 64 ? uniforms.debugPositionRadius.w * sqrt(fraction) :
-				sqrt(diskHeightSquared * fraction / (1.0 - fraction));
+			float index = float(sampleIndex - emitterCount) + 0.5;
+			float cosineOffset = coneExtent * index / float(sphereSamples);
+			float cosine = 1.0 - cosineOffset;
+			float sineSquared = cosineOffset * (2.0 - cosineOffset);
+			float sine = sqrt(max(0.0, sineSquared));
 			float angle = index * 2.39996323;
-			samplePoint = (diskIndex < 64 ? uniforms.debugPositionRadius.xy : float2(pixel) + 0.5) + radius * float2(cos(angle), sin(angle));
-			if (distance(samplePoint, uniforms.debugPositionRadius.xy) > uniforms.debugPositionRadius.w)
-				continue;
+			float3 ray = sphereAxis * cosine + sine * (sphereTangent * cos(angle) + sphereBitangent * sin(angle));
+			debugDirection = ray;
+			float projectedCenter = dot(sphereDelta, ray);
+			float root = sqrt(max(0.0, sphereRadiusSquared - sphereDistanceSquared * sineSquared));
+			float hitDistance = insideSphere ? projectedCenter + root :
+				(sphereDistanceSquared - sphereRadiusSquared) / max(projectedCenter + root, 0.000001);
+			debugPoint = receiverPosition + ray * max(hitDistance, 0.00001);
+			samplePoint = debugPoint.xy;
 		}
 		else if (directCollision)
 		{
@@ -567,7 +630,9 @@ kernel void remasterIndirectBounce(
 			samplePoint = float2(samplePixel) + 0.5;
 		if (!debugSample && (all(samplePixel == pixel) || participationField.read(samplePixel).r < 0.5))
 			continue;
-		float4 sampleSurface = debugSample ? float4(uniforms.debugPositionRadius.z, 0.0, 0.0, -1.0) : surfaceField.read(samplePixel);
+		float4 sampleSurface = debugSample ? float4(debugPoint.z, 0.0, 0.0, 0.0) : surfaceField.read(samplePixel);
+		float3 sourceRayEndpoint = debugSample ? debugPoint :
+			remasterSurfaceRayEndpoint(samplePixel, sampleSurface, occlusion, heightField);
 		float2 planarSegment = samplePoint - (float2(pixel) + 0.5);
 		float planarDistance = length(planarSegment);
 		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : previousBounce.read(samplePixel).rgb;
@@ -576,17 +641,16 @@ kernel void remasterIndirectBounce(
 			// Diagnose shadowing separately from facing, BRDF, and material absorption.
 			if (any(radiance > 0.0))
 				maximumVisibility = max(maximumVisibility, remasterVisibility(
-					float3(float2(pixel) + 0.5, receiverSurface.r),
-					float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField, visibilityBlocks));
+					receiverRayEndpoint, sourceRayEndpoint, occlusion, heightField, surfaceField, visibilityBlocks));
 			if (maximumVisibility == 1.0)
 				break;
 			continue;
 		}
 		float3 toSource = float3(planarSegment, sampleSurface.r - receiverSurface.r);
 		float distanceSquared = dot(toSource, toSource);
-		float3 segmentDirection = toSource * rsqrt(max(distanceSquared, 0.0001));
+		float3 segmentDirection = debugSample ? debugDirection : toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
-		float sourceResponse = saturate(dot(sampleSurface.gba, -segmentDirection));
+		float sourceResponse = debugSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
 		float receiverScattering = directCollision && uniforms.padding > 0.5 ? receiverResponse :
 			receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
 				viewDirection, uniforms.indirectRoughness);
@@ -600,13 +664,10 @@ kernel void remasterIndirectBounce(
 					segmentDirection, viewDirection, uniforms.indirectRoughness));
 		}
 		float sampleArea = directCollision ? 1.0 : planarDistance * float(distanceStep) * angularStep / 3.0;
-		if (debugSample)
-		{
-			float uniformDensity = 1.0 / (M_PI_F * uniforms.debugPositionRadius.w * uniforms.debugPositionRadius.w);
-			float importanceDensity = diskHeightSquared / (M_PI_F * pow(dot(planarSegment, planarSegment) + diskHeightSquared, 2.0));
-			sampleArea = 1.0 / (64.0 * (uniformDensity + importanceDensity));
-		}
-		float distanceFormFactor = min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
+		// Sphere source cosine, area, and inverse-square distance are already
+		// included in the solid-angle measure; do not apply them a second time.
+		float distanceFormFactor = debugSample ? 2.0 * coneExtent / float(sphereSamples) :
+			min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
 		float formFactor = distanceFormFactor * receiverScattering * sourceResponse;
 		if (uniforms.diagnosticStage != 0 && any(radiance > 0.0))
 		{
@@ -615,8 +676,8 @@ kernel void remasterIndirectBounce(
 		}
 		if (formFactor > 0.0 && any(radiance > 0.0))
 		{
-			float visibility = remasterVisibility(float3(float2(pixel) + 0.5, receiverSurface.r),
-				float3(samplePoint, sampleSurface.r), occlusion, heightField, surfaceField, visibilityBlocks);
+			float visibility = remasterVisibility(receiverRayEndpoint, sourceRayEndpoint,
+				occlusion, heightField, surfaceField, visibilityBlocks);
 			incoming += radiance * formFactor * visibility;
 		}
 		totalFormFactor += formFactor;
@@ -668,9 +729,8 @@ kernel void remasterCompositeLighting(
 	float3 direct = directField.read(pixel).rgb;
 	float3 indirect = indirectField.read(pixel).rgb;
 	float3 composite = remasterToLinear(original) * uniforms.originalSceneContribution + emission + direct + indirect;
-	// The disk's visible glow is presentation-only; its physical samples seed Direct above.
-	if (uniforms.debugPositionRadius.w > 0.0 && uniforms.debugPositionRadius.z >= surfaceField.read(pixel).r &&
-		distance(float2(pixel) + 0.5, uniforms.debugPositionRadius.xy) <= uniforms.debugPositionRadius.w)
+	// The sphere's visible glow is presentation-only; its samples seed Direct above.
+	if (remasterDebugSphereVisible(float2(pixel) + 0.5, surfaceField.read(pixel).r, uniforms.debugPositionRadius))
 		composite += uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance;
 	if (uniforms.view == 2)
 		output.write(float4(float3(0.0, 0.85, 1.0) * direct.r, 1.0), pixel);

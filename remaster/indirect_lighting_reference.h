@@ -98,12 +98,12 @@ inline Rgb &operator += (Rgb &left, const Rgb &right)
 	return left;
 }
 
-// Mirrors represented 2.5D blocker semantics: reflection and occlusion remain
-// independent, unknown blocker heights are conservative, and endpoint cells
-// cannot shadow their own connection.
+// Each known-height pixel is a unit voxel centered at its physical Z. DDA
+// intersects the XY slabs; the remaining Z slab is finite in both directions.
+// Reflection and occlusion remain independent, and endpoint cells cannot
+// shadow their own connection.
 inline double visibility (const Scene &scene, const Vec3 &from, const Vec3 &to)
 {
-	constexpr double heightTolerance = 0.05;
 	const Vec3 segment = to - from;
 	int cellX = static_cast<int>(std::floor(from.x));
 	int cellY = static_cast<int>(std::floor(from.y));
@@ -143,14 +143,26 @@ inline double visibility (const Scene &scene, const Vec3 &from, const Vec3 &to)
 			break;
 
 		const double exit = std::min(1.0, std::min(nextX, nextY));
-		const double entryHeight = from.z + segment.z * entry;
-		const double exitHeight = from.z + segment.z * exit;
-		const double rayHeight = std::min(entryHeight, exitHeight);
 		for (const Blocker &blocker : scene.blockers)
 		{
 			if (blocker.x != cellX || blocker.y != cellY || blocker.coverage <= 0.0)
 				continue;
-			if (!blocker.hasKnownHeight || blocker.height > rayHeight + heightTolerance)
+			if (!blocker.hasKnownHeight)
+				continue;
+			double voxelEntry = entry, voxelExit = exit;
+			if (segment.z == 0.0)
+			{
+				if (from.z <= blocker.height - 0.5 || from.z >= blocker.height + 0.5)
+					continue;
+			}
+			else
+			{
+				const double bottom = (blocker.height - 0.5 - from.z) / segment.z;
+				const double top = (blocker.height + 0.5 - from.z) / segment.z;
+				voxelEntry = std::max(voxelEntry, std::min(bottom, top));
+				voxelExit = std::min(voxelExit, std::max(bottom, top));
+			}
+			if (voxelExit - voxelEntry > 0.000001)
 			{
 				result *= 1.0 - std::max(0.0, std::min(1.0, blocker.coverage));
 				if (result <= 0.0)
@@ -180,11 +192,34 @@ inline double patchTransfer (const SurfacePatch &receiver, const SurfacePatch &s
 		(pi * distanceSquared);
 }
 
+// Keep the low-level visibility function an exact segment/voxel oracle.
+// Surface transport separately moves represented endpoint centers onto faces.
+inline Vec3 surfaceRayEndpoint (const Scene &scene, const SurfacePatch &surface)
+{
+	Vec3 point = surface.position;
+	const double dominant = std::max(std::abs(surface.normal.x),
+		std::max(std::abs(surface.normal.y), std::abs(surface.normal.z)));
+	if (dominant <= 0.0)
+		return point;
+	for (const Blocker &blocker : scene.blockers)
+		if (blocker.x == static_cast<int>(std::floor(point.x)) &&
+			blocker.y == static_cast<int>(std::floor(point.y)) &&
+			blocker.coverage > 0.0 && blocker.hasKnownHeight)
+		{
+			const double offset = 0.5001 / dominant;
+			point.x += surface.normal.x * offset;
+			point.y += surface.normal.y * offset;
+			point.z += surface.normal.z * offset;
+			break;
+		}
+	return point;
+}
+
 inline Rgb connectionContribution (const Scene &scene, const SurfacePatch &receiver,
 	const SurfacePatch &source)
 {
 	const double transfer = patchTransfer(receiver, source,
-		visibility(scene, receiver.position, source.position));
+		visibility(scene, surfaceRayEndpoint(scene, receiver), surfaceRayEndpoint(scene, source)));
 	return (receiver.reflectance * source.previousRadiance) * transfer;
 }
 

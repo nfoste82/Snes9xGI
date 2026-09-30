@@ -117,7 +117,7 @@ int main(int argc, const char *argv[])
                 "dense sampleCount=1; sampled connections=4/8/16; seed=0x%08x; dense=%u+%u; sampled=%u+%u\n",
                 width, height, seed, warmups, repeats, sampledWarmups, sampledRepeats);
             std::printf("Production formats: RGBA8Unorm source, RG8Unorm fields, RGBA32Float surface, "
-                "RGBA16Float radiance, R8Unorm facing, R32Float blocks; shared storage\n");
+                "RGBA16Float radiance, R8Unorm facing, RG32Float blocks; shared storage\n");
             std::printf("Reference macro REMASTER_REFERENCE_VISIBILITY=1; exact RGB comparison; "
                 "sampled stages timed in separate command buffers; complete pipeline remains authoritative\n");
             std::fflush(stdout);
@@ -200,7 +200,7 @@ int main(int argc, const char *argv[])
                     }
                     constexpr unsigned blockWidth = (width + 7) / 8, blockHeight = (height + 7) / 8;
                     MTLTextureDescriptor *blockDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
-                        MTLPixelFormatR32Float width:blockWidth height:blockHeight mipmapped:NO];
+                        MTLPixelFormatRG32Float width:blockWidth height:blockHeight mipmapped:NO];
                     blockDescriptor.storageMode = MTLStorageModeShared;
                     blockDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 					id<MTLTexture> blocks = [device newTextureWithDescriptor:blockDescriptor];
