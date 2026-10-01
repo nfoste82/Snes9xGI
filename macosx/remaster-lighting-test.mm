@@ -99,13 +99,22 @@ int main()
             id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             require(directTransport != nil, error.localizedDescription);
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:1];
+            id<MTLComputePipelineState> batchedTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            id<MTLComputePipelineState> reduceDirect = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterReduceDirectPartials"] error:&error];
+            require(batchedTransport && reduceDirect, error.localizedDescription);
             id<MTLComputePipelineState> powerLeaves = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
             id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterReduceSourcePower"] error:&error];
             id<MTLComputePipelineState> sampledIndirect = [device newComputePipelineStateWithFunction:
-                [library newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
-            require(powerLeaves && powerReduce && sampledIndirect, error.localizedDescription);
+                [library newFunctionWithName:@"remasterSampledIndirectBounce" constantValues:referenceConstants error:&error] error:&error];
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:2];
+            id<MTLComputePipelineState> batchedIndirect = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterSampledIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            require(powerLeaves && powerReduce && sampledIndirect && batchedIndirect, error.localizedDescription);
             id<MTLComputePipelineState> buildVisibilityBlocks = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterBuildVisibilityBlocks"] error:&error];
             require(buildVisibilityBlocks != nil, error.localizedDescription);
@@ -223,7 +232,7 @@ int main()
                 {
                     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
                         texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
-                        width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
+                        width:(width + 3) / 4 height:(height + 3) / 4 mipmapped:NO];
                     descriptor.storageMode = MTLStorageModePrivate;
                     descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
                     visibilityBlocks = [device newTextureWithDescriptor:descriptor];
@@ -236,7 +245,7 @@ int main()
                     [blocks setTexture:textures[2] atIndex:2];
                     [blocks setTexture:visibilityBlocks atIndex:3];
 					[blocks setBuffer:meshBuffer offset:0 atIndex:0];
-                    [blocks dispatchThreads:MTLSizeMake((width + 7) / 8, (height + 7) / 8, 1)
+                    [blocks dispatchThreads:MTLSizeMake((width + 3) / 4, (height + 3) / 4, 1)
                         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                     [blocks endEncoding];
                 }
@@ -268,10 +277,14 @@ int main()
                     }
                 }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+                const bool batched = bounce && !composing && !referenceVisibility && getenv("S9X_REMASTER_TEST_BATCHED") &&
+                    (sampled || (passIndex == 0 && lambertianDirect && diagnosticStage == 0));
+                uint32_t batchCount = 1;
+                id<MTLBuffer> partials = nil;
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
-                    bounce ? (sampled ? sampledIndirect : referenceVisibility ? indirectReference :
-                        passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? directTransport : indirect) : direct];
+                    bounce ? (sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
+                        passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? (batched ? batchedTransport : directTransport) : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
                 if (bounce && !composing)
@@ -285,6 +298,13 @@ int main()
                 {
                     [encoder setBuffer:sourcePower offset:0 atIndex:1];
                     [encoder setBytes:&leafCount length:sizeof(leafCount) atIndex:2];
+                    if (batched)
+                    {
+                        batchCount = (std::max(1u, uniforms.sampleCount) + 7) / 8;
+                        partials = [device newBufferWithLength:size_t(width) * height * batchCount * 16 options:MTLResourceStorageModePrivate];
+                        require(partials != nil, @"Indirect partial allocation failed");
+                        [encoder setBuffer:partials offset:0 atIndex:5];
+                    }
                 }
                 else if (bounce && !composing)
                 {
@@ -339,10 +359,32 @@ int main()
                     [encoder setBuffer:sampleBuffer offset:0 atIndex:4];
                     [encoder setBuffer:emitterBuffer offset:0 atIndex:1];
                     [encoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
+                    if (batched)
+                    {
+                        batchCount = std::max(1u, (emitterCount + (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0 ? 128u : 0u) + 7) / 8);
+                        partials = [device newBufferWithLength:size_t(width) * height * batchCount * 16 options:MTLResourceStorageModePrivate];
+                        require(partials != nil, @"Direct partial allocation failed");
+                        [encoder setBuffer:partials offset:0 atIndex:5];
+                    }
                 }
-                [encoder dispatchThreadgroups:MTLSizeMake(width, height, 1)
+                [encoder dispatchThreadgroups:MTLSizeMake(width, height, batched ? batchCount : 1)
                     threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                 [encoder endEncoding];
+                if (batched)
+                {
+                    id<MTLComputeCommandEncoder> reduce = [command computeCommandEncoder];
+                    [reduce setComputePipelineState:reduceDirect];
+                    [reduce setBuffer:partials offset:0 atIndex:0];
+                    [reduce setBytes:&batchCount length:sizeof(batchCount) atIndex:1];
+                    [reduce setBytes:&uniforms length:sizeof(uniforms) atIndex:2];
+                    [reduce setTexture:textures[7] atIndex:0];
+                    [reduce setTexture:textures[8] atIndex:1];
+                    [reduce setTexture:textures[0] atIndex:2];
+                    [reduce setTexture:textures[count - 1] atIndex:3];
+                    [reduce setTexture:textures[6] atIndex:4];
+                    [reduce dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                    [reduce endEncoding];
+                }
                 id<MTLTexture> presentation = textures[composing ? 4 : bounce ? 8 : 2];
                 if (selectedPixel >= 0)
                 {

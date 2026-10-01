@@ -1,4 +1,6 @@
 #include "surface_mesh_material.h"
+#include "surface_mesh_cache.h"
+#include <cstring>
 #include <cstdio>
 
 int main()
@@ -9,6 +11,49 @@ int main()
 		checks++; if (!pass) { failures++; std::fprintf(stderr, "FAIL %s\n", name); }
 	};
 	auto near = [](float a, float b) { return std::abs(a - b) < 0.0001f; };
+	// Exact differential oracle: sparse edits, moving footprints, viewport
+	// borders, continuity changes and quantum/size invalidation across frames.
+	{
+		Cache cache;
+		unsigned seed = 9127;
+		auto random = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
+		unsigned width = 67, height = 53;
+		std::vector<Sample> input(width * height);
+		for (auto &s : input) { s.known = true; s.coverage = 1; s.sheet = true; s.domain = 1; }
+		bool equal = true, reuse = false;
+		for (unsigned frame = 0; frame < 240; frame++)
+		{
+			if (frame == 120) { width = 71; height = 49; input.resize(width * height); }
+			if (frame == 80)
+				for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
+				{
+					Sample &s = input[size_t(y) * width + x];
+					s = Sample{}; s.known = true; s.coverage = 1; s.sheet = true; s.domain = 1;
+					s.height = float(x * 2 + y * 3);
+				}
+			for (unsigned edit = 0; edit < frame % 9; edit++)
+			{
+				Sample &s = input[random() % input.size()];
+				switch (random() % 7)
+				{
+					case 0: s.height = float(random() % 32); break;
+					case 1: s.known = !s.known; break;
+					case 2: s.coverage = float(random() % 3) / 2; break;
+					case 3: s.domain = random() % 4; break;
+					case 4: s.sheet = !s.sheet; break;
+					case 5: s.solidWall = !s.solidWall; break;
+					case 6: s.wallBase = float(random() % 16); break;
+				}
+			}
+			const float quantum = frame < 160 ? 0.25f : 1.0f;
+			const auto full = build(width, height, input, quantum);
+			const auto &cached = cache.update(width, height, input, quantum);
+			equal &= cached.size() == full.size() && std::memcmp(cached.data(), full.data(), full.size() * sizeof(Cell)) == 0;
+			reuse |= cache.rebuiltTiles == 0;
+		}
+		check("incremental cache equals full geometry after changing resolved inputs", equal);
+		check("unchanged geometry skips reconstruction", reuse);
+	}
 	constexpr unsigned w = 16, h = 16;
 	std::vector<Sample> samples(w * h);
 	for (Sample &s : samples) { s.known = true; s.coverage = 1; s.sheet = true; s.domain = 1; }

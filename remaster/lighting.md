@@ -6,7 +6,7 @@ Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
 compact 48-byte patch per screen pixel; Metal expands its corner heights into
 four triangles meeting at the authored pixel center. Shading positions remain
 on the mesh and silhouettes retain full pixel footprints. The pixel grid and
-8×8 height envelopes accelerate candidate lookup rather than defining geometry.
+4×4 height envelopes accelerate candidate lookup rather than defining geometry.
 
 Floor-class background pixels connect across tile hashes and draw records.
 Wall faces and ordinary wall tops share a wall domain, including corners;
@@ -181,6 +181,48 @@ compile time while retaining the same triangle visibility query and emitter
 enumeration. Float/half regression cases exercise this production specialization.
 The seven-case slot-004 benchmark and explicit rounding tolerances are recorded
 in `macosx/remaster-benchmark.md`.
+
+The October 1 visibility follow-up reduces envelope blocks from 8×8 to 4×4
+and streams successive triangle edges rather than dynamically indexing a local
+vertex array. Coordinates, triangle order, opacity, and endpoint rules remain
+unchanged; `REMASTER_REFERENCE_VISIBILITY` retains the original array expansion
+and unaccelerated traversal as an independent oracle. All 1215 checks pass.
+The final-build slot-004 sequence measured Direct median 66.39 ms and one-bounce
+median 105.38 ms, with identical end-of-case PNGs versus the previous implementation.
+Benchmark-only Metal timestamp counters now isolate direct/indirect transport,
+source-power construction, emitter preparation, envelope construction, and
+compositing. See the benchmark note for comparisons, limitations, and commands.
+
+Production transport now additionally partitions Direct's exhaustive source list
+and indirect's deterministic connection list into eight-element GPU batches.
+Each batch stores float32 incoming RGB (and Direct's normalization form factor),
+then a separate reduction applies the existing normalization/albedo/accumulation.
+Every source/connection is retained; no distance cutoff, light clustering, temporal
+reuse, or reduced-resolution receiver shading is introduced. Summation grouping
+changes floating-point rounding. Serial transport remains available for diagnostics
+and via `S9X_REMASTER_SERIAL_DIRECT` / `S9X_REMASTER_SERIAL_INDIRECT`. Reusable
+per-slot partial buffers are bounded to 64 MiB; larger workloads fall back to serial.
+Metal function constants 1/2 select batched direct/indirect; sampled-indirect
+pipeline creation must use `constantValues:` even for the serial variant.
+The same eight-element batch size must be used by app, test, and shader dispatch.
+Both serial and batched lighting suites pass 1215 checks. Final slot-004 medians
+are Direct 22.00 ms, one bounce 37.97, eight bounces 101.60 at 96 connections.
+See the benchmark note for live-mode differences and output-rounding validation.
+
+CPU geometry reconstruction now uses `surface_mesh_cache.h`: a screen-space cache
+compares every resolved sample (height, known, coverage sign, domain, sheet,
+structural wall fields). Changes dirty a three-pixel neighborhood, grouped into
+16×16 output tiles. Dirty tiles are rebuilt with a further three-pixel input halo
+using the original builder, preserving raw-corner reconstruction and weld order.
+Dimensions/quantum changes and widespread edits use a full build. Metadata normals
+and emission depths are refreshed after reuse; all GPU slots still receive complete
+uploads. `S9X_REMASTER_FULL_MESH=1` selects the independent full-build path.
+No static-tile flag or offscreen geometry retention is assumed; moving walls and
+newly exposed pixels invalidate via their effective inputs. A future world-space
+cache needs stable placement/world coordinates and authoritative offscreen updates.
+Material names/selectors are resolved per instance before the screen-pixel loop.
+Full/cache differential tests include sparse edits, ramps, domains, coverage,
+structural fields, resize and quantum changes. Benchmark results are in the handoff.
 
 `remaster-lighting-benchmark --direct` compares both paths at 256×224 with 128
 mixed planar/depth emitters. On an M3 Max the initial run reduced medians from

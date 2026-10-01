@@ -160,8 +160,8 @@ kernel void remasterBuildVisibilityBlocks(
 		return;
 	float minimumHeight = INFINITY;
 	float maximumHeight = -INFINITY;
-	for (uint y = block.y * 8; y < min((block.y + 1) * 8, occlusion.get_height()); y++)
-		for (uint x = block.x * 8; x < min((block.x + 1) * 8, occlusion.get_width()); x++)
+	for (uint y = block.y * 4; y < min((block.y + 1) * 4, occlusion.get_height()); y++)
+		for (uint x = block.x * 4; x < min((block.x + 1) * 4, occlusion.get_width()); x++)
 			if (occlusion.read(uint2(x, y)).r > 0.0 && heightField.read(uint2(x, y)).g >= 0.5)
 			{
 				float center = surfaceField.read(uint2(x, y)).r;
@@ -236,33 +236,50 @@ static bool remasterMeshHit(float3 from, float3 ray, int2 cell, float center,
 	if (min(z0, z1) > high || max(z0, z1) < low) return false;
 	if (patch.thickness > 0.0 && ray.z == 0.0 && all(patch.corners == center) &&
 		(from.z <= center - patch.thickness * 0.5 || from.z >= center + patch.thickness * 0.5)) return false;
+#ifdef REMASTER_REFERENCE_VISIBILITY
+	// Keep the original array-based geometry expansion as an independent oracle.
 	float3 vertices[4] = {float3(float2(cell), patch.corners.x),
 		float3(float2(cell) + float2(1, 0), patch.corners.y),
 		float3(float2(cell) + 1.0, patch.corners.z),
 		float3(float2(cell) + float2(0, 1), patch.corners.w)};
+#else
+	// Stream successive edges rather than dynamically indexing a local vertex
+	// array in this hot loop. Triangle coordinates and test order are unchanged.
+	float3 edgeVertex = float3(float2(cell), patch.corners.x);
+#endif
 	float3 middle = float3(float2(cell) + 0.5, center);
 	float3 halfThickness = float3(0, 0, patch.thickness * 0.5);
 	for (uint i = 0; i < 4; i++)
 	{
-		uint j = (i + 1) & 3;
-		if (remasterTriangleHit(from, ray, middle + halfThickness, vertices[i] + halfThickness,
-			vertices[j] + halfThickness, entry, exit)) return true;
+#ifdef REMASTER_REFERENCE_VISIBILITY
+		float3 edgeVertex = vertices[i];
+		float3 nextVertex = vertices[(i + 1) & 3];
+#else
+		float3 nextVertex = i == 0 ? float3(float2(cell) + float2(1, 0), patch.corners.y) :
+			i == 1 ? float3(float2(cell) + 1.0, patch.corners.z) :
+			i == 2 ? float3(float2(cell) + float2(0, 1), patch.corners.w) : float3(float2(cell), patch.corners.x);
+#endif
+		if (remasterTriangleHit(from, ray, middle + halfThickness, edgeVertex + halfThickness,
+			nextVertex + halfThickness, entry, exit)) return true;
 		if (patch.thickness > 0.0)
 		{
-			if (remasterTriangleHit(from, ray, middle - halfThickness, vertices[j] - halfThickness,
-				vertices[i] - halfThickness, entry, exit) ||
-				remasterTriangleHit(from, ray, vertices[i] - halfThickness, vertices[j] - halfThickness,
-				vertices[j] + halfThickness, entry, exit) ||
-				remasterTriangleHit(from, ray, vertices[i] - halfThickness, vertices[j] + halfThickness,
-				vertices[i] + halfThickness, entry, exit)) return true;
+			if (remasterTriangleHit(from, ray, middle - halfThickness, nextVertex - halfThickness,
+				edgeVertex - halfThickness, entry, exit) ||
+				remasterTriangleHit(from, ray, edgeVertex - halfThickness, nextVertex - halfThickness,
+				nextVertex + halfThickness, entry, exit) ||
+				remasterTriangleHit(from, ray, edgeVertex - halfThickness, nextVertex + halfThickness,
+				edgeVertex + halfThickness, entry, exit)) return true;
 		}
 		if (patch.solidWall > 0.5)
 		{
-			float3 bottomI = float3(vertices[i].xy, patch.wallBase);
-			float3 bottomJ = float3(vertices[j].xy, patch.wallBase);
-			if (remasterTriangleHit(from, ray, bottomI, bottomJ, vertices[j], entry, exit) ||
-				remasterTriangleHit(from, ray, bottomI, vertices[j], vertices[i], entry, exit)) return true;
+			float3 bottomI = float3(edgeVertex.xy, patch.wallBase);
+			float3 bottomJ = float3(nextVertex.xy, patch.wallBase);
+			if (remasterTriangleHit(from, ray, bottomI, bottomJ, nextVertex, entry, exit) ||
+				remasterTriangleHit(from, ray, bottomI, nextVertex, edgeVertex, entry, exit)) return true;
 		}
+#ifndef REMASTER_REFERENCE_VISIBILITY
+		edgeVertex = nextVertex;
+#endif
 	}
 	return false;
 }
@@ -306,16 +323,16 @@ static float remasterVisibility(float3 from, float3 to,
 #ifndef REMASTER_REFERENCE_VISIBILITY
 		// The envelope is acceleration only: pixels occupy finite unit voxels,
 		// not solid columns beneath their authored height.
-		int2 block = cell / 8;
+		int2 block = cell / 4;
 		if (any(block != testedBlock))
 		{
 			testedBlock = block;
-			int2 remaining = int2(step.x > 0 ? 7 - (cell.x & 7) : (cell.x & 7),
-				step.y > 0 ? 7 - (cell.y & 7) : (cell.y & 7));
+			int2 remaining = int2(step.x > 0 ? 3 - (cell.x & 3) : (cell.x & 3),
+				step.y > 0 ? 3 - (cell.y & 3) : (cell.y & 3));
 			float2 blockNext = next;
 			// Match repeated pixel steps even when a boundary is almost at t=1.
 			#pragma unroll
-			for (int i = 0; i < 7; i++)
+			for (int i = 0; i < 3; i++)
 			{
 				if (i < remaining.x && step.x) blockNext.x += delta.x;
 				if (i < remaining.y && step.y) blockNext.y += delta.y;
@@ -333,11 +350,11 @@ static float remasterVisibility(float3 from, float3 to,
 				break;
 			// Stop just before the block boundary, leaving boundary/corner handling
 			// to the same pixel DDA below.
-			int2 remaining = int2(step.x > 0 ? 7 - (cell.x & 7) : (cell.x & 7),
-				step.y > 0 ? 7 - (cell.y & 7) : (cell.y & 7));
+			int2 remaining = int2(step.x > 0 ? 3 - (cell.x & 3) : (cell.x & 3),
+				step.y > 0 ? 3 - (cell.y & 3) : (cell.y & 3));
 			// Preserve the reference DDA's rounding at pixel corners.
 			#pragma unroll
-			for (int i = 0; i < 7; i++)
+			for (int i = 0; i < 3; i++)
 			{
 				if (i < remaining.x && next.x < blockExit) { cell.x += step.x; next.x += delta.x; }
 				if (i < remaining.y && next.y < blockExit) { cell.y += step.y; next.y += delta.y; }
@@ -411,6 +428,8 @@ kernel void remasterReduceSourcePower(
 	tree[node] = tree[node * 2] + tree[node * 2 + 1];
 }
 
+constant bool remasterBatchedIndirectPass [[function_constant(2)]];
+
 kernel void remasterSampledIndirectBounce(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> occlusion [[texture(1)]],
@@ -427,14 +446,18 @@ kernel void remasterSampledIndirectBounce(
 	const device float *sourcePower [[buffer(1)]],
 	constant uint &leafCount [[buffer(2)]],
 	const device RemasterMeshCell *mesh [[buffer(3)]],
-	uint2 pixel [[thread_position_in_grid]])
+	device float4 *partials [[buffer(5)]],
+	uint3 grid [[thread_position_in_grid]])
 {
+	uint2 pixel = grid.xy;
+	bool batched = is_function_constant_defined(remasterBatchedIndirectPass) ? remasterBatchedIndirectPass : false;
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
 	float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
 	float2 participation = participationField.read(pixel).rg;
 	if (participation.r < 0.5 || participation.g < 0.5 || sourcePower[1] <= 0.0)
 	{
+		if (batched) { partials[(grid.z * uniforms.height + pixel.y) * uniforms.width + pixel.x] = float4(0.0); return; }
 		nextBounce.write(float4(0.0), pixel);
 		nextIndirect.write(float4(accumulated, 1.0), pixel);
 		return;
@@ -446,6 +469,7 @@ kernel void remasterSampledIndirectBounce(
 	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
 	if (all(albedo <= 0.0))
 	{
+		if (batched) { partials[(grid.z * uniforms.height + pixel.y) * uniforms.width + pixel.x] = float4(0.0); return; }
 		nextBounce.write(float4(0.0), pixel);
 		nextIndirect.write(float4(accumulated, 1.0), pixel);
 		return;
@@ -458,7 +482,12 @@ kernel void remasterSampledIndirectBounce(
 	uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^
 		(pixel.y * 0x85ebca6bu) ^ (uniforms.passIndex * 0xc2b2ae35u);
 	uint connectionCount = max(1u, uniforms.sampleCount);
-	for (uint connection = 0; connection < connectionCount; connection++)
+	// Preserve each connection's seed/proposal exactly, but shorten divergent
+	// traversal loops by assigning independent eight-connection batches.
+	uint firstConnection = batched ? grid.z * 8 : 0;
+	uint endConnection = batched ? min(connectionCount, firstConnection + 8) : connectionCount;
+	float3 receiverEndpoint = remasterSurfaceRayEndpoint(pixel, receiver, occlusion, heightField, mesh);
+	for (uint connection = firstConnection; connection < endConnection; connection++)
 	{
 		uint random = remasterHash(randomBase ^ (connection * 0x27d4eb2du));
 		uint choice = random % 3;
@@ -508,13 +537,14 @@ kernel void remasterSampledIndirectBounce(
 		float sourceCosine = saturate(dot(sourceSurface.gba, -direction));
 		if (receiverCosine <= 0.0 || sourceCosine <= 0.0)
 			continue;
-		float visibility = remasterVisibility(remasterSurfaceRayEndpoint(pixel, receiver, occlusion, heightField, mesh),
+		float visibility = remasterVisibility(receiverEndpoint,
 			remasterSurfaceRayEndpoint(sourcePixel, sourceSurface, occlusion, heightField, mesh), occlusion, heightField,
 			surfaceField, visibilityBlocks, mesh);
 		float transfer = receiverCosine * sourceCosine * visibility / (M_PI_F * distanceSquared);
 		incoming += previousBounce.read(sourcePixel).rgb * (transfer / probability);
 	}
 	float3 bounced = albedo * (incoming / float(connectionCount));
+	if (batched) { partials[(grid.z * uniforms.height + pixel.y) * uniforms.width + pixel.x] = float4(incoming, 0.0); return; }
 	nextBounce.write(float4(bounced, 1.0), pixel);
 	nextIndirect.write(float4(accumulated + bounced, 1.0), pixel);
 }
@@ -600,6 +630,7 @@ struct RemasterDirectSample
 // retained for reference transport and diagnostics. Compile-time branches keep
 // radial indirect sampling/diagnostics out of the production direct shader.
 constant bool remasterPreparedDirectPass [[function_constant(0)]];
+constant bool remasterBatchedDirectPass [[function_constant(1)]];
 
 kernel void remasterPrepareDirectSamples(
 	texture2d<float, access::read> occlusion [[texture(0)]],
@@ -644,8 +675,11 @@ kernel void remasterIndirectBounce(
 	constant uint &emitterCount [[buffer(2)]],
 	const device RemasterMeshCell *mesh [[buffer(3)]],
 	const device RemasterDirectSample *directSamples [[buffer(4)]],
-	uint2 pixel [[thread_position_in_grid]])
+	device float4 *directPartials [[buffer(5)]],
+	uint3 grid [[thread_position_in_grid]])
 {
+	uint2 pixel = grid.xy;
+	bool batched = is_function_constant_defined(remasterBatchedDirectPass) ? remasterBatchedDirectPass : false;
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
 		return;
 	constexpr uint distanceStep = 4;
@@ -658,6 +692,11 @@ kernel void remasterIndirectBounce(
 	float2 receiverParticipation = participationField.read(pixel).rg;
 	if (receiverParticipation.r < 0.5 || (!visibilityDiagnostic && receiverParticipation.g < 0.5))
 	{
+		if (batched)
+		{
+			directPartials[(grid.z * uniforms.height + pixel.y) * uniforms.width + pixel.x] = float4(0.0);
+			return;
+		}
 		nextBounce.write(float4(0.0), pixel);
 		float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
 		nextIndirect.write(float4(accumulated, 1.0), pixel);
@@ -695,7 +734,10 @@ kernel void remasterIndirectBounce(
 	uint sampleTotal = directCollision ? authoredSamples + sphereSamples : 16 * radialSteps * 3;
 	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
-	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
+	// Exhaustive direct transport: batches partition all samples, never subsample.
+	uint firstSample = batched ? grid.z * 8 : 0;
+	uint endSample = batched ? min(sampleTotal, firstSample + 8) : sampleTotal;
+	for (uint sampleIndex = firstSample; sampleIndex < endSample; sampleIndex++)
 	{
 		float2 samplePoint;
 		float3 debugPoint = 0.0;
@@ -849,8 +891,13 @@ kernel void remasterIndirectBounce(
 		}
 		totalFormFactor += volumeSample ? formFactor * 0.25 : formFactor;
 	}
-	if (totalFormFactor > 0.95)
+	if (!batched && totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;
+	if (batched)
+	{
+		directPartials[(grid.z * uniforms.height + pixel.y) * uniforms.width + pixel.x] = float4(incoming, totalFormFactor);
+		return;
+	}
 	// Previous radiance is already linear and includes the source's reflection.
 	// Apply only this receiver's RGB albedo, once for this collision.
 	float4 authoredReflectance = reflectanceField.read(pixel);
@@ -871,6 +918,33 @@ kernel void remasterIndirectBounce(
 	if (!specializedDirect && uniforms.passIndex > 0)
 		accumulated += bounced;
 	nextIndirect.write(float4(accumulated, 1.0), pixel);
+}
+
+kernel void remasterReduceDirectPartials(
+	const device float4 *partials [[buffer(0)]],
+	constant uint &batchCount [[buffer(1)]],
+	constant RemasterLightingUniforms &uniforms [[buffer(2)]],
+	texture2d<float, access::write> direct [[texture(0)]],
+	texture2d<float, access::write> indirect [[texture(1)]],
+	texture2d<float, access::read> source [[texture(2)]],
+	texture2d<float, access::read> reflectance [[texture(3)]],
+	texture2d<float, access::read> previousIndirect [[texture(4)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x >= direct.get_width() || pixel.y >= direct.get_height()) return;
+	float4 sum = 0.0;
+	uint stride = direct.get_width() * direct.get_height();
+	uint index = pixel.y * direct.get_width() + pixel.x;
+	for (uint batch = 0; batch < batchCount; batch++) sum += partials[batch * stride + index];
+	if (uniforms.passIndex == 0 && sum.a > 0.95) sum.rgb *= 0.95 / sum.a;
+	if (uniforms.passIndex > 0) sum.rgb /= float(max(1u, uniforms.sampleCount));
+	float4 authored = reflectance.read(pixel);
+	float3 albedo = authored.a > 0.5 ? saturate(authored.rgb) : remasterAlbedo(source.read(pixel).rgb);
+	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
+	direct.write(float4(albedo * sum.rgb, 1.0), pixel);
+	float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
+	if (uniforms.passIndex > 0) accumulated += albedo * sum.rgb;
+	indirect.write(float4(accumulated, 1.0), pixel);
 }
 
 kernel void remasterCompositeLighting(

@@ -50,7 +50,11 @@ def main():
     for case in report["cases"]:
         print(f"{case['name']:38} {case['gpu_ms']['median']:7.2f}/{case['gpu_ms']['p95']:7.2f} "
               f"{case['scene_fields_ms']['median']:6.2f}/{case['mesh_ms']['median']:6.2f} "
-              f"{case['completed_frames_per_wall_second']:8.2f} {case['completed_measured_frames']:7}")
+               f"{case['completed_frames_per_wall_second']:8.2f} {case['completed_measured_frames']:7}")
+        stages = case.get("gpu_stages_ms", {})
+        if stages:
+            print("  GPU stages median ms: " + ", ".join(
+                f"{name}={values['median']:.3f}" for name, values in sorted(stages.items())))
     if not all(case["matches_first_case_ram"] for case in report["cases"]):
         parser.exit(1, "Emulated RAM differs between cases; inspect report before comparing timings\n")
     print(f"Matching end-state RAM across all seven cases. Results: {output}")

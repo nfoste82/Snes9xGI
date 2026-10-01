@@ -54,6 +54,60 @@ typedef struct
 	vector_float3 color;
 } RemasterGpuLight;
 
+// Benchmark-only stage counters. Each producing frame owns its sample buffer,
+// so asynchronous completions cannot resolve another frame's samples.
+struct RemasterGpuStageCounters
+{
+	id buffer = nil; // API use is guarded below; supports the legacy deployment target.
+	std::vector<std::string> names;
+
+	RemasterGpuStageCounters(id<MTLDevice> device)
+	{
+		if (!RemasterBenchmarkActive() && !S9xRemasterPerformanceMetricsEnabled()) return;
+		if (@available(macOS 11.0, *))
+			if ([device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+				for (id<MTLCounterSet> set in device.counterSets)
+					if ([set.name isEqualToString:MTLCommonCounterSetTimestamp])
+					{
+						MTLCounterSampleBufferDescriptor *descriptor = [MTLCounterSampleBufferDescriptor new];
+						descriptor.counterSet = set;
+						descriptor.storageMode = MTLStorageModeShared;
+						descriptor.sampleCount = 512; // All seven standard benchmark cases fit.
+						buffer = [device newCounterSampleBufferWithDescriptor:descriptor error:nil];
+						break;
+					}
+	}
+
+	id<MTLComputeCommandEncoder> encoder(id<MTLCommandBuffer> command, const char *name)
+	{
+		if (@available(macOS 11.0, *))
+			if (buffer && names.size() < 256)
+			{
+				MTLComputePassDescriptor *descriptor = [MTLComputePassDescriptor new];
+				descriptor.sampleBufferAttachments[0].sampleBuffer = buffer;
+				descriptor.sampleBufferAttachments[0].startOfEncoderSampleIndex = names.size() * 2;
+				descriptor.sampleBufferAttachments[0].endOfEncoderSampleIndex = names.size() * 2 + 1;
+				names.emplace_back(name);
+				return [command computeCommandEncoderWithDescriptor:descriptor];
+			}
+		return [command computeCommandEncoder];
+	}
+};
+
+static MTLSize RemasterTransportThreads()
+{
+	// Sweep execution layout without changing sources, geometry, or sample order.
+	// The override is restricted to benchmark mode for reproducible experiments.
+	if (RemasterBenchmarkActive())
+		if (const char *value = std::getenv("S9X_REMASTER_TRANSPORT_THREADS"))
+		{
+			unsigned x = 0, y = 0;
+			if (sscanf(value, "%ux%u", &x, &y) == 2 && x && y && x <= 32 && y <= 8 && x * y <= 64)
+				return MTLSizeMake(x, y, 1);
+		}
+	return MTLSizeMake(8, 8, 1);
+}
+
 typedef struct
 {
 	uint32_t width;
@@ -152,6 +206,7 @@ static void LogRemasterRadianceMetrics (const char *label, uint32_t bounce,
 }
 
 #include "../remaster/surface_mesh_material.h"
+#include "../remaster/surface_mesh_cache.h"
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
@@ -199,6 +254,9 @@ id<MTLComputePipelineState>	remasterVisibilityBlocksPipelineState = nil;
 id<MTLComputePipelineState>	remasterIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterPrepareDirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterDirectTransportPipelineState = nil;
+id<MTLComputePipelineState> remasterBatchedDirectPipelineState = nil;
+id<MTLComputePipelineState> remasterReduceDirectPipelineState = nil;
+id<MTLComputePipelineState> remasterBatchedIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterSourcePowerLeavesPipelineState = nil;
 id<MTLComputePipelineState>	remasterSourcePowerReducePipelineState = nil;
 id<MTLComputePipelineState>	remasterSampledIndirectPipelineState = nil;
@@ -246,6 +304,7 @@ struct RemasterMetalResources
 	id<MTLBuffer> mesh = nil;
 	id<MTLBuffer> directSources = nil;
 	id<MTLBuffer> directSamples = nil;
+	id<MTLBuffer> directPartials = nil;
 	uint32_t sourceLeafCount = 0;
 };
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
@@ -433,6 +492,23 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		std::unordered_map<std::string, const RemasterFrameMaterial *> materials;
 		for (const RemasterFrameMaterial &material : frame.materials)
 			materials.emplace(material.name, &material);
+		// Resolve selector names once per instance/tile pixel, rather than hashing
+		// material strings for every visible screen pixel.
+		std::vector<std::array<const RemasterFrameMaterial *, 64>> instanceMaterials(frame.tileInstances.size());
+		for (size_t i = 0; i < frame.tileInstances.size(); i++)
+		{
+			const auto &instance = frame.tileInstances[i];
+			const auto *metadata = instanceMetadata[i];
+			const auto base = materials.find(instance.material);
+			instanceMaterials[i].fill(instance.material.empty() || base == materials.end() ? nullptr : base->second);
+			if (metadata && metadata->hasMaterialSelectors)
+				for (size_t p = 0; p < 64; p++)
+					if (!metadata->materialSelectors[p].empty())
+					{
+						const auto found = materials.find(metadata->materialSelectors[p]);
+						instanceMaterials[i][p] = found == materials.end() ? nullptr : found->second;
+					}
+		}
 		for (size_t i = 0; i < frame.mainPixels.size(); i++)
 		{
 			const RemasterFramePixel &mainPixel = frame.mainPixels[i];
@@ -443,13 +519,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				continue;
 			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 			const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
-			const std::string *materialName = nullptr;
-			if (metadata && metadata->hasMaterialSelectors && !metadata->materialSelectors[pixel.tilePixel].empty())
-				materialName = &metadata->materialSelectors[pixel.tilePixel];
-			else if (!instance.material.empty())
-				materialName = &instance.material;
-			const auto materialEntry = materialName ? materials.find(*materialName) : materials.end();
-			const RemasterFrameMaterial *material = materialEntry == materials.end() ? nullptr : materialEntry->second;
+			const RemasterFrameMaterial *material = instanceMaterials[pixel.instanceId - 1][pixel.tilePixel];
 			const RemasterSurfaceClass surfaceClass = material ? material->surfaceClass : RemasterSurfaceClass::Unclassified;
 			RemasterSurfaceMesh::Sample &meshSample = meshSamples[i];
 			RemasterSurfaceMesh::classify(meshSample, instance.source, instance.sourceIndex,
@@ -487,13 +557,6 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			{
 				const size_t i = static_cast<size_t>(y) * frame.width + x;
 				const float center = heightField[i * 2] / 255.0f * frame.lightingCoordinateScale;
-				const size_t left = static_cast<size_t>(y) * frame.width + (x ? x - 1 : x);
-				const size_t right = static_cast<size_t>(y) * frame.width + std::min(frame.width - 1, x + 1);
-				const size_t top = static_cast<size_t>(y ? y - 1 : y) * frame.width + x;
-				const size_t bottom = static_cast<size_t>(std::min(frame.height - 1, y + 1)) * frame.width + x;
-				const float dx = (heightField[right * 2] - heightField[left * 2]) / 255.0f * frame.lightingCoordinateScale;
-				const float dy = (heightField[bottom * 2] - heightField[top * 2]) / 255.0f * frame.lightingCoordinateScale;
-				const float length = std::sqrt(dx * dx + dy * dy + 4.0f);
 				surfaceField[i * 4] = center;
 				const RemasterFramePixel &mainPixel = frame.mainPixels[i];
 				const bool useSubscreen = !mainPixel.instanceId &&
@@ -519,12 +582,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 					surfaceField[i * 4 + 2] = normalLength > 0.0001f ? ny / normalLength : 0.0f;
 					surfaceField[i * 4 + 3] = normalLength > 0.0001f ? nz / normalLength : 1.0f;
 				}
-				else
-				{
-					surfaceField[i * 4 + 1] = -dx / length;
-					surfaceField[i * 4 + 2] = -dy / length;
-					surfaceField[i * 4 + 3] = 2.0f / length;
-				}
+				// Missing authored normals are filled from the mesh below; the old
+				// cross-object gradient was always overwritten before GPU upload.
 			}
 		for (size_t i = 0; i < meshSamples.size(); i++)
 		{
@@ -533,7 +592,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			meshSamples[i].coverage = lightingField[i * 2] / 255.0f;
 		}
 		const auto meshStarted = std::chrono::steady_clock::now();
-		mesh = RemasterSurfaceMesh::build(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f);
+		// renderMutex serializes cache access. Compare effective inputs even for
+		// moving backgrounds; no game-specific static-tile assumptions are needed.
+		static RemasterSurfaceMesh::Cache meshCache;
+		mesh = std::getenv("S9X_REMASTER_FULL_MESH") ?
+			RemasterSurfaceMesh::build(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f) :
+			meshCache.update(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f);
 		for (size_t i = 0; i < mesh.size(); i++) mesh[i].emissionDepth = emissionDepths[i];
 		for (size_t i = 0; i < mesh.size(); i++)
 			if (!authoredNormals[i]) std::copy(mesh[i].normal, mesh[i].normal + 3, surfaceField.begin() + i * 4 + 1);
@@ -618,12 +682,20 @@ static void S9xInitMetal (void)
 	id<MTLFunction> directTransport = [defaultLibrary newFunctionWithName:@"remasterIndirectBounce"
 		constantValues:directConstants error:&error];
 	remasterDirectTransportPipelineState = [metalDevice newComputePipelineStateWithFunction:directTransport error:&error];
+	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:1];
+	remasterBatchedDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+	remasterReduceDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterReduceDirectPartials"] error:&error];
 	remasterSourcePowerLeavesPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
 	remasterSourcePowerReducePipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterReduceSourcePower"] error:&error];
 	remasterSampledIndirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
-		[defaultLibrary newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
+		[defaultLibrary newFunctionWithName:@"remasterSampledIndirectBounce" constantValues:referenceConstants error:&error] error:&error];
+	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:2];
+	remasterBatchedIndirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterSampledIndirectBounce" constantValues:directConstants error:&error] error:&error];
 	id<MTLFunction> compositeFunction = [defaultLibrary newFunctionWithName:@"remasterCompositeLighting"];
 	remasterCompositePipelineState = [metalDevice newComputePipelineStateWithFunction:compositeFunction error:&error];
 	id<MTLFunction> highlightFunction = [defaultLibrary newFunctionWithName:@"remasterSelectedTileHighlight"];
@@ -657,6 +729,7 @@ static void S9xDeinitMetal (void)
 		resources.sourcePower = nil;
 		resources.mesh = nil;
 		resources.directSources = resources.directSamples = nil;
+		resources.directPartials = nil;
 		resources.sourceLeafCount = 0;
 	}
 	for (int slot : acquiredSlots)
@@ -669,6 +742,8 @@ static void S9xDeinitMetal (void)
 	remasterIndirectPipelineState = nil;
 	remasterPrepareDirectPipelineState = nil;
 	remasterDirectTransportPipelineState = nil;
+	remasterBatchedDirectPipelineState = remasterReduceDirectPipelineState = nil;
+	remasterBatchedIndirectPipelineState = nil;
 	remasterSourcePowerLeavesPipelineState = nil;
 	remasterSourcePowerReducePipelineState = nil;
 	remasterSampledIndirectPipelineState = nil;
@@ -924,6 +999,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	CGSize layerSize = metalLayer.bounds.size;
 	
 	@autoreleasepool {
+		RemasterGpuStageCounters stageCounters(metalDevice);
+		const MTLSize transportThreads = RemasterTransportThreads();
 		RemasterMetalResources *resources = resourceSlot >= 0 ? &remasterResources[resourceSlot] : nullptr;
 		if (RemasterBenchmarkActive() && lighting) benchmarkLastResourceSlot = resourceSlot;
 		id<MTLTexture> sourceTexture = resources ? resources->source : metalTexture;
@@ -968,7 +1045,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		id<MTLTexture> diagnosticStageTextures[3] = {};
 		uint32_t diagnosticBounceCount = 0;
 		if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && reflectance && remasterLightingPipelineState &&
-			remasterVisibilityBlocksPipelineState && remasterIndirectPipelineState && remasterPrepareDirectPipelineState && remasterDirectTransportPipelineState && remasterSourcePowerLeavesPipelineState &&
+			remasterVisibilityBlocksPipelineState && remasterIndirectPipelineState && remasterPrepareDirectPipelineState && remasterDirectTransportPipelineState &&
+			remasterBatchedDirectPipelineState && remasterBatchedIndirectPipelineState && remasterReduceDirectPipelineState && remasterSourcePowerLeavesPipelineState &&
 			remasterSourcePowerReducePipelineState && remasterSampledIndirectPipelineState &&
 			remasterCompositePipelineState)
 		{
@@ -980,6 +1058,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			if (rebuildTextures)
 			{
 				resources->directSources = resources->directSamples = nil;
+				resources->directPartials = nil;
 				resources->device = metalDevice;
 				resources->width = width;
 				resources->height = height;
@@ -1007,7 +1086,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				resources->surface = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
 				resources->reflectance = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
 				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
-					width:(width + 7) / 8 height:(height + 7) / 8 mipmapped:NO];
+					width:(width + 3) / 4 height:(height + 3) / 4 mipmapped:NO];
 				visibilityBlocksDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 				resources->visibilityBlocks = [metalDevice newTextureWithDescriptor:visibilityBlocksDescriptor];
 				MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -1051,7 +1130,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			memcpy(resources->mesh.contents, mesh->data(), mesh->size() * sizeof(RemasterSurfaceMesh::Cell));
 			if (!visibilityBlocksTexture || !resources->sourcePower)
 				return false;
-			id<MTLComputeCommandEncoder> visibilityBlocksEncoder = [commandBuffer computeCommandEncoder];
+			id<MTLComputeCommandEncoder> visibilityBlocksEncoder = stageCounters.encoder(commandBuffer, "visibility_blocks");
 			if (!visibilityBlocksEncoder)
 				return false;
 			[visibilityBlocksEncoder setComputePipelineState:remasterVisibilityBlocksPipelineState];
@@ -1111,7 +1190,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				uniforms.debugColorIntensity = { std::pow(light.red, 2.2f), std::pow(light.green, 2.2f),
 					std::pow(light.blue, 2.2f), light.intensity / 25.0f };
 			}
-			id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+			id<MTLComputeCommandEncoder> computeEncoder = stageCounters.encoder(commandBuffer, "emission_seed");
 			const auto directEncodeStarted = std::chrono::steady_clock::now();
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
 			[computeEncoder setTexture:sourceTexture atIndex:0];
@@ -1133,7 +1212,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
 			if (directSampleCount)
 			{
-				id<MTLComputeCommandEncoder> prepare = [commandBuffer computeCommandEncoder];
+				id<MTLComputeCommandEncoder> prepare = stageCounters.encoder(commandBuffer, "prepare_direct");
 				if (!prepare) return false;
 				prepare.label = @"Prepare direct emitter samples";
 				[prepare setComputePipelineState:remasterPrepareDirectPipelineState];
@@ -1207,10 +1286,20 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					{
 						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : directMeanTextures[0];
 						diagnosticDirectTexture = measureGi ? finalDirect : nil;
-						id<MTLComputeCommandEncoder> directEncoder = [commandBuffer computeCommandEncoder];
+						id<MTLComputeCommandEncoder> directEncoder = stageCounters.encoder(commandBuffer, "direct_transport");
+						const uint32_t batchCount = std::max(1u, (directSampleCount + (light.enabled ? 128u : 0u) + 7) / 8);
+						const size_t partialBytes = size_t(width) * height * batchCount * sizeof(vector_float4);
+						const bool batchedDirect = !visibilityView && !measureGi && batchCount > 1 &&
+							partialBytes <= 64 * 1024 * 1024 && !std::getenv("S9X_REMASTER_SERIAL_DIRECT");
+						if (batchedDirect)
+						{
+							if (!resources->directPartials || resources->directPartials.length < partialBytes)
+								resources->directPartials = [metalDevice newBufferWithLength:partialBytes options:MTLResourceStorageModePrivate];
+							if (!resources->directPartials) return false;
+						}
 						directEncoder.label = @"Direct light transport";
 						const auto directEncodeStarted = std::chrono::steady_clock::now();
-						[directEncoder setComputePipelineState:visibilityView ? remasterIndirectPipelineState : remasterDirectTransportPipelineState];
+						[directEncoder setComputePipelineState:visibilityView ? remasterIndirectPipelineState : batchedDirect ? remasterBatchedDirectPipelineState : remasterDirectTransportPipelineState];
 						[directEncoder setTexture:sourceTexture atIndex:0];
 						[directEncoder setTexture:occlusionTexture atIndex:1];
 						[directEncoder setTexture:surfaceTexture atIndex:2];
@@ -1225,12 +1314,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directEncoder setTexture:reflectanceTexture atIndex:11];
 						[directEncoder setBuffer:resources->mesh offset:0 atIndex:3];
 						[directEncoder setBuffer:resources->directSamples offset:0 atIndex:4];
+						[directEncoder setBuffer:batchedDirect ? resources->directPartials : resources->directSamples offset:0 atIndex:5];
 						[directEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[directEncoder setBuffer:resources->directSources offset:0 atIndex:1];
 						[directEncoder setBytes:&directSampleCount length:sizeof(directSampleCount) atIndex:2];
-						[directEncoder dispatchThreads:MTLSizeMake(width, height, 1)
-							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+						[directEncoder dispatchThreads:MTLSizeMake(width, height, batchedDirect ? batchCount : 1)
+							threadsPerThreadgroup:transportThreads];
 						[directEncoder endEncoding];
+						if (batchedDirect)
+						{
+							id<MTLComputeCommandEncoder> reduce = stageCounters.encoder(commandBuffer, "direct_reduce");
+							[reduce setComputePipelineState:remasterReduceDirectPipelineState];
+							[reduce setBuffer:resources->directPartials offset:0 atIndex:0];
+							[reduce setBytes:&batchCount length:sizeof(batchCount) atIndex:1];
+							[reduce setBytes:&uniforms length:sizeof(uniforms) atIndex:2];
+							[reduce setTexture:finalDirect atIndex:0];
+							[reduce setTexture:indirectTextures[0] atIndex:1];
+							[reduce setTexture:sourceTexture atIndex:2];
+							[reduce setTexture:reflectanceTexture atIndex:3];
+							[reduce setTexture:indirectTextures[1] atIndex:4];
+							[reduce dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+							[reduce endEncoding];
+						}
 						directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
 					}
 
@@ -1243,7 +1348,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						const uint32_t current = (bounce + 1) & 1;
 						const uint32_t previous = current ^ 1;
 						uniforms.passIndex = bounce + 1;
-						id<MTLComputeCommandEncoder> leavesEncoder = [commandBuffer computeCommandEncoder];
+						id<MTLComputeCommandEncoder> leavesEncoder = stageCounters.encoder(commandBuffer, "source_power");
 						[leavesEncoder setComputePipelineState:remasterSourcePowerLeavesPipelineState];
 						[leavesEncoder setTexture:previousBounce atIndex:0];
 						[leavesEncoder setTexture:participationTexture atIndex:1];
@@ -1254,7 +1359,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[leavesEncoder endEncoding];
 						for (uint32_t firstNode = resources->sourceLeafCount / 2; firstNode; firstNode /= 2)
 						{
-							id<MTLComputeCommandEncoder> reduceEncoder = [commandBuffer computeCommandEncoder];
+							id<MTLComputeCommandEncoder> reduceEncoder = stageCounters.encoder(commandBuffer, "source_power");
 							[reduceEncoder setComputePipelineState:remasterSourcePowerReducePipelineState];
 							[reduceEncoder setBuffer:resources->sourcePower offset:0 atIndex:0];
 							[reduceEncoder setBytes:&firstNode length:sizeof(firstNode) atIndex:1];
@@ -1262,9 +1367,19 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 								threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 							[reduceEncoder endEncoding];
 						}
-						id<MTLComputeCommandEncoder> bounceEncoder = [commandBuffer computeCommandEncoder];
+						id<MTLComputeCommandEncoder> bounceEncoder = stageCounters.encoder(commandBuffer, "indirect_transport");
+						const uint32_t indirectBatchCount = (connectionCount + 7) / 8;
+						const bool batchedIndirect = !measureGi && indirectBatchCount > 1 &&
+							size_t(width) * height * indirectBatchCount * 16 <= 64 * 1024 * 1024 && !std::getenv("S9X_REMASTER_SERIAL_INDIRECT");
+						if (batchedIndirect)
+						{
+							const size_t bytes = size_t(width) * height * indirectBatchCount * 16;
+							if (!resources->directPartials || resources->directPartials.length < bytes)
+								resources->directPartials = [metalDevice newBufferWithLength:bytes options:MTLResourceStorageModePrivate];
+							if (!resources->directPartials) return false;
+						}
 						const auto indirectEncodeStarted = std::chrono::steady_clock::now();
-						[bounceEncoder setComputePipelineState:remasterSampledIndirectPipelineState];
+						[bounceEncoder setComputePipelineState:batchedIndirect ? remasterBatchedIndirectPipelineState : remasterSampledIndirectPipelineState];
 						[bounceEncoder setTexture:sourceTexture atIndex:0];
 						[bounceEncoder setTexture:occlusionTexture atIndex:1];
 						[bounceEncoder setTexture:surfaceTexture atIndex:2];
@@ -1277,12 +1392,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[bounceEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[bounceEncoder setTexture:reflectanceTexture atIndex:11];
 						[bounceEncoder setBuffer:resources->mesh offset:0 atIndex:3];
+						[bounceEncoder setBuffer:batchedIndirect ? resources->directPartials : resources->directSamples offset:0 atIndex:5];
 						[bounceEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[bounceEncoder setBuffer:resources->sourcePower offset:0 atIndex:1];
 						[bounceEncoder setBytes:&resources->sourceLeafCount length:sizeof(uint32_t) atIndex:2];
-						[bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
-							threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+						[bounceEncoder dispatchThreads:MTLSizeMake(width, height, batchedIndirect ? indirectBatchCount : 1)
+							threadsPerThreadgroup:transportThreads];
 						[bounceEncoder endEncoding];
+						if (batchedIndirect)
+						{
+							id<MTLComputeCommandEncoder> reduce = stageCounters.encoder(commandBuffer, "indirect_reduce");
+							[reduce setComputePipelineState:remasterReduceDirectPipelineState];
+							[reduce setBuffer:resources->directPartials offset:0 atIndex:0];
+							[reduce setBytes:&indirectBatchCount length:sizeof(indirectBatchCount) atIndex:1];
+							[reduce setBytes:&uniforms length:sizeof(uniforms) atIndex:2];
+							[reduce setTexture:bounceTextures[current] atIndex:0];
+							[reduce setTexture:indirectTextures[current] atIndex:1];
+							[reduce setTexture:sourceTexture atIndex:2];
+							[reduce setTexture:reflectanceTexture atIndex:3];
+							[reduce setTexture:indirectTextures[previous] atIndex:4];
+							[reduce dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+							[reduce endEncoding];
+						}
 						indirectEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - indirectEncodeStarted).count();
 						previousBounce = bounceTextures[current];
 						if (measureGi && sample == 0 && bounce < 16)
@@ -1311,7 +1442,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					lightingView == RemasterLightingView::IndirectContribution ||
 					lightingView == RemasterLightingView::DirectAndIndirectContribution)
 				{
-					id<MTLComputeCommandEncoder> compositeEncoder = [commandBuffer computeCommandEncoder];
+					id<MTLComputeCommandEncoder> compositeEncoder = stageCounters.encoder(commandBuffer, "composite");
 					const auto compositeEncodeStarted = std::chrono::steady_clock::now();
 					[compositeEncoder setComputePipelineState:remasterCompositePipelineState];
 					[compositeEncoder setTexture:sourceTexture atIndex:0];
@@ -1380,6 +1511,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		const bool logFrameMetrics = std::getenv("S9X_REMASTER_FRAME_METRICS") != nullptr;
 		const bool measureFrames = panelMetrics || logFrameMetrics;
 		const RemasterBenchmarkTag benchmarkTag = GetRemasterBenchmarkTag();
+		const auto stageNames = stageCounters.names;
+		const id stageBuffer = stageCounters.buffer;
 		const RemasterState::PerformanceMetrics benchmarkMetrics = benchmarkTag.measured ?
 			S9xRemasterGetPerformanceMetrics() : RemasterState::PerformanceMetrics{};
 		const auto queuedAt = std::chrono::steady_clock::now();
@@ -1421,6 +1554,22 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							if (completed.GPUEndTime > completed.GPUStartTime)
 								gpuMs = (completed.GPUEndTime - completed.GPUStartTime) * 1000.0;
 						const uint64_t dropped = droppedRemasterPresentations.exchange(0);
+						std::vector<std::pair<std::string, double>> gpuStages;
+						if (@available(macOS 11.0, *))
+							if (stageBuffer && !stageNames.empty())
+							{
+								NSData *data = [stageBuffer resolveCounterRange:NSMakeRange(0, stageNames.size() * 2)];
+								if (data.length == stageNames.size() * 2 * sizeof(MTLCounterResultTimestamp))
+								{
+									const auto *times = static_cast<const MTLCounterResultTimestamp *>(data.bytes);
+									std::map<std::string, double> sums;
+									for (size_t i = 0; i < stageNames.size(); i++)
+										if (times[i * 2].timestamp != MTLCounterErrorValue && times[i * 2 + 1].timestamp != MTLCounterErrorValue &&
+											times[i * 2 + 1].timestamp >= times[i * 2].timestamp)
+											sums[stageNames[i]] += (times[i * 2 + 1].timestamp - times[i * 2].timestamp) / 1e6;
+									for (const auto &stage : sums) gpuStages.push_back(stage);
+								}
+							}
 						if (benchmarkTag.measured)
 						{
 							RemasterBenchmarkSample sample;
@@ -1430,6 +1579,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							sample.metrics.presentationQueueMs = queuedMs;
 							sample.metrics.drawableMs = drawableMs;
 							sample.metrics.droppedPresentations = dropped;
+							sample.gpuStages = gpuStages;
 							sample.completedTime = [NSProcessInfo processInfo].systemUptime;
 							RecordRemasterBenchmarkSample(sample);
 						}
@@ -1440,6 +1590,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							state.performanceMetrics.presentationQueueMs = queuedMs;
 							state.performanceMetrics.drawableMs = drawableMs;
 							state.performanceMetrics.gpuFrameMs = gpuMs;
+							state.performanceMetrics.gpuDirectMs = state.performanceMetrics.gpuIndirectMs = 0.0;
+							state.performanceMetrics.gpuStageTimingsAvailable = !gpuStages.empty();
+							for (const auto &stage : gpuStages)
+							{
+								if (stage.first == "direct_transport" || stage.first == "direct_reduce") state.performanceMetrics.gpuDirectMs += stage.second;
+								if (stage.first == "indirect_transport" || stage.first == "indirect_reduce") state.performanceMetrics.gpuIndirectMs += stage.second;
+							}
 							state.performanceMetrics.droppedPresentations = dropped;
 						}
 						if (logFrameMetrics)

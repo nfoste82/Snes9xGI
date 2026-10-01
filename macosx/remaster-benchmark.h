@@ -16,6 +16,9 @@ struct RemasterBenchmarkSample
 	RemasterBenchmarkTag tag;
 	RemasterState::PerformanceMetrics metrics;
 	double completedTime = 0;
+	// Timestamp-counter intervals, separate from whole-command-buffer duration.
+	// Empty when stage-boundary counter sampling is unavailable.
+	std::vector<std::pair<std::string, double>> gpuStages;
 };
 bool RemasterBenchmarkActive();
 bool RemasterBenchmarkDeterministicPresentation();

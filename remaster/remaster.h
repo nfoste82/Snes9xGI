@@ -51,6 +51,9 @@ struct RemasterState
 		double presentationQueueMs = 0.0;
 		double drawableMs = 0.0;
 		double gpuFrameMs = 0.0;
+		double gpuDirectMs = 0.0;
+		double gpuIndirectMs = 0.0;
+		bool gpuStageTimingsAvailable = false;
 		double presentedFps = 0.0;
 		uint64_t droppedPresentations = 0;
 	};

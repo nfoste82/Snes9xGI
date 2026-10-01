@@ -184,6 +184,7 @@ static void FinishBenchmarkFrame()
 	NSMutableArray *raw = [NSMutableArray array];
 	std::vector<double> gpu, fields, mesh, waits, setup, drawable, queue;
 	std::vector<double> refresh, pacing;
+	std::map<std::string, std::vector<double>> stages;
 	uint64_t dropped = 0;
 	{
 		std::lock_guard<std::mutex> lock(benchmarkSamplesMutex);
@@ -196,7 +197,14 @@ static void FinishBenchmarkFrame()
 			setup.push_back(m.lightingPreparationMs); drawable.push_back(m.drawableMs); queue.push_back(m.presentationQueueMs);
 			refresh.push_back(m.emulationFrameMs); pacing.push_back(m.pacingWaitMs);
 			dropped += m.droppedPresentations;
+			NSMutableDictionary *frameStages = [NSMutableDictionary dictionary];
+			for (const auto &stage : sample.gpuStages)
+			{
+				stages[stage.first].push_back(stage.second);
+				frameStages[@(stage.first.c_str())] = @(stage.second);
+			}
 			[raw addObject:@{@"emulated_frame": @(sample.tag.frame), @"gpu_ms": @(m.gpuFrameMs),
+				@"gpu_stages_ms": frameStages,
 				@"scene_fields_ms": @(m.lightingFieldMs), @"mesh_ms": @(m.lightingMeshMs),
 				@"field_wait_ms": @(m.lightingFieldWaitMs), @"gpu_setup_ms": @(m.lightingPreparationMs),
 				@"drawable_ms": @(m.drawableMs), @"queue_ms": @(m.presentationQueueMs),
@@ -215,6 +223,10 @@ static void FinishBenchmarkFrame()
 		@"dropped_since_completions": @(dropped), @"samples": raw,
 		@"ram_sha256": BenchmarkSha256([NSData dataWithBytes:Memory.RAM length:0x20000])} mutableCopy];
 	result[@"measurement_wall_seconds"] = @(ended - benchmarkMeasurementStarted);
+	NSMutableDictionary *stageStatistics = [NSMutableDictionary dictionary];
+	for (const auto &stage : stages)
+		stageStatistics[@(stage.first.c_str())] = BenchmarkStatistics(stage.second);
+	result[@"gpu_stages_ms"] = stageStatistics;
 	result[@"latest_refresh_ms"] = BenchmarkStatistics(refresh);
 	result[@"latest_pacing_ms"] = BenchmarkStatistics(pacing);
 	result[@"completed_frames_per_wall_second"] = @(raw.count / (ended - benchmarkMeasurementStarted));
@@ -4466,6 +4478,11 @@ void QuitWithFatalError ( NSString *message)
 		@"debug_sphere_enabled": @NO, @"timing_note": @"GPU samples are per completed submitted frame. Input and duration use emulated frames; slow GPU cases take longer in wall time. Deterministic presentation waits for each GPU frame; live presentation retains bounded in-flight slots and drops. Refresh/pacing metrics are latest emulator samples, not guaranteed same-frame."} mutableCopy];
 	WriteBenchmarkReport();
 	benchmarkActive.store(true);
+	benchmarkReport[@"transport_threads_override"] = @(getenv("S9X_REMASTER_TRANSPORT_THREADS") ?: "default 8x8");
+	benchmarkReport[@"serial_direct_override"] = @(getenv("S9X_REMASTER_SERIAL_DIRECT") != nullptr);
+	benchmarkReport[@"serial_indirect_override"] = @(getenv("S9X_REMASTER_SERIAL_INDIRECT") != nullptr);
+	benchmarkReport[@"full_mesh_override"] = @(getenv("S9X_REMASTER_FULL_MESH") != nullptr);
+	benchmarkReport[@"gpu_stage_timing_note"] = @"Benchmark-only GPU timestamp counters at compute encoder boundaries (nanoseconds converted to ms); repeated stages summed per frame. Empty when unsupported. Counter sampling can affect performance; stage sums exclude render/present and inter-encoder gaps.";
 	if (running) FailBenchmark(@"Start benchmark in a fresh app process");
 	if (!SNES9X_OpenCart([NSURL fileURLWithPath:rom])) FailBenchmark(@"Could not load benchmark ROM");
 	// Load the existing profile pipeline without starting emulation until all
@@ -5213,7 +5230,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmissionPaintMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(252, 377, 120, 28) pullsDown:NO];
 		[remasterEmissionPaintMode addItemsWithTitles:@[@"Intensity", @"RGB", @"RGB + Intensity"]];
 		[contentView addSubview:remasterEmissionPaintMode];
-		remasterEmissionColorScope = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(410, 307, 130, 28) pullsDown:NO];
+		remasterEmissionColorScope = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(300, 307, 130, 28) pullsDown:NO];
 		[remasterEmissionColorScope addItemsWithTitles:@[@"Selected Pixel", @"Entire Tile"]];
 		[remasterEmissionColorScope selectItemAtIndex:1];
 		remasterEmissionColorScope.target = self;
@@ -5231,13 +5248,13 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmissionFromAnimationButton.target = self;
 		remasterEmissionFromAnimationButton.action = @selector(setRemasterEmissionFromVisibleAnimation:);
 		[contentView addSubview:remasterEmissionFromAnimationButton];
-		remasterEmissionDepthLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(548, 342, 135, 24)];
+		remasterEmissionDepthLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(450, 307, 135, 24)];
 		remasterEmissionDepthLabel.stringValue = @"Emission Depth";
 		remasterEmissionDepthLabel.editable = NO;
 		remasterEmissionDepthLabel.bezeled = NO;
 		remasterEmissionDepthLabel.drawsBackground = NO;
 		[contentView addSubview:remasterEmissionDepthLabel];
-		remasterEmissionDepthInput = [[NSTextField alloc] initWithFrame:NSMakeRect(680, 342, 60, 24)];
+		remasterEmissionDepthInput = [[NSTextField alloc] initWithFrame:NSMakeRect(590, 307, 60, 24)];
 		remasterEmissionDepthInput.target = self;
 		remasterEmissionDepthInput.action = @selector(changeRemasterEmissionDepth:);
 		remasterEmissionDepthInput.toolTip = @"0–64 source pixels outward along the authored normal. Applies to selected tiles; zero keeps planar emission.";
@@ -5249,7 +5266,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterArtworkVisibleButton.target = self;
 		remasterArtworkVisibleButton.action = @selector(changeRemasterPreviewLayers:);
 		[contentView addSubview:remasterArtworkVisibleButton];
-		remasterEmissionVisibleButton = [[NSButton alloc] initWithFrame:NSMakeRect(288, 307, 120, 28)];
+		remasterEmissionVisibleButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 307, 120, 28)];
 		remasterEmissionVisibleButton.title = @"Emission";
 		remasterEmissionVisibleButton.buttonType = NSButtonTypeSwitch;
 		remasterEmissionVisibleButton.state = NSControlStateValueOn;
@@ -6043,8 +6060,14 @@ void QuitWithFatalError ( NSString *message)
 	remasterValueDownButton.hidden = remasterValueBrush.hidden;
 	remasterValueUpButton.hidden = remasterValueBrush.hidden;
 	remasterValueLabel.hidden = layer == RemasterEditorArtwork;
+	// Emission's color and paint-mode controls need more room before the shared value controls.
+	const bool emissionLayer = layer == RemasterEditorEmission;
+	remasterValueDownButton.frame = NSMakeRect(emissionLayer ? 380 : 342, 377, 30, 28);
+	remasterValueBrush.frame = NSMakeRect(emissionLayer ? 414 : 376, 380, 120, 22);
+	remasterValueUpButton.frame = NSMakeRect(emissionLayer ? 538 : 500, 377, 30, 28);
+	remasterValueInput.frame = NSMakeRect(emissionLayer ? 454 : 416, 399, 40, 20);
 	remasterValueLabel.frame = layer == RemasterEditorNormal ? NSMakeRect(350, 400, 390, 18) :
-		NSMakeRect(535, 379, 205, 24);
+		(emissionLayer ? NSMakeRect(573, 379, 167, 24) : NSMakeRect(535, 379, 205, 24));
 	remasterOcclusionFillOpaqueButton.hidden = layer != RemasterEditorOcclusion;
 	remasterHeightSamplingSelector.hidden = layer != RemasterEditorHeight;
 	remasterHeightPreviewMode.hidden = layer != RemasterEditorHeight;
@@ -7428,7 +7451,8 @@ void QuitWithFatalError ( NSString *message)
 	}
 	const RemasterState::PerformanceMetrics metrics = S9xRemasterGetPerformanceMetrics();
 	remasterMetricsText.stringValue = [NSString stringWithFormat:
-		@"DISPLAY  %.1f FPS  |  dropped %llu\n"
+		@"BUILD  %s\n"
+		 "DISPLAY  %.1f FPS  |  dropped %llu\n"
 		 "SELECTED  %u connections  x  %u bounces\n"
 		 "CPU LIGHTING  %.2f ms\n"
 		 "  scene fields %.2f  +  GPU setup %.2f ms\n"
@@ -7436,15 +7460,17 @@ void QuitWithFatalError ( NSString *message)
 		 "EMULATOR  refresh phase %.2f ms\n"
 		 "  pacing wait %.2f ms\n"
 		 "GPU FRAME  %.2f ms (all graphics)\n"
+		 "  %@\n"
 		 "  %u emitters / %u direct samples\n"
 		 "PRESENT CPU  queue %.2f  |  drawable %.2f ms\n"
 		 "Latest samples may be different frames.",
-		metrics.presentedFps, static_cast<unsigned long long>(metrics.droppedPresentations),
+		__DATE__ " " __TIME__, metrics.presentedFps, static_cast<unsigned long long>(metrics.droppedPresentations),
 		unsigned(remasterEditingProfile.samplesPerFrame), unsigned(remasterEditingProfile.indirectBounceCount),
 		metrics.lightingFieldMs + metrics.lightingPreparationMs, metrics.lightingFieldMs,
 		metrics.lightingPreparationMs, metrics.lightingFieldWaitMs, metrics.lightingMeshMs,
 		metrics.emulationFrameMs, metrics.pacingWaitMs,
 		metrics.gpuFrameMs,
+		metrics.gpuStageTimingsAvailable ? [NSString stringWithFormat:@"direct %.2f | indirect %.2f ms", metrics.gpuDirectMs, metrics.gpuIndirectMs] : @"direct/indirect counters unavailable",
 		metrics.directEmitterCount, metrics.directSampleCount,
 		metrics.presentationQueueMs, metrics.drawableMs];
 }

@@ -99,7 +99,7 @@ int main(int argc, const char *argv[])
             id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterReduceSourcePower"] error:&error];
             id<MTLComputePipelineState> sampledPipeline = [device newComputePipelineStateWithFunction:
-                [library newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
+                [library newFunctionWithName:@"remasterSampledIndirectBounce" constantValues:referenceConstants error:&error] error:&error];
             require(powerLeaves && powerReduce && sampledPipeline, error.localizedDescription);
             id<MTLComputePipelineState> preparePipeline = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterPrepareDirectSamples"] error:&error];
@@ -110,6 +110,14 @@ int main(int argc, const char *argv[])
             id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             require(directTransport != nil, error.localizedDescription);
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:1];
+            id<MTLComputePipelineState> batchedTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            id<MTLComputePipelineState> reduceDirect = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterReduceDirectPartials"] error:&error];
+            require(batchedTransport && reduceDirect, error.localizedDescription);
+            const bool batched = getenv("S9X_REMASTER_TEST_BATCHED") != nullptr;
+            if (directBenchmark) std::printf("Prepared production direct batching: %s (8 samples/batch)\n", batched ? "enabled" : "disabled");
             id<MTLCommandQueue> queue = [device newCommandQueue];
             require(queue != nil, @"Could not create command queue");
 
@@ -230,7 +238,7 @@ int main(int argc, const char *argv[])
                             [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                                 withBytes:uploads[i] bytesPerRow:width * bytesPerPixel[i]];
                     }
-                    constexpr unsigned blockWidth = (width + 7) / 8, blockHeight = (height + 7) / 8;
+                    constexpr unsigned blockWidth = (width + 3) / 4, blockHeight = (height + 3) / 4;
                     MTLTextureDescriptor *blockDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
                         MTLPixelFormatRG32Float width:blockWidth height:blockHeight mipmapped:NO];
                     blockDescriptor.storageMode = MTLStorageModeShared;
@@ -283,6 +291,8 @@ int main(int argc, const char *argv[])
                         id<MTLBuffer> sampleBuffer = [device newBufferWithLength:sources.size() * 64
                             options:MTLResourceStorageModePrivate];
                         const uint32_t sourceCount = static_cast<uint32_t>(sources.size());
+                        const uint32_t batchCount = (sourceCount + 7) / 8;
+                        id<MTLBuffer> partials = [device newBufferWithLength:size_t(pixels) * batchCount * 16 options:MTLResourceStorageModePrivate];
                         std::vector<__fp16> expected(pixels * 4), actual(pixels * 4);
                         for (unsigned prepared = 0; prepared < 2; prepared++)
                         {
@@ -310,7 +320,7 @@ int main(int argc, const char *argv[])
                                     [prepare endEncoding];
                                 }
                                 id<MTLComputeCommandEncoder> transport = [command computeCommandEncoder];
-                                [transport setComputePipelineState:prepared ? directTransport : pipelines[1]];
+                                [transport setComputePipelineState:prepared ? (batched ? batchedTransport : directTransport) : pipelines[1]];
                                 for (unsigned binding = 0; binding < 10; binding++)
                                     [transport setTexture:textures[binding] atIndex:binding];
                                 [transport setTexture:blocks atIndex:10];
@@ -320,8 +330,24 @@ int main(int argc, const char *argv[])
                                 [transport setBytes:&count length:sizeof(count) atIndex:2];
                                 [transport setBuffer:meshBuffer offset:0 atIndex:3];
                                 [transport setBuffer:sampleBuffer offset:0 atIndex:4];
-                                [transport dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                                [transport setBuffer:partials offset:0 atIndex:5];
+                                [transport dispatchThreads:MTLSizeMake(width, height, prepared && batched ? batchCount : 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                                 [transport endEncoding];
+                                if (prepared && batched)
+                                {
+                                    id<MTLComputeCommandEncoder> reduce = [command computeCommandEncoder];
+                                    [reduce setComputePipelineState:reduceDirect];
+                                    [reduce setBuffer:partials offset:0 atIndex:0];
+                                    [reduce setBytes:&batchCount length:sizeof(batchCount) atIndex:1];
+                                    [reduce setBytes:&directUniforms length:sizeof(directUniforms) atIndex:2];
+                                    [reduce setTexture:textures[7] atIndex:0];
+                                    [reduce setTexture:textures[8] atIndex:1];
+                                    [reduce setTexture:textures[0] atIndex:2];
+                                    [reduce setTexture:reflectanceTexture atIndex:3];
+                                    [reduce setTexture:textures[6] atIndex:4];
+                                    [reduce dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                                    [reduce endEncoding];
+                                }
                                 [command commit];
                                 [command waitUntilCompleted];
                                 require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
