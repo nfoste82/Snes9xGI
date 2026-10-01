@@ -39,6 +39,10 @@ struct RemasterState
 		double emulationFrameMs = 0.0;
 		double pacingWaitMs = 0.0;
 		double lightingFieldMs = 0.0;
+		double lightingFieldWaitMs = 0.0;
+		double lightingMeshMs = 0.0;
+		uint32_t directEmitterCount = 0;
+		uint32_t directSampleCount = 0;
 		double lightingPreparationMs = 0.0;
 		double directEncodeMs = 0.0;
 		double indirectEncodeMs = 0.0;

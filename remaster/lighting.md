@@ -166,6 +166,39 @@ remain separate from surface illumination.
 
 ## Authored emission depth
 
+Direct transport prepares a compact source-sample buffer once per presented
+lighting frame. Planar emitters contribute one record; depth emitters contribute
+four normalized records. GPU preparation stores source positions, visibility
+endpoints, normals, and radiance, preserving source order and the existing
+transport equations. Buffers are reused per in-flight resource slot. The dense
+unprepared path remains available for reference comparisons and diagnostics.
+
+Production Lambertian Direct additionally specializes `remasterIndirectBounce`
+with Metal function constant 0 (`remasterPreparedDirectPass=true`). All dense
+reference/diagnostic uses explicitly set it false; Visibility retains diagnostics.
+The specialized shader removes radial indirect sampling and diagnostic stages at
+compile time while retaining the same triangle visibility query and emitter
+enumeration. Float/half regression cases exercise this production specialization.
+The seven-case slot-004 benchmark and explicit rounding tolerances are recorded
+in `macosx/remaster-benchmark.md`.
+
+`remaster-lighting-benchmark --direct` compares both paths at 256×224 with 128
+mixed planar/depth emitters. On an M3 Max the initial run reduced medians from
+15.36/54.15/71.93/76.79 ms to 14.23/53.33/70.43/73.92 ms in the four synthetic
+scenes, including source preparation, with zero half-float output differences.
+These are synthetic direct-transport measurements, not live-room FPS results;
+another run after early transparent-candidate rejection measured original/prepared
+medians of 13.30/12.87, 48.64/46.96, 64.11/63.50, and 66.08/68.65 ms. The mixed
+results indicate that preparation alone is not a robust large speedup;
+visibility remains the next optimization target. The lighting suite passes
+1215 checks with production direct cases using prepared sources and accelerated
+versus unprepared reference comparisons.
+
+The live metrics panel additionally reports field-entry waits, mesh construction
+(including emission-depth and normal finalization), emitter count, and authored
+direct-sample count. The latter excludes the analytic debug sphere's 128 samples.
+Scene fields still includes waits; its mesh submeasurement excludes them.
+
 The Emission inspector includes **Emission Depth** (0–64 source pixels), applied
 to selected tiles. Each emissive pixel has its existing XY footprint and extends
 outward along its transformed authored normal. Four midpoint samples distribute

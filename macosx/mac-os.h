@@ -248,6 +248,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (NSString *)captureRemasterFrame;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL;
+- (void)startRemasterBenchmarkIfRequested;
 
 - (void)setDeviceSetting:(S9xDeviceSetting)_deviceSetting;
 

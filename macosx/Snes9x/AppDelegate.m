@@ -106,6 +106,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     }];
 
     [self resetWindow];
+	[self.s9xEngine startRemasterBenchmarkIfRequested];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {

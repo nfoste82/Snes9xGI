@@ -62,6 +62,196 @@
 #import "mac-snes9x.h"
 #import "mac-stringtools.h"
 #import "mac-os.h"
+#include "remaster-benchmark.h"
+#include <CommonCrypto/CommonDigest.h>
+
+static std::atomic<bool> benchmarkActive {false};
+static RemasterBenchmarkTag benchmarkTag;
+static std::mutex benchmarkSamplesMutex;
+static std::vector<RemasterBenchmarkSample> benchmarkSamples;
+static NSString *benchmarkStatePath, *benchmarkOutputPath;
+static NSMutableDictionary *benchmarkReport;
+static RemasterSceneSettings benchmarkSceneSettings;
+static unsigned benchmarkWarmupFrames = 30, benchmarkMeasureFrames = 180;
+static NSString *benchmarkMovement = @"none";
+static bool benchmarkDeterministicPresentation = true;
+static double benchmarkMeasurementStarted = 0;
+static NSString *benchmarkInitialRgbHash;
+static unsigned benchmarkFrame = 0;
+static int benchmarkCase = -1;
+static double benchmarkCaseStarted = 0;
+static const char *benchmarkNames[] = {
+	"Direct lighting only", "Direct + Indirect (0 bounces)",
+	"Direct + Indirect (1 bounce)", "Direct + Indirect (8 bounces)",
+	"Composite (0 bounces)", "Composite (1 bounce)", "Composite (8 bounces)"
+};
+static const uint8_t benchmarkBounces[] = {0, 0, 1, 8, 0, 1, 8};
+static const RemasterLightingView benchmarkViews[] = {
+	RemasterLightingView::DirectContribution,
+	RemasterLightingView::DirectAndIndirectContribution,
+	RemasterLightingView::DirectAndIndirectContribution,
+	RemasterLightingView::DirectAndIndirectContribution,
+	RemasterLightingView::Composite, RemasterLightingView::Composite, RemasterLightingView::Composite
+};
+
+bool RemasterBenchmarkActive() { return benchmarkActive.load(); }
+bool RemasterBenchmarkDeterministicPresentation() { return RemasterBenchmarkActive() && benchmarkDeterministicPresentation; }
+RemasterBenchmarkTag GetRemasterBenchmarkTag() { return benchmarkTag; }
+void RecordRemasterBenchmarkSample(const RemasterBenchmarkSample &sample)
+{
+	std::lock_guard<std::mutex> lock(benchmarkSamplesMutex);
+	benchmarkSamples.push_back(sample);
+}
+
+static NSString *BenchmarkSha256(NSData *data)
+{
+	unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+	CC_SHA256(data.bytes, static_cast<CC_LONG>(data.length), digest);
+	NSMutableString *text = [NSMutableString string];
+	for (unsigned char byte : digest) [text appendFormat:@"%02x", byte];
+	return text;
+}
+
+static void WriteBenchmarkReport()
+{
+	NSError *error = nil;
+	NSData *data = [NSJSONSerialization dataWithJSONObject:benchmarkReport options:NSJSONWritingPrettyPrinted error:&error];
+	if (!data || ![data writeToFile:[benchmarkOutputPath stringByAppendingPathComponent:@"report.json"]
+		options:NSDataWritingAtomic error:&error])
+	{
+		NSLog(@"Benchmark report failed: %@", error);
+		exit(2);
+	}
+}
+
+static void FailBenchmark(NSString *message)
+{
+	NSLog(@"Benchmark failed: %@", message);
+	if (benchmarkReport) { benchmarkReport[@"status"] = @"failed"; benchmarkReport[@"error"] = message; WriteBenchmarkReport(); }
+	exit(2);
+}
+
+static NSDictionary *BenchmarkStatistics(std::vector<double> values)
+{
+	if (values.empty()) return @{@"count": @0};
+	std::sort(values.begin(), values.end());
+	double sum = 0;
+	for (double value : values) sum += value;
+	auto percentile = [&](unsigned p) { return values[(values.size() * p + 99) / 100 - 1]; };
+	return @{@"count": @(values.size()), @"mean": @(sum / values.size()), @"median": @(percentile(50)),
+		@"p95": @(percentile(95)), @"p99": @(percentile(99)), @"max": @(values.back())};
+}
+
+static void BeginBenchmarkCase()
+{
+	DrainRemasterPresentation();
+	if (!S9xUnfreezeGame(benchmarkStatePath.fileSystemRepresentation)) FailBenchmark(@"Could not restore benchmark save state");
+	Settings.Mute = true;
+	S9xClearSamples();
+	ResetRemasterBenchmarkSampling();
+	GFX.InfoString = "";
+	GFX.InfoStringTimeout = 0;
+	benchmarkFrame = 0;
+	benchmarkInitialRgbHash = nil;
+	benchmarkTag = {benchmarkCase, 0, false};
+	RemasterSceneSettings settings = benchmarkSceneSettings;
+	settings.indirectBounceCount = benchmarkBounces[benchmarkCase];
+	S9xRemasterSetSceneSettings(settings);
+	SetLiveRemasterPresentation(true, benchmarkViews[benchmarkCase]);
+	benchmarkCaseStarted = [NSProcessInfo processInfo].systemUptime;
+	benchmarkMeasurementStarted = benchmarkCaseStarted;
+	NSLog(@"Benchmark case %d/7: %s", benchmarkCase + 1, benchmarkNames[benchmarkCase]);
+}
+
+static void FinishBenchmarkFrame()
+{
+	if (!RemasterBenchmarkActive()) return;
+	if (!benchmarkInitialRgbHash)
+	{
+		const RemasterFrame *initial = S9xRemasterCompletedFrame();
+		if (initial) benchmarkInitialRgbHash = BenchmarkSha256([NSData dataWithBytes:initial->originalRgb555.data()
+			length:initial->originalRgb555.size() * sizeof(uint16_t)]);
+	}
+	benchmarkFrame++;
+	if (benchmarkFrame == benchmarkWarmupFrames)
+	{
+		DrainRemasterPresentation();
+		benchmarkMeasurementStarted = [NSProcessInfo processInfo].systemUptime;
+	}
+	if (benchmarkFrame < benchmarkWarmupFrames + benchmarkMeasureFrames) return;
+	DrainRemasterPresentation();
+	const double ended = [NSProcessInfo processInfo].systemUptime;
+	NSMutableArray *raw = [NSMutableArray array];
+	std::vector<double> gpu, fields, mesh, waits, setup, drawable, queue;
+	std::vector<double> refresh, pacing;
+	uint64_t dropped = 0;
+	{
+		std::lock_guard<std::mutex> lock(benchmarkSamplesMutex);
+		for (const auto &sample : benchmarkSamples)
+		{
+			if (sample.tag.caseIndex != benchmarkCase) continue;
+			const auto &m = sample.metrics;
+			gpu.push_back(m.gpuFrameMs); fields.push_back(m.lightingFieldMs);
+			mesh.push_back(m.lightingMeshMs); waits.push_back(m.lightingFieldWaitMs);
+			setup.push_back(m.lightingPreparationMs); drawable.push_back(m.drawableMs); queue.push_back(m.presentationQueueMs);
+			refresh.push_back(m.emulationFrameMs); pacing.push_back(m.pacingWaitMs);
+			dropped += m.droppedPresentations;
+			[raw addObject:@{@"emulated_frame": @(sample.tag.frame), @"gpu_ms": @(m.gpuFrameMs),
+				@"scene_fields_ms": @(m.lightingFieldMs), @"mesh_ms": @(m.lightingMeshMs),
+				@"field_wait_ms": @(m.lightingFieldWaitMs), @"gpu_setup_ms": @(m.lightingPreparationMs),
+				@"drawable_ms": @(m.drawableMs), @"queue_ms": @(m.presentationQueueMs),
+				@"latest_refresh_ms": @(m.emulationFrameMs), @"latest_pacing_ms": @(m.pacingWaitMs),
+				@"emitters": @(m.directEmitterCount), @"direct_samples": @(m.directSampleCount),
+				@"completed_uptime": @(sample.completedTime), @"dropped_since_previous_completion": @(m.droppedPresentations)}];
+		}
+		benchmarkSamples.clear();
+	}
+	NSMutableDictionary *result = [@{@"name": @(benchmarkNames[benchmarkCase]), @"bounces": @(benchmarkBounces[benchmarkCase]),
+		@"view": @(static_cast<unsigned>(benchmarkViews[benchmarkCase])), @"wall_seconds_including_warmup_and_drain": @(ended - benchmarkCaseStarted),
+		@"gpu_ms": BenchmarkStatistics(gpu), @"scene_fields_ms": BenchmarkStatistics(fields),
+		@"mesh_ms": BenchmarkStatistics(mesh), @"field_wait_ms": BenchmarkStatistics(waits),
+		@"gpu_setup_ms": BenchmarkStatistics(setup), @"drawable_ms": BenchmarkStatistics(drawable),
+		@"queue_ms": BenchmarkStatistics(queue), @"completed_measured_frames": @(raw.count),
+		@"dropped_since_completions": @(dropped), @"samples": raw,
+		@"ram_sha256": BenchmarkSha256([NSData dataWithBytes:Memory.RAM length:0x20000])} mutableCopy];
+	result[@"measurement_wall_seconds"] = @(ended - benchmarkMeasurementStarted);
+	result[@"latest_refresh_ms"] = BenchmarkStatistics(refresh);
+	result[@"latest_pacing_ms"] = BenchmarkStatistics(pacing);
+	result[@"completed_frames_per_wall_second"] = @(raw.count / (ended - benchmarkMeasurementStarted));
+	if (!raw.count) FailBenchmark(@"No measured GPU frames completed; increase duration or use deterministic presentation");
+	if (benchmarkDeterministicPresentation && raw.count != benchmarkMeasureFrames) FailBenchmark(@"Deterministic benchmark did not render every measured frame");
+	const RemasterFrame *frame = S9xRemasterCompletedFrame();
+	if (!frame) FailBenchmark(@"No remaster frame produced");
+	NSString *capture = [NSString stringWithFormat:@"case-%02d.s9xrmf", benchmarkCase + 1];
+	if (!S9xWriteRemasterFrame(*frame, [benchmarkOutputPath stringByAppendingPathComponent:capture].fileSystemRepresentation))
+		FailBenchmark(@"Could not write benchmark frame capture");
+	result[@"capture"] = capture;
+	result[@"width"] = @(frame->width);
+	result[@"height"] = @(frame->height);
+	result[@"original_rgb555_sha256"] = BenchmarkSha256([NSData dataWithBytes:frame->originalRgb555.data()
+		length:frame->originalRgb555.size() * sizeof(uint16_t)]);
+	result[@"initial_rgb555_sha256"] = benchmarkInitialRgbHash ?: @"";
+	result[@"scene_pixels_changed"] = @(![result[@"original_rgb555_sha256"] isEqual:benchmarkInitialRgbHash]);
+	NSString *image = [NSString stringWithFormat:@"case-%02d.png", benchmarkCase + 1];
+	if (!SaveRemasterBenchmarkImage([benchmarkOutputPath stringByAppendingPathComponent:image].fileSystemRepresentation))
+		FailBenchmark(@"Could not save benchmark image");
+	result[@"image"] = image;
+	NSArray *previousCases = benchmarkReport[@"cases"];
+	result[@"matches_first_case_ram"] = @(!previousCases.count || [result[@"ram_sha256"] isEqual:previousCases[0][@"ram_sha256"]]);
+	[(NSMutableArray *)benchmarkReport[@"cases"] addObject:result];
+	WriteBenchmarkReport();
+	benchmarkCase++;
+	if (benchmarkCase < 7) BeginBenchmarkCase();
+	else
+	{
+		benchmarkTag = {};
+		benchmarkReport[@"status"] = @"complete";
+		WriteBenchmarkReport();
+		NSLog(@"Benchmark complete: %@", benchmarkOutputPath);
+		// Standalone benchmark process: avoid saving benchmark-driven SRAM or UI settings.
+		exit(0);
+	}
+}
 
 #define	kRecentMenu_MAX		20
 
@@ -832,6 +1022,7 @@ static void * MacSnes9xThread (void *)
 {
     Settings.StopEmulation = false;
     s9xthreadrunning = true;
+	if (RemasterBenchmarkActive()) BeginBenchmarkCase();
 
     EmulationLoop();
 
@@ -914,6 +1105,7 @@ static inline void EmulationLoop (void)
             {
                 ClearRemasterDebugLightRedraw();
                 S9xMainLoop();
+				FinishBenchmarkFrame();
             }
             else
             {
@@ -2625,6 +2817,15 @@ static void UpdateFreezeDefrostScreen (int newIndex, CGImageRef image, uint8 *dr
 
 static void ProcessInput (void)
 {
+	if (RemasterBenchmarkActive())
+	{
+		benchmarkTag = {benchmarkCase, benchmarkFrame, benchmarkFrame >= benchmarkWarmupFrames};
+		const bool moving = benchmarkFrame >= benchmarkWarmupFrames;
+		const uint32_t pad = !moving ? 0 : [benchmarkMovement isEqualToString:@"left"] ? 0x0200 :
+			[benchmarkMovement isEqualToString:@"right"] ? 0x0100 : 0;
+		for (int i = 0; i < MAC_MAX_PLAYERS; i++) ControlPadFlagsToS9xReportButtons(i, i == 0 ? pad : 0);
+		return;
+	}
     bool8           keys[MAC_MAX_PLAYERS][kNumButtons];
     bool8           gamepadButtons[MAC_MAX_PLAYERS][kNumButtons];
     bool8           isok, fnbtn, altbtn, tcbtn;
@@ -4206,6 +4407,104 @@ void QuitWithFatalError ( NSString *message)
     }
 
     return NO;
+}
+
+- (void)startRemasterBenchmarkIfRequested
+{
+	NSArray<NSString *> *arguments = [NSProcessInfo processInfo].arguments;
+	if (![arguments containsObject:@"--remaster-benchmark"]) return;
+	NSMutableDictionary<NSString *, NSString *> *options = [NSMutableDictionary dictionary];
+	NSSet *allowed = [NSSet setWithArray:@[@"--benchmark-rom", @"--benchmark-state", @"--benchmark-profile",
+		@"--benchmark-output", @"--benchmark-seconds", @"--benchmark-warmup-seconds", @"--benchmark-move", @"--benchmark-connections",
+		@"--benchmark-presentation"]];
+	for (NSUInteger i = 1; i < arguments.count; i++)
+	{
+		NSString *argument = arguments[i];
+		if ([argument isEqualToString:@"--remaster-benchmark"]) continue;
+		if (![allowed containsObject:argument] || i + 1 >= arguments.count || options[argument])
+			FailBenchmark([NSString stringWithFormat:@"Unknown, duplicate, or missing benchmark option: %@", argument]);
+		options[argument] = arguments[++i];
+	}
+	for (NSString *key in @[@"--benchmark-rom", @"--benchmark-state", @"--benchmark-profile", @"--benchmark-output"])
+		if (!options[key].length) FailBenchmark([NSString stringWithFormat:@"Required option: %@", key]);
+	auto number = [&](NSString *key, double fallback, double minimum, double maximum) {
+		if (!options[key]) return fallback;
+		NSScanner *scanner = [NSScanner scannerWithString:options[key]];
+		double value = 0;
+		if (![scanner scanDouble:&value] || !scanner.isAtEnd || !std::isfinite(value) || value < minimum || value > maximum)
+			FailBenchmark([NSString stringWithFormat:@"Invalid numeric option: %@", key]);
+		return value;
+	};
+	const double seconds = number(@"--benchmark-seconds", 3, 0.1, 60);
+	const double warmup = number(@"--benchmark-warmup-seconds", 0.5, 0, 10);
+	const double connections = number(@"--benchmark-connections", 0, 1, 255);
+	if (connections != std::floor(connections)) FailBenchmark(@"Connection count must be an integer");
+	benchmarkMovement = options[@"--benchmark-move"] ?: @"none";
+	NSString *presentation = options[@"--benchmark-presentation"] ?: @"deterministic";
+	if (![@[@"deterministic", @"live"] containsObject:presentation]) FailBenchmark(@"Presentation must be deterministic or live");
+	benchmarkDeterministicPresentation = [presentation isEqualToString:@"deterministic"];
+	if (![@[@"none", @"left", @"right"] containsObject:benchmarkMovement]) FailBenchmark(@"Movement must be none, left, or right");
+	NSString *rom = options[@"--benchmark-rom"].stringByExpandingTildeInPath.stringByStandardizingPath;
+	NSString *profile = options[@"--benchmark-profile"].stringByExpandingTildeInPath.stringByStandardizingPath;
+	benchmarkStatePath = options[@"--benchmark-state"].stringByExpandingTildeInPath.stringByStandardizingPath;
+	benchmarkOutputPath = options[@"--benchmark-output"].stringByExpandingTildeInPath.stringByStandardizingPath;
+	for (NSString *path in @[rom, profile, benchmarkStatePath])
+		if (![[NSFileManager defaultManager] isReadableFileAtPath:path]) FailBenchmark([NSString stringWithFormat:@"Unreadable input: %@", path]);
+	if ([[NSFileManager defaultManager] fileExistsAtPath:benchmarkOutputPath]) FailBenchmark(@"Benchmark output directory must not already exist");
+	NSError *error = nil;
+	if (![[NSFileManager defaultManager] createDirectoryAtPath:benchmarkOutputPath withIntermediateDirectories:YES attributes:nil error:&error])
+		FailBenchmark(error.localizedDescription);
+	if (getenv("S9X_REMASTER_GI_METRICS")) FailBenchmark(@"Disable S9X_REMASTER_GI_METRICS before benchmarking");
+	benchmarkReport = [@{@"schema_version": @1, @"status": @"starting", @"cases": [NSMutableArray array],
+		@"executable": [NSBundle mainBundle].executablePath, @"build": @(__DATE__ " " __TIME__),
+		@"os": [NSProcessInfo processInfo].operatingSystemVersionString, @"gpu": s9xView.device.name ?: @"unavailable",
+		@"rom_path": rom, @"state_path": benchmarkStatePath, @"profile_path": profile,
+		@"rom_file_sha256": BenchmarkSha256([NSData dataWithContentsOfFile:rom]),
+		@"state_sha256": BenchmarkSha256([NSData dataWithContentsOfFile:benchmarkStatePath]),
+		@"profile_sha256": BenchmarkSha256([NSData dataWithContentsOfFile:profile]),
+		@"movement": benchmarkMovement, @"presentation": presentation, @"requested_emulated_seconds": @(seconds), @"requested_warmup_seconds": @(warmup),
+		@"debug_sphere_enabled": @NO, @"timing_note": @"GPU samples are per completed submitted frame. Input and duration use emulated frames; slow GPU cases take longer in wall time. Deterministic presentation waits for each GPU frame; live presentation retains bounded in-flight slots and drops. Refresh/pacing metrics are latest emulator samples, not guaranteed same-frame."} mutableCopy];
+	WriteBenchmarkReport();
+	benchmarkActive.store(true);
+	if (running) FailBenchmark(@"Start benchmark in a fresh app process");
+	if (!SNES9X_OpenCart([NSURL fileURLWithPath:rom])) FailBenchmark(@"Could not load benchmark ROM");
+	// Load the existing profile pipeline without starting emulation until all
+	// benchmark settings have been published.
+	running = true;
+	NSString *profileError = [self loadRemasterProfile:[NSURL fileURLWithPath:profile]];
+	running = false;
+	if (profileError) FailBenchmark(profileError);
+	[remasterProfileSettingsPanel orderOut:nil];
+	benchmarkSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	if (connections) benchmarkSceneSettings.samplesPerFrame = static_cast<uint8_t>(connections);
+	benchmarkWarmupFrames = static_cast<unsigned>(std::round(warmup * Memory.ROMFramesPerSecond));
+	benchmarkMeasureFrames = std::max(1u, static_cast<unsigned>(std::round(seconds * Memory.ROMFramesPerSecond)));
+	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
+	benchmarkReport[@"audio_muted"] = @YES;
+	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
+	benchmarkReport[@"measurement_frames"] = @(benchmarkMeasureFrames);
+	benchmarkReport[@"rom_fps"] = @(Memory.ROMFramesPerSecond);
+	benchmarkReport[@"lighting_coordinate_scale"] = @(benchmarkSceneSettings.lightingCoordinateScale);
+	benchmarkReport[@"reflectance_boost"] = @(benchmarkSceneSettings.reflectanceBoost);
+	benchmarkReport[@"original_scene_contribution"] = @(benchmarkSceneSettings.originalSceneContribution);
+	benchmarkReport[@"sample_accumulation"] = @(benchmarkSceneSettings.sampleAccumulation);
+	benchmarkReport[@"window_width"] = @(s9xView.window.frame.size.width);
+	benchmarkReport[@"window_height"] = @(s9xView.window.frame.size.height);
+	benchmarkReport[@"status"] = @"running";
+	WriteBenchmarkReport();
+	SetRemasterDebugLight(RemasterDebugLight{});
+	Settings.DisplayFrameRate = false;
+	Settings.TurboMode = false;
+	Settings.SoundSync = false;
+	Settings.Mute = true;
+	Settings.AutoSaveDelay = 0;
+	macFrameSkip = 1;
+	benchmarkCase = 0;
+	S9xRemasterSetPerformanceMetricsEnabled(true);
+	[self.emulationDelegate gameLoaded];
+	[s9xView.window makeKeyAndOrderFront:nil];
+	SNES9X_Go();
+	[self start];
 }
 
 - (BOOL)loadMultiple:(NSArray<NSURL *> *)fileURLs
@@ -7072,7 +7371,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterMetricsText.selectable = YES;
 		remasterMetricsText.bezeled = NO;
 		remasterMetricsText.drawsBackground = NO;
-		remasterMetricsText.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+		remasterMetricsText.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular];
 		remasterMetricsText.alignment = NSTextAlignmentLeft;
 		remasterMetricsText.stringValue = @"Metrics are disabled.";
 		[content addSubview:remasterMetricsText];
@@ -7133,17 +7432,20 @@ void QuitWithFatalError ( NSString *message)
 		 "SELECTED  %u connections  x  %u bounces\n"
 		 "CPU LIGHTING  %.2f ms\n"
 		 "  scene fields %.2f  +  GPU setup %.2f ms\n"
+		 "  fields: wait %.2f  |  mesh %.2f ms\n"
 		 "EMULATOR  refresh phase %.2f ms\n"
 		 "  pacing wait %.2f ms\n"
 		 "GPU FRAME  %.2f ms (all graphics)\n"
-		 "  direct/indirect split unavailable\n"
+		 "  %u emitters / %u direct samples\n"
 		 "PRESENT CPU  queue %.2f  |  drawable %.2f ms\n"
 		 "Latest samples may be different frames.",
 		metrics.presentedFps, static_cast<unsigned long long>(metrics.droppedPresentations),
 		unsigned(remasterEditingProfile.samplesPerFrame), unsigned(remasterEditingProfile.indirectBounceCount),
 		metrics.lightingFieldMs + metrics.lightingPreparationMs, metrics.lightingFieldMs,
-		metrics.lightingPreparationMs, metrics.emulationFrameMs, metrics.pacingWaitMs,
+		metrics.lightingPreparationMs, metrics.lightingFieldWaitMs, metrics.lightingMeshMs,
+		metrics.emulationFrameMs, metrics.pacingWaitMs,
 		metrics.gpuFrameMs,
+		metrics.directEmitterCount, metrics.directSampleCount,
 		metrics.presentationQueueMs, metrics.drawableMs];
 }
 

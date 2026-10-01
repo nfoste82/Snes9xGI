@@ -84,9 +84,21 @@ int main()
             id<MTLComputePipelineState> direct = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterDirectLighting"] error:&error];
             require(direct != nil, error.localizedDescription);
+            MTLFunctionConstantValues *referenceConstants = [MTLFunctionConstantValues new];
+            bool unprepared = false;
+            [referenceConstants setConstantValue:&unprepared type:MTLDataTypeBool atIndex:0];
             id<MTLComputePipelineState> indirect = [device newComputePipelineStateWithFunction:
-                [library newFunctionWithName:@"remasterIndirectBounce"] error:&error];
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:referenceConstants error:&error] error:&error];
             require(indirect != nil, error.localizedDescription);
+            id<MTLComputePipelineState> prepareDirect = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterPrepareDirectSamples"] error:&error];
+            require(prepareDirect != nil, error.localizedDescription);
+            MTLFunctionConstantValues *directConstants = [MTLFunctionConstantValues new];
+            bool specialized = true;
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:0];
+            id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            require(directTransport != nil, error.localizedDescription);
             id<MTLComputePipelineState> powerLeaves = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
             id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
@@ -102,7 +114,7 @@ int main()
             id<MTLLibrary> referenceLibrary = [device newLibraryWithSource:source options:referenceOptions error:&error];
             require(referenceLibrary != nil, error.localizedDescription);
             id<MTLComputePipelineState> indirectReference = [device newComputePipelineStateWithFunction:
-                [referenceLibrary newFunctionWithName:@"remasterIndirectBounce"] error:&error];
+                [referenceLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:referenceConstants error:&error] error:&error];
             require(indirectReference != nil, error.localizedDescription);
             id<MTLComputePipelineState> composite = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterCompositeLighting"] error:&error];
@@ -258,7 +270,8 @@ int main()
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
-                    bounce ? (sampled ? sampledIndirect : referenceVisibility ? indirectReference : indirect) : direct];
+                    bounce ? (sampled ? sampledIndirect : referenceVisibility ? indirectReference :
+                        passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? directTransport : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
                 if (bounce && !composing)
@@ -280,11 +293,50 @@ int main()
                         if (s[Participation][pixel].x > 0.5f &&
                             (s[PreviousBounce][pixel].x > 0 || s[PreviousBounce][pixel].y > 0 || s[PreviousBounce][pixel].z > 0))
                             emitters.push_back(pixel);
-                    const uint32_t emitterCount = static_cast<uint32_t>(emitters.size());
+                    const bool prepared = passIndex == 0 && !referenceVisibility;
+                    std::vector<simd_uint2> sources;
+                    if (prepared)
+                        for (uint32_t pixel : emitters)
+                            for (uint32_t sample = 0, count = mesh[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
+                                sources.push_back(simd_uint2{pixel, sample});
+                    const uint32_t emitterCount = static_cast<uint32_t>(prepared ? sources.size() : emitters.size());
                     if (emitters.empty())
                         emitters.push_back(0);
                     id<MTLBuffer> emitterBuffer = [device newBufferWithBytes:emitters.data()
                         length:emitters.size() * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                    id<MTLBuffer> sampleBuffer = [device newBufferWithLength:std::max<size_t>(1, sources.size()) * 64
+                        options:MTLResourceStorageModePrivate];
+                    if (prepared)
+                    {
+                        // A separate command completes source preparation before this test's
+                        // already-open transport encoder; the app uses ordered encoders.
+                        if (sources.empty()) sources.push_back(simd_uint2{0, 0});
+                        emitterBuffer = [device newBufferWithBytes:sources.data() length:sources.size() * sizeof(simd_uint2)
+                            options:MTLResourceStorageModeShared];
+                        if (emitterCount)
+                        {
+                            id<MTLCommandBuffer> preparation = [queue commandBuffer];
+                            id<MTLComputeCommandEncoder> prepare = [preparation computeCommandEncoder];
+                            [prepare setComputePipelineState:prepareDirect];
+                            [prepare setTexture:textures[1] atIndex:0];
+                            [prepare setTexture:textures[3] atIndex:1];
+                            [prepare setTexture:textures[2] atIndex:2];
+                            [prepare setTexture:textures[5] atIndex:3];
+                            [prepare setBuffer:emitterBuffer offset:0 atIndex:0];
+                            [prepare setBuffer:sampleBuffer offset:0 atIndex:1];
+                            [prepare setBuffer:meshBuffer offset:0 atIndex:2];
+                            [prepare setBytes:&emitterCount length:sizeof(emitterCount) atIndex:3];
+                            [prepare dispatchThreads:MTLSizeMake(emitterCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                            [prepare endEncoding];
+                            [preparation commit];
+                            [preparation waitUntilCompleted];
+                            require(preparation.status == MTLCommandBufferStatusCompleted, preparation.error.localizedDescription);
+                        }
+                        // padding retains the existing Lambertian/non-Lambertian switch.
+                        uniforms.padding = lambertianDirect ? 2.0f : -2.0f;
+                        [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+                    }
+                    [encoder setBuffer:sampleBuffer offset:0 atIndex:4];
                     [encoder setBuffer:emitterBuffer offset:0 atIndex:1];
                     [encoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
                 }

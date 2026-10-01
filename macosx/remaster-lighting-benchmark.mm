@@ -39,15 +39,16 @@ static uint64_t checksum(const void *data, size_t size)
 }
 
 static void printGpuTimes(const char *scene, uint32_t connections, const char *stage,
-    std::vector<double> times)
+    std::vector<double> times, bool direct = false)
 {
     std::sort(times.begin(), times.end());
     const auto percentile = [&](unsigned percentage) {
         // Nearest-rank percentile, with the rank rounded up.
         return times[(times.size() * percentage + 99) / 100 - 1];
     };
-    std::printf("%-22s sampled connections=%u %-16s gpu_ms median=%.3f p95=%.3f p99=%.3f max=%.3f\n",
-        scene, connections, stage, times[times.size() / 2], percentile(95), percentile(99), times.back());
+    std::printf("%-22s %s=%u %-16s gpu_ms median=%.3f p95=%.3f p99=%.3f max=%.3f\n",
+        scene, direct ? "direct samples" : "sampled connections", connections, stage,
+        times[times.size() / 2], percentile(95), percentile(99), times.back());
 }
 
 int main(int argc, const char *argv[])
@@ -60,11 +61,12 @@ int main(int argc, const char *argv[])
                 if (!ok)
                     throw std::runtime_error(message ? message.UTF8String : "Metal operation failed");
             };
-            require(argc <= 2, @"Usage: remaster-lighting-benchmark [shader.metal]");
+            require(argc <= 2, @"Usage: remaster-lighting-benchmark [shader.metal | --direct]");
+            const bool directBenchmark = argc == 2 && std::strcmp(argv[1], "--direct") == 0;
             id<MTLDevice> device = MTLCreateSystemDefaultDevice();
             require(device != nil, @"No Metal device available");
             NSError *error = nil;
-            NSString *path = argc == 2 ? [NSString stringWithUTF8String:argv[1]] : @"macosx/shaders.metal";
+            NSString *path = argc == 2 && !directBenchmark ? [NSString stringWithUTF8String:argv[1]] : @"macosx/shaders.metal";
             // Retain one immutable source snapshot throughout all scenes, even if the file changes.
             NSString *source = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&error];
             require(source != nil, error.localizedDescription);
@@ -76,10 +78,13 @@ int main(int argc, const char *argv[])
             id<MTLLibrary> referenceLibrary = [device newLibraryWithSource:source options:options error:&error];
             require(referenceLibrary != nil, error.localizedDescription);
             id<MTLComputePipelineState> pipelines[2];
+            MTLFunctionConstantValues *referenceConstants = [MTLFunctionConstantValues new];
+            bool unprepared = false;
+            [referenceConstants setConstantValue:&unprepared type:MTLDataTypeBool atIndex:0];
             for (unsigned variant = 0; variant < 2; ++variant)
             {
                 id<MTLFunction> function = [(variant == 0 ? referenceLibrary : library)
-                    newFunctionWithName:@"remasterIndirectBounce"];
+                    newFunctionWithName:@"remasterIndirectBounce" constantValues:referenceConstants error:&error];
                 require(function != nil, @"Missing remasterIndirectBounce kernel");
                 pipelines[variant] = [device newComputePipelineStateWithFunction:function error:&error];
                 require(pipelines[variant] != nil, error.localizedDescription);
@@ -96,6 +101,15 @@ int main(int argc, const char *argv[])
             id<MTLComputePipelineState> sampledPipeline = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterSampledIndirectBounce"] error:&error];
             require(powerLeaves && powerReduce && sampledPipeline, error.localizedDescription);
+            id<MTLComputePipelineState> preparePipeline = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterPrepareDirectSamples"] error:&error];
+            require(preparePipeline != nil, error.localizedDescription);
+            MTLFunctionConstantValues *directConstants = [MTLFunctionConstantValues new];
+            bool specialized = true;
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:0];
+            id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            require(directTransport != nil, error.localizedDescription);
             id<MTLCommandQueue> queue = [device newCommandQueue];
             require(queue != nil, @"Could not create command queue");
 
@@ -114,7 +128,11 @@ int main(int argc, const char *argv[])
             std::printf("Device: %s; OS: %s\nShader: %s; source_fnv1a=%016llx\n",
                 device.name.UTF8String, NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
                 path.UTF8String, static_cast<unsigned long long>(checksum(sourceBytes.bytes, sourceBytes.length)));
-            std::printf("SYNTHETIC bowl scenes (not real captures); %ux%u; threads=8x8; passIndex=1; "
+            if (directBenchmark)
+                std::printf("SYNTHETIC direct scenes (not real captures); %ux%u; threads=8x8; "
+                    "128 emitters; mixed planar/depth=4; passIndex=0; Lambertian; "
+                    "original versus prepared including preparation; 3 warmups + 11 measurements\n", width, height);
+            else std::printf("SYNTHETIC bowl scenes (not real captures); %ux%u; threads=8x8; passIndex=1; "
                 "dense sampleCount=1; sampled connections=4/8/16; seed=0x%08x; dense=%u+%u; sampled=%u+%u\n",
                 width, height, seed, warmups, repeats, sampledWarmups, sampledRepeats);
             std::printf("Production formats: RGBA8Unorm source, RG8Unorm fields, RGBA32Float surface, "
@@ -187,7 +205,9 @@ int main(int argc, const char *argv[])
 						meshSamples[p].coverage = occlusion[p * 2] / 255.0f;
 						meshSamples[p].sheet = true; meshSamples[p].domain = 1;
 					}
-					const auto mesh = RemasterSurfaceMesh::build(width, height, meshSamples, 0.01f);
+					auto mesh = RemasterSurfaceMesh::build(width, height, meshSamples, 0.01f);
+					if (directBenchmark)
+						for (unsigned p = 0; p < pixels; p++) mesh[p].emissionDepth = p % 3 == 0 ? 4.0f : 0.0f;
 					id<MTLBuffer> meshBuffer = [device newBufferWithBytes:mesh.data() length:mesh.size() * sizeof(mesh[0])
 						options:MTLResourceStorageModeShared];
                     const MTLPixelFormat formats[] = {MTLPixelFormatRGBA8Unorm, MTLPixelFormatRG8Unorm,
@@ -243,6 +263,96 @@ int main(int argc, const char *argv[])
                     require(std::isfinite(buildMs) && buildMs > 0, @"Block GPU timestamps unavailable");
                     std::printf("%s block_build_ms=%.6f covered=%u unknown=%u\n",
                         names[scene], buildMs, covered, unknown);
+                    if (directBenchmark)
+                    {
+                        // Same full-resolution geometry/formats as above, but a bounded
+                        // list of authored sources, including outward-depth sources.
+                        std::vector<uint32_t> emitters;
+                        std::vector<simd_uint2> sources;
+                        for (uint32_t i = 0; i < 128; i++)
+                        {
+                            const uint32_t p = (i * 443 + 211) % pixels;
+                            emitters.push_back(p);
+                            for (uint32_t s = 0, n = mesh[p].emissionDepth > 0 ? 4 : 1; s < n; s++)
+                                sources.push_back(simd_uint2{p, s});
+                        }
+                        id<MTLBuffer> emitterBuffer = [device newBufferWithBytes:emitters.data()
+                            length:emitters.size() * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+                        id<MTLBuffer> sourceBuffer = [device newBufferWithBytes:sources.data()
+                            length:sources.size() * sizeof(simd_uint2) options:MTLResourceStorageModeShared];
+                        id<MTLBuffer> sampleBuffer = [device newBufferWithLength:sources.size() * 64
+                            options:MTLResourceStorageModePrivate];
+                        const uint32_t sourceCount = static_cast<uint32_t>(sources.size());
+                        std::vector<__fp16> expected(pixels * 4), actual(pixels * 4);
+                        for (unsigned prepared = 0; prepared < 2; prepared++)
+                        {
+                            Uniforms directUniforms = uniforms;
+                            directUniforms.passIndex = 0;
+                            directUniforms.padding = prepared ? 2.0f : 1.0f;
+                            const uint32_t count = prepared ? sourceCount : static_cast<uint32_t>(emitters.size());
+                            std::vector<double> times;
+                            for (unsigned repeat = 0; repeat < 14; repeat++)
+                            {
+                                id<MTLCommandBuffer> command = [queue commandBuffer];
+                                if (prepared)
+                                {
+                                    id<MTLComputeCommandEncoder> prepare = [command computeCommandEncoder];
+                                    [prepare setComputePipelineState:preparePipeline];
+                                    [prepare setTexture:textures[1] atIndex:0];
+                                    [prepare setTexture:textures[3] atIndex:1];
+                                    [prepare setTexture:textures[2] atIndex:2];
+                                    [prepare setTexture:textures[5] atIndex:3];
+                                    [prepare setBuffer:sourceBuffer offset:0 atIndex:0];
+                                    [prepare setBuffer:sampleBuffer offset:0 atIndex:1];
+                                    [prepare setBuffer:meshBuffer offset:0 atIndex:2];
+                                    [prepare setBytes:&sourceCount length:sizeof(sourceCount) atIndex:3];
+                                    [prepare dispatchThreads:MTLSizeMake(sourceCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                                    [prepare endEncoding];
+                                }
+                                id<MTLComputeCommandEncoder> transport = [command computeCommandEncoder];
+                                [transport setComputePipelineState:prepared ? directTransport : pipelines[1]];
+                                for (unsigned binding = 0; binding < 10; binding++)
+                                    [transport setTexture:textures[binding] atIndex:binding];
+                                [transport setTexture:blocks atIndex:10];
+                                [transport setTexture:reflectanceTexture atIndex:11];
+                                [transport setBytes:&directUniforms length:sizeof(directUniforms) atIndex:0];
+                                [transport setBuffer:prepared ? sourceBuffer : emitterBuffer offset:0 atIndex:1];
+                                [transport setBytes:&count length:sizeof(count) atIndex:2];
+                                [transport setBuffer:meshBuffer offset:0 atIndex:3];
+                                [transport setBuffer:sampleBuffer offset:0 atIndex:4];
+                                [transport dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                                [transport endEncoding];
+                                [command commit];
+                                [command waitUntilCompleted];
+                                require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
+                                const double ms = (command.GPUEndTime - command.GPUStartTime) * 1000.0;
+                                require(std::isfinite(ms) && ms > 0, @"Direct GPU timestamp unavailable");
+                                if (repeat >= 3) times.push_back(ms);
+                            }
+                            printGpuTimes(names[scene], sourceCount, prepared ? "direct-prepared" : "direct-original", times, true);
+                            auto &output = prepared ? actual : expected;
+                            [textures[7] getBytes:output.data() bytesPerRow:width * 8
+                                fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+                        }
+                        unsigned differences = 0;
+                        float maximumAbsolute = 0, maximumRelative = 0;
+                        unsigned outsideTolerance = 0;
+                        for (unsigned i = 0; i < pixels * 4; i++)
+                        {
+                            const float a = actual[i], e = expected[i];
+                            const float absolute = std::abs(a - e);
+                            differences += a != e;
+                            maximumAbsolute = std::max(maximumAbsolute, absolute);
+                            maximumRelative = std::max(maximumRelative, absolute / std::max(std::abs(e), 0x1p-24f));
+                            // Specialization changes compiler scheduling/rounding; allow one
+                            // half-float rounding step, never missing light or nonfinite output.
+                            outsideTolerance += !std::isfinite(a) || absolute > std::max(0x1p-24f, std::abs(e) / 1024.0f);
+                        }
+                        std::printf("%s direct emitters=%zu samples=%u exact_half_differences=%u max_abs=%.9g max_rel=%.9g outside_one_half_step=%u\n",
+                            names[scene], emitters.size(), sourceCount, differences, maximumAbsolute, maximumRelative, outsideTolerance);
+                        mismatch |= outsideTolerance != 0;
+                        continue;
+                    }
                     std::vector<__fp16> reference;
                     double medians[2];
                     for (unsigned variant = 0; variant < 2; ++variant)
@@ -264,6 +374,7 @@ int main(int argc, const char *argv[])
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:1];
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:2];
                         [encoder setBuffer:meshBuffer offset:0 atIndex:3];
+                        [encoder setBuffer:emptyEmitters offset:0 atIndex:4];
                         [encoder dispatchThreadgroups:MTLSizeMake(width / 8, height / 8, 1)
                             threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                         [encoder endEncoding];
@@ -441,7 +552,8 @@ int main(int argc, const char *argv[])
                     std::fflush(stdout);
                 }
             }
-            require(!mismatch, @"Reference/accelerated RGB mismatch (exact comparison required)");
+            require(!mismatch, directBenchmark ? @"Direct RGB mismatch exceeds one half-float step" :
+                @"Reference/accelerated RGB mismatch (exact comparison required)");
             return 0;
         }
         catch (const std::exception &error)

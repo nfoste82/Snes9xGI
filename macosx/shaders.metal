@@ -290,10 +290,11 @@ static float remasterVisibility(float3 from, float3 to,
 	if (all(cell >= 0) && cell.x < int(occlusion.get_width()) && cell.y < int(occlusion.get_height()))
 	{
 		uint2 originPixel = uint2(cell);
-		RemasterMeshCell originPatch = mesh[originPixel.y * occlusion.get_width() + originPixel.x];
-		if (heightField.read(originPixel).g >= 0.5 &&
-			remasterMeshHit(from, segment, cell, surfaceField.read(originPixel).r, originPatch, 0.0, min(1.0, min(next.x, next.y))))
-			visibility *= 1.0 - occlusion.read(originPixel).r;
+		float coverage = occlusion.read(originPixel).r;
+		if (coverage > 0.0 && heightField.read(originPixel).g >= 0.5 &&
+			remasterMeshHit(from, segment, cell, surfaceField.read(originPixel).r,
+				mesh[originPixel.y * occlusion.get_width() + originPixel.x], 0.0, min(1.0, min(next.x, next.y))))
+			visibility *= 1.0 - coverage;
 		if (visibility < 0.01) return 0.0;
 	}
 	int2 testedBlock = int2(-1);
@@ -353,13 +354,13 @@ static float remasterVisibility(float3 from, float3 to,
 		if (any(cell < 0) || cell.x >= int(occlusion.get_width()) || cell.y >= int(occlusion.get_height()))
 			break;
 		uint2 sample = uint2(cell);
-		RemasterMeshCell patch = mesh[sample.y * occlusion.get_width() + sample.x];
 		float coverage = occlusion.read(sample).r;
 		if (coverage <= 0.0)
 			continue;
 		float exit = min(1.0, min(next.x, next.y));
 		if (heightField.read(sample).g < 0.5)
 			continue;
+		RemasterMeshCell patch = mesh[sample.y * occlusion.get_width() + sample.x];
 		// Grid traversal bins triangle candidates; it does not define geometry.
 		// Count a patch once even if both triangles/shared edges are hit.
 		if (exit - entry > 0.000001 && remasterMeshHit(from, segment, cell, surfaceField.read(sample).r,
@@ -585,6 +586,46 @@ kernel void remasterDirectLighting(
 		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
 }
 
+// Sources are invariant across receivers. Prepare only the actual planar/depth
+// samples once, rather than reconstructing them for every screen pixel.
+struct RemasterDirectSample
+{
+	float4 position;
+	float4 endpoint;
+	float4 normal;
+	float4 radiance;
+};
+
+// The app specializes its normal direct pass; the unspecialized function is
+// retained for reference transport and diagnostics. Compile-time branches keep
+// radial indirect sampling/diagnostics out of the production direct shader.
+constant bool remasterPreparedDirectPass [[function_constant(0)]];
+
+kernel void remasterPrepareDirectSamples(
+	texture2d<float, access::read> occlusion [[texture(0)]],
+	texture2d<float, access::read> heightField [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::read> emissionSeed [[texture(3)]],
+	const device uint2 *sources [[buffer(0)]],
+	device RemasterDirectSample *samples [[buffer(1)]],
+	const device RemasterMeshCell *mesh [[buffer(2)]],
+	constant uint &count [[buffer(3)]],
+	uint index [[thread_position_in_grid]])
+{
+	if (index >= count) return;
+	uint2 source = sources[index];
+	uint2 pixel = uint2(source.x % surfaceField.get_width(), source.x / surfaceField.get_width());
+	float4 surface = surfaceField.read(pixel);
+	float depth = mesh[source.x].emissionDepth;
+	float3 offset = depth > 0.0 ? surface.gba * depth * (float(source.y) + 0.5) / 4.0 : float3(0.0);
+	RemasterDirectSample sample;
+	sample.position = float4(float3(float2(pixel) + 0.5, surface.r) + offset, depth > 0.0 ? 1.0 : 0.0);
+	sample.endpoint = float4(remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset, 0.0);
+	sample.normal = float4(surface.gba, 0.0);
+	sample.radiance = float4(emissionSeed.read(pixel).rgb * (depth > 0.0 ? 0.25 : 1.0), 0.0);
+	samples[index] = sample;
+}
+
 kernel void remasterIndirectBounce(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> occlusion [[texture(1)]],
@@ -602,6 +643,7 @@ kernel void remasterIndirectBounce(
 	const device uint *emitterPixels [[buffer(1)]],
 	constant uint &emitterCount [[buffer(2)]],
 	const device RemasterMeshCell *mesh [[buffer(3)]],
+	const device RemasterDirectSample *directSamples [[buffer(4)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
@@ -610,8 +652,9 @@ kernel void remasterIndirectBounce(
 	constexpr float angularStep = 2.0 * M_PI_F / 16.0;
 	float4 receiverSurface = surfaceField.read(pixel);
 	float3 normal = receiverSurface.gba;
-	bool oppositeFacing = uniforms.passIndex == 0 && oppositeFacingField.read(pixel).r > 0.5;
-	bool visibilityDiagnostic = uniforms.diagnosticStage == 4;
+	bool specializedDirect = is_function_constant_defined(remasterPreparedDirectPass) ? remasterPreparedDirectPass : false;
+	bool oppositeFacing = (specializedDirect || uniforms.passIndex == 0) && oppositeFacingField.read(pixel).r > 0.5;
+	bool visibilityDiagnostic = !specializedDirect && uniforms.diagnosticStage == 4;
 	float2 receiverParticipation = participationField.read(pixel).rg;
 	if (receiverParticipation.r < 0.5 || (!visibilityDiagnostic && receiverParticipation.g < 0.5))
 	{
@@ -627,7 +670,7 @@ kernel void remasterIndirectBounce(
 	float maximumVisibility = 0.0;
 	float3 viewDirection = normalize(-uniforms.cameraDirection.xyz);
 	// Direct enumerates visible emissive pixels, not receiver-local quadrature cells.
-	bool directCollision = uniforms.passIndex == 0;
+	bool directCollision = specializedDirect || uniforms.passIndex == 0;
 	// Cover the farthest frame corner, including the final jittered radial cell.
 	float2 cornerDistance = max(float2(pixel) + 0.5,
 		float2(uniforms.width, uniforms.height) - (float2(pixel) + 0.5));
@@ -647,7 +690,8 @@ kernel void remasterIndirectBounce(
 	float3 sphereBitangent = cross(sphereAxis, sphereTangent);
 	float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
 	float coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
-	uint authoredSamples = emitterCount * 4;
+	bool preparedDirect = specializedDirect || (directCollision && abs(uniforms.padding) > 1.5);
+	uint authoredSamples = preparedDirect ? emitterCount : emitterCount * 4;
 	uint sampleTotal = directCollision ? authoredSamples + sphereSamples : 16 * radialSteps * 3;
 	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
@@ -658,6 +702,7 @@ kernel void remasterIndirectBounce(
 		float3 debugDirection = 0.0;
 		bool debugSample = directCollision && sampleIndex >= authoredSamples;
 		float3 emissionOffset = 0.0;
+		RemasterDirectSample preparedSample;
 		if (debugSample)
 		{
 			float index = float(sampleIndex - authoredSamples) + 0.5;
@@ -674,6 +719,11 @@ kernel void remasterIndirectBounce(
 				(sphereDistanceSquared - sphereRadiusSquared) / max(projectedCenter + root, 0.000001);
 			debugPoint = receiverPosition + ray * max(hitDistance, 0.00001);
 			samplePoint = debugPoint.xy;
+		}
+		else if (preparedDirect)
+		{
+			preparedSample = directSamples[sampleIndex];
+			samplePoint = preparedSample.position.xy;
 		}
 		else if (directCollision)
 		{
@@ -727,17 +777,20 @@ kernel void remasterIndirectBounce(
 			// Sample about the receiver center so opposite directions select mirrored pixels.
 			samplePoint = float2(pixel) + 0.5 + direction * sampleDistance + perpendicular * lateralOffset;
 		}
-		if (!debugSample && (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height))
+		if (!debugSample && !preparedDirect && (any(samplePoint < 0.0) || samplePoint.x >= uniforms.width || samplePoint.y >= uniforms.height))
 			continue;
-		uint2 samplePixel = debugSample ? pixel : uint2(samplePoint);
-		if (!debugSample)
+		uint2 samplePixel = debugSample ? pixel : preparedDirect ?
+			uint2(emitterPixels[sampleIndex * 2] % uniforms.width, emitterPixels[sampleIndex * 2] / uniforms.width) : uint2(samplePoint);
+		if (!debugSample && !preparedDirect)
 			samplePoint = float2(samplePixel) + 0.5;
-		if (!debugSample && (all(samplePixel == pixel) || participationField.read(samplePixel).r < 0.5))
+		if (!debugSample && !preparedDirect && (all(samplePixel == pixel) || participationField.read(samplePixel).r < 0.5))
 			continue;
-		float4 sampleSurface = debugSample ? float4(debugPoint.z, 0.0, 0.0, 0.0) : surfaceField.read(samplePixel);
+		if (!debugSample && preparedDirect && all(samplePixel == pixel)) continue;
+		float4 sampleSurface = debugSample ? float4(debugPoint.z, 0.0, 0.0, 0.0) :
+			preparedDirect ? float4(preparedSample.position.z, preparedSample.normal.xyz) : surfaceField.read(samplePixel);
 		float3 sourceRayEndpoint = debugSample ? debugPoint :
-			remasterSurfaceRayEndpoint(samplePixel, sampleSurface, occlusion, heightField, mesh);
-		if (!debugSample && directCollision)
+			preparedDirect ? preparedSample.endpoint.xyz : remasterSurfaceRayEndpoint(samplePixel, sampleSurface, occlusion, heightField, mesh);
+		if (!debugSample && directCollision && !preparedDirect)
 		{
 			sourceRayEndpoint += emissionOffset;
 			samplePoint += emissionOffset.xy;
@@ -745,9 +798,11 @@ kernel void remasterIndirectBounce(
 		}
 		float2 planarSegment = samplePoint - (float2(pixel) + 0.5);
 		float planarDistance = length(planarSegment);
-		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : previousBounce.read(samplePixel).rgb;
-		bool volumeSample = !debugSample && directCollision && mesh[samplePixel.y * uniforms.width + samplePixel.x].emissionDepth > 0.0;
-		if (volumeSample) radiance *= 0.25;
+		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance :
+			preparedDirect ? preparedSample.radiance.rgb : previousBounce.read(samplePixel).rgb;
+		bool volumeSample = !debugSample && directCollision && (preparedDirect ? preparedSample.position.w > 0.5 :
+			mesh[samplePixel.y * uniforms.width + samplePixel.x].emissionDepth > 0.0);
+		if (volumeSample && !preparedDirect) radiance *= 0.25;
 		if (visibilityDiagnostic)
 		{
 			// Diagnose shadowing separately from facing, BRDF, and material absorption.
@@ -763,7 +818,7 @@ kernel void remasterIndirectBounce(
 		float3 segmentDirection = debugSample ? debugDirection : toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
 		float sourceResponse = debugSample || volumeSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
-		float receiverScattering = directCollision && uniforms.padding > 0.5 ? receiverResponse :
+		float receiverScattering = specializedDirect || (directCollision && uniforms.padding > 0.5) ? receiverResponse :
 			receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
 				viewDirection, uniforms.indirectRoughness);
 		if (oppositeFacing)
@@ -771,7 +826,7 @@ kernel void remasterIndirectBounce(
 			// Reused wall artwork may receive direct light on either authored XY facing.
 			float3 alternateNormal = float3(-normal.xy, normal.z);
 			float alternateCosine = saturate(dot(alternateNormal, segmentDirection));
-			receiverScattering = max(receiverScattering, directCollision && uniforms.padding > 0.5 ?
+			receiverScattering = max(receiverScattering, specializedDirect || (directCollision && uniforms.padding > 0.5) ?
 				alternateCosine : alternateCosine * remasterRoughDiffuse(alternateNormal,
 					segmentDirection, viewDirection, uniforms.indirectRoughness));
 		}
@@ -781,7 +836,7 @@ kernel void remasterIndirectBounce(
 		float distanceFormFactor = debugSample ? 2.0 * coneExtent / float(sphereSamples) :
 			min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
 		float formFactor = distanceFormFactor * receiverScattering * sourceResponse;
-		if (uniforms.diagnosticStage != 0 && any(radiance > 0.0))
+		if (!specializedDirect && uniforms.diagnosticStage != 0 && any(radiance > 0.0))
 		{
 			distanceIncoming += radiance * distanceFormFactor;
 			cosineIncoming += radiance * formFactor;
@@ -803,17 +858,17 @@ kernel void remasterIndirectBounce(
 		remasterAlbedo(source.read(pixel).rgb);
 	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
 	float3 bounced = albedo * incoming;
-	if (uniforms.diagnosticStage == 1)
+	if (!specializedDirect && uniforms.diagnosticStage == 1)
 		bounced = distanceIncoming;
-	else if (uniforms.diagnosticStage == 2)
+	else if (!specializedDirect && uniforms.diagnosticStage == 2)
 		bounced = cosineIncoming;
-	else if (uniforms.diagnosticStage == 3)
+	else if (!specializedDirect && uniforms.diagnosticStage == 3)
 		bounced = incoming;
 	else if (visibilityDiagnostic)
 		bounced = float3(maximumVisibility);
 	nextBounce.write(float4(bounced, 1.0), pixel);
-	float3 accumulated = uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
-	if (uniforms.passIndex > 0)
+	float3 accumulated = !specializedDirect && uniforms.passIndex > 1 ? previousIndirect.read(pixel).rgb : float3(0.0);
+	if (!specializedDirect && uniforms.passIndex > 0)
 		accumulated += bounced;
 	nextIndirect.write(float4(accumulated, 1.0), pixel);
 }
