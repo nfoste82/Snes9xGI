@@ -1,4 +1,95 @@
-# Pixel-voxel occlusion
+# Pixel-derived triangle occlusion
+
+## Connected surface meshes
+
+Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
+compact 48-byte patch per screen pixel; Metal expands its corner heights into
+four triangles meeting at the authored pixel center. Shading positions remain
+on the mesh and silhouettes retain full pixel footprints. The pixel grid and
+8×8 height envelopes accelerate candidate lookup rather than defining geometry.
+
+Floor-class background pixels connect across tile hashes and draw records.
+Wall faces and ordinary wall tops share a wall domain, including corners;
+`stair_rails` remains finite geometry. Continuous floor/wall patches are thin
+sheets. Other pixels use finite-thickness triangle shells, retaining the previous
+one-unit extent for discrete details, bars, and sprites. Unclassified backgrounds
+may connect within a BG layer but retain thickness; background props stay within
+their draw instance. No triangles join an OAM object to a background.
+
+OAM object domains use the frame-local source slot. Separate slots never weld,
+even when touching or sharing materials. Frames do not carry logical NPC/pot/
+projectile IDs; a multi-slot actor therefore remains multiple independent pieces.
+Whole-actor grouping requires a ROM-specific object-to-OAM mapping.
+
+Connectivity requires known heights, nonzero opacity, matching domains, and
+compatible height continuation. Small quantized steps connect; larger ramps need
+matching continuation evidence. Abrupt ledges remain hard boundaries. Corner
+vertices weld within cardinally connected local regions; diagonal-only contacts
+and transparent holes do not bridge objects. Disconnected levels are not stretched
+into ramps. Floors, rails, and props are not automatically extended downward.
+Monotone slope reconstruction preserves linear ramps without inventing raised
+ridges where a flat plateau meets a descending edge.
+
+Structural wall faces/tops close their sides down to the placement floor base
+(`heightOffset × coordinateScale / 255`). The visible smooth ramp stays unchanged
+while the otherwise open space below it closes. Solid-wall endpoints always bias
+toward the exterior geometric normal, independently from artwork shading normals.
+Side closure uses the surface's opacity and participates in acceleration envelopes.
+
+Solidity is classified by material and placement, never by authored shading
+normals. `remaster/surface_mesh_material.h` shares this classification between
+the renderer and regression tests. Unclassified elevated bars retain finite
+shells even when touching a structural wall. A previous normal-driven frontier
+incorrectly closed the jail crossbar `v1:4bpp:c43a8c5e3814af21` down to the floor
+and has been removed. Genuine unclassified walls require structural semantics
+before receiving base closure. Height metadata is not rewritten.
+
+The earlier captured jail leak checks used that removed frontier; their blocked
+ray counts are historical results, not validation of the current classifier.
+
+Wall corner ramps encode inside/outside folds in their height arrays (max/min
+composition). Geometry follows those heights, placement offsets, and displayed
+flips. Neighboring face normals need not be parallel to connect a corner.
+Authored shading normals remain per-pixel and transform once through the existing
+instance transform; geometric normals are separate. Missing shading normals use
+the mesh normal instead of gradients across unrelated objects.
+
+Sheet endpoints use a small geometric-normal bias toward the authored shading
+side. Only endpoint contact is excluded: a proper sheet crossing within the
+receiver cell still blocks a light behind the wall. Finite-shell endpoints keep
+their authored XY center and offset Z to the actual top/bottom face; shading
+normals select the side. The old dominant-normal voxel offset could leave rays
+inside flat shells with tilted artwork normals, causing false tabletop seam
+shadows. Known surfaces receive the same face offset regardless of blocker
+opacity, preventing transparent tabletop receivers from starting inside their
+opaque neighbors' coplanar shells. Proper crossings within source/receiver cells still block, including
+light below an opaque tabletop. Each intersected pixel patch attenuates once even if multiple
+triangles are hit. Flat-shell tangencies remain nonblocking. Direct, sampled
+indirect, and Visibility share this query.
+
+Validation: 33 portable mesh checks; 1215 Metal checks including 456 accelerated/
+reference comparisons, shallow wall lighting, opposite-side blocking, floors,
+emitter sheets, bars, gaps, and mixed sheet/shell geometry. Elevated height-50
+bar regressions test underpasses, opacity at the actual bar height, clearance
+above it, and floor sphere illumination with vertical/lateral authored normals,
+including a touching structural wall and both float/half-float GPU targets.
+Height-5/radius-2 sphere regressions additionally verify continuous opaque
+structural dividers block direct light and explicitly transparent walls do not.
+Synthetic M3 Max
+256×224 one-bounce benchmarks measured complete sampled GPU pipelines around
+0.6–3.0 ms (4 connections), 1.0–6.2 ms (8), and 2.4–13.2 ms (16), excluding CPU
+mesh preparation. These are not live-room frame timings. All four benchmark
+scenes matched accelerated/reference output exactly. Dense reference transport
+is much slower; live indirect uses the sampled path.
+
+Visible samples cannot reconstruct hidden/offscreen geometry or independent
+overlapping planes. This renderer change does not assign or approve room heights.
+
+## Historical voxel contract
+
+The following records the prior voxel model and floor self-shadow fix. Flat
+finite-detail triangle shells preserve its bounds and regression behavior;
+continuous floor/wall sheets instead use the mesh rules above.
 
 Lighting represents each visible, height-known pixel as a finite axis-aligned
 voxel. For screen pixel `(x, y)` and effective physical height `z`, its bounds are:
@@ -72,6 +163,27 @@ surfaces. Visible shafts in empty space would require a participating medium,
 such as fog or dust, with volumetric scattering and extinction. Reuse pixel-voxel
 visibility for medium-to-light connections if that feature is added; it should
 remain separate from surface illumination.
+
+## Authored emission depth
+
+The Emission inspector includes **Emission Depth** (0–64 source pixels), applied
+to selected tiles. Each emissive pixel has its existing XY footprint and extends
+outward along its transformed authored normal. Four midpoint samples distribute
+direct light over that depth, with normalized weights preserving the existing
+pixel intensity calibration. Nonzero-depth samples emit in all directions,
+approximating an optically thin flame rather than a one-sided surface. They still
+test mesh visibility individually. Zero depth retains original planar emission.
+
+For torches, start with depth 2–4 and a normal pointing outward from the wall.
+This changes emitter geometry, not wall opacity, tile height, artwork, or visible
+self-emission. The setting is tile-wide but only emissive pixels contribute.
+It is copied/reset with the Emission layer and full-tile metadata, supports undo,
+and can be applied to multiple selected tiles. Animation tiles need the same
+setting (select together or use full-frame-to-variants copy).
+
+Profiles store `emission_depth` under `[[assets]]` using schema 14; captures use
+schema 21. Older profiles/captures default to zero and remain readable. Portable
+tests cover profile/frame round trips and old-schema compatibility.
 
 ## Session debug sphere
 

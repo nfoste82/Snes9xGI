@@ -380,6 +380,8 @@ static NSButton			*remasterNormalFillTileButton;
 static NSButton			*remasterNormalApplyAnimationButton;
 static NSButton			*remasterOppositeFacingDirectButton;
 static NSColorWell		*remasterEmissionColor;
+static NSTextField *remasterEmissionDepthInput;
+static NSTextField *remasterEmissionDepthLabel;
 static NSPopUpButton	*remasterEmissionPaintMode;
 static NSPopUpButton	*remasterEmissionColorScope;
 static NSButton			*remasterEmissionFromTileButton;
@@ -552,6 +554,7 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.height = captured->height;
 		metadata.normalXyz = captured->normalXyz;
 		metadata.emissionRgba = captured->emissionRgba;
+		metadata.emissionDepth = captured->emissionDepth;
 		metadata.hasMaterialSelectors = captured->hasMaterialSelectors;
 		metadata.hasOcclusion = captured->hasOcclusion;
 		metadata.hasHeight = captured->hasHeight;
@@ -591,6 +594,7 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.hasEmission = true;
 	}
 	metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
+	metadata.emissionDepth = source.emissionDepth;
 	return metadata;
 }
 
@@ -605,7 +609,7 @@ static bool RemasterClipboardAvailable (NSInteger layer)
 static bool RemasterMetadataHasData (const RemasterAssetMetadata &metadata)
 {
 	return metadata.hasMaterialSelectors || metadata.hasOcclusion || metadata.hasHeight || metadata.hasNormals ||
-		metadata.hasEmission || metadata.directLightingOppositeFacing;
+		metadata.hasEmission || metadata.emissionDepth > 0 || metadata.directLightingOppositeFacing;
 }
 
 static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, RemasterAssetMetadata &destination,
@@ -637,12 +641,14 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	{
 		destination.emissionRgba = source.emissionRgba;
 		destination.hasEmission = source.hasEmission;
+		destination.emissionDepth = source.emissionDepth;
 	}
 }
 
 static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &metadata)
 {
 	uint32_t version = RemasterMetadataHasData(metadata) ? 2 : 0;
+	if (metadata.emissionDepth > 0) version = 14;
 	if (metadata.hasEmission)
 		version = std::max<uint32_t>(version, 3);
 	if (metadata.hasNormals)
@@ -3773,6 +3779,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)changeRemasterMetricsEnabled:(id)sender;
 - (void)refreshRemasterMetrics;
 - (void)setRemasterEmissionFromVisibleTile:(id)sender;
+- (void)changeRemasterEmissionDepth:(id)sender;
 - (void)setRemasterEmissionFromVisibleAnimation:(id)sender;
 - (void)changeRemasterPreviewLayers:(id)sender;
 - (void)resetRemasterLayer:(id)sender;
@@ -4925,6 +4932,17 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmissionFromAnimationButton.target = self;
 		remasterEmissionFromAnimationButton.action = @selector(setRemasterEmissionFromVisibleAnimation:);
 		[contentView addSubview:remasterEmissionFromAnimationButton];
+		remasterEmissionDepthLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(548, 342, 135, 24)];
+		remasterEmissionDepthLabel.stringValue = @"Emission Depth";
+		remasterEmissionDepthLabel.editable = NO;
+		remasterEmissionDepthLabel.bezeled = NO;
+		remasterEmissionDepthLabel.drawsBackground = NO;
+		[contentView addSubview:remasterEmissionDepthLabel];
+		remasterEmissionDepthInput = [[NSTextField alloc] initWithFrame:NSMakeRect(680, 342, 60, 24)];
+		remasterEmissionDepthInput.target = self;
+		remasterEmissionDepthInput.action = @selector(changeRemasterEmissionDepth:);
+		remasterEmissionDepthInput.toolTip = @"0–64 source pixels outward along the authored normal. Applies to selected tiles; zero keeps planar emission.";
+		[contentView addSubview:remasterEmissionDepthInput];
 		remasterArtworkVisibleButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 307, 120, 28)];
 		remasterArtworkVisibleButton.title = @"Artwork";
 		remasterArtworkVisibleButton.buttonType = NSButtonTypeSwitch;
@@ -5419,7 +5437,7 @@ void QuitWithFatalError ( NSString *message)
 			changed = true;
 			selected->second.hasNormals = false;
 			if (!selected->second.hasMaterialSelectors && !selected->second.hasOcclusion && !selected->second.hasHeight &&
-				!selected->second.hasEmission && !selected->second.directLightingOppositeFacing)
+				!selected->second.hasEmission && selected->second.emissionDepth == 0 && !selected->second.directLightingOppositeFacing)
 				remasterEditingProfile.assets.erase(selected);
 		}
 		if (!changed)
@@ -5462,9 +5480,12 @@ void QuitWithFatalError ( NSString *message)
 	else if (layer == RemasterEditorNormal)
 		found->second.hasNormals = false;
 	else if (layer == RemasterEditorEmission)
+	{
 		found->second.hasEmission = false;
+		found->second.emissionDepth = 0;
+	}
 	if (!found->second.hasMaterialSelectors && !found->second.hasOcclusion &&
-		!found->second.hasHeight && !found->second.hasNormals && !found->second.hasEmission &&
+		!found->second.hasHeight && !found->second.hasNormals && !found->second.hasEmission && found->second.emissionDepth == 0 &&
 		!found->second.directLightingOppositeFacing)
 		remasterEditingProfile.assets.erase(found);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
@@ -5681,6 +5702,33 @@ void QuitWithFatalError ( NSString *message)
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)changeRemasterEmissionDepth:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	float depth;
+	NSScanner *scanner = [NSScanner scannerWithString:remasterEmissionDepthInput.stringValue];
+	if (![scanner scanFloat:&depth] || !scanner.isAtEnd || !std::isfinite(depth) || depth < 0 || depth > 64)
+	{
+		NSBeep(); [self refreshRemasterEditingControls]; return;
+	}
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
+	for (const auto &tile : remasterSelectedTiles)
+	{
+		auto metadata = EffectiveRemasterMetadata(tile);
+		metadata.emissionDepth = depth;
+		remasterEditingProfile.assets[tile] = metadata;
+	}
+	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, 14u);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Change Emission Depth"];
+	std::string current;
+	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics)) UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)refreshRemasterEditingControls
 {
 	const NSInteger layer = remasterLayerSelector ? remasterLayerSelector.indexOfSelectedItem : 0;
@@ -5723,6 +5771,9 @@ void QuitWithFatalError ( NSString *message)
 	remasterEmissionFromAnimationButton.hidden = layer != RemasterEditorEmission;
 	remasterArtworkVisibleButton.hidden = YES;
 	remasterEmissionVisibleButton.hidden = layer != RemasterEditorEmission;
+	remasterEmissionDepthInput.hidden = remasterEmissionDepthLabel.hidden = layer != RemasterEditorEmission;
+	remasterEmissionDepthInput.enabled = editable;
+	if (editable) remasterEmissionDepthInput.stringValue = [NSString stringWithFormat:@"%.6g", EffectiveRemasterMetadata(remasterSelectedTile).emissionDepth];
 	remasterResetLayerButton.hidden = layer == RemasterEditorArtwork;
 	remasterResetTileButton.hidden = false;
 	remasterTilePreview.enabled = !remasterVariants.empty();
@@ -6318,7 +6369,7 @@ void QuitWithFatalError ( NSString *message)
 		changed |= metadata.directLightingOppositeFacing != enabled;
 		metadata.directLightingOppositeFacing = enabled;
 		if (!enabled && !metadata.hasMaterialSelectors && !metadata.hasOcclusion && !metadata.hasHeight &&
-			!metadata.hasNormals && !metadata.hasEmission)
+			!metadata.hasNormals && !metadata.hasEmission && metadata.emissionDepth == 0)
 			remasterEditingProfile.assets.erase(tileId);
 	}
 	if (!changed)

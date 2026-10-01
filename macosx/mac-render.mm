@@ -150,6 +150,8 @@ static void LogRemasterRadianceMetrics (const char *label, uint32_t bounce,
 		metrics.peak[2], metrics.nonzeroPixels, metrics.significantPixels, minX, minY, metrics.maxX, metrics.maxY, delta);
 }
 
+#include "../remaster/surface_mesh_material.h"
+
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);
 static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *, size_t,
@@ -159,7 +161,8 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
 	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1, bool = true,
-	const std::array<float, 3> * = nullptr, int = -1, bool = true);
+	const std::array<float, 3> * = nullptr, int = -1, bool = true,
+	const std::vector<RemasterSurfaceMesh::Cell> * = nullptr);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -237,6 +240,7 @@ struct RemasterMetalResources
 	id<MTLTexture> indirect[2] = {};
 	id<MTLTexture> directMean[2] = {};
 	id<MTLBuffer> sourcePower = nil;
+	id<MTLBuffer> mesh = nil;
 	uint32_t sourceLeafCount = 0;
 };
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
@@ -372,6 +376,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	std::vector<uint8_t> oppositeFacingField(frame.mainPixels.size(), 0);
 	std::vector<float> surfaceField(frame.mainPixels.size() * 4, 0.0f);
 	std::vector<float> reflectanceField(frame.mainPixels.size() * 4, 0.0f);
+	std::vector<RemasterSurfaceMesh::Sample> meshSamples(frame.mainPixels.size());
+	std::vector<uint8_t> authoredNormals(frame.mainPixels.size(), 0);
+	std::vector<float> emissionDepths(frame.mainPixels.size(), 0);
+	std::vector<RemasterSurfaceMesh::Cell> mesh;
 	if (lighting && frame.schemaVersion >= 5)
 	{
 		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadataByTile;
@@ -404,6 +412,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				materialName = &instance.material;
 			const auto materialEntry = materialName ? materials.find(*materialName) : materials.end();
 			const RemasterFrameMaterial *material = materialEntry == materials.end() ? nullptr : materialEntry->second;
+			const RemasterSurfaceClass surfaceClass = material ? material->surfaceClass : RemasterSurfaceClass::Unclassified;
+			RemasterSurfaceMesh::Sample &meshSample = meshSamples[i];
+			RemasterSurfaceMesh::classify(meshSample, instance.source, instance.sourceIndex,
+				surfaceClass, instance.assetGroup, pixel.instanceId);
+			meshSample.wallBase = instance.heightOffset / 255.0f * frame.lightingCoordinateScale;
+			emissionDepths[i] = metadata ? metadata->emissionDepth : 0;
 			if (material && material->surfaceClass == RemasterSurfaceClass::UserInterface)
 				participationField[i * 2] = participationField[i * 2 + 1] = 0;
 			else if (material && !material->receivesGi)
@@ -456,6 +470,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 				}
 				if (metadata && metadata->hasNormals)
 				{
+					authoredNormals[i] = 1;
 					const size_t offset = pixel.tilePixel * 3;
 					float nx = metadata->normalXyz[offset] / 127.5f - 1.0f;
 					float ny = metadata->normalXyz[offset + 1] / 127.5f - 1.0f;
@@ -473,6 +488,16 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 					surfaceField[i * 4 + 3] = 2.0f / length;
 				}
 			}
+		for (size_t i = 0; i < meshSamples.size(); i++)
+		{
+			meshSamples[i].height = surfaceField[i * 4];
+			meshSamples[i].known = heightField[i * 2 + 1] != 0 && participationField[i * 2] != 0;
+			meshSamples[i].coverage = lightingField[i * 2] / 255.0f;
+		}
+		mesh = RemasterSurfaceMesh::build(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f);
+		for (size_t i = 0; i < mesh.size(); i++) mesh[i].emissionDepth = emissionDepths[i];
+		for (size_t i = 0; i < mesh.size(); i++)
+			if (!authoredNormals[i]) std::copy(mesh[i].normal, mesh[i].normal + 3, surfaceField.begin() + i * 4 + 1);
 	}
 	if (panelMetrics)
 	{
@@ -489,7 +514,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		lighting && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
-		resourceSlot, !asynchronous);
+		resourceSlot, !asynchronous, &mesh);
 }
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
@@ -576,6 +601,7 @@ static void S9xDeinitMetal (void)
 		resources.indirect[0] = resources.indirect[1] = nil;
 		resources.directMean[0] = resources.directMean[1] = nil;
 		resources.sourcePower = nil;
+		resources.mesh = nil;
 		resources.sourceLeafCount = 0;
 	}
 	for (int slot : acquiredSlots)
@@ -747,7 +773,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	RemasterLightingView lightingView, uint8_t indirectBounceCount, float indirectRoughness,
 	float originalSceneContribution, float heightPreviewMultiplier, float reflectanceBoost,
 	uint8_t samplesPerFrame, bool sampleAccumulation,
-	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion)
+	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion,
+	const std::vector<RemasterSurfaceMesh::Cell> *mesh)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
@@ -902,6 +929,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				resources->sourcePower = [metalDevice newBufferWithLength:
 					static_cast<NSUInteger>(resources->sourceLeafCount) * 2 * sizeof(float)
 					options:MTLResourceStorageModePrivate];
+				resources->mesh = [metalDevice newBufferWithLength:static_cast<NSUInteger>(width * height) * sizeof(RemasterSurfaceMesh::Cell)
+					options:MTLResourceStorageModeShared];
 				MTLTextureDescriptor *fieldDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm
 					width:width height:height mipmapped:NO];
 				resources->occlusion = [metalDevice newTextureWithDescriptor:fieldDescriptor];
@@ -958,6 +987,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[reflectanceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
 				withBytes:reflectance bytesPerRow:width * sizeof(float) * 4];
 			id<MTLTexture> visibilityBlocksTexture = resources->visibilityBlocks;
+			if (!resources->mesh || !mesh || mesh->size() != static_cast<size_t>(width * height)) return false;
+			memcpy(resources->mesh.contents, mesh->data(), mesh->size() * sizeof(RemasterSurfaceMesh::Cell));
 			if (!visibilityBlocksTexture || !resources->sourcePower)
 				return false;
 			id<MTLComputeCommandEncoder> visibilityBlocksEncoder = [commandBuffer computeCommandEncoder];
@@ -968,6 +999,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[visibilityBlocksEncoder setTexture:heightTexture atIndex:1];
 			[visibilityBlocksEncoder setTexture:surfaceTexture atIndex:2];
 			[visibilityBlocksEncoder setTexture:visibilityBlocksTexture atIndex:3];
+			[visibilityBlocksEncoder setBuffer:resources->mesh offset:0 atIndex:0];
 			[visibilityBlocksEncoder dispatchThreadgroups:MTLSizeMake((visibilityBlocksTexture.width + 7) / 8,
 				(visibilityBlocksTexture.height + 7) / 8, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
@@ -1048,6 +1080,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[diagnosticEncoder setTexture:oppositeFacingTexture atIndex:9];
 					[diagnosticEncoder setTexture:visibilityBlocksTexture atIndex:10];
 					[diagnosticEncoder setTexture:reflectanceTexture atIndex:11];
+					[diagnosticEncoder setBuffer:resources->mesh offset:0 atIndex:3];
 					[diagnosticEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 					[diagnosticEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
 					[diagnosticEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
@@ -1096,6 +1129,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directEncoder setTexture:oppositeFacingTexture atIndex:9];
 						[directEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[directEncoder setTexture:reflectanceTexture atIndex:11];
+						[directEncoder setBuffer:resources->mesh offset:0 atIndex:3];
 						[directEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[directEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
 						[directEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
@@ -1147,6 +1181,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[bounceEncoder setTexture:indirectTextures[current] atIndex:8];
 						[bounceEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[bounceEncoder setTexture:reflectanceTexture atIndex:11];
+						[bounceEncoder setBuffer:resources->mesh offset:0 atIndex:3];
 						[bounceEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 						[bounceEncoder setBuffer:resources->sourcePower offset:0 atIndex:1];
 						[bounceEncoder setBytes:&resources->sourceLeafCount length:sizeof(uint32_t) atIndex:2];

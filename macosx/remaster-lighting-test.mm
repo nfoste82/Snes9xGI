@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <vector>
 #include "../remaster/indirect_lighting_reference.h"
+#include "../remaster/surface_mesh_material.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light
@@ -143,7 +144,8 @@ int main()
                             unsigned sampleIndex = 0, unsigned sampleCount = 1, unsigned randomSeed = 1,
                              simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
                               const Light *debugLight = nullptr, bool referenceVisibility = false,
-                              bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f) {
+                               bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f,
+                               const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -198,6 +200,12 @@ int main()
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLTexture> visibilityBlocks = nil;
                 id<MTLBuffer> sourcePower = nil;
+				std::vector<RemasterSurfaceMesh::Cell> mesh(width * height);
+				for (unsigned p = 0; p < width * height; p++)
+					for (float &corner : mesh[p].corners) corner = s[Surface][p].x;
+				if (customMesh) mesh = *customMesh;
+				id<MTLBuffer> meshBuffer = [device newBufferWithBytes:mesh.data() length:mesh.size() * sizeof(mesh[0])
+					options:MTLResourceStorageModeShared];
                 uint32_t leafCount = 1;
                 if (bounce && !composing)
                 {
@@ -215,6 +223,7 @@ int main()
                     [blocks setTexture:textures[3] atIndex:1];
                     [blocks setTexture:textures[2] atIndex:2];
                     [blocks setTexture:visibilityBlocks atIndex:3];
+					[blocks setBuffer:meshBuffer offset:0 atIndex:0];
                     [blocks dispatchThreads:MTLSizeMake((width + 7) / 8, (height + 7) / 8, 1)
                         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                     [blocks endEncoding];
@@ -252,6 +261,8 @@ int main()
                     bounce ? (sampled ? sampledIndirect : referenceVisibility ? indirectReference : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
+                if (bounce && !composing)
+                    [encoder setBuffer:meshBuffer offset:0 atIndex:3];
                 if (bounce && !composing)
                     [encoder setTexture:visibilityBlocks atIndex:10];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -813,6 +824,246 @@ int main()
             edgeWall[Surface][receiver] = {8, 0.98f, 0, -0.198997f};
             near("actual camera backface remains rejected", run(edgeWall, true).bounce, {});
 
+            for (bool half : {false, true})
+            {
+                Scene torch = scene();
+                torch[Surface][receiver] = {0, 0, 0, 1};
+                torch[Surface][emitter] = {0, 0, 0, 1};
+                std::vector<RemasterSurfaceMesh::Cell> mesh(width * height);
+                for (unsigned p = 0; p < width * height; p++)
+                    for (float &z : mesh[p].corners) z = torch[Surface][p].x;
+                auto illuminate = [&] {
+                    return run(torch, true, 0, 8, -1, nullptr, half, 0, 0, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, &mesh).bounce;
+                };
+                near("zero emission depth retains planar coplanar rejection", illuminate(), {});
+                mesh[emitter].emissionDepth = 4;
+                const auto volume = illuminate();
+                positive("emission depth lights coplanar floor from elevated samples", volume);
+                check("emission depth preserves source hue", volume.x > volume.y && volume.y > volume.z, volume, {});
+                // Close an elevated wall ramp to its floor base. A horizontal
+                // ray below the face must block, while an isolated rail stays open.
+                torch = scene();
+                const unsigned barrier = receiver + 10;
+                torch[Surface][barrier] = {20, 0, 0, 1};
+                torch[Occlusion][barrier] = {1, 1, 0, 0};
+                torch[Height][barrier] = {20, 1, 0, 0};
+                for (unsigned p = 0; p < width * height; p++)
+                {
+                    mesh[p] = {};
+                    for (float &z : mesh[p].corners) z = torch[Surface][p].x;
+                }
+                auto visibility = [&](bool reference) {
+                    return run(torch, true, 0, 8, -1, nullptr, half, 4, 0, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, reference, false, true, 0, &mesh).bounce;
+                };
+                near("raised finite rail remains open underneath", visibility(false), simd_float4{1, 1, 1, 1});
+                mesh[barrier].solidWall = 1; mesh[barrier].wallBase = 0; mesh[barrier].thickness = 0;
+                near("solid wall closure blocks under-ramp leakage", visibility(false), {});
+                near("wall closure envelope matches reference", visibility(true), {});
+                mesh[barrier].wallBase = 10;
+                near("upper-floor wall base does not fill lower underpass", visibility(false), simd_float4{1, 1, 1, 1});
+            }
+            // Regression: authoring lateral normals on an elevated unclassified
+            // jail bar must not turn it into a wall down to Z0. Use the production
+            // material classifier and mesh builder, with a touching wall seed.
+            for (bool half : {false, true})
+            {
+                for (auto surfaceClass : {RemasterSurfaceClass::Unclassified, RemasterSurfaceClass::Prop,
+                    RemasterSurfaceClass::WallTop, RemasterSurfaceClass::WallFace})
+                {
+                    Scene jail = scene();
+                    const unsigned bar = receiver + 10, wall = bar - width;
+                    std::vector<RemasterSurfaceMesh::Sample> samples(width * height);
+                    for (unsigned p : {bar, wall})
+                    {
+                        jail[Height][p] = {50, 1, 0, 0};
+                        jail[Occlusion][p] = {1, 1, 0, 0};
+                        samples[p].height = 50; samples[p].known = true; samples[p].coverage = 1;
+                        RemasterSurfaceMesh::classify(samples[p], RemasterSourceType::Background, 1,
+                            p == wall ? RemasterSurfaceClass::WallFace : surfaceClass, "", p + 1);
+                    }
+                    // A radius-2 sphere can see around a one-pixel pillar.
+                    // Continue the divider across the viewport for this test.
+                    for (unsigned y = 0; y < height; y++)
+                    {
+                        const unsigned p = y * width + bar % width;
+                        if (p == bar) continue;
+                        samples[p] = samples[bar];
+                        jail[Height][p] = jail[Height][bar];
+                        jail[Occlusion][p] = jail[Occlusion][bar];
+                        jail[Surface][p] = {50, 0, 0, 1};
+                    }
+                    const auto mesh = RemasterSurfaceMesh::build(width, height, samples, 1);
+                    auto visibility = [&](float z, bool reference) {
+                        jail[Surface][receiver] = {z, 0, 0, 1};
+                        jail[Surface][emitter] = {z, 0, 0, 1};
+                        return run(jail, true, 0, 8, -1, nullptr, half, 4, 0, 0, 1, 1,
+                            simd_float3{0, 0, -1}, -1, nullptr, reference, false, true, 0, &mesh).bounce;
+                    };
+                    const bool structural = surfaceClass == RemasterSurfaceClass::WallTop || surfaceClass == RemasterSurfaceClass::WallFace;
+                    for (simd_float3 normal : {simd_float3{0, 0, 1}, simd_float3{1, 0, 0}, simd_float3{0, -1, 0}})
+                    {
+                        jail[Surface][bar] = {50, normal.x, normal.y, normal.z};
+                        jail[Surface][wall] = {50, 1, 0, 0};
+                        for (bool reference : {false, true})
+                        {
+                            near("normals do not change elevated detail underpass or structural closure",
+                                visibility(0, reference), structural ? simd_float4{} : simd_float4{1, 1, 1, 1});
+                            near("elevated bar remains opaque at its actual height", visibility(50, reference), {});
+                            near("light passes above finite bar and structural wall", visibility(52, reference), simd_float4{1, 1, 1, 1});
+                            jail[Surface][receiver] = {0, 0, 0, 1};
+                            Light light = {};
+                            light.position = {26.5f, receiverY + 0.5f, 5};
+                            light.radius = 2; light.intensity = 1000; light.color = {1, 1, 1};
+                            const auto direct = run(jail, true, 0, 8, -1, nullptr, half, 0, 0, 0, 1, 1,
+                                simd_float3{0, 0, -1}, -1, &light, reference, false, true, 0, &mesh).bounce;
+                            if (structural) near("structural closure still blocks height-5 radius-2 floor sphere light", direct, {});
+                            else positive("floor sphere light passes below normal-authored jail bar", direct);
+                            if (structural)
+                            {
+                                // Structural semantics do not authorize replacing
+                                // user-authored zero opacity with an opaque blocker.
+                                for (unsigned y = 0; y < height; y++) jail[Occlusion][y * width + bar % width].x = 0;
+                                positive("transparent structural wall preserves authored light transmission",
+                                    run(jail, true, 0, 8, -1, nullptr, half, 0, 0, 0, 1, 1,
+                                        simd_float3{0, 0, -1}, -1, &light, reference, false, true, 0, &mesh).bounce);
+                                for (unsigned y = 0; y < height; y++) jail[Occlusion][y * width + bar % width].x = 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // Flat height-6 tiled props must not shadow themselves when artwork
+            // normals tilt away from the geometric tabletop normal. Separate draw
+            // domains are intentional: this does not assume whole-table ownership.
+            for (bool half : {false, true}) for (bool reference : {false, true})
+                for (auto material : {RemasterSurfaceClass::Unclassified, RemasterSurfaceClass::Prop})
+                {
+                    Scene table = scene();
+                    table[PreviousBounce].assign(width * height, {});
+                    std::vector<RemasterSurfaceMesh::Sample> samples(width * height);
+                    for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
+                    {
+                        const unsigned p = y * width + x;
+                        table[Surface][p] = {6, 0, 0, 1};
+                        table[Height][p] = {6, 1, 0, 0};
+                        table[Occlusion][p] = {1, 1, 0, 0};
+                        table[Participation][p] = {1, 1, 0, 0};
+                        samples[p].height = 6; samples[p].known = true; samples[p].coverage = 1;
+                        RemasterSurfaceMesh::classify(samples[p], RemasterSourceType::Background, 1,
+                            material, "", 1 + (y / 8) * (width / 8) + x / 8);
+                    }
+                    const auto mesh = RemasterSurfaceMesh::build(width, height, samples, 200.0f / 255);
+                    // Strong sideways relief normal: the former voxel-face bias
+                    // moved only 0.375 in Z, still inside the one-unit shell.
+                    table[Surface][receiver] = {6, 0.8f, 0, 0.6f};
+                    Light light = {};
+                    light.position = {100.5f, receiverY + 0.5f, 8};
+                    light.radius = 0.25f; light.intensity = 10000; light.color = {1, 1, 1};
+                    auto illuminate = [&](const Scene &s, unsigned stage, const Light *sphere = nullptr) {
+                        return run(s, true, 0, 8, -1, nullptr, half, stage, 0, 0, 1, 1,
+                            simd_float3{0, 0, -1}, -1, sphere, reference, false, true, 0, &mesh).bounce;
+                    };
+                    Scene clear = table; clear[Occlusion].assign(width * height, {});
+                    positive("tilted tabletop receives shallow sphere light", illuminate(table, 0, &light));
+                    near("coplanar tiled shells do not shadow tilted tabletop", illuminate(table, 0, &light), illuminate(clear, 0, &light));
+                    near("tabletop sphere visibility has no tile seams", illuminate(table, 4, &light), simd_float4{1, 1, 1, 1});
+                    Scene transparentReceiver = table;
+                    transparentReceiver[Occlusion][receiver].x = 0;
+                    near("transparent tabletop receiver uses the same geometric face as opaque neighbors",
+                        illuminate(transparentReceiver, 0, &light), illuminate(table, 0, &light));
+                    near("transparent tabletop endpoint does not enter coplanar opaque shell",
+                        illuminate(transparentReceiver, 4, &light), simd_float4{1, 1, 1, 1});
+                    table[PreviousBounce][emitter] = {1, 0.5f, 0.25f, 1};
+                    table[Surface][emitter] = {6, -0.8f, 0, 0.6f};
+                    near("coplanar authored shell endpoints have clear visibility", illuminate(table, 4), simd_float4{1, 1, 1, 1});
+                    positive("coplanar authored shells retain indirect transport", illuminate(table, 0));
+                    Scene clearIndirect = table; clearIndirect[Occlusion].assign(width * height, {});
+                    near("coplanar indirect transport has no false seam attenuation", illuminate(table, 0), illuminate(clearIndirect, 0));
+                    // Below-table source is not evidence of a seam: a tilted
+                    // shading normal can face it while the actual opaque top blocks.
+                    table[PreviousBounce].assign(width * height, {});
+                    light.position.z = 4;
+                    positive("tilted artwork faces a below-table source without occlusion", illuminate(clear, 0, &light));
+                    near("opaque tabletop blocks a source below its surface", illuminate(table, 0, &light), {});
+                    light.position = {receiverX + 0.5f, receiverY + 0.5f, 4};
+                    near("below-table source crossing only receiver cell remains blocked", illuminate(table, 4, &light), {});
+                }
+            // Connected triangle surfaces must illuminate smoothly, but still
+            // Plateau-to-lower-edge reconstruction must not invent a ridge that
+            // intercepts shallow rays on the plateau (fresh table capture).
+            for (bool half : {false, true}) for (bool reference : {false, true})
+            {
+                Scene tabletop = scene(); tabletop[PreviousBounce].assign(width * height, {});
+                std::vector<RemasterSurfaceMesh::Sample> samples(width * height);
+                for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
+                {
+                    unsigned p = y * width + x;
+                    float z = x < 8 ? 6 : 5.75f;
+                    tabletop[Surface][p] = {z, 0, 0, 1};
+                    tabletop[Occlusion][p] = {1, 1, 0, 0};
+                    tabletop[Height][p] = {z, 1, 0, 0};
+                    tabletop[Participation][p] = {1, 1, 0, 0};
+                    samples[p].height = z; samples[p].known = true; samples[p].coverage = 1; samples[p].domain = 11;
+                }
+                auto mesh = RemasterSurfaceMesh::build(width, height, samples, 0.25f);
+                Light light = {}; light.position = {100.5f, receiverY + 0.5f, 6.8f};
+                light.radius = 0.05f; light.intensity = 10000; light.color = {1, 1, 1};
+                auto illuminate = [&](const Scene &s, unsigned stage) {
+                    return run(s, true, 0, 8, -1, nullptr, half, stage, 0, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, &light, reference, false, true, 0, &mesh).bounce;
+                };
+                Scene clear = tabletop; clear[Occlusion].assign(width * height, {});
+                near("lower tabletop edge does not raise a shadow-casting plateau ridge", illuminate(tabletop, 4), simd_float4{1, 1, 1, 1});
+                positive("shallow sphere illuminates plateau beside lower edge", illuminate(tabletop, 0));
+                near("plateau lower edge preserves direct lighting", illuminate(tabletop, 0), illuminate(clear, 0));
+                // Transparent source/receiver face positioning must not bypass a
+                // real opaque crossing. A light below the top remains blocked.
+                tabletop[Occlusion][receiver].x = 0;
+                light.position.z = 4;
+                near("transparent plateau receiver still respects opaque below-top crossing", illuminate(tabletop, 4), {});
+            }
+            // Connected triangle surfaces must illuminate smoothly, but still
+            // block rays crossing from the opposite side of a perspective wall.
+            for (bool half : {false, true})
+            {
+                Scene ramp = scene();
+                ramp[PreviousBounce].assign(width * height, {});
+                std::vector<RemasterSurfaceMesh::Sample> samples(width * height);
+                for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
+                {
+                    const unsigned p = y * width + x;
+                    const float z = (x + 0.5f) * 0.5f;
+                    ramp[Surface][p] = {z, -0.4472136f, 0, 0.8944272f};
+                    ramp[Occlusion][p] = {1, 1, 0, 0};
+                    ramp[Height][p] = {z, 1, 0, 0};
+                    ramp[Participation][p] = {1, 1, 0, 0};
+                    samples[p].height = z; samples[p].known = true;
+                    samples[p].coverage = 1; samples[p].sheet = true; samples[p].domain = 2;
+                }
+                const auto mesh = RemasterSurfaceMesh::build(width, height, samples, 0.25f);
+                Light light = {};
+                light.position = {100.5f, receiverY + 0.5f, 50.75f};
+                light.radius = 0.1f; light.intensity = 10000; light.color = {1, 1, 1};
+                auto illuminate = [&](const Scene &s, unsigned stage, bool reference = false) {
+                    return run(s, true, 0, 8, -1, nullptr, half, stage, 0, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, &light, reference, false, true, 0, &mesh).bounce;
+                };
+                Scene clear = ramp; clear[Occlusion].assign(width * height, {});
+                positive("shallow light reaches continuous perspective wall", illuminate(ramp, 0));
+                near("connected wall does not staircase-shadow itself", illuminate(ramp, 0), illuminate(clear, 0));
+                near("continuous wall visibility is clear", illuminate(ramp, 4), simd_float4{1, 1, 1, 1});
+                near("continuous wall acceleration parity", illuminate(ramp, 0), illuminate(ramp, 0, true));
+                light.position.z = 40;
+                near("perspective wall blocks light crossing to opposite side", illuminate(ramp, 4), {});
+                // A separate raised rail remains finite, with a gap underneath.
+                samples[receiver + 45].sheet = false; samples[receiver + 45].domain = 300;
+                samples[receiver + 45].height = 40;
+                const auto railMesh = RemasterSurfaceMesh::build(width, height, samples, 0.25f);
+                check("rail is finite while wall remains a connected sheet", railMesh[receiver + 45].thickness == 1 &&
+                    railMesh[receiver + 44].thickness == 0, {}, {});
+            }
             // Real floors are opaque continuous voxel sheets, not isolated
             // non-occluding receiver points. Shallow rays must escape their face.
             for (bool half : {false, true})
@@ -1338,6 +1589,11 @@ int main()
                     blocker(voxels, 0, 1, true, 8);
                     blocker(voxels, 22, 1, true, 8);
                     near("endpoint voxels do not self-shadow", visible(), full);
+                    // These endpoints now have face geometry, not blanket cell
+                    // exclusion. Remove them before changing endpoint heights;
+                    // the following cases isolate the intervening voxel only.
+                    blocker(voxels, 0, 0, true, 8);
+                    blocker(voxels, 22, 0, true, 8);
                     blocker(voxels, 7, 1, true, 7);
                     voxels[Surface][receiver].x = 0;
                     voxels[Surface][emitter].x = 22;
@@ -1368,13 +1624,14 @@ int main()
             // Compare the entire frame against the unaccelerated pixel DDA, including the
             // partial block at y=16. Report the first differing pixel per dispatch.
             auto compareVisibility = [&](const Scene &input, const char *label, unsigned pass,
-                                         unsigned stage, unsigned sample, unsigned samples, unsigned seed,
-                                         const Light *debugLight = nullptr) {
+                                          unsigned stage, unsigned sample, unsigned samples, unsigned seed,
+                                          const Light *debugLight = nullptr,
+                                          const std::vector<RemasterSurfaceMesh::Cell> *mesh = nullptr) {
                 Scene optimized = input, reference = input;
                 run(input, true, pass, 8, -1, &optimized, false, stage, 1, sample, samples, seed,
-                    simd_float3{0, 0, -1}, -1, debugLight);
+                    simd_float3{0, 0, -1}, -1, debugLight, false, false, false, 0, mesh);
                 run(input, true, pass, 8, -1, &reference, false, stage, 1, sample, samples, seed,
-                    simd_float3{0, 0, -1}, -1, debugLight, true);
+                    simd_float3{0, 0, -1}, -1, debugLight, true, false, false, 0, mesh);
                 unsigned mismatch = width * height;
                 for (unsigned p = 0; p < width * height && mismatch == width * height; ++p)
                     for (unsigned c = 0; c < 4; ++c)
@@ -1455,6 +1712,18 @@ int main()
                         for (unsigned sample = 0; sample < (samples == 1 ? 1u : 2u); ++sample)
                             compareVisibility(randomScene, "randomized visibility", pass, 0, sample, samples, seed);
                 compareVisibility(randomScene, "randomized visibility diagnostic", 0, 4, 0, 1, seed);
+                std::vector<RemasterSurfaceMesh::Sample> samples(width * height);
+                for (unsigned p = 0; p < width * height; p++)
+                {
+                    samples[p].height = randomScene[Surface][p].x;
+                    samples[p].known = randomScene[Height][p].y > 0.5f;
+                    samples[p].coverage = randomScene[Occlusion][p].x;
+                    samples[p].sheet = p % 3 != 0;
+                    samples[p].domain = p % 3 + 1;
+                }
+                const auto mesh = RemasterSurfaceMesh::build(width, height, samples, 0.25f);
+                compareVisibility(randomScene, "mixed triangle visibility", 0, 4, 0, 1, seed, nullptr, &mesh);
+                compareVisibility(randomScene, "mixed triangle transport", 0, 0, 0, 1, seed, nullptr, &mesh);
             }
             // Sphere samples retain fractional XYZ endpoints, including outside the frame.
             const simd_float3 diskPositions[] = {

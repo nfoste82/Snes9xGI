@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 20;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 21;
 
 struct RemasterFramePixel
 {
@@ -57,6 +57,7 @@ struct RemasterFrameAssetMetadata
 	std::array<uint8_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
+	float emissionDepth = 0.0f;
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
@@ -1068,6 +1069,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.height = source.height;
 		metadata.normalXyz = source.normalXyz;
 		metadata.emissionRgba = source.emissionRgba;
+		metadata.emissionDepth = source.emissionDepth;
 		metadata.hasMaterialSelectors = source.hasMaterialSelectors;
 		metadata.hasOcclusion = source.hasOcclusion;
 		metadata.hasHeight = source.hasHeight;
@@ -1597,6 +1599,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 				metadata.emissionRgba.begin());
 			input.offset += metadata.emissionRgba.size();
 		}
+		if (result.schemaVersion >= 21 && (!input.ReadFloat(metadata.emissionDepth) ||
+			!std::isfinite(metadata.emissionDepth) || metadata.emissionDepth < 0 || metadata.emissionDepth > 64)) return false;
 	}
 	result.materials.resize(materialCount);
 	for (RemasterFrameMaterial &material : result.materials)
@@ -2103,6 +2107,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			bytes.insert(bytes.end(), metadata.normalXyz.begin(), metadata.normalXyz.end());
 		if (metadata.hasEmission)
 			bytes.insert(bytes.end(), metadata.emissionRgba.begin(), metadata.emissionRgba.end());
+		if (!std::isfinite(metadata.emissionDepth) || metadata.emissionDepth < 0 || metadata.emissionDepth > 64) return false;
+		RemasterFrameSerialization::Float(bytes, metadata.emissionDepth);
 	}
 	for (const RemasterFrameMaterial &material : frame.materials)
 	{

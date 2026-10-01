@@ -16,6 +16,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include "../remaster/surface_mesh.h"
 
 struct Uniforms
 {
@@ -178,6 +179,17 @@ int main(int argc, const char *argv[])
                             radiance[p * 4 + 3] = 1;
                         }
 
+					std::vector<RemasterSurfaceMesh::Sample> meshSamples(pixels);
+					for (unsigned p = 0; p < pixels; p++)
+					{
+						meshSamples[p].height = surfaces[p].x;
+						meshSamples[p].known = heights[p * 2 + 1] != 0;
+						meshSamples[p].coverage = occlusion[p * 2] / 255.0f;
+						meshSamples[p].sheet = true; meshSamples[p].domain = 1;
+					}
+					const auto mesh = RemasterSurfaceMesh::build(width, height, meshSamples, 0.01f);
+					id<MTLBuffer> meshBuffer = [device newBufferWithBytes:mesh.data() length:mesh.size() * sizeof(mesh[0])
+						options:MTLResourceStorageModeShared];
                     const MTLPixelFormat formats[] = {MTLPixelFormatRGBA8Unorm, MTLPixelFormatRG8Unorm,
                         MTLPixelFormatRGBA32Float, MTLPixelFormatRG8Unorm, MTLPixelFormatRG8Unorm,
                         MTLPixelFormatRGBA16Float, MTLPixelFormatRGBA16Float, MTLPixelFormatRGBA16Float,
@@ -220,6 +232,7 @@ int main(int argc, const char *argv[])
                     [builder setTexture:textures[3] atIndex:1];
                     [builder setTexture:textures[2] atIndex:2];
                     [builder setTexture:blocks atIndex:3];
+                    [builder setBuffer:meshBuffer offset:0 atIndex:0];
                     [builder dispatchThreadgroups:MTLSizeMake((blockWidth + 7) / 8, (blockHeight + 7) / 8, 1)
                         threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                     [builder endEncoding];
@@ -250,6 +263,7 @@ int main(int argc, const char *argv[])
                         [encoder setBuffer:constants offset:0 atIndex:0];
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:1];
                         [encoder setBuffer:emptyEmitters offset:0 atIndex:2];
+                        [encoder setBuffer:meshBuffer offset:0 atIndex:3];
                         [encoder dispatchThreadgroups:MTLSizeMake(width / 8, height / 8, 1)
                             threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                         [encoder endEncoding];
@@ -343,6 +357,7 @@ int main(int argc, const char *argv[])
                             id<MTLComputeCommandEncoder> blockEncoder = [command computeCommandEncoder];
                             require(blockEncoder != nil, @"Could not encode visibility blocks");
                             [blockEncoder setComputePipelineState:buildPipeline];
+                            [blockEncoder setBuffer:meshBuffer offset:0 atIndex:0];
                             [blockEncoder setTexture:textures[1] atIndex:0];
                             [blockEncoder setTexture:textures[3] atIndex:1];
                             [blockEncoder setTexture:textures[2] atIndex:2];
@@ -384,6 +399,7 @@ int main(int argc, const char *argv[])
                             [bounceEncoder setTexture:reflectanceTexture atIndex:11];
                             [bounceEncoder setBuffer:sampledConstants offset:0 atIndex:0];
                             [bounceEncoder setBuffer:sourcePower offset:0 atIndex:1];
+                            [bounceEncoder setBuffer:meshBuffer offset:0 atIndex:3];
                             [bounceEncoder setBytes:&leafCount length:sizeof(leafCount) atIndex:2];
                             [bounceEncoder dispatchThreads:MTLSizeMake(width, height, 1)
                                 threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];

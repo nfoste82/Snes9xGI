@@ -85,6 +85,7 @@ int main ()
 	frameMetadata.normalXyz[2] = 255;
 	frameMetadata.normalXyz[3] = 255;
 	frameMetadata.hasEmission = true;
+	frameMetadata.emissionDepth = 3.5f;
 	frameMetadata.directLightingOppositeFacing = true;
 	frameMetadata.emissionRgba[12] = 255;
 	frameMetadata.emissionRgba[13] = 96;
@@ -721,6 +722,10 @@ int main ()
 	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
 	assert(decodedFrame.tileInstances[0].heightOffset == 48);
 	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
+	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
+		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
+	assert(emissionStart != previousVersionBytes.end());
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 260); // v21 emission depth
 	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end());
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset,
@@ -754,7 +759,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 20);
+	assert(decodedFrame.schemaVersion == 21);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -765,6 +770,7 @@ int main ()
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->height[2] == 128);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->normalXyz[3] == 255);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->emissionRgba[15] == 25);
+	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->emissionDepth == 3.5f);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->heightSampling == RemasterHeightSampling::Linear);
 	assert(S9xRemasterFrameMetadataForTile(decodedFrame, frameAsset.tileId)->directLightingOppositeFacing);
 	assert(S9xRemasterFrameInstanceAt(decodedFrame, 0, 0));
@@ -1200,7 +1206,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 20);
+	assert(decodedFrame.schemaVersion == 21);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
 	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
@@ -1451,5 +1457,22 @@ material = "missing"
 	assert(S9xRemasterFrameAssetGroupVariants(profiledFrame, "torch_flame") ==
 		(std::vector<RemasterTileContentId> { { UINT64_C(0x34eb3798eedfa0fc), 1, 4 },
 			{ UINT64_C(0x9c36635bd77c6108), 1, 4 }, { UINT64_C(0xa8d1d0722ff1bda3), 1, 4 } }));
+	const RemasterTileContentId flame = { UINT64_C(0x34eb3798eedfa0fc), 1, 4 };
+	profile.assets[flame].tileId = flame;
+	profile.assets[flame].emissionDepth = 3.25f;
+	std::string volumeText;
+	std::vector<RemasterProfileDiagnostic> volumeDiagnostics;
+	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
+	RemasterProfile volumeProfile;
+	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
+	assert(volumeProfile.schemaVersion == 14 && volumeProfile.assets.at(flame).emissionDepth == 3.25f);
+	RemasterFrame volumeFrame;
+	RemasterFrameAsset volumeAsset;
+	volumeAsset.tileId = flame;
+	volumeFrame.assets.push_back(volumeAsset);
+	S9xRemasterApplyProfileToFrame(volumeProfile, volumeFrame);
+	assert(S9xRemasterFrameMetadataForTile(volumeFrame, flame)->emissionDepth == 3.25f);
+	profile.assets[flame].emissionDepth = -1;
+	assert(!S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
 	return 0;
 }

@@ -137,11 +137,23 @@ static bool remasterDebugSphereVisible(float2 point, float height, float4 sphere
 		height <= sphere.z + sqrt(max(0.0, sphere.w * sphere.w - radialSquared));
 }
 
+struct RemasterMeshCell
+{
+	float4 corners;
+	packed_float3 normal;
+	float thickness;
+	float wallBase;
+	float solidWall;
+	float emissionDepth;
+	float reserved;
+};
+
 kernel void remasterBuildVisibilityBlocks(
 	texture2d<float, access::read> occlusion [[texture(0)]],
 	texture2d<float, access::read> heightField [[texture(1)]],
 	texture2d<float, access::read> surfaceField [[texture(2)]],
 	texture2d<float, access::write> blocks [[texture(3)]],
+	const device RemasterMeshCell *mesh [[buffer(0)]],
 	uint2 block [[thread_position_in_grid]])
 {
 	if (block.x >= blocks.get_width() || block.y >= blocks.get_height())
@@ -153,32 +165,114 @@ kernel void remasterBuildVisibilityBlocks(
 			if (occlusion.read(uint2(x, y)).r > 0.0 && heightField.read(uint2(x, y)).g >= 0.5)
 			{
 				float center = surfaceField.read(uint2(x, y)).r;
-				minimumHeight = min(minimumHeight, center - 0.5);
-				maximumHeight = max(maximumHeight, center + 0.5);
+				RemasterMeshCell patch = mesh[y * occlusion.get_width() + x];
+				float low = min(center, min(min(patch.corners.x, patch.corners.y), min(patch.corners.z, patch.corners.w)));
+				if (patch.solidWall > 0.5) low = min(low, patch.wallBase);
+				float high = max(center, max(max(patch.corners.x, patch.corners.y), max(patch.corners.z, patch.corners.w)));
+				minimumHeight = min(minimumHeight, low - patch.thickness * 0.5);
+				maximumHeight = max(maximumHeight, high + patch.thickness * 0.5);
 			}
 	blocks.write(float4(minimumHeight, maximumHeight, 0.0, 0.0), block);
 }
 
-// Transport positions describe voxel centers for shading. Visibility must
-// originate on the outward face instead: otherwise a shallow ray immediately
-// hits the adjacent voxels of its own continuous floor/wall/emitter sheet.
-// Bias only represented opaque geometry; analytic lights keep exact endpoints.
+// Shading positions lie at authored surface centers. Visibility starts outside
+// the represented face so shallow rays do not hit coplanar neighboring shells.
+// Known surfaces share this bias regardless of opacity; analytic lights keep
+// exact endpoints.
 static float3 remasterSurfaceRayEndpoint(uint2 pixel, float4 surface,
 	texture2d<float, access::read> occlusion,
-	texture2d<float, access::read> heightField)
+	texture2d<float, access::read> heightField,
+	const device RemasterMeshCell *mesh)
 {
 	float3 point = float3(float2(pixel) + 0.5, surface.r);
-	float dominant = max(abs(surface.g), max(abs(surface.b), abs(surface.a)));
-	if (dominant > 0.0 && occlusion.read(pixel).r > 0.0 && heightField.read(pixel).g >= 0.5)
-		point += surface.gba * (0.5001 / dominant);
+	RemasterMeshCell patch = mesh[pixel.y * occlusion.get_width() + pixel.x];
+	// Opacity controls ray attenuation, not where a known receiving/emitting
+	// surface lies. Transparent top patches must use the same shell face as
+	// coplanar opaque patches or their rays enter the neighbors' thickness.
+	if (heightField.read(pixel).g >= 0.5)
+	{
+		if (patch.thickness == 0.0)
+		{
+			float3 geometricNormal = float3(patch.normal);
+			point += geometricNormal * (patch.solidWall <= 0.5 && dot(geometricNormal, surface.gba) < 0.0 ? -0.0001 : 0.0001);
+		}
+		else
+		{
+			// Shells are extruded in Z, not axis-aligned unit voxels. Artwork
+			// normals may tilt strongly on a flat top; a voxel-face offset can
+			// leave the endpoint inside this shell and hit coplanar neighbors.
+			// Keep XY at the authored center and reach its actual top/bottom
+			// face. Shading normals select the side, never the geometry.
+			float side = dot(float3(patch.normal), surface.gba) < 0.0 ? -1.0 : 1.0;
+			point.z += side * (patch.thickness * 0.5 + 0.0001);
+		}
+	}
 	return point;
+}
+
+static bool remasterTriangleHit(float3 from, float3 ray, float3 a, float3 b, float3 c, float entry, float exit)
+{
+	float3 e1 = b - a, e2 = c - a;
+	float3 p = cross(ray, e2);
+	float determinant = dot(e1, p);
+	if (abs(determinant) <= 0.0000001) return false;
+	float inverse = 1.0 / determinant;
+	float3 s = from - a;
+	float u = dot(s, p) * inverse;
+	float3 q = cross(s, e1);
+	float v = dot(ray, q) * inverse;
+	float t = dot(e2, q) * inverse;
+	return u >= -0.000001 && v >= -0.000001 && u + v <= 1.000001 &&
+		t > max(0.000001, entry - 0.000001) && t < min(0.999999, exit + 0.000001);
+}
+
+static bool remasterMeshHit(float3 from, float3 ray, int2 cell, float center,
+	RemasterMeshCell patch, float entry, float exit)
+{
+	float low = min(center, min(min(patch.corners.x, patch.corners.y), min(patch.corners.z, patch.corners.w))) - patch.thickness * 0.5;
+	if (patch.solidWall > 0.5) low = min(low, patch.wallBase);
+	float high = max(center, max(max(patch.corners.x, patch.corners.y), max(patch.corners.z, patch.corners.w))) + patch.thickness * 0.5;
+	float z0 = from.z + ray.z * entry, z1 = from.z + ray.z * exit;
+	if (min(z0, z1) > high || max(z0, z1) < low) return false;
+	if (patch.thickness > 0.0 && ray.z == 0.0 && all(patch.corners == center) &&
+		(from.z <= center - patch.thickness * 0.5 || from.z >= center + patch.thickness * 0.5)) return false;
+	float3 vertices[4] = {float3(float2(cell), patch.corners.x),
+		float3(float2(cell) + float2(1, 0), patch.corners.y),
+		float3(float2(cell) + 1.0, patch.corners.z),
+		float3(float2(cell) + float2(0, 1), patch.corners.w)};
+	float3 middle = float3(float2(cell) + 0.5, center);
+	float3 halfThickness = float3(0, 0, patch.thickness * 0.5);
+	for (uint i = 0; i < 4; i++)
+	{
+		uint j = (i + 1) & 3;
+		if (remasterTriangleHit(from, ray, middle + halfThickness, vertices[i] + halfThickness,
+			vertices[j] + halfThickness, entry, exit)) return true;
+		if (patch.thickness > 0.0)
+		{
+			if (remasterTriangleHit(from, ray, middle - halfThickness, vertices[j] - halfThickness,
+				vertices[i] - halfThickness, entry, exit) ||
+				remasterTriangleHit(from, ray, vertices[i] - halfThickness, vertices[j] - halfThickness,
+				vertices[j] + halfThickness, entry, exit) ||
+				remasterTriangleHit(from, ray, vertices[i] - halfThickness, vertices[j] + halfThickness,
+				vertices[i] + halfThickness, entry, exit)) return true;
+		}
+		if (patch.solidWall > 0.5)
+		{
+			float3 bottomI = float3(vertices[i].xy, patch.wallBase);
+			float3 bottomJ = float3(vertices[j].xy, patch.wallBase);
+			if (remasterTriangleHit(from, ray, bottomI, bottomJ, vertices[j], entry, exit) ||
+				remasterTriangleHit(from, ray, bottomI, vertices[j], vertices[i], entry, exit)) return true;
+		}
+	}
+	return false;
 }
 
 static float remasterVisibility(float3 from, float3 to,
 	texture2d<float, access::read> occlusion,
 	texture2d<float, access::read> heightField,
 	texture2d<float, access::read> surfaceField,
-	texture2d<float, access::read> visibilityBlocks)
+	texture2d<float, access::read> visibilityBlocks,
+	const device RemasterMeshCell *mesh)
 {
 	float3 segment = to - from;
 	int2 cell = int2(floor(from.xy));
@@ -190,6 +284,18 @@ static float remasterVisibility(float3 from, float3 to,
 	float2 next = float2(segment.x != 0.0 ? (edge.x - from.x) / segment.x : INFINITY,
 		segment.y != 0.0 ? (edge.y - from.y) / segment.y : INFINITY);
 	float visibility = 1.0;
+	// Exclude only endpoint contact, not a proper crossing near the receiver.
+	// Shell endpoints now lie outside their faces too: a below-top source must
+	// not leak through a crossing wholly inside the receiver's first XY cell.
+	if (all(cell >= 0) && cell.x < int(occlusion.get_width()) && cell.y < int(occlusion.get_height()))
+	{
+		uint2 originPixel = uint2(cell);
+		RemasterMeshCell originPatch = mesh[originPixel.y * occlusion.get_width() + originPixel.x];
+		if (heightField.read(originPixel).g >= 0.5 &&
+			remasterMeshHit(from, segment, cell, surfaceField.read(originPixel).r, originPatch, 0.0, min(1.0, min(next.x, next.y))))
+			visibility *= 1.0 - occlusion.read(originPixel).r;
+		if (visibility < 0.01) return 0.0;
+	}
 	int2 testedBlock = int2(-1);
 	bool emptyBlock = false;
 	float blockExit = 0.0;
@@ -244,34 +350,20 @@ static float remasterVisibility(float3 from, float3 to,
 		bool crossY = next.y <= next.x;
 		if (crossX) { cell.x += step.x; next.x += delta.x; }
 		if (crossY) { cell.y += step.y; next.y += delta.y; }
-		if (all(cell == endpoint))
-			break;
 		if (any(cell < 0) || cell.x >= int(occlusion.get_width()) || cell.y >= int(occlusion.get_height()))
 			break;
 		uint2 sample = uint2(cell);
+		RemasterMeshCell patch = mesh[sample.y * occlusion.get_width() + sample.x];
 		float coverage = occlusion.read(sample).r;
 		if (coverage <= 0.0)
 			continue;
 		float exit = min(1.0, min(next.x, next.y));
 		if (heightField.read(sample).g < 0.5)
 			continue;
-		// DDA supplies the segment's XY slab interval. Intersect it with the
-		// unit Z slab centered on the effective physical height. Tangencies
-		// have no positive-length intersection and do not attenuate.
-		float center = surfaceField.read(sample).r;
-		if (segment.z == 0.0)
-		{
-			if (from.z <= center - 0.5 || from.z >= center + 0.5)
-				continue;
-		}
-		else
-		{
-			float bottom = (center - 0.5 - from.z) / segment.z;
-			float top = (center + 0.5 - from.z) / segment.z;
-			entry = max(entry, min(bottom, top));
-			exit = min(exit, max(bottom, top));
-		}
-		if (exit - entry > 0.000001)
+		// Grid traversal bins triangle candidates; it does not define geometry.
+		// Count a patch once even if both triangles/shared edges are hit.
+		if (exit - entry > 0.000001 && remasterMeshHit(from, segment, cell, surfaceField.read(sample).r,
+			patch, entry, exit))
 		{
 			visibility *= 1.0 - coverage;
 			if (visibility < 0.01)
@@ -333,6 +425,7 @@ kernel void remasterSampledIndirectBounce(
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
 	const device float *sourcePower [[buffer(1)]],
 	constant uint &leafCount [[buffer(2)]],
+	const device RemasterMeshCell *mesh [[buffer(3)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
@@ -414,9 +507,9 @@ kernel void remasterSampledIndirectBounce(
 		float sourceCosine = saturate(dot(sourceSurface.gba, -direction));
 		if (receiverCosine <= 0.0 || sourceCosine <= 0.0)
 			continue;
-		float visibility = remasterVisibility(remasterSurfaceRayEndpoint(pixel, receiver, occlusion, heightField),
-			remasterSurfaceRayEndpoint(sourcePixel, sourceSurface, occlusion, heightField), occlusion, heightField,
-			surfaceField, visibilityBlocks);
+		float visibility = remasterVisibility(remasterSurfaceRayEndpoint(pixel, receiver, occlusion, heightField, mesh),
+			remasterSurfaceRayEndpoint(sourcePixel, sourceSurface, occlusion, heightField, mesh), occlusion, heightField,
+			surfaceField, visibilityBlocks, mesh);
 		float transfer = receiverCosine * sourceCosine * visibility / (M_PI_F * distanceSquared);
 		incoming += previousBounce.read(sourcePixel).rgb * (transfer / probability);
 	}
@@ -508,6 +601,7 @@ kernel void remasterIndirectBounce(
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
 	const device uint *emitterPixels [[buffer(1)]],
 	constant uint &emitterCount [[buffer(2)]],
+	const device RemasterMeshCell *mesh [[buffer(3)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
@@ -543,7 +637,7 @@ kernel void remasterIndirectBounce(
 	// an enclosing emissive boundary (the session light is two-sided).
 	uint sphereSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
 	float3 receiverPosition = float3(float2(pixel) + 0.5, receiverSurface.r);
-	float3 receiverRayEndpoint = remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField);
+	float3 receiverRayEndpoint = remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh);
 	float3 sphereDelta = uniforms.debugPositionRadius.xyz - receiverPosition;
 	float sphereDistanceSquared = dot(sphereDelta, sphereDelta);
 	float sphereRadiusSquared = uniforms.debugPositionRadius.w * uniforms.debugPositionRadius.w;
@@ -553,7 +647,8 @@ kernel void remasterIndirectBounce(
 	float3 sphereBitangent = cross(sphereAxis, sphereTangent);
 	float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
 	float coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
-	uint sampleTotal = directCollision ? emitterCount + sphereSamples : 16 * radialSteps * 3;
+	uint authoredSamples = emitterCount * 4;
+	uint sampleTotal = directCollision ? authoredSamples + sphereSamples : 16 * radialSteps * 3;
 	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
 	for (uint sampleIndex = 0; sampleIndex < sampleTotal; sampleIndex++)
@@ -561,10 +656,11 @@ kernel void remasterIndirectBounce(
 		float2 samplePoint;
 		float3 debugPoint = 0.0;
 		float3 debugDirection = 0.0;
-		bool debugSample = directCollision && sampleIndex >= emitterCount;
+		bool debugSample = directCollision && sampleIndex >= authoredSamples;
+		float3 emissionOffset = 0.0;
 		if (debugSample)
 		{
-			float index = float(sampleIndex - emitterCount) + 0.5;
+			float index = float(sampleIndex - authoredSamples) + 0.5;
 			float cosineOffset = coneExtent * index / float(sphereSamples);
 			float cosine = 1.0 - cosineOffset;
 			float sineSquared = cosineOffset * (2.0 - cosineOffset);
@@ -581,7 +677,15 @@ kernel void remasterIndirectBounce(
 		}
 		else if (directCollision)
 		{
-			uint emitter = emitterPixels[sampleIndex];
+			uint emitter = emitterPixels[sampleIndex / 4];
+			RemasterMeshCell emitterPatch = mesh[emitter];
+			// Zero depth keeps the original one-sample planar emission exactly.
+			if (emitterPatch.emissionDepth <= 0.0 && (sampleIndex & 3) != 0) continue;
+			if (emitterPatch.emissionDepth > 0.0)
+			{
+				float3 emitterNormal = surfaceField.read(uint2(emitter % uniforms.width, emitter / uniforms.width)).gba;
+				emissionOffset = emitterNormal * emitterPatch.emissionDepth * (float(sampleIndex & 3) + 0.5) / 4.0;
+			}
 			samplePoint = float2(emitter % uniforms.width, emitter / uniforms.width) + 0.5;
 		}
 		else
@@ -632,16 +736,24 @@ kernel void remasterIndirectBounce(
 			continue;
 		float4 sampleSurface = debugSample ? float4(debugPoint.z, 0.0, 0.0, 0.0) : surfaceField.read(samplePixel);
 		float3 sourceRayEndpoint = debugSample ? debugPoint :
-			remasterSurfaceRayEndpoint(samplePixel, sampleSurface, occlusion, heightField);
+			remasterSurfaceRayEndpoint(samplePixel, sampleSurface, occlusion, heightField, mesh);
+		if (!debugSample && directCollision)
+		{
+			sourceRayEndpoint += emissionOffset;
+			samplePoint += emissionOffset.xy;
+			sampleSurface.r += emissionOffset.z;
+		}
 		float2 planarSegment = samplePoint - (float2(pixel) + 0.5);
 		float planarDistance = length(planarSegment);
 		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : previousBounce.read(samplePixel).rgb;
+		bool volumeSample = !debugSample && directCollision && mesh[samplePixel.y * uniforms.width + samplePixel.x].emissionDepth > 0.0;
+		if (volumeSample) radiance *= 0.25;
 		if (visibilityDiagnostic)
 		{
 			// Diagnose shadowing separately from facing, BRDF, and material absorption.
 			if (any(radiance > 0.0))
 				maximumVisibility = max(maximumVisibility, remasterVisibility(
-					receiverRayEndpoint, sourceRayEndpoint, occlusion, heightField, surfaceField, visibilityBlocks));
+					receiverRayEndpoint, sourceRayEndpoint, occlusion, heightField, surfaceField, visibilityBlocks, mesh));
 			if (maximumVisibility == 1.0)
 				break;
 			continue;
@@ -650,7 +762,7 @@ kernel void remasterIndirectBounce(
 		float distanceSquared = dot(toSource, toSource);
 		float3 segmentDirection = debugSample ? debugDirection : toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
-		float sourceResponse = debugSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
+		float sourceResponse = debugSample || volumeSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
 		float receiverScattering = directCollision && uniforms.padding > 0.5 ? receiverResponse :
 			receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
 				viewDirection, uniforms.indirectRoughness);
@@ -677,10 +789,10 @@ kernel void remasterIndirectBounce(
 		if (formFactor > 0.0 && any(radiance > 0.0))
 		{
 			float visibility = remasterVisibility(receiverRayEndpoint, sourceRayEndpoint,
-				occlusion, heightField, surfaceField, visibilityBlocks);
+				occlusion, heightField, surfaceField, visibilityBlocks, mesh);
 			incoming += radiance * formFactor * visibility;
 		}
-		totalFormFactor += formFactor;
+		totalFormFactor += volumeSample ? formFactor * 0.25 : formFactor;
 	}
 	if (totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;
