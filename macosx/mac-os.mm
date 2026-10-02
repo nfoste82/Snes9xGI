@@ -183,7 +183,7 @@ static void FinishBenchmarkFrame()
 	const double ended = [NSProcessInfo processInfo].systemUptime;
 	NSMutableArray *raw = [NSMutableArray array];
 	std::vector<double> gpu, fields, mesh, waits, setup, drawable, queue;
-	std::vector<double> refresh, pacing;
+	std::vector<double> refresh, pacing, submitToGpu, driver;
 	std::map<std::string, std::vector<double>> stages;
 	uint64_t dropped = 0;
 	{
@@ -196,6 +196,7 @@ static void FinishBenchmarkFrame()
 			mesh.push_back(m.lightingMeshMs); waits.push_back(m.lightingFieldWaitMs);
 			setup.push_back(m.lightingPreparationMs); drawable.push_back(m.drawableMs); queue.push_back(m.presentationQueueMs);
 			refresh.push_back(m.emulationFrameMs); pacing.push_back(m.pacingWaitMs);
+			submitToGpu.push_back(sample.submitToGpuMs); driver.push_back(sample.driverMs);
 			dropped += m.droppedPresentations;
 			NSMutableDictionary *frameStages = [NSMutableDictionary dictionary];
 			for (const auto &stage : sample.gpuStages)
@@ -205,11 +206,14 @@ static void FinishBenchmarkFrame()
 			}
 			[raw addObject:@{@"emulated_frame": @(sample.tag.frame), @"gpu_ms": @(m.gpuFrameMs),
 				@"gpu_stages_ms": frameStages,
+				@"submit_to_gpu_ms": @(sample.submitToGpuMs), @"driver_ms": @(sample.driverMs),
 				@"scene_fields_ms": @(m.lightingFieldMs), @"mesh_ms": @(m.lightingMeshMs),
 				@"field_wait_ms": @(m.lightingFieldWaitMs), @"gpu_setup_ms": @(m.lightingPreparationMs),
 				@"drawable_ms": @(m.drawableMs), @"queue_ms": @(m.presentationQueueMs),
 				@"latest_refresh_ms": @(m.emulationFrameMs), @"latest_pacing_ms": @(m.pacingWaitMs),
 				@"emitters": @(m.directEmitterCount), @"direct_samples": @(m.directSampleCount),
+				@"depth_emitters": @(m.directDepthEmitterCount), @"source_build_ms": @(m.directSourceBuildMs),
+				@"emitter_signature": [NSString stringWithFormat:@"%016llx", static_cast<unsigned long long>(m.directEmitterSignature)],
 				@"completed_uptime": @(sample.completedTime), @"dropped_since_previous_completion": @(m.droppedPresentations)}];
 		}
 		benchmarkSamples.clear();
@@ -228,6 +232,8 @@ static void FinishBenchmarkFrame()
 		stageStatistics[@(stage.first.c_str())] = BenchmarkStatistics(stage.second);
 	result[@"gpu_stages_ms"] = stageStatistics;
 	result[@"latest_refresh_ms"] = BenchmarkStatistics(refresh);
+	result[@"submit_to_gpu_ms"] = BenchmarkStatistics(submitToGpu);
+	result[@"driver_ms"] = BenchmarkStatistics(driver);
 	result[@"latest_pacing_ms"] = BenchmarkStatistics(pacing);
 	result[@"completed_frames_per_wall_second"] = @(raw.count / (ended - benchmarkMeasurementStarted));
 	if (!raw.count) FailBenchmark(@"No measured GPU frames completed; increase duration or use deterministic presentation");
@@ -540,6 +546,8 @@ static NSTextField		*remasterOriginalSceneInput;
 static NSSlider			*remasterReflectanceBoostSlider;
 static NSTextField		*remasterReflectanceBoostInput;
 static NSSlider			*remasterSamplesSlider;
+static NSSlider *remasterEmitterPatchSlider;
+static NSTextField *remasterEmitterPatchInput;
 static NSTextField		*remasterSamplesInput;
 static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
@@ -4482,6 +4490,11 @@ void QuitWithFatalError ( NSString *message)
 	benchmarkReport[@"serial_direct_override"] = @(getenv("S9X_REMASTER_SERIAL_DIRECT") != nullptr);
 	benchmarkReport[@"serial_indirect_override"] = @(getenv("S9X_REMASTER_SERIAL_INDIRECT") != nullptr);
 	benchmarkReport[@"full_mesh_override"] = @(getenv("S9X_REMASTER_FULL_MESH") != nullptr);
+	benchmarkReport[@"stage_counters_disabled"] = @(getenv("S9X_REMASTER_DISABLE_STAGE_COUNTERS") != nullptr);
+	benchmarkReport[@"direct_samples_override"] = getenv("S9X_REMASTER_DIRECT_SAMPLES") ?
+		[NSString stringWithUTF8String:getenv("S9X_REMASTER_DIRECT_SAMPLES")] : @"";
+	benchmarkReport[@"expanded_sampled_depth_override"] = @(getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH") != nullptr);
+	benchmarkReport[@"direct_sampling_note"] = @"Valid override 1..4096 enables per-frame stratified Direct visibility sampling with exact unoccluded normalization; exhaustive fallback for visibility/diagnostic views or enabled debug sphere.";
 	benchmarkReport[@"gpu_stage_timing_note"] = @"Benchmark-only GPU timestamp counters at compute encoder boundaries (nanoseconds converted to ms); repeated stages summed per frame. Empty when unsupported. Counter sampling can affect performance; stage sums exclude render/present and inter-encoder gaps.";
 	if (running) FailBenchmark(@"Start benchmark in a fresh app process");
 	if (!SNES9X_OpenCart([NSURL fileURLWithPath:rom])) FailBenchmark(@"Could not load benchmark ROM");
@@ -4497,6 +4510,7 @@ void QuitWithFatalError ( NSString *message)
 	benchmarkWarmupFrames = static_cast<unsigned>(std::round(warmup * Memory.ROMFramesPerSecond));
 	benchmarkMeasureFrames = std::max(1u, static_cast<unsigned>(std::round(seconds * Memory.ROMFramesPerSecond)));
 	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
+	benchmarkReport[@"emitter_patch_size"] = @(benchmarkSceneSettings.emitterPatchSize);
 	benchmarkReport[@"audio_muted"] = @YES;
 	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
 	benchmarkReport[@"measurement_frames"] = @(benchmarkMeasureFrames);
@@ -7120,6 +7134,8 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 		remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
+		remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
+		remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
 		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	}
@@ -7286,12 +7302,25 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesInput];
 		NSTextField *sampleNote = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 546, 390, 24)];
-		sampleNote.stringValue = @"Averaged this frame; high values increase GPU work.";
+		sampleNote.stringValue = @"Emitter Patch Size (1–5; maximum N×N)";
 		sampleNote.editable = NO;
 		sampleNote.bezeled = NO;
 		sampleNote.drawsBackground = NO;
 		[content addSubview:sampleNote];
-		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 510, 180, 24)];
+		remasterEmitterPatchSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 522, 300, 24)];
+		remasterEmitterPatchSlider.minValue = 1;
+		remasterEmitterPatchSlider.maxValue = 5;
+		remasterEmitterPatchSlider.numberOfTickMarks = 5;
+		remasterEmitterPatchSlider.allowsTickMarkValuesOnly = YES;
+		remasterEmitterPatchSlider.continuous = NO;
+		remasterEmitterPatchSlider.target = self;
+		remasterEmitterPatchSlider.action = @selector(changeRemasterEmitterPatchSize:);
+		[content addSubview:remasterEmitterPatchSlider];
+		remasterEmitterPatchInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 522, 60, 24)];
+		remasterEmitterPatchInput.target = self;
+		remasterEmitterPatchInput.action = @selector(changeRemasterEmitterPatchSize:);
+		[content addSubview:remasterEmitterPatchInput];
+		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 498, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
 		title.bezeled = NO;
@@ -7424,6 +7453,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterHeightPreviewMaxInput.integerValue = remasterHeightPreviewMax;
 	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
+	remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
+	remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	remasterMetricsButton.state = S9xRemasterPerformanceMetricsEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
@@ -7522,6 +7553,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterHeightPreviewMultiplierInput.integerValue = restored.heightPreviewMultiplier;
 	remasterSamplesSlider.integerValue = restored.samplesPerFrame;
 	remasterSamplesInput.integerValue = restored.samplesPerFrame;
+	remasterEmitterPatchSlider.integerValue = restored.emitterPatchSize;
+	remasterEmitterPatchInput.integerValue = restored.emitterPatchSize;
 	remasterSampleAccumulationButton.state = restored.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
@@ -7681,6 +7714,20 @@ void QuitWithFatalError ( NSString *message)
 	remasterReflectanceBoostSlider.floatValue = boost;
 	remasterReflectanceBoostInput.stringValue = [NSString stringWithFormat:@"%.6g", boost];
 	return YES;
+}
+
+- (void)changeRemasterEmitterPatchSize:(id)sender
+{
+	if (!remasterEditingProfileLoaded) return;
+	NSInteger value = sender == remasterEmitterPatchInput ? remasterEmitterPatchInput.integerValue : remasterEmitterPatchSlider.integerValue;
+	uint8_t size = static_cast<uint8_t>(std::max<NSInteger>(1, std::min<NSInteger>(5, value)));
+	remasterEmitterPatchSlider.integerValue = size;
+	remasterEmitterPatchInput.integerValue = size;
+	if (size == remasterEditingProfile.emitterPatchSize) return;
+	const auto before = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	remasterEditingProfile.emitterPatchSize = size;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(15, remasterEditingProfile.schemaVersion);
+	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Emitter Patch Size"];
 }
 
 - (void)changeRemasterSamplesPerFrame:(id)sender

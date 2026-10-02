@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 21;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 22;
 
 struct RemasterFramePixel
 {
@@ -145,6 +145,7 @@ struct RemasterFrame
 	float originalSceneContribution = 0.65f;
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
+	uint8_t emitterPatchSize = 2;
 	bool sampleAccumulation = true;
 	std::vector<uint16_t> originalRgb555;
 	std::vector<RemasterFramePixel> mainPixels;
@@ -1037,6 +1038,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.originalSceneContribution = profile.originalSceneContribution;
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
+	frame.emitterPatchSize = profile.emitterPatchSize;
 	frame.sampleAccumulation = profile.sampleAccumulation;
 
 	frame.assetGroups.clear();
@@ -1456,13 +1458,14 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			!input.ReadFloat(result.cameraDirection[1]) || !input.ReadFloat(result.cameraDirection[2]))) ||
 		(result.schemaVersion >= 15 && !input.ReadU8(result.heightPreviewMultiplier)) ||
 		(result.schemaVersion >= 17 && !input.ReadFloat(result.reflectanceBoost)) ||
+		(result.schemaVersion >= 22 && !input.ReadU8(result.emitterPatchSize)) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
 		return false;
-	if (!std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
+	if (result.emitterPatchSize < 1 || result.emitterPatchSize > 5 || !std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
 		return false;
 	if (result.indirectBounceCount > 16)
 		return false;
@@ -2042,6 +2045,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			return false;
 		RemasterFrameSerialization::Float(bytes, frame.reflectanceBoost);
 	}
+	if (frame.emitterPatchSize < 1 || frame.emitterPatchSize > 5) return false;
+	RemasterFrameSerialization::U8(bytes, frame.emitterPatchSize);
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||

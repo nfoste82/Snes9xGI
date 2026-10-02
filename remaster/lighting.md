@@ -1,5 +1,80 @@
 # Pixel-derived triangle occlusion
 
+## Sampled Direct lighting
+
+### Single-record sampled emission depth
+
+Sampled Direct now prepares one base record per pixel/patch, including positive
+emission depth. Exhaustive Direct retains four quarter-energy depth records.
+The source record's high bit in `y` marks sampled base preparation; it is masked
+before patch indexing. `normal.w` carries depth, with unshifted shading position
+and biased ray endpoint, full RGB, and full normalization area. Patch receiver
+exclusion subtracts full member energy/area and base centroid weight first.
+
+Each scan evaluates the existing four depth form factors together at offsets
+`depth * (0.125, 0.375, 0.625, 0.875)` along the authored normal. Their mean times
+source power determines source-selection probability; their mean times area
+contributes to the exact unoccluded normalization. For each selected connection,
+a separately salted random draw selects a depth stratum proportional to its
+factor. The joint-probability estimator uses full RGB/power times total weight;
+no additional quarter-energy or form-factor multiplier is applied. Repeated
+selections of the same source and stratum share a visibility query.
+
+This preserves the expected four-stratum transport, not a continuous-volume
+integral. Source/stratum random choices change, so individual frames differ from
+expanded sampling; there is still no temporal denoiser. The four cheap factor
+calculations remain, making record-count savings larger than total timing savings.
+`S9X_REMASTER_EXPANDED_SAMPLED_DEPTH=1` restores expanded sampled records for A/B.
+Exhaustive, visibility/GI diagnostics, and enabled debug-sphere paths automatically
+retain the expanded representation. No profile or capture schema change.
+
+### Emitter patches
+
+Scene Controls' **Emitter Patch Size** is an integer1..5 maximum footprint,
+default2. Profile schema15 saves `emitter_patch_size` in `[lighting_space]`;
+capture schema22 saves it for replay. Older profiles/captures default2. Size1
+retains per-pixel emission. It affects exhaustive and sampled Direct, not the
+displayed emission artwork or blocker geometry.
+
+Deterministic full rectangles (including1xN strips) merge only within the same
+owner instance and canonical tile-local N-grid bin. Hidden/nonemitting pixels
+never fill holes. Height, shading/geometric normals, flat corner support,
+thickness and depth must match. Colors split when max-normalized linear RGB
+differs from the seed by more than0.4 in any channel. Summed linear radiance
+preserves RGB energy; maximum-channel power weights positions and biased
+endpoints. Normalization area is member count, quartered for depth strata.
+Receiver membership removes only that receiver's energy/area and centroid weight.
+Visibility/diagnostic modes bypass clustering. Snapshot export currently requires
+size1 because its packet format does not contain member lists.
+
+This is approximate area-light transport: a centroid cannot preserve all nearby
+shadow boundaries, inverse-square falloff or spatial color variation. Larger
+footprints are maxima, not guaranteed source counts; compatible fragments often
+remain smaller. Visual acceptance of clustering is pending.
+
+Opt in with `S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps
+exhaustive Direct). This first implementation stratifies samples over each
+receiver's source CDF, weighted by unoccluded Lambertian form factor times the
+maximum linear radiance channel. It scans all prepared planar/depth sources to
+compute the **exact unoccluded normalization**, then scans their weights again
+to choose a bounded number of visibility queries. Repeated selections of the
+same source share one visibility query with multiplicity weighting.
+
+For source `i`, `w_i = f_i * max(L_i)`, `W = sum(w_i)` and `p_i = w_i/W`.
+Estimate `sum(L_i*f_i*V_i)` with `L_i/max(L_i) * W * V_i` per selection, averaged
+over the requested count. Normalize with the exhaustive `sum(f_i*area_i)` and
+the existing0.95 clamp, then apply receiver albedo once. Depth radiance and
+normalization retain their quarter-sample energy convention. This avoids a
+stochastic ratio/clamp denominator; the estimator targets current exhaustive
+lighting in expectation, subject to float/half rounding.
+
+Random seeds advance with rendered frames; fixed benchmark seeds reproduce
+results. There is no temporal reuse, denoiser or persistence yet, so live shadows
+can show sampling noise/flicker. Exact source scans remain O(receivers*sources).
+Indirect connections remain independently controlled by the profile. Visibility
+and diagnostic views and an enabled debug sphere use exhaustive Direct. Source
+and geometry preparation remain frame-local and unchanged.
+
 ## Connected surface meshes
 
 Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
@@ -7,6 +82,14 @@ compact 48-byte patch per screen pixel; Metal expands its corner heights into
 four triangles meeting at the authored pixel center. Shading positions remain
 on the mesh and silhouettes retain full pixel footprints. The pixel grid and
 4×4 height envelopes accelerate candidate lookup rather than defining geometry.
+
+The default shader also rejects shell/wall side-face candidates whose
+XY plane lies outside the patch ray interval, using the fixed margin
+`0.001 + abs(rayAxis)*2e-6`. The user visually reviewed this faster variant and
+accepted it as the default on October 1, 2026. Top/bottom fans and surviving triangle predicates/order stay
+unchanged; `REMASTER_REFERENCE_VISIBILITY` bypasses the filter. Bounded regression
+and pinned-frame outputs match, but extreme-coordinate/near-parallel numerical
+equivalence is not guaranteed. The more heavily guarded variant was slower.
 
 Floor-class background pixels connect across tile hashes and draw records.
 Wall faces and ordinary wall tops share a wall domain, including corners;
@@ -221,6 +304,12 @@ No static-tile flag or offscreen geometry retention is assumed; moving walls and
 newly exposed pixels invalidate via their effective inputs. A future world-space
 cache needs stable placement/world coordinates and authoritative offscreen updates.
 Material names/selectors are resolved per instance before the screen-pixel loop.
+CPU field/mesh staging vectors retain capacity under `renderMutex` and reset
+contents on every presentation. Effective field values, transformed authored
+normals and mesh samples are resolved in one screen-pixel pass. Texture/buffer
+uploads complete before asynchronous presentation is queued, so scratch pointers
+are never retained by the GPU/presentation queue. Scene changes still clear all
+fields, and each resource slot still receives its own complete upload.
 Full/cache differential tests include sparse edits, ramps, domains, coverage,
 structural fields, resize and quantum changes. Benchmark results are in the handoff.
 

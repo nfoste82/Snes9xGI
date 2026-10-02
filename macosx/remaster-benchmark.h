@@ -16,6 +16,10 @@ struct RemasterBenchmarkSample
 	RemasterBenchmarkTag tag;
 	RemasterState::PerformanceMetrics metrics;
 	double completedTime = 0;
+	// Host submission marker is taken immediately before handler registration /
+	// commit, after drawable and render encoding. GPUStartTime uses uptime seconds.
+	double submitToGpuMs = 0;
+	double driverMs = 0;
 	// Timestamp-counter intervals, separate from whole-command-buffer duration.
 	// Empty when stage-boundary counter sampling is unavailable.
 	std::vector<std::pair<std::string, double>> gpuStages;

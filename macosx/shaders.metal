@@ -264,13 +264,32 @@ static bool remasterMeshHit(float3 from, float3 ray, int2 cell, float center,
 		if (patch.thickness > 0.0)
 		{
 			if (remasterTriangleHit(from, ray, middle - halfThickness, nextVertex - halfThickness,
-				edgeVertex - halfThickness, entry, exit) ||
-				remasterTriangleHit(from, ray, edgeVertex - halfThickness, nextVertex - halfThickness,
+				edgeVertex - halfThickness, entry, exit)) return true;
+		}
+#ifndef REMASTER_REFERENCE_VISIBILITY
+		// Default side-face filter, visually accepted: faces lie on an XY plane. This
+		// fixed margin passed bounded reference probes, but is not a universal
+		// floating-point guarantee for extreme coordinates/near-parallel rays.
+		bool verticalEdge = (i & 1) != 0;
+		float originAxis = verticalEdge ? from.x : from.y;
+		float rayAxis = verticalEdge ? ray.x : ray.y;
+		float edgeAxis = verticalEdge ? edgeVertex.x : edgeVertex.y;
+		float axis0 = originAxis + rayAxis * entry;
+		float axis1 = originAxis + rayAxis * exit;
+		float margin = 0.001 + abs(rayAxis) * 0.000002;
+		bool sideCandidate = edgeAxis >= min(axis0, axis1) - margin &&
+			edgeAxis <= max(axis0, axis1) + margin;
+#else
+		bool sideCandidate = true;
+#endif
+		if (sideCandidate && patch.thickness > 0.0)
+		{
+			if (remasterTriangleHit(from, ray, edgeVertex - halfThickness, nextVertex - halfThickness,
 				nextVertex + halfThickness, entry, exit) ||
 				remasterTriangleHit(from, ray, edgeVertex - halfThickness, nextVertex + halfThickness,
 				edgeVertex + halfThickness, entry, exit)) return true;
 		}
-		if (patch.solidWall > 0.5)
+		if (sideCandidate && patch.solidWall > 0.5)
 		{
 			float3 bottomI = float3(edgeVertex.xy, patch.wallBase);
 			float3 bottomJ = float3(nextVertex.xy, patch.wallBase);
@@ -626,11 +645,93 @@ struct RemasterDirectSample
 	float4 radiance;
 };
 
+struct RemasterEmitterPatch { uint count; uint members[25]; };
+// High bit marks the sampled-only base record; low bits retain patch/stratum ABI.
+constant uint remasterCollapsedDepthRecord = 0x80000000u;
+
+kernel void remasterPrepareEmitterPatches(
+	texture2d<float, access::read> occlusion [[texture(0)]],
+	texture2d<float, access::read> heightField [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::read> emissionSeed [[texture(3)]],
+	const device uint2 *sources [[buffer(0)]],
+	device RemasterDirectSample *samples [[buffer(1)]],
+	const device RemasterMeshCell *mesh [[buffer(2)]],
+	constant uint &count [[buffer(3)]],
+	const device RemasterEmitterPatch *patches [[buffer(4)]],
+	uint index [[thread_position_in_grid]])
+{
+	if (index >= count) return;
+	uint2 source = sources[index];
+	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
+	source.y &= ~remasterCollapsedDepthRecord;
+	RemasterEmitterPatch patch = patches[source.y >> 2];
+	float3 position = 0, endpoint = 0, normal = 0, radiance = 0;
+	float weight = 0;
+	float depth = mesh[source.x].emissionDepth;
+	for (uint i = 0; i < patch.count; i++) {
+		uint p = patch.members[i];
+		uint2 pixel = uint2(p % surfaceField.get_width(), p / surfaceField.get_width());
+		float4 surface = surfaceField.read(pixel);
+		float3 value = emissionSeed.read(pixel).rgb;
+		float power = max(value.r, max(value.g, value.b));
+		float3 offset = depth > 0 && !collapsed ? surface.gba * depth * (float(source.y & 3) + 0.5) / 4.0 : float3(0);
+		position += (float3(float2(pixel) + 0.5, surface.r) + offset) * power;
+		endpoint += (remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset) * power;
+		normal += surface.gba * power;
+		radiance += value;
+		weight += power;
+	}
+	float fraction = depth > 0 && !collapsed ? 0.25 : 1.0;
+	float area = float(patch.count) * fraction;
+	RemasterDirectSample sample;
+	sample.position = float4(position / max(weight, 1e-20), depth > 0 ? 1.0 : 0.0);
+	sample.endpoint = float4(endpoint / max(weight, 1e-20), weight);
+	sample.normal = float4(normal / max(weight, 1e-20), collapsed ? depth : 0);
+	sample.radiance = float4(radiance * fraction, area);
+	samples[index] = sample;
+}
+
+// Remove only the receiving member from an aggregated source. Cluster members
+// share normal/height/depth, so removing its energy and centroid weight is cheap.
+static RemasterDirectSample remasterExcludeEmitterReceiver(RemasterDirectSample sample,
+	uint2 source, uint receiverIndex, float4 receiverSurface,
+	texture2d<float, access::read> emissionSeed,
+	texture2d<float, access::read> occlusion, texture2d<float, access::read> heightField,
+	const device RemasterMeshCell *mesh, const device RemasterEmitterPatch *patches)
+{
+	uint2 receiverPixel = uint2(receiverIndex % emissionSeed.get_width(), receiverIndex / emissionSeed.get_width());
+	if (all(emissionSeed.read(receiverPixel).rgb <= 0)) return sample;
+	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
+	source.y &= ~remasterCollapsedDepthRecord;
+	RemasterEmitterPatch patch = patches[source.y >> 2];
+	for (uint i = 0; i < patch.count; i++) if (patch.members[i] == receiverIndex) {
+		uint2 pixel = uint2(receiverIndex % emissionSeed.get_width(), receiverIndex / emissionSeed.get_width());
+		float3 value = emissionSeed.read(pixel).rgb;
+		float power = max(value.r, max(value.g, value.b));
+		float remaining = sample.endpoint.w - power;
+		float depth = mesh[receiverIndex].emissionDepth;
+		float fraction = depth > 0 && !collapsed ? 0.25 : 1.0;
+		if (remaining <= 0 || patch.count == 1) { sample.radiance = 0; return sample; }
+		float3 offset = depth > 0 && !collapsed ? receiverSurface.gba * depth * (float(source.y & 3) + 0.5) / 4.0 : float3(0);
+		sample.position.xyz = (sample.position.xyz * sample.endpoint.w -
+			(float3(float2(pixel)+0.5, receiverSurface.r)+offset)*power) / remaining;
+		sample.endpoint.xyz = (sample.endpoint.xyz * sample.endpoint.w -
+			(remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh)+offset)*power) / remaining;
+		sample.endpoint.w = remaining;
+		sample.radiance.rgb = max(float3(0), sample.radiance.rgb - value*fraction);
+		sample.radiance.w -= fraction;
+		break;
+	}
+	return sample;
+}
+
 // The app specializes its normal direct pass; the unspecialized function is
 // retained for reference transport and diagnostics. Compile-time branches keep
 // radial indirect sampling/diagnostics out of the production direct shader.
 constant bool remasterPreparedDirectPass [[function_constant(0)]];
 constant bool remasterBatchedDirectPass [[function_constant(1)]];
+constant bool remasterClusteredDirectPass [[function_constant(3)]];
 
 kernel void remasterPrepareDirectSamples(
 	texture2d<float, access::read> occlusion [[texture(0)]],
@@ -645,16 +746,150 @@ kernel void remasterPrepareDirectSamples(
 {
 	if (index >= count) return;
 	uint2 source = sources[index];
+	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
+	source.y &= ~remasterCollapsedDepthRecord;
 	uint2 pixel = uint2(source.x % surfaceField.get_width(), source.x / surfaceField.get_width());
 	float4 surface = surfaceField.read(pixel);
 	float depth = mesh[source.x].emissionDepth;
-	float3 offset = depth > 0.0 ? surface.gba * depth * (float(source.y) + 0.5) / 4.0 : float3(0.0);
+	float3 offset = depth > 0.0 && !collapsed ? surface.gba * depth * (float(source.y) + 0.5) / 4.0 : float3(0.0);
 	RemasterDirectSample sample;
 	sample.position = float4(float3(float2(pixel) + 0.5, surface.r) + offset, depth > 0.0 ? 1.0 : 0.0);
 	sample.endpoint = float4(remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset, 0.0);
-	sample.normal = float4(surface.gba, 0.0);
-	sample.radiance = float4(emissionSeed.read(pixel).rgb * (depth > 0.0 ? 0.25 : 1.0), 0.0);
+	sample.normal = float4(surface.gba, collapsed ? depth : 0.0);
+	sample.radiance = float4(emissionSeed.read(pixel).rgb * (depth > 0.0 && !collapsed ? 0.25 : 1.0), 0.0);
 	samples[index] = sample;
+}
+
+// Cheap unoccluded weight shared by the two sampled-Direct scans. The exact
+// normalization includes every source, including depth samples' quarter area.
+static float remasterDirectFormFactor(float3 receiver, float3 normal,
+	bool oppositeFacing, RemasterDirectSample sample)
+{
+	float3 delta = sample.position.xyz - receiver;
+	float distanceSquared = dot(delta, delta);
+	float3 direction = delta * rsqrt(max(distanceSquared, 0.0001));
+	float response = saturate(dot(normal, direction));
+	if (oppositeFacing) response = max(response, saturate(dot(float3(-normal.xy, normal.z), direction)));
+	float sourceResponse = sample.position.w > 0.5 ? 1.0 : saturate(dot(sample.normal.xyz, -direction));
+	return min(0.25, 1.0 / (M_PI_F * (distanceSquared + 1.0))) * response * sourceResponse;
+}
+
+static float4 remasterSampledDepthFactors(float3 receiver, float3 normal,
+	bool oppositeFacing, RemasterDirectSample sample)
+{
+	if (sample.normal.w <= 0) return float4(remasterDirectFormFactor(receiver, normal, oppositeFacing, sample));
+	// Evaluate the four cheap strata together without fetching four source records.
+	float4 depths = float4(0.125, 0.375, 0.625, 0.875) * sample.normal.w;
+	float4 dx = sample.position.x + sample.normal.x * depths - receiver.x;
+	float4 dy = sample.position.y + sample.normal.y * depths - receiver.y;
+	float4 dz = sample.position.z + sample.normal.z * depths - receiver.z;
+	float4 distanceSquared = dx*dx + dy*dy + dz*dz;
+	float4 inverseDistance = rsqrt(max(distanceSquared, float4(0.0001)));
+	float4 xy = normal.x * dx + normal.y * dy;
+	float4 z = normal.z * dz;
+	float4 response = saturate((xy + z) * inverseDistance);
+	if (oppositeFacing) response = max(response, saturate((-xy + z) * inverseDistance));
+	return min(float4(0.25), 1.0 / (M_PI_F * (distanceSquared + 1.0))) * response;
+}
+
+kernel void remasterSampledDirect(
+	texture2d<float, access::read> source [[texture(0)]],
+	texture2d<float, access::read> occlusion [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::read> heightField [[texture(3)]],
+	texture2d<float, access::read> participationField [[texture(4)]],
+	texture2d<float, access::read> emissionSeed [[texture(5)]],
+	texture2d<float, access::write> direct [[texture(7)]],
+	texture2d<float, access::write> indirect [[texture(8)]],
+	texture2d<float, access::read> oppositeFacingField [[texture(9)]],
+	texture2d<float, access::read> visibilityBlocks [[texture(10)]],
+	texture2d<float, access::read> reflectanceField [[texture(11)]],
+	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	const device uint2 *sources [[buffer(1)]],
+	constant uint &count [[buffer(2)]],
+	const device RemasterMeshCell *mesh [[buffer(3)]],
+	const device RemasterDirectSample *samples [[buffer(4)]],
+	const device RemasterEmitterPatch *patches [[buffer(6)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height) return;
+	float2 participation = participationField.read(pixel).rg;
+	if (participation.r < 0.5 || participation.g < 0.5 || count == 0)
+	{
+		direct.write(float4(0.0), pixel);
+		indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
+		return;
+	}
+	float4 surface = surfaceField.read(pixel);
+	float3 receiver = float3(float2(pixel) + 0.5, surface.r);
+	bool oppositeFacing = oppositeFacingField.read(pixel).r > 0.5;
+	uint receiverIndex = pixel.y * uniforms.width + pixel.x;
+	float totalFormFactor = 0.0, totalWeight = 0.0;
+	for (uint i = 0; i < count; i++)
+	{
+		RemasterDirectSample sample = samples[i];
+		if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
+			surface, emissionSeed, occlusion, heightField, mesh, patches);
+		else if (sources[i].x == receiverIndex) continue;
+		if (all(sample.radiance.rgb <= 0)) continue;
+		float factor = dot(remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample), float4(0.25));
+		totalFormFactor += factor * (sample.radiance.w > 0 ? sample.radiance.w : sample.normal.w > 0 ? 1.0 : sample.position.w > 0.5 ? 0.25 : 1.0);
+		totalWeight += factor * max(sample.radiance.r, max(sample.radiance.g, sample.radiance.b));
+	}
+	float3 incoming = 0.0;
+	if (totalWeight > 0.0 && isfinite(totalWeight))
+	{
+		uint connections = max(1u, uniforms.sampleCount);
+		uint randomBase = uniforms.randomSeed ^ (pixel.x * 0x9e3779b9u) ^ (pixel.y * 0x85ebca6bu);
+		uint connection = 0;
+		// Stratified CDF targets are sorted: scan emitters once, not once per ray.
+		float target = remasterRandom(remasterHash(randomBase)) * totalWeight / float(connections);
+		float cumulative = 0.0;
+		float3 endpoint = remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh);
+		for (uint i = 0; i < count && connection < connections; i++)
+		{
+			RemasterDirectSample sample = samples[i];
+			if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
+				surface, emissionSeed, occlusion, heightField, mesh, patches);
+			else if (sources[i].x == receiverIndex) continue;
+			if (all(sample.radiance.rgb <= 0)) continue;
+			float4 factors = remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample);
+			float factor = dot(factors, float4(0.25));
+			float power = max(sample.radiance.r, max(sample.radiance.g, sample.radiance.b));
+			float weight = factor * power;
+			cumulative += weight;
+			if (weight <= 0.0 || target >= cumulative) continue;
+			uint4 multiplicities = uint4(0);
+			while (connection < connections && target < cumulative)
+			{
+				uint stratum = 0;
+				if (sample.normal.w > 0) {
+					float depthTarget = remasterRandom(remasterHash(randomBase ^ 0xa511e9b3u ^
+						(connection * 0x63d83595u))) * (factor * 4.0);
+					float depthCumulative = factors[0];
+					while (stratum < 3 && depthTarget >= depthCumulative) depthCumulative += factors[++stratum];
+				}
+				multiplicities[stratum]++;
+				connection++;
+				uint random = remasterHash(randomBase ^ (connection * 0x27d4eb2du));
+				target = (float(connection) + remasterRandom(random)) * totalWeight / float(connections);
+			}
+			for (uint k = 0; k < 4; k++) if (multiplicities[k]) {
+				float3 depthOffset = sample.normal.xyz * sample.normal.w * (float(k) + 0.5) / 4.0;
+				float visibility = remasterVisibility(endpoint, sample.endpoint.xyz + depthOffset,
+					occlusion, heightField, surfaceField, visibilityBlocks, mesh);
+				// Joint source/stratum probability cancels its form factor.
+				incoming += (sample.radiance.rgb / power) * visibility *
+					(totalWeight * float(multiplicities[k]) / float(connections));
+			}
+		}
+	}
+	if (totalFormFactor > 0.95) incoming *= 0.95 / totalFormFactor;
+	float4 authored = reflectanceField.read(pixel);
+	float3 albedo = authored.a > 0.5 ? saturate(authored.rgb) : remasterAlbedo(source.read(pixel).rgb);
+	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
+	direct.write(float4(albedo * incoming, 1.0), pixel);
+	indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
 }
 
 kernel void remasterIndirectBounce(
@@ -676,6 +911,7 @@ kernel void remasterIndirectBounce(
 	const device RemasterMeshCell *mesh [[buffer(3)]],
 	const device RemasterDirectSample *directSamples [[buffer(4)]],
 	device float4 *directPartials [[buffer(5)]],
+	const device RemasterEmitterPatch *emitterPatches [[buffer(7)]],
 	uint3 grid [[thread_position_in_grid]])
 {
 	uint2 pixel = grid.xy;
@@ -687,6 +923,7 @@ kernel void remasterIndirectBounce(
 	float4 receiverSurface = surfaceField.read(pixel);
 	float3 normal = receiverSurface.gba;
 	bool specializedDirect = is_function_constant_defined(remasterPreparedDirectPass) ? remasterPreparedDirectPass : false;
+	bool clusteredDirect = is_function_constant_defined(remasterClusteredDirectPass) ? remasterClusteredDirectPass : false;
 	bool oppositeFacing = (specializedDirect || uniforms.passIndex == 0) && oppositeFacingField.read(pixel).r > 0.5;
 	bool visibilityDiagnostic = !specializedDirect && uniforms.diagnosticStage == 4;
 	float2 receiverParticipation = participationField.read(pixel).rg;
@@ -765,6 +1002,12 @@ kernel void remasterIndirectBounce(
 		else if (preparedDirect)
 		{
 			preparedSample = directSamples[sampleIndex];
+			if (clusteredDirect) {
+				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
+				preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
+					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, occlusion, heightField, mesh, emitterPatches);
+				if (all(preparedSample.radiance.rgb <= 0)) continue;
+			}
 			samplePoint = preparedSample.position.xy;
 		}
 		else if (directCollision)
@@ -827,7 +1070,7 @@ kernel void remasterIndirectBounce(
 			samplePoint = float2(samplePixel) + 0.5;
 		if (!debugSample && !preparedDirect && (all(samplePixel == pixel) || participationField.read(samplePixel).r < 0.5))
 			continue;
-		if (!debugSample && preparedDirect && all(samplePixel == pixel)) continue;
+		if (!debugSample && preparedDirect && !clusteredDirect && all(samplePixel == pixel)) continue;
 		float4 sampleSurface = debugSample ? float4(debugPoint.z, 0.0, 0.0, 0.0) :
 			preparedDirect ? float4(preparedSample.position.z, preparedSample.normal.xyz) : surfaceField.read(samplePixel);
 		float3 sourceRayEndpoint = debugSample ? debugPoint :
@@ -889,7 +1132,7 @@ kernel void remasterIndirectBounce(
 				occlusion, heightField, surfaceField, visibilityBlocks, mesh);
 			incoming += radiance * formFactor * visibility;
 		}
-		totalFormFactor += volumeSample ? formFactor * 0.25 : formFactor;
+		totalFormFactor += clusteredDirect && !debugSample ? formFactor * preparedSample.radiance.w : volumeSample ? formFactor * 0.25 : formFactor;
 	}
 	if (!batched && totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;

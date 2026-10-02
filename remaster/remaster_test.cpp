@@ -716,6 +716,7 @@ int main ()
 	assert(decodedFrame.originalSceneContribution == 0.4f);
 	assert(decodedFrame.heightPreviewMultiplier == 12);
 	assert(decodedFrame.samplesPerFrame == frame.samplesPerFrame);
+	assert(decodedFrame.emitterPatchSize == 2);
 	assert(!decodedFrame.sampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
@@ -728,6 +729,7 @@ int main ()
 	previousVersionBytes.erase(emissionStart + 256, emissionStart + 260); // v21 emission depth
 	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end());
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
+	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset,
 		previousVersionBytes.begin() + boostOffset + 4);
 	previousVersionBytes[8] = 16;
@@ -759,7 +761,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 21);
+	assert(decodedFrame.schemaVersion == 22);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -843,6 +845,7 @@ int main ()
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
 	const size_t legacyScaleOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size();
+	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 32);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 28,
 		legacyBytes.begin() + legacyScaleOffset + 32);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 27);
@@ -1080,7 +1083,7 @@ material = "wet_stone"
 	invalidBoostProfile.replace(boostBegin, sizeof("reflectance_boost = 8") - 1, "reflectance_boost = 8.1");
 	assert(!S9xRemasterParseProfile(invalidBoostProfile, roundTrippedProfile, diagnostics));
 	std::string legacyBoostProfile = serializedProfile;
-	legacyBoostProfile.replace(legacyBoostProfile.find("schema_version = 13"), 19, "schema_version = 11");
+	legacyBoostProfile.replace(legacyBoostProfile.find("schema_version = 15"), 19, "schema_version = 11");
 	assert(!S9xRemasterParseProfile(legacyBoostProfile, roundTrippedProfile, diagnostics));
 	const size_t legacyBoostBegin = legacyBoostProfile.find("reflectance_boost = ");
 	assert(legacyBoostBegin != std::string::npos);
@@ -1101,10 +1104,10 @@ material = "wet_stone"
 	invalidCameraProfile.replace(cameraBegin, cameraEnd - cameraBegin, "camera_direction = [0, 0, 0]");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	invalidCameraProfile = serializedProfile;
-	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 13"), 19, "schema_version = 8");
+	invalidCameraProfile.replace(invalidCameraProfile.find("schema_version = 15"), 19, "schema_version = 8");
 	assert(!S9xRemasterParseProfile(invalidCameraProfile, roundTrippedProfile, diagnostics));
 	std::string legacyReflectanceProfile = serializedProfile;
-	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 13"), 19, "schema_version = 10");
+	legacyReflectanceProfile.replace(legacyReflectanceProfile.find("schema_version = 15"), 19, "schema_version = 10");
 	assert(!S9xRemasterParseProfile(legacyReflectanceProfile, roundTrippedProfile, diagnostics));
 	std::string invalidReflectanceProfile = serializedProfile;
 	const size_t reflectanceBegin = invalidReflectanceProfile.find("diffuse_reflectance = [");
@@ -1206,7 +1209,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 21);
+	assert(decodedFrame.schemaVersion == 22);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
 	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
@@ -1465,7 +1468,15 @@ material = "missing"
 	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
 	RemasterProfile volumeProfile;
 	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
-	assert(volumeProfile.schemaVersion == 14 && volumeProfile.assets.at(flame).emissionDepth == 3.25f);
+	assert(volumeProfile.schemaVersion == 15 && volumeProfile.assets.at(flame).emissionDepth == 3.25f);
+	assert(volumeProfile.emitterPatchSize == 2);
+	profile.emitterPatchSize = 5;
+	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
+	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
+	assert(volumeProfile.emitterPatchSize == 5);
+	profile.emitterPatchSize = 6;
+	assert(!S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
+	profile.emitterPatchSize = 2;
 	RemasterFrame volumeFrame;
 	RemasterFrameAsset volumeAsset;
 	volumeAsset.tileId = flame;

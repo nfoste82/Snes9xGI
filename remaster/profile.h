@@ -151,6 +151,7 @@ struct RemasterProfile
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
+	uint8_t emitterPatchSize = 2;
 	bool sampleAccumulation = true;
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
@@ -171,6 +172,7 @@ struct RemasterSceneSettings
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
+	uint8_t emitterPatchSize = 2;
 	bool sampleAccumulation = true;
 };
 
@@ -179,7 +181,7 @@ inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile 
 	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
 		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost,
 		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
-		profile.sampleAccumulation };
+		profile.emitterPatchSize, profile.sampleAccumulation };
 }
 
 inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
@@ -194,6 +196,7 @@ inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const Remas
 	profile.heightPreviewMultiplier = settings.heightPreviewMultiplier;
 	profile.upperFloorHeight = settings.upperFloorHeight;
 	profile.samplesPerFrame = settings.samplesPerFrame;
+	profile.emitterPatchSize = settings.emitterPatchSize;
 	profile.sampleAccumulation = settings.sampleAccumulation;
 }
 
@@ -209,6 +212,7 @@ inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const
 		a.heightPreviewMultiplier == b.heightPreviewMultiplier &&
 		a.upperFloorHeight == b.upperFloorHeight &&
 		a.samplesPerFrame == b.samplesPerFrame &&
+		a.emitterPatchSize == b.emitterPatchSize &&
 		a.sampleAccumulation == b.sampleAccumulation;
 }
 
@@ -713,6 +717,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				else
 					parsed.samplesPerFrame = static_cast<uint8_t>(unsignedValue);
 			}
+			else if (key == "emitter_patch_size")
+			{
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 5)
+					fail(lineNumber, "emitter_patch_size must be an integer in [1, 5]");
+				else parsed.emitterPatchSize = static_cast<uint8_t>(unsignedValue);
+			}
 			else if (key == "sample_accumulation")
 			{
 				hasSceneSampling = true;
@@ -922,8 +932,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 14)
-		fail(0, "schema_version must be an integer in [1, 14]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 15)
+		fail(0, "schema_version must be an integer in [1, 15]");
 	for (const auto &entry : parsed.assets)
 		if (entry.second.emissionDepth > 0 && parsed.schemaVersion < 14)
 			fail(0, "emission_depth requires schema_version 14");
@@ -1143,7 +1153,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
-	output << "schema_version = " << std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema) << "\n\n";
+	output << "schema_version = " << std::max(15u, std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1160,6 +1170,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	if (profile.schemaVersion >= 13 || profile.upperFloorHeight)
 		output << "upper_floor_height = " << unsigned(profile.upperFloorHeight) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
+	output << "emitter_patch_size = " << unsigned(profile.emitterPatchSize) << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.materials)
 	{

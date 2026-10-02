@@ -43,6 +43,11 @@ samples and can refer to a previous frame. Frames/s is GPU-completion throughput
 not a display-present callback measurement. GPU duration includes all command
 buffer graphics. `gpu_stages_ms` additionally isolates compute encoders using GPU
 timestamp counters on devices supporting stage-boundary sampling (macOS 11+).
+Set `S9X_REMASTER_DISABLE_STAGE_COUNTERS=1` to disable sampling without disabling
+whole-command-buffer metrics. Reports record the override. `submit_to_gpu_ms`
+measures from a host uptime marker after drawable/render encoding immediately
+before handler registration/commit to GPUStartTime. `driver_ms` is Metal's
+kernelStartTime/kernelEndTime interval, not CPU-active time or additional GPU work.
 Repeated `source_power` and `indirect_transport` intervals are summed per frame;
 each stage's statistics include a sample count. Empty stage dictionaries mean
 counters were unavailable. These intervals exclude render/present and encoder
@@ -403,3 +408,501 @@ Reports now record `full_mesh_override`. New cache header and prior comparison
 tools are untracked; preserve them along with all other uncommitted work.
 Next: more efficient visibility representation/traversal, CPU scratch reuse,
 then authoritative world-space cache only if placement/state inputs support it.
+
+## CPU scratch and field-pass follow-up (October 1, 2026)
+
+User confirmed the Release cache improvement and unchanged visuals. Continued
+with capacity reuse for owner/highlight, byte/float field, mesh-sample and mesh
+staging vectors. All contents reset every frame under `renderMutex`; synchronous
+uploads finish before queued asynchronous presentation. Fused metadata/material,
+height, authored-normal and mesh-sample resolution from three pixel passes into
+one. Invalid pixel ownership retains the same zero/default fields as before.
+No mesh-builder/visibility semantics or GPU transport changes retained.
+
+Two GPU candidates removed: rejecting triangle t outside the DDA interval before
+barycentrics, and guarding sphere setup when disabled. Both passed the batched
+1215-check suite but offered no convincing measured gain. Unrelated composite
+and source-power stages also slowed versus earlier runs, suggesting external
+load/scheduling variation; timings are not isolated A/B evidence.
+
+Final full 30+180-frame, 96-connection deterministic benchmark
+`gpu-scratch-fused-right-3s/` (same existing temporary parent):
+- GPU medians in case order: 28.40, 28.00, 47.40, 122.99, 27.92, 46.00, 121.98 ms.
+- CPU fields/mesh: 1.98/0.73, 2.26/0.80, 2.64/0.93, 2.55/0.95,
+  2.47/0.92, 2.55/0.95, 2.78/0.97 ms.
+- All seven final PNGs decoded-pixel identical to `gpu-cache-final-right-3s/`;
+  matching RAM and 180 samples/case. No extra rounding differences.
+- No claimed GPU speedup, nor controlled CPU speedup estimate from these noisy
+  sequential runs. CPU changes remove allocations/passes and preserve outputs.
+- Candidate reports: `gpu-scratch-interval-right-3s/`,
+  `gpu-scratch-sphere-right-3s/`.
+
+Serial and batched Metal suites each pass 1215/1215 with final runtime shaders.
+Debug/Release rebuilt and diff check passes. Further GPU work needs a larger
+representation/traversal change and controlled profiling, rather than small
+triangle arithmetic branches. The approximately 5 ms total goal remains unmet.
+
+## Profiling findings (October 1, 2026)
+
+Added `tools/analyze_remaster_profile.py` (stdlib-only report and xctrace XML
+summaries), stage-counter disable override, submission-to-GPU and driver intervals.
+Lighting output and execution defaults are unchanged. All seven deterministic
+PNG outputs match between counter-on/off runs, with matching end-state RAM.
+
+Four full right-moving 30+180-frame runs at **9 connections**, counters in ON,
+OFF, OFF, ON order. Whole-GPU medians in standard seven-case order:
+
+| Run | Direct | D+I 0 | D+I 1 | D+I 8 | Composite 0 | Composite 1 | Composite 8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| profile-on-a | 26.14 | 25.72 | 28.95 | 42.54 | 27.96 | 29.96 | 42.07 |
+| profile-off-a | 30.03 | 32.00 | 40.13 | 56.51 | 41.04 | 49.02 | 72.05 |
+| profile-off-b | 34.04 | 34.04 | 38.02 | 52.37 | 36.86 | 39.32 | 51.11 |
+| profile-on-b | 36.97 | 36.00 | 41.70 | 55.97 | 33.67 | 36.94 | 50.45 |
+
+**Measured priorities:**
+- Direct transport is ~99.2% of summed compute-stage intervals at zero bounces,
+  ~85–86% at one bounce, ~57–59% at eight (9 connections). Emitter preparation,
+  envelope construction and direct reduction are tiny by comparison.
+- Effective direct list contains **192–366 planar samples/frame**, all enumerated
+  independently of connection count. At 256×224 this is approximately 11–21 million
+  receiver/source pairs before participation/facing rejection (not visibility-ray
+  count). Source count/scene changes contribute to scrolling p95 costs.
+- CPU fields 1.6–2.9 ms, GPU setup ~0.4–0.6 ms normally. Submission-to-GPU generally
+  ~0.1–0.6 ms deterministic; drawable ~0.01 ms and presentation queue ~0.001 ms.
+- Eight-bounce sampled counters dramatically change `driver_ms`: ~38–49 ms ON
+  versus ~0.07–0.09 ms OFF. Kernel intervals are elapsed scheduling/driver spans,
+  not additive CPU work. Counter overhead cannot be quantified from these noisy
+  runs: disabled timings are not consistently faster and drift is large.
+
+Live ON/OFF at 9 connections:
+- ON GPU medians 75.24/67.75/77.69/84.93/73.00/85.03/72.08 ms, throughput 19–29/s.
+- OFF 66.38/59.22/68.18/106.35/62.77/68.05/116.37 ms, throughput 21–33/s.
+- ON per-frame whole-GPU minus summed-stage median ~20–26 ms at 0/1 bounces;
+  4.6–5.4 ms at eight. This residual includes render and GPU scheduling gaps,
+  and is not automatically app encoder overhead.
+- Eight-bounce ON submission-to-GPU ~42–50 ms, OFF ~0.13–0.15 ms. Driver spans
+  likewise ~43–49 ms ON versus ~0.06–0.07 ms OFF. Counters alter scheduling.
+- Queue/drawable medians ~0.01 ms in these runs: the older screenshot's huge
+  drawable wait is not reproduced here. Live subsets differ, so PNGs aren't A/B.
+
+**Native profiler captures:** available templates include Time Profiler and Metal
+System Trace. `xctrace --launch` resolved the Debug bundle despite a Release
+executable argument; discard those first launch captures as Release evidence.
+Launch the executable with subprocess first, then use `--attach PID`. Exported
+CPU stack binary paths confirm the attached trace loaded the Release framework.
+Attached captures are 8 seconds each, cover early Direct/zero-bounce work rather
+than the whole scrolling sequence, and are perturbed by profiler overhead.
+
+CPU trace: 1050 one-ms running-thread samples across the process. Inclusive
+weights (overlap, **not additive**): DrawRemasterFrame 42.5%, mesh Cache::update
+23.9%, frame finalization 13.5%, profile-to-frame resolution 8.3%, Metal setup/
+upload S9xPutImageMetal 6.5%. Emulation thread 87.2% of sampled active CPU. This
+reveals CPU remaster/profile work outside the panel's scene-field measurement;
+5 ms total overhead must account for that too. Waiting threads are excluded.
+
+Metal trace shows Snes9x GPU intervals split/interleaved with **Warp (`stable`),
+WindowServer, and Firefox GPU Helper**. Direct encoders have median three splits,
+~58.75 ms summed execution intervals / ~61.00 ms elapsed span in this early-room
+trace. Presentation vertex/fragment intervals summed ~0.66 ms but span ~61.93 ms
+because stages can straddle compute: do not count that span as render cost.
+Other-process duration sums overlap and are not GPU-utilization percentages.
+This is direct evidence of concurrent GPU traffic, not proof of a particular
+bandwidth/occupancy bottleneck. The stock Metal template reports shader timeline
+disabled and no counter set; **register pressure, occupancy, cache misses, and
+triangle-vs-DDA instruction costs remain unmeasured**. Next requires a shader
+profiler/counter-enabled Instruments template or Xcode GPU frame capture under
+a quieter desktop workload. Do not assume memory-bound versus arithmetic-bound.
+
+Artifacts under the existing temporary parent:
+`profile-on-a/`, `profile-off-a/`, `profile-off-b/`, `profile-on-b/`,
+`profile-live-on/`, `profile-live-off/`, `remaster-release-cpu.trace`,
+`remaster-release-metal.trace`, `release-cpu.xml`, `release-metal.xml`.
+The first 15-second Metal launch capture timed out saving and is malformed;
+the short launch capture and launch CPU capture used Debug. Use attached traces.
+
+Reproduce (launch benchmark separately, attach to its PID):
+```sh
+xcrun xctrace record --template 'Time Profiler' --time-limit 8s --output cpu.trace --attach PID
+xcrun xctrace record --template 'Metal System Trace' --time-limit 8s --output metal.trace --attach PID
+xcrun xctrace export --input cpu.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' --output cpu.xml
+xcrun xctrace export --input metal.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="metal-gpu-intervals"]' --output metal.xml
+python3 tools/analyze_remaster_profile.py OUTPUT_DIRECTORY cpu.xml metal.xml
+```
+Analysis uses Python's conventional median; benchmark summaries select sorted
+percentile samples, so even-sized medians can differ slightly. Next priorities:
+disable stage counters for shipping-cost measurements, quieter GPU workload,
+shader-level profiling of Direct, then profile/mesh CPU input resolution.
+
+### Pinned-frame Direct work profile follow-up
+
+The installed Instruments **Metal GPU Counters** instrument can be added with
+`--instrument 'Metal GPU Counters'`, but its default **Performance Limiters**
+profile is rejected on this M3 Max: "Selected counter profile is not supported
+on target device". Exports `gpu-counter-info` and `gpu-shader-profiler-sample`
+have **zero rows**, even though the TOC says shader timeline enabled. Public
+`MTLDevice.counterSets` exposes only `timestamp / GPUTimestamp`. Consequently
+these captures do not establish occupancy, register pressure, or cache misses.
+The counter-disabled trace coalesces seed/preparation/Direct into one interval
+group (~43.1 ms median sum / 43.6 ms span, four splits). Competing GPU work
+remains visible; no quieter-desktop performance claim is made.
+
+Added two opt-in deterministic benchmark helpers:
+- `S9X_REMASTER_GPU_CAPTURE=/new/path/frame.gputrace`, together with
+  `MTL_CAPTURE_ENABLED=1`: capture first measured Direct frame. Optional
+  `S9X_REMASTER_GPU_CAPTURE_FRAME=60` selects a later absolute case frame index
+  (warmup included). Capture begins before resource uploads/command creation,
+  ends after GPU completion, and is restricted to deterministic benchmarks.
+- `S9X_REMASTER_DIRECT_SNAPSHOT=/new/path/snapshot`: dump first measured batched
+  Direct frame's immutable CPU GPU-input arrays, uniforms, full mesh, source list,
+  and completed application's Direct half-float output. Directory must be new.
+  Snapshot readback/writes perturb that frame; don't use it for shipping timing.
+
+Single-frame `remaster-direct-frame.gputrace` was saved with resource contents,
+but capture-enabled app teardown **crashed in CaptureMTLDevice deallocateResource /
+CaptureMTLBuffer dealloc** during static resource destruction after all seven
+cases and report output. This is an unresolved capture-layer teardown issue;
+that run is not a successful benchmark and the document has not been replay-
+validated in Xcode. Ordinary snapshot run exits successfully.
+
+`tools/profile_remaster_direct.mm` loads the snapshot and rebuilds production
+seed, 4x4 envelopes and prepared samples, then measures transport alone. Shader
+source is compiled at runtime; diagnostic scratch is shared for readback rather
+than production private. It builds isolated instrumented copies of visibility
+helpers; shipping `shaders.metal` is unchanged. Local invocation counters avoid
+global atomics. It requires counted float32 partials to exactly match ordinary
+partials and, when `direct-result.bin` exists, requires reduced half-float Direct
+to **exactly match the application's pinned GPU output**. Both checks passed.
+
+Pinned slot-004 case0 frame30: **256x224, 288 samples, 36 batches**, shader FNV
+`3af616679a99b3c1`, mesh FNV `86616fe468455c55`, source-list FNV `c8ba46622faac0d1`.
+Counted work (same for 8x8 and 32x1 thread layouts):
+
+| Work | Count |
+| --- | ---: |
+| visibility rays after facing/form-factor rejection | 12,718,513 |
+| DDA while-loop iterations (including envelope skipping) | 554,481,813 |
+| 4x4 envelope tests | 432,023,551 |
+| mesh patch tests (origin included) | 207,432,088 |
+| mesh height-interval early rejects | 122,606,271 |
+| triangle intersection calls | 1,315,322,436 |
+| empty-block iterations | 385,854,494 |
+| mesh hits causing coverage attenuation | 4,339,082 |
+
+Approximately **43.6 traversal iterations and 103.4 triangle calls per ray**.
+59.1% of mesh calls reject on height range; 69.6% of traversal iterations enter
+the empty-block path. Many calls remain after envelope skipping, and mesh hits
+are only 2.1% of patch tests. These are exact work counts for one viewport/frame,
+not complete-room geometry coverage or a whole scrolling-sequence average.
+
+Four variants rotate order each round (4 warmups +12 measured each), no stage
+counters; measured GPU medians in the verified 8x8 run:
+- production transport **77.94 ms** (minimum75.26)
+- visibility forced to1 **0.63 ms**
+- mesh hit forced false, keeping traversal **35.18 ms**
+- exact work-counted transport **79.17 ms**
+
+Earlier repeat: 86.73/0.68/38.60/97.93 ms. 32x1 layout: 82.42/0.72/40.54/85.82 ms,
+same exact results/counts; no demonstrated layout improvement. Disabled variants
+alter shadowing, early exit, generated code/register allocation and dead-code
+elimination. Their deltas **are not additive component timings** or valid lighting
+modes. They nevertheless identify visibility/traversal/intersections as the
+high-value next target, rather than emission preparation or form-factor math.
+
+Next optimization experiment should reduce triangle candidate work and empty-
+space traversal using exact geometry bounds/representation, then compare this
+pinned result and full movement benchmarks. Larger envelope schemes already
+tested slower; avoid simply repeating them. GPU instruction/cache hardware
+classification is still unresolved; Xcode shader profiling requires manual
+inspection of the captured document or a supported custom counter template.
+
+Reproduce snapshot with stage counters disabled, then (no app benchmark running):
+```sh
+xcrun clang++ -std=c++17 -O2 -fobjc-arc -Wall -Wextra tools/profile_remaster_direct.mm \
+  -framework Foundation -framework Metal -o /temporary/path/profile-remaster-direct
+/temporary/path/profile-remaster-direct /path/to/snapshot
+/temporary/path/profile-remaster-direct /path/to/snapshot 32x1
+```
+Local artifacts: `remaster-shader-counters.trace`, `shader-counters-toc.xml`,
+`shader-counter-info.xml`, `shader-samples.xml`, `shader-counter-timeline.xml`,
+`direct-snapshot-verified/`, `profile-direct-verified-run/`,
+`direct-profile-8x8.log`, `direct-profile-32x1.log`, and the capture document above.
+
+### Candidate and empty-space experiments
+
+Reviewed geometry/endpoint requirements with room-height-expert before testing.
+Side-face XY-plane interval rejection reduced pinned triangle calls from
+1,315,322,436 to 971,545,432 (26.1%). Kept top/bottom fans and original side
+triangle tests/order; reference path bypassed rejection. Pinned float32 partials
+and application's half output stayed exact. Interleaved 12-sample medians:
+48.74 ms filtered versus51.11 ms unfiltered (about4.6%).
+
+However, the fixed margin `0.001 + abs(rayAxis)*2e-6` is not a universal numerical
+proof: near-parallel Moller–Trumbore predicates and large-coordinate cancellation
+can disagree with a cheap plane interval. Added fail-open bounds for coordinates,
+Z, thickness and near-parallel rays. That variant retained exact output and
+reduced calls to983,551,930, but **regressed**:59.17 ms versus55.24 ms unfiltered
+in the same interleaved run. Branches/register pressure may explain the reversal;
+hardware evidence is unavailable. Both variants were initially removed.
+
+Cached 4x4 outgoing boundaries, retaining repeated additions rather than `4*delta`,
+also matched pinned partials but measured59.72 versus59.17 ms in the same run.
+Removed; no new acceleration resource or pipeline is retained. At that point the
+production shader was restored exactly, and no movement A/B was run.
+
+Retained a meaningful narrow-phase regression:65,536 batched randomized patch/ray
+probes compare raw hit booleans against independent reference expansion. Includes
+short intervals, zero XY components, near-side boundary cancellation, folded
+heights, shells and wall closures.4213 reference hits, zero mismatches for tested
+candidate versions. Final suites now1216 checks plus456 full-frame visibility
+comparisons; raw probes are not a proof for unbounded floating-point inputs.
+
+**BVH next-experiment constraints:** patch leaves can reject much larger groups
+than per-triangle arithmetic, but eligibility must match DDA lanes/corner ties,
+origin/final intervals and per-patch fractional-opacity attenuation order. Bounds
+include shells/wallBase; leaves keep original intersection predicate. Traversal
+storage overflow must fall back, not lose geometry. Build/refit and resources
+must match each producing frame and in-flight slot. A simple unordered hardware
+triangle first-hit query is not equivalent. No BVH implemented in this pass;
+its build/traversal cost and exact boundary strategy remain to be measured.
+
+**User-requested recovery:** restored the initial, faster fixed-margin side filter
+as the default shader path for visual evaluation. The guarded variant and cached
+block-boundary experiment remain removed. Independent reference bypass remains.
+This accepts possible extreme-coordinate/near-parallel disagreement; it is not
+a universal exactness claim. Fresh serial/batched suites pass1216/1216 each,
+with65536 raw patch probes and zero mismatches. Pinned partial FNV remains
+`f3e5d505d986f6f7`, application's half output stays exact, and triangle calls remain
+971,545,432. Debug/Release builds and diff check pass. Latest unpaired transport
+median53.52 ms is not a fresh A/B speedup measurement; the historical ~5% result
+remains workload-dependent. Review by restarting the DerivedData Release app.
+
+**Visual acceptance (October 1, 2026):** user reports the triangle reduction looks
+good with no observed issues and accepts it as the default. It is no longer
+experimental. Numerical limitations above remain documented; visual acceptance
+does not establish universal floating-point equivalence.
+
+### Arrival-block traversal follow-up
+
+Reviewed with room-height-expert: existing traversal examines the first arriving
+patch before its block envelope. Two prototypes checked the envelope earlier,
+retaining repeated-addition DDA and origin handling. First duplicated the
+block check at arrival with broadphase padding; second consolidated the check
+through a pending-cell state and retained final-cell processing.
+
+Both reproduced pinned float32 partials exactly, but neither improved transport:
+first46.88 ms baseline versus48.11 ms prototype; consolidated48.38 versus49.27 ms
+(12 interleaved measured rounds each, four warmup rounds). Removed both. These
+are single immutable-frame diagnostics, not scrolling performance claims.
+
+Next larger candidate remains an ordered patch BVH. It must reproduce grid-lane
+eligibility and accumulated interval arithmetic while reducing patch reads;
+ordinary unordered triangle first-hit traversal would change opacity semantics.
+No BVH implemented or performance gain established by this follow-up.
+
+### Ordered patch BVH prototype
+
+Tested a profiling-only CPU-built XY spatial BVH, then removed the prototype
+at the user's request after all measured variants regressed. The
+application retains the visually accepted side filter and existing 4x4 traversal.
+BVH nodes use 40-byte bounds/child records; split-sign depth-first order preserves
+relative order of DDA-eligible cells. Reconstruct per-axis crossing times using
+the original repeated additions, commit only eligible intervals, and run the
+unchanged patch predicate with once-per-patch opacity. Grouped leaves use local
+pixel DDA. Bounds include corners, center, thickness and wall base. Stack overflow
+and outside origins fall back to production visibility.
+
+Pinned256x224/288-source comparisons, rotating five variants with four warmup
+and12 measured rounds (transport only; build/upload excluded):
+
+| Maximum leaf footprint | Nodes | BVH median ms | Paired production ms |
+| --- | ---: | ---: | ---: |
+| 1x1 | 114687 | 168.160 | 52.831 |
+| 4x4 | 8191 | 115.294 | 52.997 |
+| 8x8 | 2047 | 83.533 | 52.624 |
+| 16x16 | 511 | 71.494 | 56.696 |
+
+After input pinning/finite-geometry validation and expanded negative-diagonal,
+zero-length and near-tie probes,16x16 measured67.046 versus49.942 ms. ItsCPU
+construction was1.069 ms,20,440 bytes/depth8, nodeFNV`1d87a623560dd9d5`, helper
+FNV`4fd11ea7cd119531`. Earlier construction metrics included input reads and are
+not runtime build-cost estimates. Timings drift, but every interleaved comparison
+lost substantially; no production integration or scrolling A/B warranted.
+
+All tested leaf sizes:65,536 visibility probes with zero mismatches, exact full
+float32 Direct partials and exact application half output. Final expanded probes
+compare visibility bits. This is bounded equivalence evidence, not universal
+proof: slab padding `.001 + abs(ray)*2e-6` is empirical, and explicit interval-bit
+and ordered-hit trace comparison plus broader synthetic materials remain future
+validation before any integration. The measured benefit/cost of node visits,
+speculative additions and patch reads has not been separately instrumented; their
+roles in the slowdown remain hypotheses, not hardware-counter conclusions.
+
+Removed the BVH shader helper, CPU builder, resources, differential probes, leaf
+size override and fifth profiling variant. The profiler again runs its original
+four variants; retained the input-pinning improvement and explicit skipped
+application-output-check message. These findings are historical experimental
+results, not an available application or profiling mode. Room-height-expert
+reviewed design and implementation; no height metadata generated or approved.
+
+### Sampled Direct first implementation
+
+`S9X_REMASTER_DIRECT_SAMPLES=N` opts into stratified receiver-specific source
+sampling, N1..4096; exhaustive default and debug-sphere/visibility/diagnostic
+fallback remain. See `remaster/lighting.md` for exact-denominator estimator.
+No temporal filtering. Benchmark reports record raw `direct_samples_override`
+and fallback note; per-frame `direct_samples` continues to mean available
+prepared emitter samples, not the requested sampling budget.
+
+Pinned288-source frame, seven rotating variants/four warmup/12 measured rounds:
+
+| Direct mode | Transport median ms | Relative RMS of 12-frame mean |
+| --- | ---: | ---: |
+| Exhaustive | 47.358 | reference |
+| Sampled16 | 26.937 | 0.007782 |
+| Sampled32 | 33.813 | 0.004878 |
+| Sampled64 | 41.057 | 0.002050 |
+
+Offline12-frame averaging is an estimator diagnostic, **not** live denoising.
+Original exhaustive partials/app half output still exact. New tests cover one
+emitter, fractional visibility, colored-source statistical mean, authored black,
+fixed seeds, emission-depth energy and a dense opposite-facing receiver fixture
+whose denominator exceeds0.95.1226 checks pass, plus456 visibility comparisons
+and65536 patch probes. Debug/Release app and profiler compile successfully.
+
+Production right-moving deterministic runs:30 warmup+180 measured frames per
+case,9 indirect connections, stage counters disabled, identical profile SHA256
+`5b5faa04df5fafd9d153e0455bb0255ccfc20f39205b5f3cd0df7790c612f4b9`.
+Available source sequence456..1152 is identical between runs. User authored
+emission extent on one torch animation frame; depth samples expand each emitter
+to four samples. Existing profile changes were preserved.
+
+| Case | Exhaustive wholeGPU median/p95 ms | Sampled16 median/p95 ms |
+| --- | ---: | ---: |
+| Direct | 60.10/303.46 | 29.27/39.95 |
+| Direct+Indirect0 | 56.81/308.64 | 29.39/40.34 |
+| Direct+Indirect1 | 57.69/307.98 | 32.42/44.20 |
+| Direct+Indirect8 | 72.59/325.51 | 45.50/58.68 |
+| Composite0 | 55.63/308.43 | 29.38/40.48 |
+| Composite1 | 57.87/309.54 | 32.92/43.65 |
+| Composite8 | 69.54/324.77 | 45.33/58.09 |
+
+Both runs complete; RAM and original RGB555 hashes match across cases/runs.
+Lighting images intentionally differ. Source-count strata for Direct:456 samples
+(54frames)41.97 versus26.97 ms;768 (51frames)216.39 versus35.87 ms;1152
+(9frames)393.29 versus39.40 ms. Scheduling/load drift still prevents interpreting
+all elapsed differences as pure shader time. Pinned interleaving supports an
+improvement but5ms is not reached. Initial300s baseline attempt timed out at case7
+and is excluded. Artifacts: `sampled-direct-exhaustive-right-complete/` and
+`sampled-direct-16-right/` under the session temp directory.
+
+Launch review build with
+`S9X_REMASTER_DIRECT_SAMPLES=16 /path/to/Snes9x.app/Contents/MacOS/Snes9x` after
+quitting the running app. Sampling is opt-in pending visual noise review. Next
+work: parallelize cheap source weighting/selection, investigate denoising/history
+with dynamic-scene invalidation, and add a user-facing independent Direct budget.
+
+### Default emitter patches and size control
+
+Added default2 maximum emitter footprint with Scene Controls integer slider1..5,
+numeric input, undo/live preview/profile persistence and captured replay setting.
+Size1 is unclustered comparison. Profile schema15/frame22; old files default2.
+`remaster/emitter_patches.h` partitions same-instance/tile-local-bin full emitting
+rectangles, preserving color fragments, summed RGB and quarter-stratum depth area.
+See lighting contract for compatibility and approximation. Room-height-expert
+identified stepped-endpoint and exclusion-normal hazards; final rules require
+matching flat support/normals. No height metadata generated or approved.
+
+First strict draft produced no merges. Relaxed-height prototype reached232..552
+sources and21.28 ms median, but was replaced after endpoint review. Final safe
+rules produce296..960 sources versus456..1152 before clustering on identical
+right-moving sequence. Final sampled16/9indirect connections/30warmup+180measured,
+stage counters disabled, seven cases complete with matching RAM:
+Direct25.65/38.14 ms median/p95;Direct+Indirect0/1/8:25.81/37.02,
+29.33/41.49,41.67/56.12;Composite0/1/8:25.76/37.83,28.92/41.34,
+41.91/56.28. Historical unclustered Direct29.27/39.95 is not an interleaved
+causal speedup estimate. Artifact `cluster2-safe-final/`; looser prototype
+`cluster2-sampled16-final/` is superseded.60FPS/5ms target remains unmet.
+
+Portable tests verify max-footprint membership conservation1..5, holes, distinct
+instances, color/depth/stepped-support/normal splits, profile/frame roundtrips and
+legacy frame loading. Metal suites1230 checks,456 visibility comparisons and65536
+patch probes; GPU aggregation singleton equivalence and sampled/exhaustive patch
+agreement covered. Visual review of larger footprints/near-source lighting pending.
+
+### Collapsed sampled depth records
+
+Sampled Direct now uses one base record per emitter pixel/patch instead of four
+positive-depth records. The existing four depth weights are evaluated as vectors;
+source selection uses their mean and each selected connection conditionally
+samples one of those depth positions. Visibility is deduplicated per source AND
+stratum. Exact unoccluded area normalization and full RGB energy are retained.
+Exhaustive/debug-sphere/visibility/GI diagnostic fallbacks keep expanded records.
+`S9X_REMASTER_EXPANDED_SAMPLED_DEPTH=1` enables comparison with expanded sampling;
+the report records `expanded_sampled_depth_override`.
+
+Apple M3 Max Release paired right-moving runs, sampled16, patch size2,
+9indirect connections,30warmup/180measured, stage counters off. Final artifacts
+`depth-expanded-final/` and `depth-collapsed-final/`. Profile SHA256
+`5b5faa04df5fafd9d153e0455bb0255ccfc20f39205b5f3cd0df7790c612f4b9`;
+all seven cases have matching initial/original/RAM hashes across both runs, and
+matching emitter-pixel/frame sequences. Prepared-record range296..960 becomes
+140..318 (mixed planar/depth emitters mean total counts need not fall exactly4x).
+
+Expanded -> collapsed whole-GPU median/p95 ms:
+- Direct:26.28/38.16 ->26.06/36.35.
+- Direct+Indirect0/1/8:26.24/37.83 ->26.28/36.81;
+  29.37/42.35 ->29.64/40.53;42.32/55.97 ->42.41/56.30.
+- Composite0/1/8:26.65/38.40 ->26.32/37.21;
+  29.92/42.73 ->29.43/41.22;42.72/57.59 ->42.53/56.18.
+
+Performance is largely unchanged; do not claim a meaningful end-to-end speedup
+from this pair. Four factor calculations and expensive visibility remain.
+Earlier scalar collapsed run Direct25.80 vs26.73 ms expanded also showed only
+small changes.60FPS/5ms remains unmet. Frame images differ due to changed random
+selection; live visual/noise review pending.
+
+Metal suites1240/1240 serial and batched,456 visibility comparisons and65536
+patch probes unchanged. New cases cover unoccluded exact depth energy, fixed-seed
+determinism, fractional partial-stratum blockers and multi-seed means, mixed
+planar/depth/color, depth-patch self exclusion, singleton exclusion, half-float
+output and dense depth normalization clamp. Debug/Release builds pass.
+
+### Stationary flat-torch animation investigation
+
+User reported fast flat-emitter replay but periodic live slowdowns. Recent unified
+logs contained profile-load/capture-open events, not per-frame timing; existing
+`frame.s9xrmf` remained schema21 with depth2 torch metadata,96connections, so it
+was not a matching flat-emitter input. Current saved profile was schema15,
+patch5/14connections/zero authored depth. Stationary slot004 benchmark demonstrates
+three repeating nine-frame phases. With sampled16, Direct prepared sources
+204/144/282 correspond to emitter pixels288/306/366 and GPU medians approximately
+23/15.5/25.7ms. CPU fields remain about1.5ms/mesh0.5ms; timestamped GPU preparation
+about0.01ms, Direct transport dominates. Slowness persists throughout the phase,
+not only its first frame. No evidence supports light destruction as primary cost.
+
+Added producing-frame metrics `source_build_ms`, `depth_emitters`, and
+`emitter_signature` (hex FNV over emitter location, RGB/intensity, shading and
+endpoint mesh geometry; excludes transient instance IDs). Signature identifies
+effective source phases, not universal animation assets; geometry/movement also
+changes it. `S9X_REMASTER_FRAME_METRICS=1` logs those fields plus CPU fields/mesh/
+setup, GPU, queue/drawable, drops. Log mode now collects CPU fields without needing
+the metrics panel. Benchmark reports include same fields; analyzer groups phases
+and compares changed/held frames. Timestamp instrumentation still perturbs timing.
+
+Source-list/patch CPU work at patch5 measured1..2.4ms every frame, not just phase
+changes. Removed repeated gamma pow decoding per candidate (predecode each
+active pixel once), and stop rectangle scans immediately on incompatibility.
+Preserves rectangle search order, patch membership and color thresholds.
+Before/after `flat-torch-phase-metrics/` / `flat-torch-phase-optimized/` sampled16,
+patch5/14connections,30warmup/60measured frames/case, counters off: median source
+build Direct1.384->0.295ms, Composite0 1.787->0.365ms (about79% lower).
+All source counts/signatures/depth counts match every measured frame; all seven
+end-frame PNGs byte identical and state/original hashes match. All depth counts0.
+Direct GPU22.58->22.35ms; CPU saving does not solve transport phase cost. Larger
+Composite8 GPU change52.13->43.67ms includes scheduling drift, not this CPU edit.
+Portable patch fixtures pass; Release/Debug builds and diff check validated.
+
+Next useful GPU optimization targets source scans/visibility workload across
+flame phases. Caching three source templates only addresses the smaller CPU
+setup fraction; caching complete lighting needs receiver/blocker invalidation
+and a deliberate strategy for independent per-frame sampling noise.

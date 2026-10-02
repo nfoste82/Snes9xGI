@@ -43,6 +43,9 @@ struct RemasterState
 		double lightingMeshMs = 0.0;
 		uint32_t directEmitterCount = 0;
 		uint32_t directSampleCount = 0;
+		uint32_t directDepthEmitterCount = 0;
+		uint64_t directEmitterSignature = 0;
+		double directSourceBuildMs = 0.0;
 		double lightingPreparationMs = 0.0;
 		double directEncodeMs = 0.0;
 		double indirectEncodeMs = 0.0;
@@ -687,6 +690,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.originalSceneContribution = state.activeProfile.originalSceneContribution;
 	result.heightPreviewMultiplier = state.activeProfile.heightPreviewMultiplier;
 	result.samplesPerFrame = state.activeProfile.samplesPerFrame;
+	result.emitterPatchSize = state.activeProfile.emitterPatchSize;
 	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;
 	result.originalRgb555.reserve(pixelCount);

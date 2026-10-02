@@ -14,6 +14,7 @@
 #include <vector>
 #include "../remaster/indirect_lighting_reference.h"
 #include "../remaster/surface_mesh_material.h"
+#include "../remaster/emitter_patches.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light
@@ -99,6 +100,17 @@ int main()
             id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             require(directTransport != nil, error.localizedDescription);
+            id<MTLComputePipelineState> sampledDirectTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterSampledDirect"] error:&error];
+            require(sampledDirectTransport != nil, error.localizedDescription);
+            id<MTLComputePipelineState> preparePatches = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:3];
+            id<MTLComputePipelineState> clusteredTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            bool noClusters = false;
+            [directConstants setConstantValue:&noClusters type:MTLDataTypeBool atIndex:3];
+            require(preparePatches && clusteredTransport, error.localizedDescription);
             [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:1];
             id<MTLComputePipelineState> batchedTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
@@ -166,7 +178,8 @@ int main()
                              simd_float3 cameraDirection = {0, 0, -1}, int compositeView = -1,
                               const Light *debugLight = nullptr, bool referenceVisibility = false,
                                bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f,
-                               const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr) {
+                                const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr, bool sampleDirect = false,
+                                const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -277,13 +290,13 @@ int main()
                     }
                 }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-                const bool batched = bounce && !composing && !referenceVisibility && getenv("S9X_REMASTER_TEST_BATCHED") &&
+                const bool batched = !customPatches && !sampleDirect && bounce && !composing && !referenceVisibility && getenv("S9X_REMASTER_TEST_BATCHED") &&
                     (sampled || (passIndex == 0 && lambertianDirect && diagnosticStage == 0));
                 uint32_t batchCount = 1;
                 id<MTLBuffer> partials = nil;
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
-                    bounce ? (sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
+                    bounce ? (sampleDirect ? sampledDirectTransport : customPatches ? clusteredTransport : sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
                         passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? (batched ? batchedTransport : directTransport) : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
@@ -314,11 +327,25 @@ int main()
                             (s[PreviousBounce][pixel].x > 0 || s[PreviousBounce][pixel].y > 0 || s[PreviousBounce][pixel].z > 0))
                             emitters.push_back(pixel);
                     const bool prepared = passIndex == 0 && !referenceVisibility;
+                    const bool collapsed = sampleDirect && !expandedDepth;
+                    const uint32_t sourceFlag = collapsed ? 0x80000000u : 0u;
                     std::vector<simd_uint2> sources;
                     if (prepared)
                         for (uint32_t pixel : emitters)
-                            for (uint32_t sample = 0, count = mesh[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
-                                sources.push_back(simd_uint2{pixel, sample});
+                            for (uint32_t sample = 0, count = !collapsed && mesh[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
+                                sources.push_back(simd_uint2{pixel, sample | sourceFlag});
+                    id<MTLBuffer> patchBuffer = nil;
+                    if (customPatches) {
+                        sources.clear();
+                        for (unsigned p = 0; p < customPatches->size(); p++) {
+                            unsigned pixel = (*customPatches)[p].members[0];
+                            for (unsigned sample = 0, count = !collapsed && mesh[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
+                                sources.push_back(simd_uint2{pixel, (p*4+sample) | sourceFlag});
+                        }
+                        patchBuffer = [device newBufferWithBytes:customPatches->data() length:customPatches->size()*sizeof(RemasterEmitterPatch) options:MTLResourceStorageModeShared];
+                        [encoder setBuffer:patchBuffer offset:0 atIndex:6];
+                        [encoder setBuffer:patchBuffer offset:0 atIndex:7];
+                    }
                     const uint32_t emitterCount = static_cast<uint32_t>(prepared ? sources.size() : emitters.size());
                     if (emitters.empty())
                         emitters.push_back(0);
@@ -337,7 +364,8 @@ int main()
                         {
                             id<MTLCommandBuffer> preparation = [queue commandBuffer];
                             id<MTLComputeCommandEncoder> prepare = [preparation computeCommandEncoder];
-                            [prepare setComputePipelineState:prepareDirect];
+                            [prepare setComputePipelineState:customPatches ? preparePatches : prepareDirect];
+                            if (customPatches) [prepare setBuffer:patchBuffer offset:0 atIndex:4];
                             [prepare setTexture:textures[1] atIndex:0];
                             [prepare setTexture:textures[3] atIndex:1];
                             [prepare setTexture:textures[2] atIndex:2];
@@ -524,7 +552,127 @@ int main()
                 check(name, ok, actual, unblocked);
             };
 
+            auto directTrial = [&](const Scene &input, bool sampledDirect, unsigned connections, unsigned seed,
+                const std::vector<RemasterSurfaceMesh::Cell> *mesh = nullptr) {
+                return run(input, true, 0, 8, -1, nullptr, false, 0, 1, 0, connections, seed,
+                    simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, mesh, sampledDirect).bounce;
+            };
+            {
+                Scene single = scene();
+                auto exact = directTrial(single, false, 1, 1);
+                for (unsigned n : {1u, 4u, 16u})
+                    near("sampled Direct single emitter exact", directTrial(single, true, n, 31), exact);
+                blocker(single, 8, 0.5f, true, 8);
+                near("sampled Direct fractional visibility", directTrial(single, true, 4, 7), directTrial(single, false, 1, 7));
+                single[Reflectance][receiver] = {0, 0, 0, 1};
+                near("sampled Direct authored black", directTrial(single, true, 4, 7), {});
+
+                Scene multiple = scene();
+                for (unsigned d : {5u, 9u, 13u}) {
+                    unsigned p = receiver + d;
+                    multiple[Surface][p] = {8, -1, 0, 0};
+                    multiple[Participation][p] = {1, 1, 0, 0};
+                    multiple[PreviousBounce][p] = {float(d == 5), float(d == 9), float(d == 13), 1};
+                }
+                blocker(multiple, 7, 0.5f, true, 8);
+                simd_float4 mean = {}, reference = directTrial(multiple, false, 1, 1);
+                for (unsigned seed = 1; seed <= 256; seed++) mean += directTrial(multiple, true, 8, seed) / 256.0f;
+                bool close = true;
+                for (unsigned c = 0; c < 3; c++) close &= std::fabs(mean[c] - reference[c]) < std::fabs(reference[c]) * 0.035f + 1e-6f;
+                check("sampled Direct colored fractional mean", close, mean, reference);
+                near("sampled Direct deterministic seed", directTrial(multiple, true, 8, 77), directTrial(multiple, true, 8, 77));
+                std::vector<RemasterSurfaceMesh::Cell> depthMesh(width * height);
+                for (auto &patch : depthMesh) for (auto &corner : patch.corners) corner = 8;
+                depthMesh[emitter].emissionDepth = 4;
+                Scene depth = scene();
+                simd_float4 depthMean = {}, depthExact = directTrial(depth, false, 1, 1, &depthMesh);
+                for (unsigned seed = 1; seed <= 64; seed++) depthMean += directTrial(depth, true, 16, seed, &depthMesh) / 64.0f;
+                bool depthClose = true;
+                for (unsigned c = 0; c < 3; c++) depthClose &= std::fabs(depthMean[c] - depthExact[c]) < std::fabs(depthExact[c]) * 0.02f + 1e-6f;
+                check("sampled Direct emission depth mean", depthClose, depthMean, depthExact);
+                near("collapsed depth unoccluded exact energy", directTrial(depth, true, 1, 91, &depthMesh), depthExact);
+                near("collapsed depth deterministic seed", directTrial(depth, true, 8, 77, &depthMesh), directTrial(depth, true, 8, 77, &depthMesh));
+                // A finite blocker cuts only some of a lateral/upward emitter's strata.
+                blocker(depth, 8, 0.5f, true, 8.25f);
+                for (auto &corner : depthMesh[receiver+8].corners) corner = 8.25f;
+                auto partialExact = directTrial(depth, false, 1, 1, &depthMesh);
+                check("depth fixture partially occludes strata", partialExact.x > 0 && partialExact.x < depthExact.x, partialExact, depthExact);
+                auto depthRun = [&](const Scene &input, unsigned seed, const std::vector<RemasterEmitterPatch> *patches = nullptr,
+                    int pixel = -1, bool half = false, bool expanded = false, bool sampled = true) {
+                    Scene readback = input;
+                    auto result = run(input, true, 0, 8, -1, pixel >= 0 ? &readback : nullptr, half, 0, 1, 0, 32, seed,
+                        simd_float3{0,0,-1}, -1, nullptr, false, false, true, 0, &depthMesh, sampled, patches, expanded);
+                    return pixel >= 0 ? readback[NextBounce][pixel] : result.bounce;
+                };
+                auto meanNear = [&](const char *name, const Scene &input, const std::vector<RemasterEmitterPatch> *patches,
+                    int pixel = -1, bool half = false) {
+                    simd_float4 exact = depthRun(input, 1, patches, pixel, half, false, false), average = {};
+                    for (unsigned seed = 1; seed <= 128; seed++) average += depthRun(input, seed, patches, pixel, half) / 128.0f;
+                    bool close = true;
+                    for (unsigned c = 0; c < 3; c++) close &= std::fabs(average[c]-exact[c]) < std::fabs(exact[c])*0.04f + 1e-6f;
+                    check(name, close, average, exact);
+                };
+                meanNear("collapsed depth partially occluded mean", depth, nullptr);
+                meanNear("collapsed depth half precision mean", depth, nullptr, -1, true);
+                Scene mixed = depth;
+                unsigned planar = receiver+5;
+                mixed[Surface][planar] = {8,-1,0,0};
+                mixed[Participation][planar] = {1,1,0,0};
+                mixed[PreviousBounce][planar] = {0.1f,1,0.2f,1};
+                meanNear("collapsed mixed depth and planar mean", mixed, nullptr);
+                RemasterEmitterPatch depthPatch;
+                depthPatch.count = 2; depthPatch.members[0] = emitter; depthPatch.members[1] = emitter+1;
+                std::vector<RemasterEmitterPatch> depthPatches{depthPatch};
+                Scene clusterDepth = depth;
+                clusterDepth[Surface][emitter+1] = clusterDepth[Surface][emitter];
+                clusterDepth[Participation][emitter+1] = {1,1,0,0};
+                clusterDepth[PreviousBounce][emitter+1] = {0.4f,0.15f,0.05f,1};
+                depthMesh[emitter+1].emissionDepth = 4;
+                meanNear("collapsed depth patch energy mean", clusterDepth, &depthPatches);
+                meanNear("collapsed depth patch self exclusion mean", clusterDepth, &depthPatches, emitter);
+                depthPatches[0].count = 1;
+                near("collapsed singleton depth self exclusion", depthRun(clusterDepth, 11, &depthPatches, emitter), {});
+                Scene dense = scene();
+                dense[Surface][receiver] = {8, 1, 0, 0};
+                dense[OppositeFacing][receiver] = {1, 0, 0, 0};
+                double denominator = 0;
+                for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++) {
+                    unsigned p = y * width + x;
+                    if (p == receiver) continue;
+                    double dx = double(receiverX) - x, dy = double(receiverY) - y;
+                    double distance = std::sqrt(dx * dx + dy * dy);
+                    dense[Surface][p] = {8, float(dx / distance), float(dy / distance), 0};
+                    dense[Participation][p] = {1, 1, 0, 0};
+                    dense[PreviousBounce][p] = {1, 0.5f, 0.25f, 1};
+                    denominator += std::min(0.25, 1.0 / (M_PI * (distance * distance + 1))) * std::fabs(dx) / distance;
+                }
+                check("sampled Direct fixture exercises normalization clamp", denominator > 0.95, {}, {});
+                auto denseExact = directTrial(dense, false, 1, 1);
+                near("sampled Direct exact clamped denominator", directTrial(dense, true, 8, 19), denseExact);
+                // Mixed depth normals/powers with an active normalization clamp.
+                for (unsigned p = 0; p < width*height; p++) if (p != receiver) depthMesh[p].emissionDepth = 2;
+                denseExact = directTrial(dense, false, 1, 1, &depthMesh);
+                near("collapsed depth exact clamped denominator", directTrial(dense, true, 8, 19, &depthMesh), denseExact);
+            }
             Scene s = scene();
+            {
+                RemasterEmitterPatch patch;
+                patch.count = 1; patch.members[0] = emitter;
+                std::vector<RemasterEmitterPatch> patches{patch};
+                auto clustered = [&](const Scene &input, bool sampled) {
+                    return run(input, true, 0, 8, -1, nullptr, false, 0, 1, 0, 16, 37,
+                        simd_float3{0,0,-1}, -1, nullptr, false, false, true, 0, nullptr, sampled, &patches).bounce;
+                };
+                near("cluster singleton exhaustive exact", clustered(s, false), directTrial(s,false,1,1));
+                near("cluster singleton sampled exact", clustered(s, true), directTrial(s,false,1,1));
+                Scene two = s;
+                two[Participation][emitter+1] = {1,1,0,0};
+                two[Surface][emitter+1] = two[Surface][emitter];
+                two[PreviousBounce][emitter+1] = two[PreviousBounce][emitter];
+                patches[0].count = 2; patches[0].members[1] = emitter+1;
+                near("cluster sampled matches exhaustive proposal", clustered(two,true), clustered(two,false));
+                positive("cluster summed energy positive", clustered(two,false));
+            }
             near("direct field excludes generated point-light proxies", run(s, false).bounce, {});
             s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};
             positive("direct field retains per-pixel emission seed", run(s, false).bounce);
@@ -1858,6 +2006,84 @@ int main()
                             compareVisibility(disk, label, 0, stage, 0, 1, 1, &light);
                     }
             std::printf("Visibility reference comparisons: %u\n", checks - visibilityChecks);
+            // Direct narrow-phase differential tests, including tiny intervals,
+            // boundary-aligned rays, near-tangent sides, folds and finite walls.
+            // Test a batch in one dispatch so broad coverage is inexpensive.
+            struct PatchProbe { simd_float4 from, ray, corners, geometry, cellInterval; };
+            static_assert(sizeof(PatchProbe) == 80, "Patch probe Metal ABI");
+            NSString *probeSource = [source stringByAppendingString:@R"(
+struct PatchProbe { float4 from, ray, corners, geometry, cellInterval; };
+kernel void probePatch(const device PatchProbe *inputs [[buffer(0)]],
+    device uint *output [[buffer(1)]], uint index [[thread_position_in_grid]]) {
+    PatchProbe p = inputs[index];
+    RemasterMeshCell patch = {};
+    patch.corners = p.corners;
+    patch.thickness = p.geometry.y;
+    patch.solidWall = p.geometry.z;
+    patch.wallBase = p.geometry.w;
+    output[index] = remasterMeshHit(p.from.xyz, p.ray.xyz, int2(p.cellInterval.xy),
+        p.geometry.x, patch, p.cellInterval.z, p.cellInterval.w);
+}
+)"];
+            std::vector<PatchProbe> probes;
+            uint32_t probeSeed = 0x192ac7u;
+            auto probeRandom = [&]() {
+                probeSeed ^= probeSeed << 13; probeSeed ^= probeSeed >> 17; probeSeed ^= probeSeed << 5;
+                return float(probeSeed & 65535) / 65535.0f;
+            };
+            for (unsigned i = 0; i < 65536; ++i) {
+                PatchProbe p = {};
+                float x = std::floor(probeRandom() * 512), y = std::floor(probeRandom() * 512);
+                float center = probeRandom() * 128 - 32;
+                p.geometry = {center, i % 3 ? 0.0f : 0.25f + probeRandom() * 8,
+                    i % 4 == 0 ? 1.0f : 0.0f, center - probeRandom() * 64};
+                p.corners = {center + probeRandom() * 4, center - probeRandom() * 4,
+                    center + probeRandom() * 4, center - probeRandom() * 4};
+                p.from = {x + probeRandom() * 4 - 1.5f, y + probeRandom() * 4 - 1.5f,
+                    center + probeRandom() * 32 - 16, 0};
+                p.ray = {probeRandom() * 1024 - 512, probeRandom() * 1024 - 512,
+                    probeRandom() * 256 - 128, 0};
+                float entry = probeRandom(), exit = std::min(1.0f, entry + probeRandom() * 0.02f);
+                if (i % 8 == 0) exit = entry + 0.000002f;
+                if (i % 8 == 1) p.ray.x = 0;
+                if (i % 8 == 2) p.ray.y = 0;
+                if (i % 8 == 3) {
+                    // Put the ray on/just outside a side plane at the interval
+                    // boundary, where strict clipping and roundoff interact.
+                    p.from.x = x + (i % 2) - p.ray.x * entry + (probeRandom() - 0.5f) * 0.00002f;
+                    p.from.y = y + 0.5f - p.ray.y * entry;
+                    p.from.z = center - p.ray.z * entry;
+                }
+                p.cellInterval = {x, y, entry, exit};
+                probes.push_back(p);
+            }
+            id<MTLBuffer> probeInputs = [device newBufferWithBytes:probes.data()
+                length:probes.size() * sizeof(PatchProbe) options:MTLResourceStorageModeShared];
+            id<MTLBuffer> probeOutputs[2];
+            for (unsigned variant = 0; variant < 2; ++variant) {
+                auto lib = [device newLibraryWithSource:probeSource options:variant ? referenceOptions : nil error:&error];
+                require(lib != nil, error.localizedDescription);
+                auto pipeline = [device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"probePatch"] error:&error];
+                require(pipeline != nil, error.localizedDescription);
+                probeOutputs[variant] = [device newBufferWithLength:probes.size() * 4 options:MTLResourceStorageModeShared];
+                auto command = [queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                [encoder setComputePipelineState:pipeline];
+                [encoder setBuffer:probeInputs offset:0 atIndex:0];
+                [encoder setBuffer:probeOutputs[variant] offset:0 atIndex:1];
+                [encoder dispatchThreads:MTLSizeMake(probes.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+                require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
+            }
+            unsigned probeMismatch = 0, probeHits = 0;
+            const auto *actualProbes = static_cast<const uint32_t *>(probeOutputs[0].contents);
+            const auto *expectedProbes = static_cast<const uint32_t *>(probeOutputs[1].contents);
+            for (unsigned i = 0; i < probes.size(); ++i) {
+                probeMismatch += actualProbes[i] != expectedProbes[i];
+                probeHits += expectedProbes[i] != 0;
+            }
+            std::printf("Patch candidate probes: %zu; reference hits=%u mismatches=%u\n", probes.size(), probeHits, probeMismatch);
+            check("raw patch candidate rejection matches independent triangle expansion", probeMismatch == 0, {}, {});
             std::printf("%u/%u checks passed; %u failed\n", checks - failures, checks, failures);
             return failures ? 1 : 0;
         }
