@@ -48,4 +48,31 @@ int main()
 	for (auto &corner : mesh[0].corners) corner = 0;
 	surface[1] = 0.1f;
 	assert(build()[0].count == 1);
+	for (unsigned k = 1; k <= 8; k++) {
+		frame.representativeEmitters = k;
+		auto clusters = build(), repeated = build();
+		assert(clusters.size() <= k && clusters.size() == repeated.size());
+		std::array<unsigned,64> seen = {};
+		for (unsigned c = 0; c < clusters.size(); c++) {
+			assert(clusters[c].mode & 1u);
+			assert(clusters[c].members == repeated[c].members);
+			for (unsigned j = 0; j < clusters[c].count; j++) seen[clusters[c].members[j]]++;
+		}
+		for (unsigned n : seen) assert(n == 1);
+		if (k == 1) assert(clusters[0].count == 64);
+	}
+	frame.representativeEmitters = 1;
+	emission[3] = 0;
+	assert(build()[0].count == 63);
+	emission[3] = 255;
+	frame.mainPixels[0].instanceId = 2;
+	assert(build().size() == 2);
+	frame.mainPixels[0].instanceId = 1;
+	frame.subPixels[0] = frame.mainPixels[0];
+	frame.mainPixels[0].instanceId = 0; frame.mainPixels[0].owner = 0;
+	assert(build().size() == 2); // Selected main/sub channels cannot merge.
+	mesh[0].emissionDepth = 2;
+	frame.subPixels[0].tilePixel = 64;
+	auto fallback = build();
+	assert(fallback[0].count == 1 && fallback[0].mode == 3);
 }

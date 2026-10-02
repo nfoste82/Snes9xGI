@@ -1237,7 +1237,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
-			const bool clustered = frame && frame->emitterPatchSize > 1 &&
+			const bool clustered = frame && (frame->emitterPatchSize > 1 || frame->representativeEmitters > 0) &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
 			std::vector<RemasterEmitterPatch> patches;
@@ -1246,7 +1246,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			if (clustered) {
 				for (uint32_t p = 0; p < patches.size(); p++) {
 					uint32_t pixel = patches[p].members[0];
-					for (uint32_t sample = 0, count = !collapsedDepth && (*mesh)[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
+					bool depthLayout = (patches[p].mode & 1u) ? (patches[p].mode & 2u) : (*mesh)[pixel].emissionDepth > 0;
+					for (uint32_t sample = 0, count = !collapsedDepth && depthLayout ? 4 : 1; sample < count; sample++)
 						directSources.push_back(vector_uint2{pixel, (p*4+sample) | sourceFlag});
 				}
 			} else for (uint32_t pixel : emitterPixels)

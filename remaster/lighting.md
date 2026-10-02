@@ -30,6 +30,33 @@ retain the expanded representation. No profile or capture schema change.
 
 ### Emitter patches
 
+Scene Controls also offers opt-in **Representative Emitters per Tile**: enable
+the checkbox and choose1..8, initially4. Off retains rectangular patch grouping;
+patch-size controls are disabled while representative mode is enabled. Profile
+schema16 stores `representative_emitters` (0=off); frame schema23 stores the same
+byte. Older files default off. Changes support live apply and scene-settings undo.
+
+Representative mode clusters visible emitting pixels separately for each selected
+main/sub channel, owner and tile instance. Deterministic six-iteration weighted
+k-means uses canonical tile XY/7 and max-normalized linear RGB with equal feature
+scales. Highest-power first seed, power-weighted farthest subsequent seeds, and
+canonical-order ties keep identical inputs repeatable. Power includes intensity.
+Every active member appears once; holes/nonemitters never become members.
+For ordinary8x8 instances the slider caps clusters atK. Oversized malformed or
+duplicated occurrences are split into64-member chunks, each capped atK; unresolved
+identities stay singleton. These fallbacks can exceed the per-tile cap.
+
+GPU clusters preserve summed linear RGB and member-count normalization area.
+Their representative is the actual member nearest the power-weighted3D surface
+centroid. Shading position/normal, geometric biased endpoint and depth all come
+from that member. No averaged endpoint is placed in a hole. Receiver exclusion
+rebuilds the remaining representative and energy/area. Expanded layout uses four
+quarter-energy records if ANY original member has depth; layout remains fixed
+when exclusion changes the chosen member. Collapsed sampled mode uses one record.
+Mixed geometry/directional/depth behavior is deliberately approximated by the
+chosen member, so near-source shadows and animation can shift/pop. This mode
+does not change artwork emission or blockers. Visual acceptance remains pending.
+
 Scene Controls' **Emitter Patch Size** is an integer1..5 maximum footprint,
 default2. Profile schema15 saves `emitter_patch_size` in `[lighting_space]`;
 capture schema22 saves it for replay. Older profiles/captures default2. Size1

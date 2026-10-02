@@ -152,6 +152,7 @@ struct RemasterProfile
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	uint8_t emitterPatchSize = 2;
+	uint8_t representativeEmitters = 0;
 	bool sampleAccumulation = true;
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
@@ -173,6 +174,7 @@ struct RemasterSceneSettings
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	uint8_t emitterPatchSize = 2;
+	uint8_t representativeEmitters = 0;
 	bool sampleAccumulation = true;
 };
 
@@ -181,7 +183,7 @@ inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile 
 	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
 		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost,
 		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
-		profile.emitterPatchSize, profile.sampleAccumulation };
+		profile.emitterPatchSize, profile.representativeEmitters, profile.sampleAccumulation };
 }
 
 inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
@@ -197,6 +199,7 @@ inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const Remas
 	profile.upperFloorHeight = settings.upperFloorHeight;
 	profile.samplesPerFrame = settings.samplesPerFrame;
 	profile.emitterPatchSize = settings.emitterPatchSize;
+	profile.representativeEmitters = settings.representativeEmitters;
 	profile.sampleAccumulation = settings.sampleAccumulation;
 }
 
@@ -213,6 +216,7 @@ inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const
 		a.upperFloorHeight == b.upperFloorHeight &&
 		a.samplesPerFrame == b.samplesPerFrame &&
 		a.emitterPatchSize == b.emitterPatchSize &&
+		a.representativeEmitters == b.representativeEmitters &&
 		a.sampleAccumulation == b.sampleAccumulation;
 }
 
@@ -717,6 +721,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				else
 					parsed.samplesPerFrame = static_cast<uint8_t>(unsignedValue);
 			}
+			else if (key == "representative_emitters")
+			{
+				if (!ParseUnsigned(value, unsignedValue) || unsignedValue > 8)
+					fail(lineNumber, "representative_emitters must be an integer in [0, 8]");
+				else parsed.representativeEmitters = static_cast<uint8_t>(unsignedValue);
+			}
 			else if (key == "emitter_patch_size")
 			{
 				if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 5)
@@ -932,8 +942,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 15)
-		fail(0, "schema_version must be an integer in [1, 15]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 16)
+		fail(0, "schema_version must be an integer in [1, 16]");
 	for (const auto &entry : parsed.assets)
 		if (entry.second.emissionDepth > 0 && parsed.schemaVersion < 14)
 			fail(0, "emission_depth requires schema_version 14");
@@ -1153,7 +1163,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
-	output << "schema_version = " << std::max(15u, std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
+	output << "schema_version = " << std::max(profile.representativeEmitters ? 16u : 15u, std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1171,6 +1181,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "upper_floor_height = " << unsigned(profile.upperFloorHeight) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	output << "emitter_patch_size = " << unsigned(profile.emitterPatchSize) << "\n";
+	if (profile.representativeEmitters) output << "representative_emitters = " << unsigned(profile.representativeEmitters) << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.materials)
 	{

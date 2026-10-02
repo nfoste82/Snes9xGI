@@ -160,7 +160,7 @@ static void BeginBenchmarkCase()
 	SetLiveRemasterPresentation(true, benchmarkViews[benchmarkCase]);
 	benchmarkCaseStarted = [NSProcessInfo processInfo].systemUptime;
 	benchmarkMeasurementStarted = benchmarkCaseStarted;
-	NSLog(@"Benchmark case %d/7: %s", benchmarkCase + 1, benchmarkNames[benchmarkCase]);
+	NSLog(@"Benchmark case: %s", benchmarkNames[benchmarkCase]);
 }
 
 static void FinishBenchmarkFrame()
@@ -259,7 +259,7 @@ static void FinishBenchmarkFrame()
 	[(NSMutableArray *)benchmarkReport[@"cases"] addObject:result];
 	WriteBenchmarkReport();
 	benchmarkCase++;
-	if (benchmarkCase < 7) BeginBenchmarkCase();
+	if (benchmarkCase < 7 && !getenv("S9X_REMASTER_BENCHMARK_COMPOSITE_ONLY")) BeginBenchmarkCase();
 	else
 	{
 		benchmarkTag = {};
@@ -548,6 +548,9 @@ static NSTextField		*remasterReflectanceBoostInput;
 static NSSlider			*remasterSamplesSlider;
 static NSSlider *remasterEmitterPatchSlider;
 static NSTextField *remasterEmitterPatchInput;
+static NSSlider *remasterRepresentativeSlider;
+static NSTextField *remasterRepresentativeInput;
+static NSButton *remasterRepresentativeEnabled;
 static NSTextField		*remasterSamplesInput;
 static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
@@ -4507,10 +4510,16 @@ void QuitWithFatalError ( NSString *message)
 	[remasterProfileSettingsPanel orderOut:nil];
 	benchmarkSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 	if (connections) benchmarkSceneSettings.samplesPerFrame = static_cast<uint8_t>(connections);
+	if (const char *value = getenv("S9X_REMASTER_BENCHMARK_REPRESENTATIVES")) {
+		char *end = nullptr; long count = strtol(value, &end, 10);
+		if (end == value || *end || count < 0 || count > 8) FailBenchmark(@"Representative override must be0..8");
+		benchmarkSceneSettings.representativeEmitters = static_cast<uint8_t>(count);
+	}
 	benchmarkWarmupFrames = static_cast<unsigned>(std::round(warmup * Memory.ROMFramesPerSecond));
 	benchmarkMeasureFrames = std::max(1u, static_cast<unsigned>(std::round(seconds * Memory.ROMFramesPerSecond)));
 	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
 	benchmarkReport[@"emitter_patch_size"] = @(benchmarkSceneSettings.emitterPatchSize);
+	benchmarkReport[@"representative_emitters"] = @(benchmarkSceneSettings.representativeEmitters);
 	benchmarkReport[@"audio_muted"] = @YES;
 	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
 	benchmarkReport[@"measurement_frames"] = @(benchmarkMeasureFrames);
@@ -4530,7 +4539,7 @@ void QuitWithFatalError ( NSString *message)
 	Settings.Mute = true;
 	Settings.AutoSaveDelay = 0;
 	macFrameSkip = 1;
-	benchmarkCase = 0;
+	benchmarkCase = getenv("S9X_REMASTER_BENCHMARK_COMPOSITE_ONLY") ? 4 : 0;
 	S9xRemasterSetPerformanceMetricsEnabled(true);
 	[self.emulationDelegate gameLoaded];
 	[s9xView.window makeKeyAndOrderFront:nil];
@@ -7136,6 +7145,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
 		remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
+		[self refreshRemasterRepresentativeControls];
 		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	}
@@ -7185,7 +7195,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 980)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1044)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
@@ -7320,6 +7330,30 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmitterPatchInput.target = self;
 		remasterEmitterPatchInput.action = @selector(changeRemasterEmitterPatchSize:);
 		[content addSubview:remasterEmitterPatchInput];
+		// Make room between patch size and bounce controls without compressing rows.
+		for (NSView *view in content.subviews) if (view.frame.origin.y >= 522) {
+			NSRect rect = view.frame; rect.origin.y += 64; view.frame = rect;
+		}
+		remasterRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 550, 390, 24)];
+		[remasterRepresentativeEnabled setButtonType:NSButtonTypeSwitch];
+		remasterRepresentativeEnabled.title = @"Representative Emitters per Tile (1–8; approximate)";
+		remasterRepresentativeEnabled.target = self;
+		remasterRepresentativeEnabled.action = @selector(changeRemasterRepresentativeEmitters:);
+		[content addSubview:remasterRepresentativeEnabled];
+		remasterRepresentativeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 522, 300, 24)];
+		remasterRepresentativeSlider.minValue = 1;
+		remasterRepresentativeSlider.maxValue = 8;
+		remasterRepresentativeSlider.numberOfTickMarks = 8;
+		remasterRepresentativeSlider.allowsTickMarkValuesOnly = YES;
+		remasterRepresentativeSlider.continuous = NO;
+		remasterRepresentativeSlider.target = self;
+		remasterRepresentativeSlider.action = @selector(changeRemasterRepresentativeEmitters:);
+		[content addSubview:remasterRepresentativeSlider];
+		remasterRepresentativeInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 522, 60, 24)];
+		remasterRepresentativeInput.alignment = NSTextAlignmentCenter;
+		remasterRepresentativeInput.target = self;
+		remasterRepresentativeInput.action = @selector(changeRemasterRepresentativeEmitters:);
+		[content addSubview:remasterRepresentativeInput];
 		NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 498, 180, 24)];
 		title.stringValue = @"Indirect Light Bounces";
 		title.editable = NO;
@@ -7455,6 +7489,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
 	remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
+	[self refreshRemasterRepresentativeControls];
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	remasterMetricsButton.state = S9xRemasterPerformanceMetricsEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
@@ -7555,6 +7590,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterSamplesInput.integerValue = restored.samplesPerFrame;
 	remasterEmitterPatchSlider.integerValue = restored.emitterPatchSize;
 	remasterEmitterPatchInput.integerValue = restored.emitterPatchSize;
+	[self refreshRemasterRepresentativeControls];
 	remasterSampleAccumulationButton.state = restored.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
@@ -7714,6 +7750,30 @@ void QuitWithFatalError ( NSString *message)
 	remasterReflectanceBoostSlider.floatValue = boost;
 	remasterReflectanceBoostInput.stringValue = [NSString stringWithFormat:@"%.6g", boost];
 	return YES;
+}
+
+- (void)refreshRemasterRepresentativeControls
+{
+	const uint8_t count = remasterEditingProfile.representativeEmitters;
+	remasterRepresentativeEnabled.state = count ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterRepresentativeSlider.integerValue = count ? count : 4;
+	remasterRepresentativeInput.integerValue = count ? count : 4;
+	remasterRepresentativeSlider.enabled = remasterRepresentativeInput.enabled = count != 0;
+	remasterEmitterPatchSlider.enabled = remasterEmitterPatchInput.enabled = count == 0;
+}
+
+- (void)changeRemasterRepresentativeEmitters:(id)sender
+{
+	if (!remasterEditingProfileLoaded) return;
+	NSInteger value = sender == remasterRepresentativeInput ? remasterRepresentativeInput.integerValue : remasterRepresentativeSlider.integerValue;
+	uint8_t count = remasterRepresentativeEnabled.state == NSControlStateValueOn ?
+		static_cast<uint8_t>(std::max<NSInteger>(1, std::min<NSInteger>(8, value))) : 0;
+	const auto before = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	remasterEditingProfile.representativeEmitters = count;
+	[self refreshRemasterRepresentativeControls];
+	if (count == before.representativeEmitters) return;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(16, remasterEditingProfile.schemaVersion);
+	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Representative Emitters"];
 }
 
 - (void)changeRemasterEmitterPatchSize:(id)sender

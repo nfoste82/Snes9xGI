@@ -906,3 +906,77 @@ Next useful GPU optimization targets source scans/visibility workload across
 flame phases. Caching three source templates only addresses the smaller CPU
 setup fraction; caching complete lighting needs receiver/blocker invalidation
 and a deliberate strategy for independent per-frame sampling noise.
+
+Deferred optimization idea: the jail scene has two unique torch sprites repeated
+three times each (six torches). Shared per-animation-frame emitter templates
+could reuse local patch/color/normal preparation across placements, but cannot
+share visibility rays because each placement has different receiver distances
+and blockers. Preparation is now a small cost, so template instancing is lower
+priority than Direct GPU transport. A two-level torch-instance/patch sampler
+could potentially reduce the current two full source scans per receiver; this
+is a separate, unimplemented idea requiring contribution estimates, correct
+joint probability weights, near-source handling and variance validation. Revisit
+after profiling the remaining Direct transport costs. Future performance runs
+use Composite with zero bounces only until Direct meets the target.
+
+### Representative emitters per tile
+
+Opt-in checkbox plus1..8 integer slider/input in Scene Controls, initial enabled
+value4; Off uses existing patch-size method. Undo/live profile application and
+profile schema16/frame23 persistence implemented; older files default off. Uses
+deterministic color/spatial weighted clusters with actual-member endpoints,
+summed energy/area and membership self-exclusion (see lighting contract).
+No authored room geometry/height changes. User visual acceptance pending.
+
+Benchmark runner now supports `--composite-only`; app environment
+`S9X_REMASTER_BENCHMARK_COMPOSITE_ONLY=1` selects only Composite0. Optional
+benchmark-only `S9X_REMASTER_BENCHMARK_REPRESENTATIVES=0..8` overrides the loaded
+scene setting without editing the user's profile. Report records the effective
+`representative_emitters` value. No indirect benchmark cases ran for this change.
+
+Stationary jail, Release Apple M3 Max, flat emitters, sampled16, saved patch5,
+14indirect connections,30warmup/180measured, counters disabled. All input profile,
+initial/original image and RAM hashes match across runs. Results median/p95 GPU:
+- Off:144/204/282 sources across phases;23.58/26.98ms.
+-3:36 sources;6.65/7.93ms.
+-4:48 sources;7.83/8.96ms.
+-8:96 sources;12.47/14.19ms.
+Artifacts `representatives-off/`, `representatives-three/`, `representatives-four/`,
+`representatives-eight/`. Four representatives reduces median GPU about67%;
+benchmark completed rate57.1fps, not a guarantee of live60fps. Approximate images
+are intentionally different and require user review, especially shadow edges.
+
+Portable tests cover deterministic coverage/caps1..8,64members,holes,instances,
+channels,fallback depth bit, profile/frame roundtrips and schema22 backward default.
+Metal1248 checks pass serial/batched,456visibility comparisons/65536patch probes;
+representative singleton/energy/64member ABI and mixed planar/depth exclusion
+switching covered. Debug/Release builds and diff check pass.
+
+### Next-session notes — user visual review and deferred ideas
+
+User visually approved representative mode at4 and considers3 good enough;
+requested3 as the future default. This review was WITHOUT the sampled-Direct
+launch command, so do not describe it as acceptance of sampled16 noise/appearance.
+Defer implementation/default changes until the next session (user explicitly
+requested notes only for now).
+
+- Group adjacent tiles into one artistic emitting shape before representative
+  clustering: two adjacent torch tiles should form one torch; other emitters span
+  four adjacent tiles and should share one representative budget rather thanK per
+  tile. Expected source reduction roughly2x/4x for those assemblies. Investigate
+  placement/asset-group/connectivity identity so separate nearby lights never
+  merge accidentally; account for animation, flips, partial visibility and main/
+  sub channel ownership. This is proposed work, not implemented or validated.
+- Investigate a cheaper substitute for torch emission depth. Original motivation:
+  torches flush against walls illuminate the wall poorly; moving emission outward
+  looks much better, but depth is expensive. Candidate: a single planar emitter
+  offset a small distance along its authored normal, translating both shading
+  position and biased visibility endpoint, without four depth strata. Compare
+  this with a single displaced omnidirectional point-like representative: planar
+  source-facing cosine may still suppress wall illumination, while isotropic
+  emission may reproduce the desired look more closely. Treat offset distance
+  and emission directionality as separate choices. Preserve total energy, member
+  self-exclusion and valid endpoint geometry; review shadows/blocker intersections
+  and actual GPU cost. No new controls, geometry changes or implementation yet.
+
+Resume tomorrow with these notes; performance tests remain Composite0 only.

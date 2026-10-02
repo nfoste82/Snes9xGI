@@ -645,9 +645,49 @@ struct RemasterDirectSample
 	float4 radiance;
 };
 
-struct RemasterEmitterPatch { uint count; uint members[25]; };
+struct RemasterEmitterPatch { uint count; uint mode; uint members[64]; };
 // High bit marks the sampled-only base record; low bits retain patch/stratum ABI.
 constant uint remasterCollapsedDepthRecord = 0x80000000u;
+
+static RemasterDirectSample remasterRepresentativeSample(uint2 source, uint excluded,
+	texture2d<float, access::read> occlusion, texture2d<float, access::read> heightField,
+	texture2d<float, access::read> surfaceField, texture2d<float, access::read> emissionSeed,
+	const device RemasterMeshCell *mesh, const device RemasterEmitterPatch *patches)
+{
+	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
+	source.y &= ~remasterCollapsedDepthRecord;
+	const device RemasterEmitterPatch &patch = patches[source.y >> 2];
+	float3 centroid = 0, radiance = 0; float weight = 0; uint count = 0;
+	for (uint j = 0; j < patch.count; j++) {
+		uint p = patch.members[j]; if (p == excluded) continue;
+		uint2 pixel = uint2(p % surfaceField.get_width(), p / surfaceField.get_width());
+		float3 value = emissionSeed.read(pixel).rgb;
+		float power = max(value.r,max(value.g,value.b));
+		centroid += float3(float2(pixel)+0.5,surfaceField.read(pixel).r)*power;
+		radiance += value; weight += power; count++;
+	}
+	RemasterDirectSample sample = {};
+	if (!count || weight <= 0) return sample;
+	centroid /= weight;
+	uint representative = source.x; float nearest = INFINITY;
+	for (uint j = 0; j < patch.count; j++) {
+		uint p = patch.members[j]; if (p == excluded) continue;
+		uint2 pixel = uint2(p % surfaceField.get_width(), p / surfaceField.get_width());
+		float3 position = float3(float2(pixel)+0.5,surfaceField.read(pixel).r);
+		float d = dot(position-centroid,position-centroid);
+		if (d < nearest) { nearest = d; representative = p; }
+	}
+	uint2 pixel = uint2(representative % surfaceField.get_width(), representative / surfaceField.get_width());
+	float4 surface = surfaceField.read(pixel); float depth = mesh[representative].emissionDepth;
+	// Layout stays fixed even if receiver exclusion changes the representative's depth.
+	float fraction = !collapsed && (patch.mode & 2u) ? 0.25 : 1.0;
+	float3 offset = !collapsed && depth > 0 ? surface.gba*depth*(float(source.y & 3)+0.5)/4 : float3(0);
+	sample.position = float4(float3(float2(pixel)+0.5,surface.r)+offset,depth > 0 ? 1.0 : 0.0);
+	sample.endpoint = float4(remasterSurfaceRayEndpoint(pixel,surface,occlusion,heightField,mesh)+offset,weight);
+	sample.normal = float4(surface.gba,collapsed ? depth : 0);
+	sample.radiance = float4(radiance*fraction,float(count)*fraction);
+	return sample;
+}
 
 kernel void remasterPrepareEmitterPatches(
 	texture2d<float, access::read> occlusion [[texture(0)]],
@@ -663,6 +703,10 @@ kernel void remasterPrepareEmitterPatches(
 {
 	if (index >= count) return;
 	uint2 source = sources[index];
+	if (patches[(source.y & ~remasterCollapsedDepthRecord) >> 2].mode & 1u) {
+		samples[index] = remasterRepresentativeSample(source, 0xffffffffu, occlusion, heightField,
+			surfaceField, emissionSeed, mesh, patches); return;
+	}
 	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
 	source.y &= ~remasterCollapsedDepthRecord;
 	RemasterEmitterPatch patch = patches[source.y >> 2];
@@ -696,7 +740,7 @@ kernel void remasterPrepareEmitterPatches(
 // share normal/height/depth, so removing its energy and centroid weight is cheap.
 static RemasterDirectSample remasterExcludeEmitterReceiver(RemasterDirectSample sample,
 	uint2 source, uint receiverIndex, float4 receiverSurface,
-	texture2d<float, access::read> emissionSeed,
+	texture2d<float, access::read> emissionSeed, texture2d<float, access::read> surfaceField,
 	texture2d<float, access::read> occlusion, texture2d<float, access::read> heightField,
 	const device RemasterMeshCell *mesh, const device RemasterEmitterPatch *patches)
 {
@@ -704,8 +748,11 @@ static RemasterDirectSample remasterExcludeEmitterReceiver(RemasterDirectSample 
 	if (all(emissionSeed.read(receiverPixel).rgb <= 0)) return sample;
 	bool collapsed = (source.y & remasterCollapsedDepthRecord) != 0;
 	source.y &= ~remasterCollapsedDepthRecord;
-	RemasterEmitterPatch patch = patches[source.y >> 2];
+	const device RemasterEmitterPatch &patch = patches[source.y >> 2];
 	for (uint i = 0; i < patch.count; i++) if (patch.members[i] == receiverIndex) {
+		if (patch.mode & 1u) return remasterRepresentativeSample(
+			uint2(source.x, source.y | (collapsed ? remasterCollapsedDepthRecord : 0u)), receiverIndex,
+			occlusion, heightField, surfaceField, emissionSeed, mesh, patches);
 		uint2 pixel = uint2(receiverIndex % emissionSeed.get_width(), receiverIndex / emissionSeed.get_width());
 		float3 value = emissionSeed.read(pixel).rgb;
 		float power = max(value.r, max(value.g, value.b));
@@ -829,7 +876,7 @@ kernel void remasterSampledDirect(
 	{
 		RemasterDirectSample sample = samples[i];
 		if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
-			surface, emissionSeed, occlusion, heightField, mesh, patches);
+			surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
 		else if (sources[i].x == receiverIndex) continue;
 		if (all(sample.radiance.rgb <= 0)) continue;
 		float factor = dot(remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample), float4(0.25));
@@ -850,7 +897,7 @@ kernel void remasterSampledDirect(
 		{
 			RemasterDirectSample sample = samples[i];
 			if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
-				surface, emissionSeed, occlusion, heightField, mesh, patches);
+				surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
 			else if (sources[i].x == receiverIndex) continue;
 			if (all(sample.radiance.rgb <= 0)) continue;
 			float4 factors = remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample);
@@ -1005,7 +1052,7 @@ kernel void remasterIndirectBounce(
 			if (clusteredDirect) {
 				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
 				preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
-					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, occlusion, heightField, mesh, emitterPatches);
+					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
 				if (all(preparedSample.radiance.rgb <= 0)) continue;
 			}
 			samplePoint = preparedSample.position.xy;

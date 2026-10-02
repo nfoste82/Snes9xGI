@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--move", choices=("none", "left", "right"), default="none")
     parser.add_argument("--presentation", choices=("deterministic", "live"), default="deterministic")
     parser.add_argument("--connections", type=int, help="Override profile connection count")
+    parser.add_argument("--composite-only", action="store_true", help="Measure only Composite with zero bounces")
     parser.add_argument("--timeout", type=float, default=1800, help="Wall-clock timeout in seconds")
     args = parser.parse_args()
     executable = args.app.expanduser().resolve()
@@ -36,6 +37,8 @@ def main():
     if args.connections is not None:
         command += ["--benchmark-connections", str(args.connections)]
     environment = os.environ.copy()
+    if args.composite_only:
+        environment["S9X_REMASTER_BENCHMARK_COMPOSITE_ONLY"] = "1"
     environment.pop("S9X_REMASTER_GI_METRICS", None)
     environment.pop("S9X_REMASTER_FRAME_METRICS", None)
     print(f"Running {args.presentation} benchmark; {args.seconds:g} emulated seconds per case", flush=True)
@@ -44,7 +47,7 @@ def main():
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Benchmark failed: {error}. Partial report, if any: {output / 'report.json'}\n")
     report = json.loads((output / "report.json").read_text())
-    if report["status"] != "complete" or len(report["cases"]) != 7:
+    if report["status"] != "complete" or len(report["cases"]) != (1 if args.composite_only else 7):
         parser.exit(1, "Benchmark report is incomplete\n")
     print("\nCase                                  GPU median/p95 ms  Fields/mesh ms  Frames/s  Samples")
     for case in report["cases"]:
@@ -57,7 +60,7 @@ def main():
                 f"{name}={values['median']:.3f}" for name, values in sorted(stages.items())))
     if not all(case["matches_first_case_ram"] for case in report["cases"]):
         parser.exit(1, "Emulated RAM differs between cases; inspect report before comparing timings\n")
-    print(f"Matching end-state RAM across all seven cases. Results: {output}")
+    print(f"Matching end-state RAM across {len(report['cases'])} case(s). Results: {output}")
 
 
 if __name__ == "__main__":

@@ -339,7 +339,8 @@ int main()
                         sources.clear();
                         for (unsigned p = 0; p < customPatches->size(); p++) {
                             unsigned pixel = (*customPatches)[p].members[0];
-                            for (unsigned sample = 0, count = !collapsed && mesh[pixel].emissionDepth > 0 ? 4 : 1; sample < count; sample++)
+                            bool depthLayout = ((*customPatches)[p].mode & 1u) ? ((*customPatches)[p].mode & 2u) : mesh[pixel].emissionDepth > 0;
+                            for (unsigned sample = 0, count = !collapsed && depthLayout ? 4 : 1; sample < count; sample++)
                                 sources.push_back(simd_uint2{pixel, (p*4+sample) | sourceFlag});
                         }
                         patchBuffer = [device newBufferWithBytes:customPatches->data() length:customPatches->size()*sizeof(RemasterEmitterPatch) options:MTLResourceStorageModeShared];
@@ -632,6 +633,16 @@ int main()
                 meanNear("collapsed depth patch self exclusion mean", clusterDepth, &depthPatches, emitter);
                 depthPatches[0].count = 1;
                 near("collapsed singleton depth self exclusion", depthRun(clusterDepth, 11, &depthPatches, emitter), {});
+                depthPatches[0].count = 2; depthPatches[0].mode = 3;
+                meanNear("representative depth patch mean", clusterDepth, &depthPatches);
+                meanNear("representative depth self exclusion mean", clusterDepth, &depthPatches, emitter);
+                // Exclusion can select a different source model without changing layout.
+                depthMesh[emitter+1].emissionDepth = 0;
+                clusterDepth[Surface][emitter+1] = {9,1,0,0};
+                meanNear("representative remaining planar member", clusterDepth, &depthPatches, emitter);
+                meanNear("representative remaining depth member", clusterDepth, &depthPatches, emitter+1);
+                near("representative mixed depth layout expanded sample", depthRun(clusterDepth, 13, &depthPatches, -1, false, true),
+                    depthRun(clusterDepth, 13, &depthPatches, -1, false, false, false));
                 Scene dense = scene();
                 dense[Surface][receiver] = {8, 1, 0, 0};
                 dense[OppositeFacing][receiver] = {1, 0, 0, 0};
@@ -672,6 +683,20 @@ int main()
                 patches[0].count = 2; patches[0].members[1] = emitter+1;
                 near("cluster sampled matches exhaustive proposal", clustered(two,true), clustered(two,false));
                 positive("cluster summed energy positive", clustered(two,false));
+                patches[0].mode = 1;
+                near("representative summed energy unoccluded", clustered(two,true), clustered(two,false));
+                patches[0].count = 1;
+                near("representative singleton exact", clustered(s,true), directTrial(s,false,1,1));
+                patches[0].count = 64;
+                Scene full = s;
+                for (unsigned j = 0; j < 64; j++) {
+                    unsigned p = (j/8)*width+16+j%8;
+                    patches[0].members[j] = p;
+                    full[Participation][p] = {1,1,0,0};
+                    full[Surface][p] = {8,-0.98f,0,0.198997f};
+                    full[PreviousBounce][p] = {1,0.5f,0.25f,1};
+                }
+                near("representative 64 member ABI and exact sampled energy", clustered(full,true), clustered(full,false));
             }
             near("direct field excludes generated point-light proxies", run(s, false).bounce, {});
             s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};

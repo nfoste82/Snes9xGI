@@ -691,6 +691,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.heightPreviewMultiplier = state.activeProfile.heightPreviewMultiplier;
 	result.samplesPerFrame = state.activeProfile.samplesPerFrame;
 	result.emitterPatchSize = state.activeProfile.emitterPatchSize;
+	result.representativeEmitters = state.activeProfile.representativeEmitters;
 	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;
 	result.originalRgb555.reserve(pixelCount);
