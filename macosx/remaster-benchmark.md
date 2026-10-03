@@ -980,3 +980,11 @@ requested notes only for now).
   and actual GPU cost. No new controls, geometry changes or implementation yet.
 
 Resume tomorrow with these notes; performance tests remain Composite0 only.
+
+Adjacent-tile authoring implemented in the following session: Combine Emitters
+in Emission layer, reciprocal per-hash lists (profile17/capture24), connected-shape
+validation and cardinal footprint joining with one shared representative budget.
+See `remaster/lighting.md` for semantics and larger-shape capacity fallback.
+Portable grouping/profile/capture checks pass; Metal1249 checks pass in serial
+and batched modes including256-member energy/ABI. Debug/Release build verified.
+Interactive button/alert and combined-torch visual review remain pending.

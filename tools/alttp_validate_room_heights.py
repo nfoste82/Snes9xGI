@@ -19,12 +19,23 @@ UNKNOWN = 255
 DIRS = ((0, -1, "north"), (0, 1, "south"), (-1, 0, "west"), (1, 0, "east"))
 
 
-def load_height_map(path: Path, room: int) -> list[int]:
+def load_height_map(path: Path, room: int) -> list[int] | dict:
     data = path.read_bytes()
-    if (len(data) != 10 + SIZE * SIZE or data[:8] != b"ALTPHM1\0" or
+    v1 = len(data) == 4106 and data[:8] == b"ALTPHM1\0"
+    v2 = len(data) == 12298 and data[:8] == b"ALTPHM2\0"
+    if (not (v1 or v2) or
             struct.unpack_from("<H", data, 8)[0] != room):
-        raise ValueError("height map is not ALTPHM1 for the requested room")
+        raise ValueError("height map is not ALTPHM1/2 for the requested room")
+    if v2:
+        return {"visible": list(data[10:4106]), "planes": [list(data[4106:8202]), list(data[8202:12298])]}
     return list(data[10:])
+
+
+def _fnv(data: bytes) -> str:
+    value = 14695981039346656037
+    for byte in data:
+        value = ((value ^ byte) * 1099511628211) & 0xffffffffffffffff
+    return f"{value:x}"
 
 
 def _profile(profile: dict) -> tuple[dict[str, list[int]], set[str]]:
@@ -62,6 +73,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     if not isinstance(planes, list) or len(planes) != 2 or not isinstance(elevation, dict):
         raise ValueError("graph must contain two planes and an elevation solution")
     assets, wall_hashes = _profile(profile)
+    obstacle_hashes = set(profile.get("asset_groups", {}).get("obstacles", {}).get("tile_hashes", []))
     walkable: set[tuple[int, int, int]] = set()
     denominators = []
     for plane, record in enumerate(planes):
@@ -76,7 +88,8 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             walkable.add((plane, cell[0], cell[1]))
         denominators.append(len({(x, y) for p, x, y in walkable if p == plane}))
     solved = {}
-    for cell in elevation.get("cells_plane_x_y_level", []):
+    explicit_bases = elevation.get("cells_plane_x_y_base")
+    for cell in explicit_bases if explicit_bases is not None else elevation.get("cells_plane_x_y_level", []):
         if (not isinstance(cell, list) or len(cell) != 4 or
                 not all(isinstance(v, int) for v in cell)):
             raise ValueError("elevation contains an invalid solved cell")
@@ -86,7 +99,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
         key = plane, x, y
         if key in solved and solved[key] != level:
             raise ValueError("elevation assigns conflicting levels to one support cell")
-        solved[key] = level
+        solved[key] = level if explicit_bases is not None else level * rise
 
     placements, missing, conflicts = [], [], []
     for plane, x, y in sorted(walkable):
@@ -98,12 +111,12 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                             "reason": "missing_level" if level is None else "missing_local_height",
                             "tile_hash": cell.tile_hash})
             continue
-        base = level * rise
+        base = level
         if base > 254:
             missing.append({"plane": plane, "x": x, "y": y, "reason": "base_overflow"})
             continue
         placements.append({"kind": "walkable_support", "plane": plane, "x": x, "y": y,
-                           "level": level, "floor_base": base, "tile_hash": cell.tile_hash,
+                            "floor_base": base, "tile_hash": cell.tile_hash,
                            "local_source": "authored_asset", "local_min": min(local),
                            "local_max": max(local), "effective_min": base + min(local),
                            "effective_max": base + max(local)})
@@ -122,7 +135,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             index = by * SIZE + bx
             placed = snapshot.cell(1, bx, by)
             if attributes[plane][index] in (1, 2) and placed.tile_hash not in wall_hashes:
-                candidates.setdefault((bx, by), []).append((plane, level * rise, dx, dy, y * SIZE + x))
+                candidates.setdefault((bx, by), []).append((plane, level, dx, dy, y * SIZE + x))
     for (x, y), contacts in sorted(candidates.items(), key=lambda item: (item[0][1], item[0][0])):
         levels = {base for _, base, _, _, _ in contacts}
         directions = sorted({(dx, dy) for _, _, dx, dy, _ in contacts})
@@ -135,6 +148,17 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             continue
         base = next(iter(levels))
         cell = snapshot.cell(1, x, y)
+        if cell.tile_hash in obstacle_hashes:
+            local = assets.get(cell.tile_hash)
+            if local is None:
+                missing.append({"plane": planes_here[0], "x": x, "y": y,
+                                "reason": "missing_obstacle_relief", "tile_hash": cell.tile_hash})
+                continue
+            placements.append({"kind": "authored_obstacle", "planes": planes_here, "x": x, "y": y,
+                               "floor_base": base, "tile_hash": cell.tile_hash,
+                               "local_source": "authored_asset", "local_min": min(local), "local_max": max(local),
+                               "effective_min": base + min(local), "effective_max": base + max(local)})
+            continue
         directional_ramps = [_ramp(dx, dy, cell.hflip, cell.vflip) for dx, dy in directions]
         # Outside/multi-edge corner convention: each contacting edge remains at
         # floor height, so the conservative composed surface is the pixel-wise
@@ -150,6 +174,24 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                            "hflip": cell.hflip, "vflip": cell.vflip,
                            "local_source": "placement_ramp_0_7", "local_height": ramp,
                            "effective_min": base, "effective_max": base + 7})
+    for record in elevation.get("structural_placements", []):
+        x, y, base = record.get("x"), record.get("y"), record.get("floor_base")
+        if not all(isinstance(v, int) for v in (x, y, base)) or not (0 <= x < 64 and 0 <= y < 64 and 0 <= base < 255):
+            raise ValueError("invalid structural placement")
+        cell = snapshot.cell(1, x, y)
+        if record.get("kind") != "authored_wall":
+            continue # Obstacles are independently verified from support contacts above.
+        if cell.tile_hash not in wall_hashes:
+            raise ValueError("runtime wall is not classified in pinned profile")
+        local = assets.get(cell.tile_hash)
+        if local is None:
+            missing.append({"x": x, "y": y, "reason": "missing_wall_local_height"})
+            continue
+        placements.append({"kind": "authored_wall", "x": x, "y": y, "floor_base": base,
+                           "planes": record.get("planes", []),
+                           "tile_hash": cell.tile_hash, "local_source": "authored_asset",
+                           "local_min": min(local), "local_max": max(local),
+                           "effective_min": base + min(local), "effective_max": base + max(local)})
     meta = {"per_plane_walkable_denominator": denominators,
             "plane_overlap_cells": len({(x, y) for _, x, y in walkable if
                                         (0, x, y) in walkable and (1, x, y) in walkable})}
@@ -166,12 +208,18 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
     elevation = graph["elevation"]
     map_missing, map_mismatches = [], []
     if height_map is not None:
+        visible_map = height_map["visible"] if isinstance(height_map, dict) else height_map
         expected = {}
         for item in placements:
             index = item["y"] * SIZE + item["x"]
             expected[index] = max(expected.get(index, 0), item["floor_base"])
+            if isinstance(height_map, dict):
+                for plane in [item["plane"]] if "plane" in item else item.get("planes", []):
+                    actual = height_map["planes"][plane][index]
+                    if actual != item["floor_base"]:
+                        map_mismatches.append([plane, item["x"], item["y"], item["floor_base"], actual])
         for index, expected_value in sorted(expected.items()):
-            actual = height_map[index]
+            actual = visible_map[index]
             if actual == UNKNOWN:
                 map_missing.append([index % SIZE, index // SIZE, expected_value])
             elif actual != expected_value:
@@ -179,8 +227,16 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
     supports = [p for p in placements if p["kind"] == "walkable_support"]
     fallbacks = [p for p in placements if p["kind"] == "collidable_fallback"]
     conflicts = list(elevation.get("conflicting_components", [])) + fallback_conflicts
+    if elevation.get("structural_conflicts", 0):
+        issues = elevation.get("geometry_component_issues", [])
+        conflicts.extend({"kind": "runtime_geometry_component", **issue} for issue in issues)
+        accounted = sum(issue.get("nodes", 0) if issue.get("equality_mismatches", 0) else
+                        issue.get("negative_base_nodes", 0) + issue.get("overflow_nodes", 0) for issue in issues)
+        if not issues or elevation["structural_conflicts"] > accounted:
+            conflicts.append({"kind": "runtime_structure", "count": elevation["structural_conflicts"] - accounted})
     unresolved = elevation.get("unresolved_stairs", [])
-    success = not missing and not conflicts and not unresolved and not map_missing and not map_mismatches
+    unknown_walls = elevation.get("unknown_wall_cells", 0)
+    success = not missing and not conflicts and not unresolved and not map_missing and not map_mismatches and not unknown_walls
     return {"format": "alttp-room-height-validation-v2", "room_id": graph.get("room_id"),
             "success": success, "rise": rise, **meta,
             "required_walkable_placements": sum(meta["per_plane_walkable_denominator"]),
@@ -190,6 +246,13 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
             "effective_height_placements": len(placements), "placements": placements,
             "conflicting_components": conflicts, "unresolved_stairs": unresolved,
             "compiled_map_checked": height_map is not None,
+            "solved_wall_cells": elevation.get("solved_wall_cells", 0),
+            "unknown_wall_cells": unknown_walls,
+            "unresolved_wall_placements": elevation.get("unresolved_wall_placements", []),
+            "constraint_issues": elevation.get("constraint_issues", []),
+            "relative_anchor_provenance": elevation.get("relative_anchor_provenance", []),
+            "geometry_component_issues": elevation.get("geometry_component_issues", []),
+            "issue_placements": elevation.get("issue_placements", []),
             "compiled_map_missing": map_missing, "compiled_map_mismatches": map_mismatches}
 
 
@@ -218,6 +281,8 @@ def main() -> int:
                         help="room traversal state pin (room, entrance, plane, collision mode)")
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--height-map", type=Path)
+    parser.add_argument("--runtime-solution", type=Path,
+                        help="complete-room output of alttp_runtime_room_heights; bases are height units, not levels")
     parser.add_argument("--rise", type=int, default=50)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--diagnostic-svg", type=Path)
@@ -231,6 +296,8 @@ def main() -> int:
             raise ValueError("snapshot/state does not match graph room")
         if state.get("collision_mode") != 0:
             raise ValueError("only collision mode 0 is supported")
+        if graph.get("state") is not None and graph["state"] != state:
+            raise ValueError("pinned traversal state does not match graph")
         attribute_bytes = args.attributes.read_bytes()
         attributes = read_attributes(attribute_bytes, room)
         expected_digest = graph.get("attribute_sha256")
@@ -238,6 +305,21 @@ def main() -> int:
             raise ValueError("collision arrays do not match graph attribute SHA-256")
         with args.profile.open("rb") as source:
             profile = tomllib.load(source)
+        if args.runtime_solution:
+            solution = json.loads(args.runtime_solution.read_text())
+            if solution.get("format") != "alttp-runtime-room-heights-v1" or solution.get("room_id") != room:
+                raise ValueError("runtime solution room/format mismatch")
+            if solution.get("link_xy") != state.get("link_xy") or solution.get("plane") != state.get("plane"):
+                raise ValueError("runtime solution seed does not match pinned state")
+            for key, source in (("snapshot_fnv1a64", args.snapshot), ("attributes_fnv1a64", args.attributes),
+                                ("profile_fnv1a64", args.profile)):
+                if solution.get(key) != _fnv(source.read_bytes()):
+                    raise ValueError(f"runtime solution {key} does not match pinned input")
+            words = b"".join(snapshot.cell(1, x, y).word.to_bytes(2, "little")
+                             for y in range(64) for x in range(64))
+            if solution.get("bg2_words_fnv1a64") != _fnv(words):
+                raise ValueError("runtime decoded BG2 words do not match complete snapshot map")
+            graph["elevation"] = {**graph["elevation"], **solution}
         height_map = load_height_map(args.height_map, room) if args.height_map else None
         report = validate(graph, args.rise, height_map, snapshot=snapshot,
                           attributes=attributes, profile=profile)

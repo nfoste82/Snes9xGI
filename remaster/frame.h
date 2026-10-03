@@ -15,13 +15,14 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 23;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 25;
 
 struct RemasterFramePixel
 {
@@ -52,12 +53,14 @@ struct RemasterFrameAssetGroup
 struct RemasterFrameAssetMetadata
 {
 	RemasterTileContentId tileId;
+	RemasterTileRole tileRole = RemasterTileRole::Unknown;
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
 	std::array<uint8_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
 	float emissionDepth = 0.0f;
+	std::vector<RemasterTileContentId> combineEmitters;
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
@@ -162,6 +165,14 @@ struct RemasterFrame
 
 struct RemasterDungeonFloorContext
 {
+	enum class Surface : uint8_t { Unknown, Floor, Wall, Obstacle, Stair };
+	struct Placement
+	{
+		Surface surface = Surface::Unknown;
+		std::array<uint8_t, 64> height = {};
+		bool hasHeight = false;
+		bool hflip = false, vflip = false;
+	};
 	struct Stair
 	{
 		uint8_t x = 0;
@@ -185,6 +196,12 @@ struct RemasterDungeonFloorContext
 	uint16_t backgroundScrollX = 0;
 	uint16_t backgroundScrollY = 0;
 	const uint8_t *collisionAttributes = nullptr;
+	// Complete constructed BG2 room, never a viewport inventory. Heights are
+	// canonical authored relief; flips are applied by the geometry solver.
+	const Placement *placements = nullptr;
+	const uint8_t *constructedMaps = nullptr; // both final WRAM BG maps, 16384 bytes
+	const uint8_t *graphics = nullptr; // complete VRAM; included in state identity
+	uint16_t graphicsBase = 0;
 	std::array<Stair, 32> stairs = {};
 	uint8_t stairCount = 0;
 };
@@ -223,6 +240,21 @@ struct RemasterDungeonHeightMap
 	uint16_t conflictingComponentCount = 0;
 	std::array<uint16_t, 2> solvedPlaneCells = {};
 	bool hasPlaneOffsets = false;
+	bool hasRoomGeometry = false;
+	std::array<uint8_t, 4096> fallbackDirections = {};
+	std::array<std::array<uint8_t, 4096>, 2> structuralPlaneOffsets = {};
+	std::array<uint16_t, 2> requiredPlaneCells = {};
+	std::array<uint16_t, 2> unknownPlaneCells = {};
+	uint16_t structuralConflicts = 0;
+	uint16_t solvedWallCells = 0;
+	uint16_t unknownWallCells = 0;
+	struct Conflict { int node, other, expected, actual; };
+	std::vector<Conflict> geometryConflicts;
+	std::vector<std::array<int, 4>> geometryIssuePlacements;
+	struct RelativeAnchor { int node, minimum, supportNodes; bool isolatedFlat; };
+	std::vector<RelativeAnchor> relativeAnchors;
+	struct GeometryGroupIssue { int start, nodes, mismatches, negative, overflow; bool isolatedFlat; };
+	std::vector<GeometryGroupIssue> geometryGroupIssues;
 };
 
 struct RemasterDungeonHeightApplyDiagnostics
@@ -265,9 +297,11 @@ inline bool S9xRemasterReadDungeonHeightMap (const std::string &path,
 inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext &context,
 	uint8_t floorRise, RemasterDungeonHeightMap &result)
 {
+	result = RemasterDungeonHeightMap{};
 	result.roomIndex = context.roomIndex;
 	result.offsets.fill(255);
 	for (auto &plane : result.planeOffsets) plane.fill(255);
+	for (auto &plane : result.structuralPlaneOffsets) plane.fill(255);
 	result.componentCount = result.constraintCount = result.conflictingComponentCount = 0;
 	result.solvedPlaneCells.fill(0);
 	result.hasPlaneOffsets = false;
@@ -275,10 +309,15 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		!context.collisionAttributes || context.collisionMode != 0)
 		return false;
 
-	std::array<int16_t, 2 * 64 * 64> components;
+	// The emulator runs on a ~512 KiB thread stack. Keep room-sized scratch
+	// on the heap, with fixed bounds and invocation-local ownership (no shared
+	// static scratch or retained per-room allocations).
+	auto componentStorage = std::make_unique<std::array<int16_t, 2 * 64 * 64>>();
+	auto &components = *componentStorage;
 	components.fill(-1);
 	std::vector<std::vector<uint16_t>> cells;
-	std::array<uint8_t, 2 * 497 * 488> visited = {};
+	auto visitedStorage = std::make_unique<std::array<uint8_t, 2 * 497 * 488>>();
+	auto &visited = *visitedStorage;
 	auto walkable = [&] (int plane, int x, int y, int direction) {
 		static const int sx[4][3] = {{ 0, 8, 15 }, { 8, 0, 15 }, { 0, 0, 0 }, { 15, 15, 15 }};
 		static const int sy[4][3] = {{ 8, 8, 8 }, { 24, 24, 24 }, { 8, 16, 23 }, { 8, 16, 23 }};
@@ -292,6 +331,12 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		return true;
 	};
 	std::vector<uint32_t> seeds;
+	std::array<bool, 2> activePlanes = {true, true};
+	if (context.placements)
+	{
+		activePlanes = {false, false}; activePlanes[context.linkPlane & 1] = true;
+		for (uint8_t i = 0; i < context.stairCount; i++) if (context.stairs[i].changesPlane) activePlanes = {true, true};
+	}
 	seeds.push_back((context.linkPlane * 488 + (context.linkY & 511)) * 497 + (context.linkX & 511));
 	for (uint8_t i = 0; i < context.stairCount; i++)
 	{
@@ -299,12 +344,27 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		const int x = stair.x * 8 + 8, north = stair.y * 8 - 24, south = stair.y * 8 + 16;
 		for (int plane = 0; plane < 2; plane++)
 			for (int y : { north, south })
-				if (x >= 0 && x <= 496 && y >= 0 && y <= 487)
+				if (activePlanes[plane] && x >= 0 && x <= 496 && y >= 0 && y <= 487)
 					seeds.push_back((plane * 488 + y) * 497 + x);
 	}
+	if (context.placements)
+		for (int p = 0; p < 2; p++) for (int y = 0; y < 61; y++) for (int x = 0; x < 62; x++)
+			if (activePlanes[p] && context.placements[(y + 1) * 64 + x].surface == RemasterDungeonFloorContext::Surface::Floor &&
+				walkable(p, x * 8, y * 8, 0) && walkable(p, x * 8, y * 8, 1) &&
+				walkable(p, x * 8, y * 8, 2) && walkable(p, x * 8, y * 8, 3))
+				seeds.push_back((p * 488 + y * 8) * 497 + x * 8);
 	for (uint32_t seed : seeds)
 	{
 		if (seed >= visited.size() || visited[seed]) continue;
+		if (context.placements)
+		{
+			const int x = seed % 497, row = seed / 497, p = row / 488, y = row % 488;
+			bool legal = true;
+			for (int yy = (y + 8) / 8; yy <= (y + 23) / 8; yy++)
+				for (int xx = x / 8; xx <= (x + 15) / 8; xx++)
+					if (context.collisionAttributes[p * 4096 + yy * 64 + xx] != 0) legal = false;
+			if (!legal) continue;
+		}
 		const int16_t id = static_cast<int16_t>(cells.size());
 		cells.push_back({});
 		std::vector<uint32_t> queue(1, seed);
@@ -374,11 +434,281 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 						Constraint{ north, south });
 			}
 	}
-	if (constraints.empty())
+	if (constraints.empty() && !context.placements)
 		return false;
 	result.componentCount = static_cast<uint16_t>(std::min<size_t>(UINT16_MAX, cells.size()));
 	result.constraintCount = static_cast<uint16_t>(std::min<size_t>(UINT16_MAX, constraints.size()));
 
+	if (context.placements)
+	{
+		// Geometry graph retains independent gameplay planes. Cardinal movement
+		// components are support nodes; authored flat plateaus and walls add
+		// geometric connections without adding illegal movement edges.
+		struct Edge { int a, b, rise; };
+		std::vector<Edge> edges;
+		auto nodeStorage = std::make_unique<std::array<int, 8192>>();
+		auto &nodes = *nodeStorage;
+		nodes.fill(-1);
+		int count = static_cast<int>(cells.size());
+		for (int p = 0; p < 2; p++) for (int i = 0; i < 4096; i++)
+		{
+			if (!activePlanes[p]) continue;
+			const auto &tile = context.placements[i];
+			if (tile.hasHeight && tile.surface == RemasterDungeonFloorContext::Surface::Wall)
+				nodes[p * 4096 + i] = count++;
+			else if (components[p * 4096 + i] >= 0) nodes[p * 4096 + i] = components[p * 4096 + i];
+			else if (tile.hasHeight && (tile.surface == RemasterDungeonFloorContext::Surface::Wall ||
+				tile.surface == RemasterDungeonFloorContext::Surface::Floor ||
+				tile.surface == RemasterDungeonFloorContext::Surface::Obstacle)) nodes[p * 4096 + i] = count++;
+		}
+		auto height = [&] (int i, int x, int y) {
+			const auto &tile = context.placements[i];
+			return static_cast<int>(tile.height[(tile.vflip ? 7 - y : y) * 8 + (tile.hflip ? 7 - x : x)]);
+		};
+		auto direction = [&] (int i, int dx, int dy) {
+			int low = 0, high = 0;
+			for (int k = 0; k < 8; k++)
+			{
+				low += height(i, dx ? (dx > 0 ? 7 : 0) : k, dy ? (dy > 0 ? 7 : 0) : k);
+				high += height(i, dx ? (dx > 0 ? 0 : 7) : k, dy ? (dy > 0 ? 0 : 7) : k);
+			}
+			return low < high;
+		};
+		auto diagonal = [&] (int i) {
+			// A diagonal may terminate in a flat cap or floor half-plane. Require
+			// an exact clipped affine profile, not averaged normals or a corner.
+			int lo = 255, hi = 0;
+			for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++)
+				{ lo = std::min(lo, height(i,x,y)); hi = std::max(hi, height(i,x,y)); }
+			for (int y = 0; y < 7; y++) for (int x = 0; x < 7; x++)
+			{
+				const int h = height(i,x,y), sx = height(i,x+1,y)-h, sy = height(i,x,y+1)-h;
+				if (!sx || !sy) continue;
+				bool exact = true;
+				for (int yy = 0; yy < 8; yy++) for (int xx = 0; xx < 8; xx++)
+					if (height(i,xx,yy) != std::max(lo, std::min(hi, h + sx*(xx-x) + sy*(yy-y)))) exact = false;
+				if (exact) return true;
+			}
+			return false;
+		};
+		auto diagonalStorage = std::make_unique<std::array<bool, 4096>>();
+		auto &diagonals = *diagonalStorage;
+		for (int i = 0; i < 4096; i++) diagonals[i] =
+			context.placements[i].surface == RemasterDungeonFloorContext::Surface::Wall && diagonal(i);
+		for (int p = 0; p < 2; p++) for (int i = 0; i < 4096; i++)
+		{
+			const auto &tile = context.placements[i];
+			if (!tile.hasHeight || nodes[p * 4096 + i] < 0) continue;
+			// A visible wall over nonblocking support on another gameplay plane
+			// is an occluder, not a ramp connecting that underpass's floor.
+			if (tile.surface == RemasterDungeonFloorContext::Surface::Wall &&
+				context.collisionAttributes[p * 4096 + i] == 0) continue;
+			for (const auto &d : {std::array<int, 2>{1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1,1}, {1,-1}, {-1,1}, {-1,-1}})
+			{
+				const int dx = d[0], dy = d[1], x = i % 64 + dx, y = i / 64 + dy;
+				if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+				const int j = y * 64 + x, a = nodes[p * 4096 + i], b = nodes[p * 4096 + j];
+				const auto &other = context.placements[j];
+				if (b < 0 || !other.hasHeight) continue;
+				const bool wall = tile.surface == RemasterDungeonFloorContext::Surface::Wall;
+				const bool otherWall = other.surface == RemasterDungeonFloorContext::Surface::Wall;
+				if (dx && dy)
+				{
+					if (!wall || !diagonals[i]) continue;
+					// A corner-only contact cannot identify which region of a
+					// clipped cap/floor owns the seam. Only complete affine faces
+					// may supply these point contacts.
+					auto affine = [&] (int cell) {
+						const int h = height(cell,0,0), sx = height(cell,1,0)-h, sy = height(cell,0,1)-h;
+						for (int yy=0; yy<8; yy++) for (int xx=0; xx<8; xx++)
+							if (height(cell,xx,yy) != h+sx*xx+sy*yy) return false;
+						return true;
+					};
+					if (!affine(i) || (otherWall && !affine(j))) continue;
+					// A rasterized assembly's full edge contacts own the geometry;
+					// do not short-circuit them through the corner of a neighboring
+					// placement (often a different cap/floor region).
+					if (context.placements[(i / 64) * 64 + x].hasHeight ||
+						context.placements[y * 64 + i % 64].hasHeight) continue;
+					const bool downX = direction(i, dx, 0), downY = direction(i, 0, dy);
+					if (downX != downY || (otherWall && (!diagonals[j] || direction(j, dx, 0) != downX || direction(j, 0, dy) != downY))) continue;
+					if (otherWall && context.collisionAttributes[p * 4096 + j] == 0) continue;
+					const int h = height(i, dx > 0 ? 7 : 0, dy > 0 ? 7 : 0);
+					const int oh = other.surface == RemasterDungeonFloorContext::Surface::Obstacle ? 0 : height(j, dx > 0 ? 0 : 7, dy > 0 ? 0 : 7);
+					const int step = std::abs(h - height(i, dx > 0 ? 6 : 1, dy > 0 ? 6 : 1));
+					edges.push_back({a, b, h - oh + (!downX ? step : otherWall ? -step : 0)});
+					continue;
+				}
+				// Diagonal raster assemblies share cardinal edges too. Test all
+				// eight seam samples below instead of dropping those contacts.
+				if (otherWall && context.collisionAttributes[p * 4096 + j] == 0) continue;
+				if (wall)
+				{
+					// Uphill/downhill sequences and compatible full wall tangent
+					// seams establish a relation. Tangents require every sample to
+					// agree below; artwork similarity alone never supplies an edge.
+					if (!direction(i, dx, dy) && !direction(i, -dx, -dy) && !otherWall) continue;
+					if (otherWall && direction(i, dx, dy) != direction(j, dx, dy)) continue;
+				}
+				else if (otherWall) continue; // reciprocal wall iteration owns this edge
+				else if (!((tile.surface == RemasterDungeonFloorContext::Surface::Floor &&
+					(other.surface == RemasterDungeonFloorContext::Surface::Floor || other.surface == RemasterDungeonFloorContext::Surface::Obstacle)) ||
+					(tile.surface == RemasterDungeonFloorContext::Surface::Obstacle && other.surface == RemasterDungeonFloorContext::Surface::Floor))) continue;
+				int rise = INT_MIN;
+				bool compatible = true;
+				for (int k = 0; k < 8; k++)
+				{
+					const int h = tile.surface == RemasterDungeonFloorContext::Surface::Obstacle ? 0 :
+						height(i, dx ? (dx > 0 ? 7 : 0) : k, dy ? (dy > 0 ? 7 : 0) : k);
+					const int oh = other.surface == RemasterDungeonFloorContext::Surface::Obstacle ? 0 :
+						height(j, dx ? (dx > 0 ? 0 : 7) : k, dy ? (dy > 0 ? 0 : 7) : k);
+					// Extend the authored edge slope to the tile boundary; do not
+					// substitute a fixed eight-unit rise for variable authored ramps.
+					const int inner = height(i, dx ? (dx > 0 ? 6 : 1) : k, dy ? (dy > 0 ? 6 : 1) : k);
+					const int otherInner = height(j, dx ? (dx > 0 ? 1 : 6) : k, dy ? (dy > 0 ? 1 : 6) : k);
+					const int step = wall && otherWall && direction(i, dx, dy) ?
+						std::abs(oh - otherInner) : std::abs(h - inner);
+					const int value = h - oh + (wall && !direction(i, dx, dy) ? step :
+						wall && otherWall ? -step : 0);
+					if (rise != INT_MIN && value != rise) compatible = false;
+					rise = value;
+				}
+				if (compatible) edges.push_back({a, b, rise});
+			}
+		}
+		std::vector<std::vector<std::pair<int, int>>> adjacency(count);
+		auto add = [&] (int a, int b, int rise) {
+			adjacency[a].push_back({b, rise}); adjacency[b].push_back({a, -rise});
+		};
+		for (const auto &e : edges) add(e.a, e.b, e.rise);
+		// Stair direction remains signed evidence. Its configured rise is a
+		// fallback only when no authored wall path already relates its landings.
+		for (const auto &e : constraints)
+		{
+			std::vector<bool> seen(count, false);
+			std::vector<int> queue(1, e.low); seen[e.low] = true;
+			for (size_t n = 0; n < queue.size(); n++) for (auto next : adjacency[queue[n]])
+				if (!seen[next.first]) { seen[next.first] = true; queue.push_back(next.first); }
+			if (!seen[e.high]) add(e.low, e.high, floorRise);
+		}
+		std::vector<int> bases(count, INT_MIN);
+		std::vector<bool> bad(count, false);
+		std::vector<bool> supportNode(count, false), flatNode(count, false);
+		for (size_t i = 0; i < cells.size(); i++) supportNode[i] = !cells[i].empty();
+		for (int encoded = 0; encoded < 8192; encoded++)
+			if (nodes[encoded] >= 0 && context.placements[encoded % 4096].surface == RemasterDungeonFloorContext::Surface::Floor)
+				flatNode[nodes[encoded]] = true;
+		// Every geometric component with established support has its own relative
+		// datum. Entry is not a low-floor anchor: solve signed differences first,
+		// then apply the explicit lowest-support-relative-zero convention.
+		for (int start = 0; start < count; start++)
+		{
+			if (bases[start] != INT_MIN || (!supportNode[start] && !flatNode[start])) continue;
+			bases[start] = 0;
+			std::vector<int> queue(1, start);
+			bool conflict = false;
+			int mismatches = 0;
+			for (size_t n = 0; n < queue.size(); n++) for (auto next : adjacency[queue[n]])
+			{
+				const int value = bases[queue[n]] + next.second;
+				if (bases[next.first] == INT_MIN) { bases[next.first] = value; queue.push_back(next.first); }
+				else if (bases[next.first] != value)
+				{
+					conflict = true;
+					mismatches++;
+					if (result.geometryConflicts.size() < 64)
+						result.geometryConflicts.push_back({queue[n], next.first, value, bases[next.first]});
+				}
+			}
+			int minimum = INT_MAX, supports = 0;
+			for (int node : queue) if (supportNode[node]) { minimum = std::min(minimum, bases[node]); supports++; }
+			const bool isolatedFlat = supports == 0;
+			if (isolatedFlat) for (int node : queue) if (flatNode[node]) minimum = std::min(minimum, bases[node]);
+			result.relativeAnchors.push_back({start, minimum, supports, isolatedFlat});
+			for (int node : queue) bases[node] -= minimum;
+			// Normalization is a declared relative datum, never conflict repair.
+			// Contradictory equalities and representation overflow still fail.
+			int negative = 0, overflow = 0;
+			for (int node : queue) if (bases[node] < 0 || bases[node] > 254)
+			{
+				if (bases[node] < 0) negative++; else overflow++;
+				// Representation failure is placement-local, not a contradictory
+				// equality. Preserve other solved members of this relative graph.
+				bad[node] = true;
+				if (result.geometryConflicts.size() < 64) result.geometryConflicts.push_back({node, node, 0, bases[node]});
+			}
+			for (const auto &e : constraints) if (bases[e.low] != INT_MIN && bases[e.high] != INT_MIN &&
+				bases[e.high] <= bases[e.low]) conflict = true;
+			if (conflict) for (int node : queue) bad[node] = true;
+			if (conflict || negative || overflow) result.geometryGroupIssues.push_back({start, static_cast<int>(queue.size()), mismatches, negative, overflow, isolatedFlat});
+		}
+		result.hasRoomGeometry = result.hasPlaneOffsets = true;
+		for (bool value : bad) if (value) result.structuralConflicts++;
+		for (const auto &issue : result.geometryConflicts)
+			for (int encoded = 0; encoded < 8192; encoded++) if ((nodes[encoded] == issue.node || nodes[encoded] == issue.other) &&
+				context.placements[encoded % 4096].surface == RemasterDungeonFloorContext::Surface::Wall)
+				if (result.geometryIssuePlacements.size() < 128)
+					result.geometryIssuePlacements.push_back({encoded / 4096, encoded % 64, (encoded % 4096) / 64, nodes[encoded]});
+		for (int p = 0; p < 2; p++) for (int i = 0; i < 4096; i++)
+		{
+			const int node = components[p * 4096 + i] >= 0 ? components[p * 4096 + i] : nodes[p * 4096 + i];
+			if (components[p * 4096 + i] >= 0) result.requiredPlaneCells[p]++;
+			if (node >= 0 && bases[node] != INT_MIN && !bad[node])
+			{
+				result.planeOffsets[p][i] = static_cast<uint8_t>(bases[node]);
+				if (result.offsets[i] == 255 || bases[node] > result.offsets[i]) result.offsets[i] = static_cast<uint8_t>(bases[node]);
+				if (components[p * 4096 + i] >= 0) result.solvedPlaneCells[p]++;
+			}
+			else if (components[p * 4096 + i] >= 0) result.unknownPlaneCells[p]++;
+		}
+		// Visible wall art and support beneath it are distinct surfaces. Do not
+		// collapse a nonblocking wall picture into the actor's floor component.
+		for (int i = 0; i < 4096; i++) if (context.placements[i].surface == RemasterDungeonFloorContext::Surface::Wall)
+		{
+			result.offsets[i] = 255;
+			for (int p = 0; p < 2; p++)
+			{
+				const int node = nodes[p * 4096 + i];
+				if (node >= 0 && bases[node] != INT_MIN && !bad[node])
+				{
+					result.structuralPlaneOffsets[p][i] = static_cast<uint8_t>(bases[node]);
+					if (result.offsets[i] == 255 || bases[node] > result.offsets[i]) result.offsets[i] = static_cast<uint8_t>(bases[node]);
+				}
+			}
+		}
+		for (int i = 0; i < 4096; i++)
+		{
+			const auto &tile = context.placements[i];
+			if (tile.surface == RemasterDungeonFloorContext::Surface::Wall)
+			{
+				if (result.offsets[i] == 255) result.unknownWallCells++; else result.solvedWallCells++;
+				continue;
+			}
+			if (tile.surface == RemasterDungeonFloorContext::Surface::Floor || tile.surface == RemasterDungeonFloorContext::Surface::Stair) continue;
+			int base = -1, planeIdentity = -1;
+			uint8_t directions = 0; bool conflict = false;
+			for (int p = 0; p < 2; p++) for (int d = 0; d < 4; d++)
+			{
+				static const int dx[] = {0, 0, -1, 1}, dy[] = {-1, 1, 0, 0};
+				int x = i % 64 - dx[d], y = i / 64 - dy[d];
+				if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+				int j = y * 64 + x;
+				if (components[p * 4096 + j] < 0 || result.planeOffsets[p][j] == 255) continue;
+				if (tile.surface != RemasterDungeonFloorContext::Surface::Obstacle &&
+					context.collisionAttributes[p * 4096 + i] != 1 && context.collisionAttributes[p * 4096 + i] != 2) continue;
+				int value = result.planeOffsets[p][j];
+				if (base >= 0 && (base != value || planeIdentity != p)) conflict = true;
+				base = value; planeIdentity = p; directions |= static_cast<uint8_t>(1 << d);
+			}
+			if (conflict) { result.structuralConflicts++; result.offsets[i] = 255; }
+			else if (base >= 0)
+			{
+				result.offsets[i] = static_cast<uint8_t>(base);
+				if (tile.surface != RemasterDungeonFloorContext::Surface::Obstacle) result.fallbackDirections[i] = directions;
+			}
+		}
+		return true; // unresolved is a cached result too, not a reason to reuse stale geometry
+	}
 	std::vector<int16_t> levels(cells.size(), INT16_MIN);
 	std::vector<bool> conflict(cells.size(), false);
 	for (const Constraint &start : constraints)
@@ -423,7 +753,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			{
 				const int plane = encoded / 4096;
 				const uint16_t index = encoded % 4096;
-				const int value = std::min(254, levels[component] * floorRise);
+				const int value = levels[component] * floorRise;
+				if (value < 0 || value > 254) continue;
 				result.planeOffsets[plane][index] = static_cast<uint8_t>(value);
 				result.solvedPlaneCells[plane]++;
 				uint8_t &output = result.offsets[index];
@@ -449,7 +780,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	for (const RemasterFrameMaterial &material : frame.materials)
 		if (material.surfaceClass == RemasterSurfaceClass::WallFace)
 			wallFaceMaterials.insert(material.name);
-	std::array<uint8_t, 64 * 64> placementOffsets = map.offsets;
+	auto offsetStorage = std::make_unique<std::array<uint8_t, 64 * 64>>(map.offsets);
+	auto &placementOffsets = *offsetStorage;
 	struct WallCell
 	{
 		int8_t dx[2] = {};
@@ -458,7 +790,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		uint8_t localMinimum = 0;
 		bool conflict = false;
 	};
-	std::array<WallCell, 64 * 64> walls = {};
+	auto wallStorage = std::make_unique<std::array<WallCell, 64 * 64>>();
+	auto &walls = *wallStorage;
 	std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(originalCount, nullptr);
 	for (size_t instanceId = 0; instanceId < originalCount; instanceId++)
 		for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
@@ -530,9 +863,13 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 					cell.conflict = true;
 			}
 	};
-	observeWalls(frame.mainPixels);
-	observeWalls(frame.subPixels);
-	std::array<bool, 64 * 64> visibleWalls = {};
+	if (!map.hasRoomGeometry)
+	{
+		observeWalls(frame.mainPixels);
+		observeWalls(frame.subPixels);
+	}
+	auto visibleWallStorage = std::make_unique<std::array<bool, 64 * 64>>();
+	auto &visibleWalls = *visibleWallStorage;
 	for (int index = 0; index < 64 * 64; index++)
 		visibleWalls[index] = walls[index].directions != 0;
 	for (int index = 0; index < 64 * 64; index++)
@@ -580,8 +917,16 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		bool candidate = false;
 		bool conflict = false;
 	};
-	std::array<BorderCell, 64 * 64> borders = {};
-	if (context.collisionAttributes && map.hasPlaneOffsets)
+	auto borderStorage = std::make_unique<std::array<BorderCell, 64 * 64>>();
+	auto &borders = *borderStorage;
+	if (map.hasRoomGeometry)
+		for (int i = 0; i < 4096; i++) if (map.fallbackDirections[i] && map.offsets[i] != 255)
+		{
+			borders[i].candidate = true;
+			borders[i].offset = map.offsets[i];
+			borders[i].directions = map.fallbackDirections[i];
+		}
+	if (!map.hasRoomGeometry && context.collisionAttributes && map.hasPlaneOffsets)
 		for (int index = 0; index < 64 * 64; index++)
 		{
 			if (visibleWalls[index]) continue;
@@ -619,6 +964,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	// every solved sample on its movement axis agree.
 	for (int index = 0; index < 64 * 64; index++)
 	{
+		if (map.hasRoomGeometry) break;
 		int axis = -1;
 		for (int plane = 0; plane < 2; plane++)
 		{
@@ -664,7 +1010,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 			const uint8_t sourceValue = sourceRoomMap->offsets[cell];
 			return sourceValue == 255 ? 0 : sourceValue;
 		}
-		if (wallFaceMaterials.count(instance.material) && !walls[cell].directions)
+		if (!map.hasRoomGeometry && wallFaceMaterials.count(instance.material) && !walls[cell].directions)
 			return 0;
 		const uint8_t value = placementOffsets[cell];
 		return value == 255 ? 0 : value;
@@ -1074,6 +1420,8 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.normalXyz = source.normalXyz;
 		metadata.emissionRgba = source.emissionRgba;
 		metadata.emissionDepth = source.emissionDepth;
+		metadata.combineEmitters = source.combineEmitters;
+		metadata.tileRole = source.tileRole;
 		metadata.hasMaterialSelectors = source.hasMaterialSelectors;
 		metadata.hasOcclusion = source.hasOcclusion;
 		metadata.hasHeight = source.hasHeight;
@@ -1607,6 +1955,20 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		}
 		if (result.schemaVersion >= 21 && (!input.ReadFloat(metadata.emissionDepth) ||
 			!std::isfinite(metadata.emissionDepth) || metadata.emissionDepth < 0 || metadata.emissionDepth > 64)) return false;
+		if (result.schemaVersion >= 24) {
+			uint32_t count; if (!input.ReadU32(count) || count > (bytes.size()-input.offset)/10) return false;
+			for (uint32_t i = 0; i < count; i++) {
+				RemasterTileContentId id; if (!input.ReadTileId(id) || id == metadata.tileId ||
+					std::find(metadata.combineEmitters.begin(), metadata.combineEmitters.end(), id) != metadata.combineEmitters.end()) return false;
+				metadata.combineEmitters.push_back(id);
+			}
+		}
+		if (result.schemaVersion >= 25)
+		{
+			uint8_t role;
+			if (!input.ReadU8(role) || role >= static_cast<uint8_t>(RemasterTileRole::Count)) return false;
+			metadata.tileRole = static_cast<RemasterTileRole>(role);
+		}
 	}
 	result.materials.resize(materialCount);
 	for (RemasterFrameMaterial &material : result.materials)
@@ -2119,6 +2481,15 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			bytes.insert(bytes.end(), metadata.emissionRgba.begin(), metadata.emissionRgba.end());
 		if (!std::isfinite(metadata.emissionDepth) || metadata.emissionDepth < 0 || metadata.emissionDepth > 64) return false;
 		RemasterFrameSerialization::Float(bytes, metadata.emissionDepth);
+		if (metadata.combineEmitters.size() > UINT32_MAX) return false;
+		RemasterFrameSerialization::U32(bytes, uint32_t(metadata.combineEmitters.size()));
+		std::vector<RemasterTileContentId> peers = metadata.combineEmitters; std::sort(peers.begin(), peers.end());
+		for (size_t i = 0; i < peers.size(); i++) {
+			if (peers[i] == metadata.tileId || (i && peers[i] == peers[i-1])) return false;
+			RemasterFrameSerialization::TileId(bytes, peers[i]);
+		}
+		if (metadata.tileRole >= RemasterTileRole::Count) return false;
+		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(metadata.tileRole));
 	}
 	for (const RemasterFrameMaterial &material : frame.materials)
 	{

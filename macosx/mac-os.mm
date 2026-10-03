@@ -38,6 +38,7 @@
 #import "display.h"
 #import "blit.h"
 #import "remaster/remaster.h"
+#include "remaster/emitter_groups.h"
 
 #ifdef DEBUGGER
 #import "debug.h"
@@ -514,6 +515,22 @@ static NSColorWell		*remasterDebugLightColor;
 // A paused live packet may only be read by its producer. Zero means no redraw.
 static std::atomic<uint32_t> remasterDebugLightRedraw { 0 };
 static std::mutex remasterDebugLightRedrawMutex;
+static std::atomic<bool> remasterPausedCapturePending { false };
+static std::mutex remasterPausedCaptureMutex;
+static NSString *remasterPausedCapturePath;
+static NSPoint remasterPausedCapturePoint;
+static bool remasterPausedCaptureSelect = false;
+static std::atomic<uint64_t> remasterCaptureSession { 0 };
+
+static NSURL *RemasterCaptureDirectory ()
+{
+	NSURL *support = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
+		inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:nil];
+	NSURL *directory = [[support URLByAppendingPathComponent:@"Snes9x" isDirectory:YES]
+		URLByAppendingPathComponent:@"Remaster" isDirectory:YES];
+	return [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES
+		attributes:nil error:nil] ? directory : nil;
+}
 
 static void ClearRemasterDebugLightRedraw ()
 {
@@ -599,6 +616,7 @@ static NSPopUpButton	*remasterEmissionPaintMode;
 static NSPopUpButton	*remasterEmissionColorScope;
 static NSButton			*remasterEmissionFromTileButton;
 static NSButton			*remasterEmissionFromAnimationButton;
+static NSButton *remasterCombineEmittersButton;
 static NSButton			*remasterArtworkVisibleButton;
 static NSButton			*remasterEmissionVisibleButton;
 static NSButton			*remasterResetLayerButton;
@@ -768,6 +786,8 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.normalXyz = captured->normalXyz;
 		metadata.emissionRgba = captured->emissionRgba;
 		metadata.emissionDepth = captured->emissionDepth;
+		metadata.combineEmitters = captured->combineEmitters;
+		metadata.tileRole = captured->tileRole;
 		metadata.hasMaterialSelectors = captured->hasMaterialSelectors;
 		metadata.hasOcclusion = captured->hasOcclusion;
 		metadata.hasHeight = captured->hasHeight;
@@ -808,6 +828,8 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	}
 	metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
 	metadata.emissionDepth = source.emissionDepth;
+	metadata.combineEmitters = source.combineEmitters;
+	metadata.tileRole = source.tileRole;
 	return metadata;
 }
 
@@ -822,7 +844,7 @@ static bool RemasterClipboardAvailable (NSInteger layer)
 static bool RemasterMetadataHasData (const RemasterAssetMetadata &metadata)
 {
 	return metadata.hasMaterialSelectors || metadata.hasOcclusion || metadata.hasHeight || metadata.hasNormals ||
-		metadata.hasEmission || metadata.emissionDepth > 0 || metadata.directLightingOppositeFacing;
+		metadata.hasEmission || metadata.emissionDepth > 0 || !metadata.combineEmitters.empty() || metadata.directLightingOppositeFacing;
 }
 
 static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, RemasterAssetMetadata &destination,
@@ -862,6 +884,7 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 {
 	uint32_t version = RemasterMetadataHasData(metadata) ? 2 : 0;
 	if (metadata.emissionDepth > 0) version = 14;
+	if (!metadata.combineEmitters.empty()) version = 17;
 	if (metadata.hasEmission)
 		version = std::max<uint32_t>(version, 3);
 	if (metadata.hasNormals)
@@ -925,7 +948,7 @@ static float SampleRemasterHeight (const std::array<uint8_t, 64> &height,
 }
 
 static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, const RemasterFrame &frame,
-	const RemasterTileContentId &tileId, int selectedPixel)
+	const RemasterTileContentId &tileId, int selectedPixel, uint8_t intensity)
 {
 	std::array<std::array<uint8_t, 3>, 64> visibleColors = {};
 	const std::array<bool, 64> visible = RemasterVisibleTileColors(frame, tileId, visibleColors);
@@ -950,11 +973,12 @@ static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, cons
 		const uint8_t newGreen = visibleColors[pixel][1];
 		const uint8_t newBlue = visibleColors[pixel][2];
 		if (metadata.emissionRgba[offset] != newRed || metadata.emissionRgba[offset + 1] != newGreen ||
-			metadata.emissionRgba[offset + 2] != newBlue)
+			metadata.emissionRgba[offset + 2] != newBlue || metadata.emissionRgba[offset + 3] != intensity)
 		{
 			metadata.emissionRgba[offset] = newRed;
 			metadata.emissionRgba[offset + 1] = newGreen;
 			metadata.emissionRgba[offset + 2] = newBlue;
+			metadata.emissionRgba[offset + 3] = intensity;
 			changed = true;
 		}
 	}
@@ -1140,6 +1164,47 @@ static inline void EmulationLoop (void)
                     S9xMainLoop();
                     macFrameSkip = storedMacFrameSkip;
                 }
+
+				// Copy/write on the producer thread: the UI must never borrow a
+				// mutable live packet, even while the emulator is paused.
+				if (remasterPausedCapturePending.exchange(false))
+				{
+					const uint64_t session = remasterCaptureSession.load();
+					NSString *path; NSPoint point; bool select;
+					{
+						std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
+						path = remasterPausedCapturePath; point = remasterPausedCapturePoint;
+						select = remasterPausedCaptureSelect;
+					}
+					const RemasterFrame *frame = S9xRemasterCompletedFrame();
+					std::string written;
+					std::vector<uint8_t> bytes;
+					bool success = false;
+					if (!frzselecting && frame && frame->width && frame->height)
+					{
+						static const unsigned char alttpHash[32] = {
+							0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,
+							0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
+						auto word = [] (int address) { return Memory.RAM[address] | (Memory.RAM[address + 1] << 8); };
+						const std::string located = S9xRemasterCaptureLocationPath(path.fileSystemRepresentation,
+							std::memcmp(Memory.ROMSHA256, alttpHash, 32) == 0, Memory.RAM[0x1b] != 0,
+							word(0xa0), word(0x22), word(0x20));
+						success = S9xSerializeRemasterFrame(*frame, bytes) && S9xRemasterWriteUniqueCapture(bytes, located, written);
+					}
+					NSString *savedPath = success ? [NSString stringWithUTF8String:written.c_str()] : nil;
+					dispatch_async(dispatch_get_main_queue(), ^{
+						if (session != remasterCaptureSession.load() || !running || !pauseEmulation || frzselecting) return;
+						if (!savedPath) { NSBeep(); NSLog(@"Paused capture unavailable: allow one live frame after loading the profile."); return; }
+						NSLog(@"Remaster frame capture written: %@", savedPath);
+						if (select)
+						{
+							ClearRemasterDebugLightRedraw();
+							NSString *error = [(S9xEngine *)s9xView.emulationDelegate openRemasterFrame:[NSURL fileURLWithPath:savedPath]];
+							if (error.length) { NSBeep(); NSLog(@"%@", error); return; }
+							[(S9xEngine *)s9xView.emulationDelegate selectRemasterPixelAtViewPoint:point extendingSelection:NO];
+						}
+					});
+				}
 
                 {
                     std::lock_guard<std::mutex> lock(remasterDebugLightRedrawMutex);
@@ -3974,6 +4039,7 @@ void QuitWithFatalError ( NSString *message)
 @end
 
 @interface S9xEngine () <NSWindowDelegate, NSTextFieldDelegate>
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL;
 - (BOOL)hasRemasterDebugLightContext;
 - (void)showRemasterDebugLight;
 - (void)refreshRemasterDebugLightControls;
@@ -4004,6 +4070,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)refreshRemasterMetrics;
 - (void)setRemasterEmissionFromVisibleTile:(id)sender;
 - (void)changeRemasterEmissionDepth:(id)sender;
+- (void)combineRemasterEmitters:(id)sender;
 - (void)setRemasterEmissionFromVisibleAnimation:(id)sender;
 - (void)changeRemasterPreviewLayers:(id)sender;
 - (void)resetRemasterLayer:(id)sender;
@@ -4014,7 +4081,6 @@ void QuitWithFatalError ( NSString *message)
 - (void)pasteRemasterTile:(id)sender;
 - (void)applyRemasterTileToVariants:(id)sender;
 - (void)saveRemasterProfile:(id)sender;
-- (void)showRemasterProfileSettings;
 - (void)changeRemasterBounceCount:(id)sender;
 - (void)changeRemasterHeightScale:(id)sender;
 - (void)changeRemasterHeightPreviewMultiplier:(id)sender;
@@ -4259,6 +4325,19 @@ void QuitWithFatalError ( NSString *message)
 	return remasterFramePresenting;
 }
 
+- (BOOL)canShowRemasterTileEditor
+{
+	return remasterFramePresenting && remasterInspectorPanel != nil;
+}
+
+- (void)showRemasterTileEditor
+{
+	if (![self canShowRemasterTileEditor])
+		return;
+	[self refreshRemasterEditingControls];
+	[remasterInspectorPanel makeKeyAndOrderFront:nil];
+}
+
 - (void)pause
 {
     pauseEmulation = true;
@@ -4276,6 +4355,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resume
 {
+	remasterCaptureSession.fetch_add(1);
+	remasterPausedCapturePending.store(false);
 	ClearRemasterDebugLightRedraw();
 	remasterFramePresenting = false;
 	remasterSelectionValid = false;
@@ -4402,6 +4483,9 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)loadROM:(NSURL *)fileURL
 {
+	remasterCaptureSession.fetch_add(1);
+	remasterPausedCapturePending.store(false);
+	S9xRemasterState().requestedInspectableFrames.store(false);
 	[self resetRemasterDebugLight];
 	SetLiveRemasterPresentation(false, remasterLightingView);
 	running = false;
@@ -4549,6 +4633,9 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)loadMultiple:(NSArray<NSURL *> *)fileURLs
 {
+	remasterCaptureSession.fetch_add(1);
+	remasterPausedCapturePending.store(false);
+	S9xRemasterState().requestedInspectableFrames.store(false);
 	if (fileURLs.count == 0)
 	{
 		return NO;
@@ -4603,6 +4690,8 @@ void QuitWithFatalError ( NSString *message)
 			return @"Surface Overlay";
 		case RemasterDebugMode::SurfaceIds:
 			return @"Surface IDs";
+		case RemasterDebugMode::TileTypes:
+			return @"Tile Types";
 		case RemasterDebugMode::Original:
 		default:
 			return @"Original";
@@ -4663,23 +4752,31 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterEditingProfileLoaded)
 		return nil;
-	NSURL *applicationSupport = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
-	                                                                    inDomain:NSUserDomainMask
-	                                                           appropriateForURL:nil
-	                                                                      create:YES
-	                                                                       error:nil];
-	NSURL *directory = [[applicationSupport URLByAppendingPathComponent:@"Snes9x" isDirectory:YES]
-		URLByAppendingPathComponent:@"Remaster" isDirectory:YES];
-	if (![[NSFileManager defaultManager] createDirectoryAtURL:directory
-	                             withIntermediateDirectories:YES
-	                                              attributes:nil
-	                                                   error:nil])
+	NSURL *directory = RemasterCaptureDirectory();
+	if (!directory)
 		return nil;
 
 	NSURL *file = [directory URLByAppendingPathComponent:@"frame.s9xrmf"];
+	if (running && pauseEmulation)
+	{
+		if (remasterFramePresenting)
+		{
+			std::vector<uint8_t> bytes; std::string written;
+			// A replay may be from a different location than current game RAM.
+			if (S9xSerializeRemasterFrame(remasterReplayFrame, bytes) &&
+				S9xRemasterWriteUniqueCapture(bytes, [directory URLByAppendingPathComponent:@"frame_replay.s9xrmf"].path.fileSystemRepresentation, written))
+				return [NSString stringWithUTF8String:written.c_str()];
+			return nil;
+		}
+		std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
+		remasterPausedCapturePath = file.path;
+		remasterPausedCaptureSelect = false;
+		remasterPausedCapturePending.store(true);
+		return directory.path;
+	}
 	// Two seconds covers slow ALTTP tile animation without creating an unbounded capture.
 	S9xRemasterRequestFrameCapture(file.path.UTF8String, 120);
-	return file.path;
+	return directory.path; // final location/index is chosen by the captured frame
 }
 
 - (NSString *)openRemasterFrame:(NSURL *)fileURL
@@ -4742,6 +4839,7 @@ void QuitWithFatalError ( NSString *message)
 	[self resetRemasterDebugLight];
 	if (incompatibleProfile)
 	{
+		S9xRemasterState().requestedInspectableFrames.store(false);
 		remasterEditingProfile = RemasterProfile();
 		remasterEditingProfileURL = nil;
 		remasterEditingProfileLoaded = false;
@@ -4959,13 +5057,25 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)selectRemasterPixelAtViewPoint:(NSPoint)point extendingSelection:(BOOL)extendingSelection
 {
+	if (!remasterFramePresenting && running && pauseEmulation && !frzselecting && !useMouse && remasterEditingProfileLoaded)
+	{
+		if (!NSPointInRect(point, s9xView.bounds)) return YES;
+		NSURL *directory = RemasterCaptureDirectory();
+		if (!directory) { NSBeep(); return YES; }
+		std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
+		remasterPausedCapturePath = [[directory URLByAppendingPathComponent:@"frame.s9xrmf"] path];
+		remasterPausedCapturePoint = point;
+		remasterPausedCaptureSelect = true;
+		remasterPausedCapturePending.store(true);
+		return YES;
+	}
 	if (!remasterFramePresenting || remasterReplayFrame.width == 0 || remasterReplayFrame.height == 0)
 		return NO;
 	const NSRect bounds = s9xView.bounds;
 	if (NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0 || !NSPointInRect(point, bounds))
 		return YES;
 	const CGFloat normalizedX = (point.x - NSMinX(bounds)) / NSWidth(bounds);
-	const CGFloat normalizedY = (NSMaxY(bounds) - point.y) / NSHeight(bounds);
+	const CGFloat normalizedY = (s9xView.isFlipped ? point.y - NSMinY(bounds) : NSMaxY(bounds) - point.y) / NSHeight(bounds);
 	if (normalizedX < 0 || normalizedX >= 1 || normalizedY < 0 || normalizedY >= 1)
 		return YES;
 	const uint32_t x = static_cast<uint32_t>(normalizedX * remasterReplayFrame.width);
@@ -4982,8 +5092,10 @@ void QuitWithFatalError ( NSString *message)
 		auto selected = std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), instance->tileId);
 		if (!extendingSelection)
 		{
+			const bool alreadySelected = selected != remasterSelectedTiles.end();
 			remasterSelectedTiles.clear();
-			remasterSelectedTiles.push_back(instance->tileId);
+			if (!alreadySelected)
+				remasterSelectedTiles.push_back(instance->tileId);
 		}
 		else if (selected == remasterSelectedTiles.end())
 			remasterSelectedTiles.push_back(instance->tileId);
@@ -5019,7 +5131,8 @@ void QuitWithFatalError ( NSString *message)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
-		remasterInspectorPanel.hidesOnDeactivate = NO;
+		remasterInspectorPanel.releasedWhenClosed = NO;
+		remasterInspectorPanel.hidesOnDeactivate = YES;
 		NSView *contentView = remasterInspectorPanel.contentView;
 		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 405, 128, 128)];
 		tilePreview.editor = self;
@@ -5265,12 +5378,21 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmissionFromTileButton.target = self;
 		remasterEmissionFromTileButton.action = @selector(setRemasterEmissionFromVisibleTile:);
 		[contentView addSubview:remasterEmissionFromTileButton];
-		remasterEmissionFromAnimationButton = [[NSButton alloc] initWithFrame:NSMakeRect(345, 342, 190, 28)];
+		remasterEmissionFromAnimationButton = [[NSButton alloc] initWithFrame:NSMakeRect(345, 342, 180, 28)];
 		remasterEmissionFromAnimationButton.title = @"From Visible Animation";
 		remasterEmissionFromAnimationButton.bezelStyle = NSBezelStyleRounded;
 		remasterEmissionFromAnimationButton.target = self;
 		remasterEmissionFromAnimationButton.action = @selector(setRemasterEmissionFromVisibleAnimation:);
 		[contentView addSubview:remasterEmissionFromAnimationButton];
+		// Keep combination authoring on its own row above the paint controls;
+		// the visible-color row already contains both reset buttons.
+		remasterCombineEmittersButton = [[NSButton alloc] initWithFrame:NSMakeRect(540, 432, 200, 28)];
+		remasterCombineEmittersButton.title = @"Combine Emitters";
+		remasterCombineEmittersButton.bezelStyle = NSBezelStyleRounded;
+		remasterCombineEmittersButton.target = self;
+		remasterCombineEmittersButton.action = @selector(combineRemasterEmitters:);
+		remasterCombineEmittersButton.toolTip = @"Cmd-click another tile type to select a connected shape. Only cardinally adjacent, explicitly linked tile types combine at runtime.";
+		[contentView addSubview:remasterCombineEmittersButton];
 		remasterEmissionDepthLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(450, 307, 135, 24)];
 		remasterEmissionDepthLabel.stringValue = @"Emission Depth";
 		remasterEmissionDepthLabel.editable = NO;
@@ -5393,7 +5515,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 	else
 	{
-		text << "Tile        No captured tile instance\n";
+		text << "Tile        No tile selected\n";
 	}
 	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
 	remasterVariants.clear();
@@ -5422,6 +5544,7 @@ void QuitWithFatalError ( NSString *message)
 			remasterNextVariantButton.enabled = NO;
 		}
 	}
+	[self refreshRemasterEditingControls];
 	[remasterInspectorPanel orderFront:nil];
 	return YES;
 }
@@ -5776,7 +5899,7 @@ void QuitWithFatalError ( NSString *message)
 			changed = true;
 			selected->second.hasNormals = false;
 			if (!selected->second.hasMaterialSelectors && !selected->second.hasOcclusion && !selected->second.hasHeight &&
-				!selected->second.hasEmission && selected->second.emissionDepth == 0 && !selected->second.directLightingOppositeFacing)
+				!selected->second.hasEmission && selected->second.emissionDepth == 0 && selected->second.combineEmitters.empty() && !selected->second.directLightingOppositeFacing)
 				remasterEditingProfile.assets.erase(selected);
 		}
 		if (!changed)
@@ -5825,7 +5948,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 	if (!found->second.hasMaterialSelectors && !found->second.hasOcclusion &&
 		!found->second.hasHeight && !found->second.hasNormals && !found->second.hasEmission && found->second.emissionDepth == 0 &&
-		!found->second.directLightingOppositeFacing)
+		found->second.combineEmitters.empty() && !found->second.directLightingOppositeFacing)
 		remasterEditingProfile.assets.erase(found);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
@@ -5926,6 +6049,8 @@ void QuitWithFatalError ( NSString *message)
 		{
 			RemasterAssetMetadata destination = remasterClipboardMetadata;
 			destination.tileId = tileId;
+			// Combination links describe identities, not paintable tile layers.
+			destination.combineEmitters = EffectiveRemasterMetadata(tileId).combineEmitters;
 			remasterEditingProfile.assets[tileId] = std::move(destination);
 		}
 		else
@@ -5960,6 +6085,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		RemasterAssetMetadata destination = sourceMetadata;
 		destination.tileId = tileId;
+		destination.combineEmitters = EffectiveRemasterMetadata(tileId).combineEmitters;
 		if (sourceMetadata.hasEmission && !(tileId == remasterSelectedTile))
 		{
 			std::array<std::array<uint8_t, 3>, 64> destinationArtwork = {};
@@ -6006,11 +6132,11 @@ void QuitWithFatalError ( NSString *message)
 	const int selectedPixel = remasterEmissionColorScope.indexOfSelectedItem == 0 ?
 		static_cast<int>(remasterSelectedTilePixel) : -1;
 	if (!SetRemasterEmissionFromVisibleColors(remasterEditingProfile, remasterReplayFrame,
-		remasterSelectedTile, selectedPixel))
+		remasterSelectedTile, selectedPixel, static_cast<uint8_t>(std::max<NSInteger>(0, std::min<NSInteger>(255, remasterValueBrush.integerValue)))))
 		return;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
-	[remasterUndoManager setActionName:@"Set Emission RGB From Visible Tile"];
+	[remasterUndoManager setActionName:@"Set Emission From Visible Tile"];
 	std::string current;
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		UpdateRemasterEditingProfileDirty(current);
@@ -6029,7 +6155,8 @@ void QuitWithFatalError ( NSString *message)
 		static_cast<int>(remasterSelectedTilePixel) : -1;
 	bool changed = false;
 	for (const RemasterTileContentId &variant : remasterVariants)
-		changed |= SetRemasterEmissionFromVisibleColors(remasterEditingProfile, remasterReplayFrame, variant, selectedPixel);
+		changed |= SetRemasterEmissionFromVisibleColors(remasterEditingProfile, remasterReplayFrame, variant, selectedPixel,
+			static_cast<uint8_t>(std::max<NSInteger>(0, std::min<NSInteger>(255, remasterValueBrush.integerValue))));
 	if (!changed)
 		return;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
@@ -6065,6 +6192,34 @@ void QuitWithFatalError ( NSString *message)
 	[remasterUndoManager setActionName:@"Change Emission Depth"];
 	std::string current;
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics)) UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)combineRemasterEmitters:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.size() < 2) return;
+	if (!S9xRemasterEmitterSelectionConnected(remasterReplayFrame, remasterSelectedTiles)) {
+		NSAlert *alert = [[NSAlert alloc] init];
+		alert.messageText = @"Selected tiles are not adjacent";
+		alert.informativeText = @"All selected tile types must appear together in one shape connected by shared tile edges (up, down, left or right). Diagonal contact does not count. No emitters were combined.";
+		[alert runModal]; return;
+	}
+	std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	for (const auto &tile : remasterSelectedTiles) {
+		auto metadata = EffectiveRemasterMetadata(tile);
+		for (const auto &peer : remasterSelectedTiles) if (!(peer == tile) &&
+			std::find(metadata.combineEmitters.begin(),metadata.combineEmitters.end(),peer) == metadata.combineEmitters.end())
+			metadata.combineEmitters.push_back(peer);
+		remasterEditingProfile.assets[tile] = metadata;
+	}
+	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion,17u);
+	std::string current;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile,current,diagnostics) || current == before) return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Combine Emitters"];
+	UpdateRemasterEditingProfileDirty(current);
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
@@ -6118,6 +6273,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterEmissionVisibleButton.hidden = layer != RemasterEditorEmission;
 	remasterEmissionDepthInput.hidden = remasterEmissionDepthLabel.hidden = layer != RemasterEditorEmission;
 	remasterEmissionDepthInput.enabled = editable;
+	remasterCombineEmittersButton.hidden = !emissionLayer;
+	remasterCombineEmittersButton.enabled = editable && remasterSelectedTiles.size() > 1;
 	if (editable) remasterEmissionDepthInput.stringValue = [NSString stringWithFormat:@"%.6g", EffectiveRemasterMetadata(remasterSelectedTile).emissionDepth];
 	remasterResetLayerButton.hidden = layer == RemasterEditorArtwork;
 	remasterResetTileButton.hidden = false;
@@ -7193,13 +7350,16 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)showRemasterProfileSettings
 {
+	if (!remasterEditingProfileLoaded)
+		return;
 	if (!remasterProfileSettingsPanel)
 	{
 		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1044)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
-		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
+		remasterProfileSettingsPanel.releasedWhenClosed = NO;
+		remasterProfileSettingsPanel.hidesOnDeactivate = YES;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
 		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 930, 300, 24)];
@@ -7906,6 +8066,22 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL
 {
+	try
+	{
+		return [self loadRemasterProfileChecked:fileURL];
+	}
+	catch (const std::bad_alloc &)
+	{
+		return @"There was not enough memory to load this remaster profile. Close other applications and try again.";
+	}
+	catch (const std::exception &error)
+	{
+		return [NSString stringWithFormat:@"The remaster profile could not be loaded: %s", error.what()];
+	}
+}
+
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL
+{
 	RemasterProfile profile;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (!S9xRemasterLoadProfile(fileURL.path.UTF8String, profile, diagnostics))
@@ -7974,16 +8150,20 @@ void QuitWithFatalError ( NSString *message)
 	if (remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
 		return @"";
 	const NSUInteger reviewMapCount = reviewMaps.size();
+	std::string savedProfileText;
+	if (!S9xRemasterSerializeProfile(profile, savedProfileText, diagnostics, false))
+		return @"The remaster profile contains metadata that cannot be saved. Correct its asset metadata and try again.";
 
 	remasterEditingProfile = std::move(profile);
 	remasterEditingProfileURL = fileURL;
 	remasterEditingProfileLoaded = true;
 	remasterMetadataNeedsSync = true;
+	S9xRemasterState().requestedInspectableFrames.store(running);
 	remasterEditingProfileDirty = false;
 	remasterSavedSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 	remasterNonSceneDirty = false;
 	[[NSUserDefaults standardUserDefaults] setObject:fileURL.path forKey:RemasterLastProfilePathKey];
-	S9xRemasterSerializeProfile(remasterEditingProfile, remasterSavedProfileText, diagnostics, false);
+	remasterSavedProfileText = std::move(savedProfileText);
 	[remasterUndoManager removeAllActions];
 	if (running)
 	{

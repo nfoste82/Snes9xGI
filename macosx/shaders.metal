@@ -645,7 +645,7 @@ struct RemasterDirectSample
 	float4 radiance;
 };
 
-struct RemasterEmitterPatch { uint count; uint mode; uint members[64]; };
+struct RemasterEmitterPatch { uint count; uint mode; uint members[256]; };
 // High bit marks the sampled-only base record; low bits retain patch/stratum ABI.
 constant uint remasterCollapsedDepthRecord = 0x80000000u;
 

@@ -75,4 +75,64 @@ int main()
 	frame.subPixels[0].tilePixel = 64;
 	auto fallback = build();
 	assert(fallback[0].count == 1 && fallback[0].mode == 3);
+	// Four adjacent tile types: full 256-member shape, and sparse flame gaps.
+	frame = RemasterFrame{}; frame.width = frame.height = 16;
+	frame.representativeEmitters = 1;
+	frame.mainPixels.resize(256); frame.subPixels.resize(256);
+	frame.tileInstances.resize(4); frame.assetMetadata.resize(4);
+	for (unsigned t = 0; t < 4; t++) {
+		auto &instance = frame.tileInstances[t]; instance.tileId = {100+t,1,4};
+		instance.source = RemasterSourceType::Background;
+		frame.assetMetadata[t].tileId = instance.tileId;
+		for (unsigned peer = 0; peer < 4; peer++) if (t != peer)
+			frame.assetMetadata[t].combineEmitters.push_back({100+peer,1,4});
+	}
+	emission.assign(1024,255); participation.assign(512,255); surface.assign(1024,0); mesh.resize(256);
+	for (unsigned i = 0; i < 256; i++) {
+		unsigned x = i%16, y = i/16, t = x/8+(y/8)*2;
+		frame.mainPixels[i] = {0x01000000,t+1,uint8_t((y%8)*8+x%8)};
+	}
+	std::vector<RemasterTileContentId> selected;
+	for (auto &instance : frame.tileInstances) selected.push_back(instance.tileId);
+	assert(S9xRemasterEmitterSelectionConnected(frame,selected));
+	assert(build().size() == 1 && build()[0].count == 256);
+	frame.representativeEmitters = 3;
+	auto combined = build(); assert(combined.size() <= 3);
+	std::array<unsigned,256> coverage = {};
+	for (auto &p : combined) for (unsigned i = 0; i < p.count; i++) coverage[p.members[i]]++;
+	for (auto c : coverage) assert(c == 1);
+	frame.representativeEmitters = 1;
+	for (unsigned i = 0; i < 256; i++) if (i%16 == 7 || i%16 == 8) emission[i*4+3] = 0;
+	assert(build().size() == 1 && build()[0].count == 224);
+	frame.assetMetadata[0].combineEmitters.clear(); // One-way metadata never joins.
+	assert(build().size() == 2);
+	frame.assetMetadata[1].combineEmitters.clear();
+	frame.assetMetadata[2].combineEmitters.clear();
+	frame.assetMetadata[3].combineEmitters.clear();
+	assert(build().size() == 4);
+	assert(!S9xRemasterEmitterSelectionConnected(frame,{selected[0],selected[3]})); // diagonal
+	frame.tileInstances[1].sourceIndex = 1;
+	assert(!S9xRemasterEmitterSelectionConnected(frame,{selected[0],selected[1]}));
+	frame.tileInstances[1].sourceIndex = 0;
+	frame.tileInstances[1].hFlip = true;
+	for (auto &p : frame.mainPixels) if (p.instanceId == 2) p.tilePixel ^= 7;
+	assert(S9xRemasterEmitterSelectionConnected(frame,{selected[0],selected[1]}));
+	for (auto &p : frame.mainPixels) if (p.instanceId == 2 && p.tilePixel != 7) p = RemasterFramePixel{};
+	assert(S9xRemasterEmitterSelectionConnected(frame,{selected[0],selected[1]})); // clipped origin
+	// Repeated matching types at separate placements never join remotely.
+	frame = RemasterFrame{}; frame.width = 40; frame.height = 8; frame.representativeEmitters = 1;
+	frame.mainPixels.resize(320); frame.subPixels.resize(320); frame.tileInstances.resize(4);
+	frame.assetMetadata.resize(2);
+	for (unsigned t = 0; t < 4; t++) {
+		frame.tileInstances[t].tileId = selected[t%2]; frame.tileInstances[t].source = RemasterSourceType::Background;
+	}
+	for (unsigned t = 0; t < 2; t++) { frame.assetMetadata[t].tileId = selected[t]; frame.assetMetadata[t].combineEmitters = {selected[1-t]}; }
+	emission.assign(1280,0); participation.assign(640,255); surface.assign(1280,0); mesh.resize(320);
+	for (unsigned i = 0; i < 320; i++) {
+		unsigned x = i%40, y = i/40; if (x/8 == 2) continue;
+		unsigned t = x/8-(x >= 24 ? 1 : 0);
+		frame.mainPixels[i] = {0x01000000,t+1,uint8_t(y*8+x%8)};
+		if (x%8 == 3) for (unsigned c = 0; c < 4; c++) emission[i*4+c] = 255;
+	}
+	assert(build().size() == 2);
 }

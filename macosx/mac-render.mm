@@ -488,7 +488,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		!S9xRemasterFrameHasPixelData(frame, frame.width, frame.height))
 		return false;
 	// Surface diagnostics are presentation-only, never lighting albedo.
-	if (lighting)
+	if (debugMode == RemasterDebugMode::TileTypes)
+	{
+		lighting = false;
+		asynchronous = false;
+	}
+	else if (lighting)
 		debugMode = RemasterDebugMode::Original;
 	const int resourceSlot = lighting ? AcquireRemasterResourceSlot(!asynchronous) : -1;
 	if (lighting && resourceSlot < 0)
@@ -931,6 +936,10 @@ void S9xPutImage (int width, int height)
     }
 	
 	const RemasterFrame *liveFrame = S9xRemasterCompletedFrame();
+	if (S9xRemasterGetDebugMode() == RemasterDebugMode::TileTypes && liveFrame &&
+		S9xRemasterFrameHasPixelData(*liveFrame, static_cast<uint32_t>(width), static_cast<uint32_t>(height)) &&
+		DrawRemasterFrame(*liveFrame, RemasterDebugMode::TileTypes, nullptr, false))
+		return;
 	if (liveRemasterPresentationEnabled.load(std::memory_order_relaxed) &&
 		width == SNES_WIDTH && height > 0 && liveFrame &&
 		S9xRemasterFrameHasPixelData(*liveFrame, static_cast<uint32_t>(width), static_cast<uint32_t>(height)) &&
@@ -976,6 +985,17 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		(*cameraDirection)[2] } : vector_float3{ 0.0f, 0.0f, -1.0f };
 	normalizedCameraDirection = simd_normalize(normalizedCameraDirection);
 	const size_t requiredSize = static_cast<size_t>(width) * height * 4;
+	std::vector<RemasterTileRole> tileRoles;
+	if (debugMode == RemasterDebugMode::TileTypes && frame)
+	{
+		std::map<RemasterTileContentId, RemasterTileRole> roles;
+		for (const auto &metadata : frame->assetMetadata) roles[metadata.tileId] = metadata.tileRole;
+		for (const auto &instance : frame->tileInstances)
+		{
+			const auto found = roles.find(instance.tileId);
+			tileRoles.push_back(found == roles.end() ? RemasterTileRole::Unknown : found->second);
+		}
+	}
 
 	if (buffer_size != requiredSize)
 	{
@@ -999,7 +1019,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			green = ( green * 527 + 23 ) >> 6;
 			blue = ( blue * 527 + 23 ) >> 6;
 
-			if (debugMode != RemasterDebugMode::Original)
+			if (debugMode == RemasterDebugMode::TileTypes)
+			{
+				const size_t index = y * width + x;
+				if (frame && index < frame->mainPixels.size())
+				{
+					const auto &main = frame->mainPixels[index];
+					const auto &pixel = !main.instanceId && index < frame->subPixels.size() ? frame->subPixels[index] : main;
+					if (pixel.instanceId && pixel.instanceId <= tileRoles.size())
+					{
+						const auto &instance = frame->tileInstances[pixel.instanceId - 1];
+						// Keep Link/sprites and the HUD readable over the classified room.
+						if (instance.source == RemasterSourceType::Background && instance.sourceIndex != 2)
+						{
+							const uint32_t color = S9xRemasterTileRoleColor(tileRoles[pixel.instanceId - 1]);
+							red = (red + 2 * ((color >> 16) & 255)) / 3;
+							green = (green + 2 * ((color >> 8) & 255)) / 3;
+							blue = (blue + 2 * (color & 255)) / 3;
+						}
+					}
+				}
+			}
+			else if (debugMode != RemasterDebugMode::Original)
 			{
 				uint32 owner = owners && ownerPitch >= static_cast<size_t>(width) ?
 					owners[y * ownerPitch + x] : REMASTER_OWNER_UNSUPPORTED;

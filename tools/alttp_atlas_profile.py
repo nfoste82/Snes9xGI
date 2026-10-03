@@ -2,7 +2,8 @@
 
 The first pass uses decoded artwork and source family, not inferred object
 identity. Every decoded tile gets all four pixel layers. Existing authored
-values are preserved field by field. Generated values are intentionally simple
+values are preserved except for explicitly classified local floor/wall geometry.
+Obstacle relief remains authored. Generated values are intentionally simple
 and the report identifies ambiguous cross-family hashes for review in game.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ import sqlite3
 import tomllib
 
 from alttp_tile_semantic_atlas import AnnotationStore, TileCatalog
+from alttp_reference_wall_templates import ReferenceTemplates
 
 
 LAYERS = ("height", "normal_xyz", "occlusion", "emission_rgba")
@@ -293,7 +296,9 @@ def _format_layer(name: str, values: tuple[int, ...]) -> str:
 
 
 def _render_profile(source_text: str, authored: dict[str, dict],
-                    generated: dict[str, dict[str, tuple[int, ...]]]) -> str:
+                    generated: dict[str, dict[str, tuple[int, ...]]],
+                    geometry_overrides: set[str] | None = None,
+                    tile_roles: dict[str, str] | None = None) -> str:
     """Keep original text and insert only absent fields / new asset tables."""
     matches = list(SECTION.finditer(source_text))
     asset_starts = [match.start() for match in matches if match.group(1) == "assets"]
@@ -313,6 +318,14 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         content_id = hashes[0]
         seen.add(content_id)
         additions = generated.get(content_id, {})
+        if tile_roles is not None:
+            block = re.sub(r'(?m)^tile_role\s*=\s*[^\n]*\n?', '', block)
+            if content_id in tile_roles:
+                block += '\ntile_role = ' + json.dumps(tile_roles[content_id])
+        if content_id in (geometry_overrides or set()):
+            for name in ("height",):
+                block = re.sub(rf"(?m)^{name}\s*=\s*\[[^\]]*\]",
+                               _format_layer(name, additions[name]).rstrip(), block)
         output.append(block + "\n")
         for name in LAYERS:
             if name in additions and name not in authored[content_id]:
@@ -324,6 +337,8 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         if content_id in authored:
             continue
         output.append(f'[[assets]]\ntile_hash = "{content_id}"\n')
+        if tile_roles is not None and content_id in tile_roles:
+            output.append('tile_role = ' + json.dumps(tile_roles[content_id]) + '\n')
         for name in LAYERS:
             output.append(_format_layer(name, generated[content_id][name]))
         output.append("\n")
@@ -361,15 +376,58 @@ def _complete_hud_group(source_text: str, profile: dict,
 
 
 def _complete_semantic_groups(source_text: str, profile: dict,
-                              semantics: dict[str, dict]) -> tuple[str, dict[str, int]]:
+                               semantics: dict[str, dict]) -> tuple[str, dict[str, int]]:
     additions = {}
+    obstacle_ids = {content_id for content_id, annotation in semantics.items()
+                    if annotation["role"] == "obstacle" and not annotation["context_dependent"]}
+    target_groups = {"floor": "dungeon_floor", "wall": "wall_faces",
+                     "wall_corner": "wall_faces", "obstacle": "obstacles"}
+    assigned = {content_id: target_groups[annotation["role"]]
+                for content_id, annotation in semantics.items()
+                if annotation["role"] in target_groups and not annotation["context_dependent"] and
+                annotation.get("corner_type") != "unknown"}
+    # Profile groups are exclusive. Explicit obstacle annotations replace a
+    # legacy material classification without changing the tile's authored relief.
+    for name, group in profile.get("asset_groups", {}).items():
+        removed = {content_id for content_id in group["tile_hashes"]
+                   if content_id in assigned and assigned[content_id] != name}
+        if not removed:
+            continue
+        remaining = set(group["tile_hashes"]) - removed
+        pattern = re.compile(rf'(?ms)^\[asset_groups\.{re.escape(name)}\]\n.*?(?=^\[|\Z)')
+        if remaining:
+            def replace_group(match):
+                line = "tile_hashes = [" + ", ".join(json.dumps(item) for item in sorted(remaining)) + "]"
+                return re.sub(r'tile_hashes\s*=\s*\[[^\n]*\]', lambda _: line, match.group())
+            source_text = pattern.sub(replace_group, source_text, count=1)
+        else:
+            if any(rule.get("asset_group") == name for rule in profile.get("rules", [])):
+                raise ProfileGenerationError(f"obstacle annotations empty referenced group {name}")
+            source_text = pattern.sub("", source_text, count=1)
+        additions[name] = -len(removed)
     roles = {"dungeon_floor": {"floor"},
-             "wall_faces": {"wall", "wall_corner"}}
+             "wall_faces": {"wall", "wall_corner"},
+             "obstacles": {"obstacle"}}
     for group_name, accepted in roles.items():
         group = profile.get("asset_groups", {}).get(group_name)
+        if group is None and group_name == "obstacles":
+            semantic_ids = {content_id for content_id, annotation in semantics.items()
+                            if annotation["role"] == "obstacle" and
+                            not annotation["context_dependent"]}
+            if semantic_ids:
+                section = ('[asset_groups.obstacles]\n'
+                           'tile_hashes = [' + ', '.join(json.dumps(item) for item in sorted(semantic_ids)) + ']\n\n')
+                first_asset = source_text.find("[[assets]]")
+                if first_asset < 0:
+                    first_asset = len(source_text)
+                source_text = source_text[:first_asset] + section + source_text[first_asset:]
+                additions[group_name] = len(semantic_ids)
+            continue
         if group is None:
             raise ProfileGenerationError(f"profile lacks {group_name} asset group")
         existing = set(group["tile_hashes"])
+        existing = {content_id for content_id in existing
+                    if content_id not in assigned or assigned[content_id] == group_name}
         semantic_ids = {content_id for content_id, annotation in semantics.items()
                         if annotation["role"] in accepted and
                         not annotation["context_dependent"] and
@@ -389,12 +447,7 @@ def _complete_semantic_groups(source_text: str, profile: dict,
 def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, int]:
     existing = profile.get("lighting_space", {}).get("upper_floor_height")
     if existing is not None:
-        height = 50
-        updated, count = re.subn(r"(?m)^upper_floor_height\s*=\s*\d+\s*$",
-                                 f"upper_floor_height = {height}", source_text, count=1)
-        if count != 1:
-            raise ProfileGenerationError("could not update upper-floor height")
-        return updated, height
+        return source_text, existing
     height = 50  # Leave room above the tallest authored wall (47).
     updated, count = re.subn(r"(?m)^schema_version\s*=\s*\d+\s*$",
                              "schema_version = 13", source_text, count=1)
@@ -408,10 +461,12 @@ def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, in
 
 
 def generate_profile(database: Path, source: Path, output: Path,
-                     semantics_path: Path | None = None) -> dict:
+                     semantics_path: Path | None = None,
+                     reference_templates_path: Path | None = None) -> dict:
     if output.resolve() in {database.resolve(), source.resolve()}:
         raise ProfileGenerationError("candidate profile must be distinct from inputs")
-    source_text = source.read_text()
+    source_snapshot = source.read_bytes()
+    source_text = source_snapshot.decode()
     profile = tomllib.loads(source_text)
     authored = {asset["tile_hash"]: asset for asset in profile.get("assets", [])}
     declared_floor_ids = set(profile.get("asset_groups", {}).get(
@@ -424,9 +479,18 @@ def generate_profile(database: Path, source: Path, output: Path,
         if run.get("rom_sha256") != profile.get("game", {}).get("rom_sha256"):
             raise ProfileGenerationError("atlas ROM hash differs from profile")
         semantics = {}
+        templates = (ReferenceTemplates(reference_templates_path, authored, run["rom_sha256"])
+                     if reference_templates_path else None)
+        reference_records = []
         if semantics_path:
             authored_semantics = AnnotationStore(semantics_path, run["rom_sha256"]).tiles
             catalog = TileCatalog(database)
+            if templates:
+                for entry in templates.entries:
+                    if 'tile_hashes' in entry:
+                        excluded = set(entry.get('tile_hashes', [])) | {entry['reference']}
+                        entry['tile_hashes'] = sorted({alias for key in excluded
+                                                      for alias in catalog.semantic_group(key)})
             for content_id, annotation in authored_semantics.items():
                 for alias in catalog.semantic_group(content_id):
                     existing = semantics.get(alias)
@@ -447,6 +511,7 @@ def generate_profile(database: Path, source: Path, output: Path,
         methods: Counter[str] = Counter()
         ambiguous: list[str] = []
         authored_layer_counts = Counter()
+        geometry_overrides: set[str] = set()
         for content_id, indices, families_text in rows:
             families = set(families_text.split(","))
             if len(indices) != 64:
@@ -472,7 +537,8 @@ def generate_profile(database: Path, source: Path, output: Path,
                   not semantics[content_id]["context_dependent"] and
                   semantics[content_id].get("corner_type") != "unknown"):
                 method = "semantic_" + semantics[content_id]["role"]
-                proposal = _semantic_wall_layers(semantics[content_id])
+                proposal = (_neutral_layers() if templates else
+                            _semantic_wall_layers(semantics[content_id]))
             elif (families == {"background"} and content_id in semantics and
                   semantics[content_id]["role"] == "floor" and
                   not semantics[content_id]["context_dependent"]):
@@ -499,23 +565,57 @@ def generate_profile(database: Path, source: Path, output: Path,
             for name in LAYERS:
                 if name in existing:
                     authored_layer_counts[name] += 1
-            if "height" in existing and "normal_xyz" not in existing:
+            if "height" in existing and "normal_xyz" not in existing and not templates:
                 proposal["normal_xyz"] = _normal_from_height(existing["height"])
                 methods["normal_from_authored_height"] += 1
             semantic_floor = (content_id in semantics and semantics[content_id]["role"] == "floor" and
                               not semantics[content_id]["context_dependent"])
-            if semantic_floor or content_id in declared_floor_ids:
+            semantic_obstacle = (content_id in semantics and semantics[content_id]["role"] == "obstacle" and
+                                 not semantics[content_id]["context_dependent"])
+            if semantic_floor or (content_id in declared_floor_ids and not semantic_obstacle):
                 proposal["height"] = (0,) * 64
                 proposal["normal_xyz"] = FRONT * 64
                 methods["semantic_floor_override"] += 1
+                geometry_overrides.add(content_id)
+            annotation = semantics.get(content_id)
+            if (not semantic_floor and annotation and annotation["role"] in ("wall", "wall_corner") and
+                    not annotation["context_dependent"] and
+                    annotation.get("corner_type") != "unknown"):
+                if templates:
+                    local, record = templates.resolve(content_id, annotation)
+                    reference_records.append(record)
+                else:
+                    local = _semantic_wall_layers(annotation)
+                if local:
+                    proposal.update(local)
+                    geometry_overrides.add(content_id)
+                    methods["reference_wall_override" if templates else "semantic_wall_override"] += 1
+            elif not semantic_floor and templates and any(content_id == e['reference'] or content_id in e.get("tile_hashes", [])
+                                   for e in templates.entries):
+                local, record = templates.resolve(content_id, annotation or {})
+                reference_records.append(record)
+                if local:
+                    proposal.update(local)
+                    geometry_overrides.add(content_id)
+            # Authored lighting is an absolute invariant, including legacy
+            # generated arrays. No geometry path may regenerate it.
+            if "normal_xyz" in existing:
+                proposal["normal_xyz"] = tuple(existing["normal_xyz"])
             generated[content_id] = proposal
     finally:
         connection.close()
     if not authored.keys() <= generated.keys():
         raise ProfileGenerationError("profile contains assets absent from ROM atlas")
-    candidate = _render_profile(source_text, authored, generated)
+    tile_roles = {content_id: annotation["role"] for content_id, annotation in semantics.items()
+                  if not annotation["context_dependent"] and annotation.get("corner_type") != "unknown"}
+    candidate = _render_profile(source_text, authored, generated, geometry_overrides,
+                                tile_roles if semantics_path else None)
+    if semantics_path:
+        candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$', 'schema_version = 18', candidate, count=1)
     parsed = tomllib.loads(candidate)
     for key, value in profile.items():
+        if key == "schema_version" and semantics_path:
+            value = 18
         if key == "schema_version" and upper_floor_height and value < 13:
             value = 13
         if key == "lighting_space" and upper_floor_height:
@@ -524,12 +624,18 @@ def generate_profile(database: Path, source: Path, output: Path,
             expected = {name: dict(group) for name, group in value.items()}
             expected["hud_tiles"]["tile_hashes"] = parsed[key]["hud_tiles"]["tile_hashes"]
             for name in semantic_group_additions:
-                expected[name]["tile_hashes"] = parsed[key][name]["tile_hashes"]
+                if name in parsed[key]:
+                    expected[name] = parsed[key][name]
+                else:
+                    expected.pop(name, None)
             value = expected
         elif key == "asset_groups" and semantic_group_additions:
             expected = {name: dict(group) for name, group in value.items()}
             for name in semantic_group_additions:
-                expected[name]["tile_hashes"] = parsed[key][name]["tile_hashes"]
+                if name in parsed[key]:
+                    expected[name] = parsed[key][name]
+                else:
+                    expected.pop(name, None)
             value = expected
         if key != "assets" and parsed.get(key) != value:
             raise ProfileGenerationError(f"non-asset profile section changed: {key}")
@@ -542,14 +648,13 @@ def generate_profile(database: Path, source: Path, output: Path,
         if any(name not in asset for name in LAYERS):
             raise ProfileGenerationError(f"candidate {asset['tile_hash']} lacks a layer")
         original = authored.get(asset["tile_hash"])
-        allowed_floor_override = (original and (asset["tile_hash"] in declared_floor_ids or
-                                  (asset["tile_hash"] in semantics and
-                                   semantics[asset["tile_hash"]]["role"] == "floor" and
-                                   not semantics[asset["tile_hash"]]["context_dependent"])))
+        allowed_floor_override = asset["tile_hash"] in geometry_overrides
         if original and any(asset.get(name) != value for name, value in original.items()
-                            if not allowed_floor_override or name not in ("height", "normal_xyz")):
+                            if name != "tile_role" and (not allowed_floor_override or name != "height")):
             raise ProfileGenerationError(f"authored asset changed: {asset['tile_hash']}")
     output.parent.mkdir(parents=True, exist_ok=True)
+    if source.read_bytes() != source_snapshot:
+        raise ProfileGenerationError("source changed during generation; candidate not written")
     temporary = output.with_name(output.name + ".tmp")
     try:
         temporary.write_text(candidate)
@@ -558,6 +663,9 @@ def generate_profile(database: Path, source: Path, output: Path,
         if temporary.exists():
             temporary.unlink()
     return {"candidate_profile": str(output), "candidate_bytes": len(candidate.encode()),
+             "source_sha256": hashlib.sha256(source_snapshot).hexdigest(),
+             "candidate_sha256": hashlib.sha256(candidate.encode()).hexdigest(),
+             "normal_arrays_changed": 0,
             "assets": len(generated), "new_assets": len(generated) - len(authored),
             "authored_assets_preserved": len(authored),
             "authored_layer_counts": dict(authored_layer_counts),
@@ -567,4 +675,60 @@ def generate_profile(database: Path, source: Path, output: Path,
              "upper_floor_height": upper_floor_height,
              "semantic_annotations": len(semantics),
              "semantic_group_additions": semantic_group_additions,
+             "local_geometry_overrides": len(geometry_overrides),
+              "reference_templates": templates.report(reference_records) if templates else None,
              "confidence": "first-pass visual heuristics; review in game"}
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--atlas", type=Path, required=True)
+    parser.add_argument("--source", type=Path, default=Path("alttp-profile.toml"))
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tile-semantics", type=Path,
+                        default=Path("tools/alttp-tile-semantics-v1.json"))
+    parser.add_argument("--update-source", action="store_true",
+                        help="promote the candidate to --source, keeping a unique byte-exact backup")
+    parser.add_argument("--reference-templates", type=Path,
+                        help="opt-in reference-derived local wall geometry; never replaces existing normals")
+    parser.add_argument("--report", type=Path, help="write reproducible generation/evidence report")
+    args = parser.parse_args()
+    try:
+        if args.report and args.report.resolve() in {p.resolve() for p in
+                (args.source, args.output, args.atlas, args.tile_semantics,
+                 *([args.reference_templates] if args.reference_templates else []))}:
+            raise ProfileGenerationError("report must be distinct from all inputs and candidate")
+        source_snapshot = args.source.read_bytes() if args.update_source else None
+        report = generate_profile(args.atlas, args.source, args.output, args.tile_semantics,
+                                  args.reference_templates)
+        if args.report:
+            args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        if args.update_source:
+            if args.source.read_bytes() != source_snapshot:
+                raise ProfileGenerationError("source changed during generation; candidate was not promoted")
+            index = 0
+            while True:
+                backup = args.source.with_name(args.source.stem + ".before-heights" +
+                    (f"_{index:03d}" if index else "") + args.source.suffix)
+                try:
+                    with backup.open("xb") as saved:
+                        saved.write(source_snapshot)
+                    break
+                except FileExistsError:
+                    index += 1
+            if args.source.read_bytes() != source_snapshot:
+                raise ProfileGenerationError("source changed before promotion; backup and candidate retained")
+            # Candidate and source are on the same workspace filesystem here.
+            # Replacement is atomic; existing files are never partially rewritten.
+            os.replace(args.output, args.source)
+            report["updated_source"] = str(args.source)
+            report["backup"] = str(backup)
+    except (ProfileGenerationError, ValueError, OSError) as exc:
+        parser.exit(1, f"{exc}\n")
+    print(json.dumps({key: report[key] for key in (
+        "candidate_profile", "assets", "semantic_annotations",
+        "semantic_group_additions", "local_geometry_overrides")}, indent=2))
+    if args.update_source:
+        print(json.dumps({key: report[key] for key in ("updated_source", "backup")}, indent=2))

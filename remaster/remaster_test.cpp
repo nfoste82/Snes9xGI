@@ -727,7 +727,7 @@ int main ()
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());
-	previousVersionBytes.erase(emissionStart + 256, emissionStart + 260); // v21 emission depth
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 265); // v21 depth, v24 empty peer count, v25 role
 	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end());
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
@@ -763,7 +763,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 23);
+	assert(decodedFrame.schemaVersion == 25);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -1190,6 +1190,7 @@ material = "wet_stone"
 	S9xRemasterSetProfile(profile);
 
 	const std::string framePath = "/tmp/snes9x-remaster-frame-test.s9xrmf";
+	std::remove(framePath.c_str());
 	S9xRemasterRequestFrameCapture(framePath);
 	S9xRemasterBeginFrame(2, 2, 2, 1);
 	S9xRemasterSetSubscreen(false);
@@ -1200,7 +1201,7 @@ material = "wet_stone"
 	const uint16_t screen[] = { 0x001f, 0x03e0 };
 	RemasterFrame finalizedFrame;
 	assert(S9xRemasterEndFrame(screen, 2, 2, 1, &finalizedFrame) & RemasterCaptureFrame);
-	std::ifstream frameInput(framePath, std::ios::binary);
+	std::ifstream frameInput(S9xRemasterState().lastWrittenCapturePath, std::ios::binary);
 	std::vector<uint8_t> capturedFrameBytes((std::istreambuf_iterator<char>(frameInput)),
 		std::istreambuf_iterator<char>());
 	assert(capturedFrameBytes.size() > 8);
@@ -1212,7 +1213,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 23);
+	assert(decodedFrame.schemaVersion == 25);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
 	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
@@ -1362,6 +1363,17 @@ material = "wet_stone"
 	S9xRemasterBeginFrame(2, 2, 2, 1);
 	assert(!S9xRemasterCompletedFrame());
 	S9xRemasterEndFrame(screen, 2, 2, 1);
+	// Inspection packets remain available with lighting/live presentation off.
+	S9xRemasterState().requestedInspectableFrames.store(true);
+	S9xRemasterBeginFrame(2, 2, 2, 1);
+	S9xRemasterSetSubscreen(false);
+	S9xRemasterSetDraw(RemasterSourceType::Background, 1, 0x1402);
+	S9xRemasterObserveTile(indices, 4, 0x2000, 0x1402);
+	S9xRemasterSetTilePixel(0);
+	S9xRemasterWriteOwner(0);
+	S9xRemasterEndFrame(screen, 2, 2, 1);
+	assert(S9xRemasterCompletedFrame() && S9xRemasterCompletedFrame()->mainPixels[0].instanceId == 1);
+	S9xRemasterState().requestedInspectableFrames.store(false);
 
 	const char *ambiguousProfile = R"PROFILE(
 schema_version = 1
@@ -1467,6 +1479,8 @@ material = "missing"
 	profile.assets[flame].tileId = flame;
 	profile.assets[flame].emissionDepth = 3.25f;
 	profile.emitterPatchSize = 2; // Explicit fixture; loaded user profile may change.
+	profile.schemaVersion = 15; profile.representativeEmitters = 0;
+	for (auto &entry : profile.assets) entry.second.combineEmitters.clear();
 	std::string volumeText;
 	std::vector<RemasterProfileDiagnostic> volumeDiagnostics;
 	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
@@ -1502,12 +1516,56 @@ material = "missing"
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.representativeEmitters == 4);
 	// Schema22 lacks only the new representative setting byte.
+	// Remove v24 metadata peer counts before downgrading this singleton fixture.
+	const auto representativeEmission = std::search(representativeBytes.begin(),representativeBytes.end(),
+		representativeFrame.assetMetadata[0].emissionRgba.begin(),representativeFrame.assetMetadata[0].emissionRgba.end());
+	assert(representativeEmission != representativeBytes.end());
+	representativeBytes.erase(representativeEmission+260,representativeEmission+265);
+	representativeBytes[8] = 23;
+	assert(S9xDeserializeRemasterFrame(representativeBytes,representativeDecoded));
+	assert(representativeDecoded.assetMetadata[0].combineEmitters.empty());
 	representativeBytes[8] = 22;
 	const size_t representativesOffset = 8 + 4 + 4 + 4 + 4 + representativeFrame.profileRomSha256.size() + 33;
 	representativeBytes.erase(representativeBytes.begin() + representativesOffset);
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.representativeEmitters == 0);
 	assert(S9xRemasterFrameMetadataForTile(volumeFrame, flame)->emissionDepth == 3.25f);
+	const RemasterTileContentId peer = {UINT64_C(0xe41e81c4f0f14d5f),1,4};
+	profile.assets[flame].combineEmitters = {peer};
+	assert(S9xRemasterSerializeProfile(profile,volumeText,volumeDiagnostics));
+	assert(S9xRemasterParseProfile(volumeText,volumeProfile,volumeDiagnostics));
+	assert(volumeProfile.schemaVersion == 17 && volumeProfile.assets.at(flame).combineEmitters == std::vector<RemasterTileContentId>{peer});
+	S9xRemasterApplyProfileToFrame(volumeProfile,volumeFrame);
+	assert(S9xRemasterFrameMetadataForTile(volumeFrame,flame)->combineEmitters == std::vector<RemasterTileContentId>{peer});
+	representativeFrame.assetMetadata[0].combineEmitters = {peer};
+	assert(S9xSerializeRemasterFrame(representativeFrame,representativeBytes));
+	assert(S9xDeserializeRemasterFrame(representativeBytes,representativeDecoded));
+	assert(representativeDecoded.assetMetadata[0].combineEmitters == std::vector<RemasterTileContentId>{peer});
+	profile.assets[flame].tileRole = RemasterTileRole::WallCorner;
+	assert(S9xRemasterSerializeProfile(profile,volumeText,volumeDiagnostics));
+	assert(S9xRemasterParseProfile(volumeText,volumeProfile,volumeDiagnostics));
+	assert(volumeProfile.schemaVersion == 18 && volumeProfile.assets.at(flame).tileRole == RemasterTileRole::WallCorner);
+	S9xRemasterApplyProfileToFrame(volumeProfile, volumeFrame);
+	assert(S9xRemasterFrameMetadataForTile(volumeFrame, flame)->tileRole == RemasterTileRole::WallCorner);
+	representativeFrame.assetMetadata[0].tileRole = RemasterTileRole::WallCorner;
+	assert(S9xSerializeRemasterFrame(representativeFrame, representativeBytes));
+	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
+	assert(representativeDecoded.assetMetadata[0].tileRole == RemasterTileRole::WallCorner);
+	assert((S9xRemasterTileRoleColor(RemasterTileRole::Unknown) >> 16) == 255);
+	// v24 captures preserve emitter peers but have no authored role byte.
+	const auto roleEmission = std::search(representativeBytes.begin(), representativeBytes.end(),
+		representativeFrame.assetMetadata[0].emissionRgba.begin(), representativeFrame.assetMetadata[0].emissionRgba.end());
+	assert(roleEmission != representativeBytes.end());
+	representativeBytes.erase(roleEmission + 274); // 256 RGBA + 4 depth + 4 count + 10 peer
+	representativeBytes[8] = 24;
+	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
+	assert(representativeDecoded.assetMetadata[0].tileRole == RemasterTileRole::Unknown);
+	assert(representativeDecoded.assetMetadata[0].combineEmitters == std::vector<RemasterTileContentId>{peer});
+	profile.assets[flame].combineEmitters = {peer,peer};
+	assert(!S9xRemasterSerializeProfile(profile,volumeText,volumeDiagnostics));
+	profile.assets[flame].combineEmitters = {flame};
+	assert(!S9xRemasterSerializeProfile(profile,volumeText,volumeDiagnostics));
+	profile.assets[flame].combineEmitters.clear();
 	profile.assets[flame].emissionDepth = -1;
 	assert(!S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
 	return 0;

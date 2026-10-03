@@ -697,6 +697,16 @@ int main()
                     full[PreviousBounce][p] = {1,0.5f,0.25f,1};
                 }
                 near("representative 64 member ABI and exact sampled energy", clustered(full,true), clustered(full,false));
+                patches[0].count = 256;
+                full = s;
+                for (unsigned j = 0; j < 256; j++) {
+                    unsigned p = (j/16)*width+16+j%16;
+                    patches[0].members[j] = p;
+                    full[Participation][p] = {1,1,0,0};
+                    full[Surface][p] = {8,-0.98f,0,0.198997f};
+                    full[PreviousBounce][p] = {1,0.5f,0.25f,1};
+                }
+                near("combined 256 member ABI and sampled energy", clustered(full,true), clustered(full,false));
             }
             near("direct field excludes generated point-light proxies", run(s, false).bounce, {});
             s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};

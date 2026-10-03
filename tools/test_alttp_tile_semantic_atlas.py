@@ -129,10 +129,10 @@ class TileSemanticAtlasTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "annotations.json"
             store = AnnotationStore(path, ROM_SHA256)
-            store.save("bg", {"role": "stair_top", "normals": [],
-                              "context_dependent": True, "note": "upper cap"})
+            store.save("bg", {"role": "obstacle", "normals": [],
+                              "context_dependent": True, "note": "upper railing"})
             loaded = AnnotationStore(path, ROM_SHA256)
-            self.assertEqual(loaded.tiles["bg"]["role"], "stair_top")
+            self.assertEqual(loaded.tiles["bg"]["role"], "obstacle")
             self.assertFalse(path.with_name(path.name + ".tmp").exists())
             value = json.loads(path.read_text())
             value["rom_sha256"] = "2" * 64

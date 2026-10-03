@@ -37,6 +37,13 @@ SOLVED = [[0, 1, 2, 1], [0, 2, 2, 1], [1, 1, 2, 0]]
 
 
 class RoomHeightValidationTests(unittest.TestCase):
+    def test_variable_bases_do_not_multiply_by_configured_stair_rise(self):
+        fixture = graph(SOLVED)
+        fixture["elevation"]["cells_plane_x_y_base"] = [[0, 1, 2, 32], [0, 2, 2, 32], [1, 1, 2, 0]]
+        report = validate(fixture, 50, snapshot=Snapshot(), attributes=attrs(), profile=PROFILE)
+        self.assertTrue(report["success"])
+        self.assertEqual(report["placements"][0]["floor_base"], 32)
+
     def test_requires_every_walkable_placement_on_each_plane(self):
         report = validate(graph(SOLVED[:-1]), 50, snapshot=Snapshot(), attributes=attrs(), profile=PROFILE)
         self.assertFalse(report["success"])
@@ -94,6 +101,17 @@ class RoomHeightValidationTests(unittest.TestCase):
                           attributes=attrs(), profile=PROFILE)
         self.assertFalse(report["success"])
         self.assertTrue(report["compiled_map_missing"])
+
+    def test_plane_aware_map_cannot_hide_wrong_underpass_base(self):
+        visible = [255] * 4096
+        visible[129] = visible[130] = 50
+        planes = [[255] * 4096 for _ in range(2)]
+        planes[0][129] = planes[0][130] = 50
+        planes[1][129] = 50 # wrong: lower underpass should be zero
+        report = validate(graph(SOLVED), 50, {"visible": visible, "planes": planes},
+                          snapshot=Snapshot(), attributes=attrs(), profile=PROFILE)
+        self.assertFalse(report["success"])
+        self.assertEqual(report["compiled_map_mismatches"], [[1, 1, 2, 0, 50]])
 
 
 if __name__ == "__main__":

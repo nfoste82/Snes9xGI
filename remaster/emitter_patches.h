@@ -7,15 +7,16 @@
 #include <tuple>
 #include <cstddef>
 #include "frame.h"
+#include "emitter_groups.h"
 #include "surface_mesh.h"
 
 struct RemasterEmitterPatch
 {
 	uint32_t count = 0;
 	uint32_t mode = 0; // bit0: actual-member representative; bit1: expanded depth layout
-	std::array<uint32_t, 64> members = {};
+	std::array<uint32_t, 256> members = {};
 };
-static_assert(sizeof(RemasterEmitterPatch) == 264 && offsetof(RemasterEmitterPatch, members) == 8, "Emitter patch ABI");
+static_assert(sizeof(RemasterEmitterPatch) == 1032 && offsetof(RemasterEmitterPatch, members) == 8, "Emitter patch ABI");
 
 inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const RemasterFrame &frame,
 	const uint8_t *emission, const uint8_t *participation, const float *surface,
@@ -27,7 +28,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 	std::vector<RemasterEmitterPatch> result;
 	auto pixelAt = [&](size_t i) -> const RemasterFramePixel & {
 		const auto &main = frame.mainPixels[i];
-		return !main.instanceId && uint8_t(main.owner >> 24) == uint8_t(RemasterSourceType::Backdrop) ? frame.subPixels[i] : main;
+		return (!main.instanceId || main.instanceId > frame.tileInstances.size()) && uint8_t(main.owner >> 24) == uint8_t(RemasterSourceType::Backdrop) ? frame.subPixels[i] : main;
 	};
 	auto active = [&](size_t i) { return participation[i*2] > 127 && emission[i*4+3] &&
 		(emission[i*4] || emission[i*4+1] || emission[i*4+2]); };
@@ -40,29 +41,69 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 	if (frame.representativeEmitters) {
 		// Separate screen channels and placements even when their tile hashes match.
 		std::map<std::tuple<bool, uint32_t, uint32_t>, std::vector<uint32_t>> instances;
+		bool hasLinks = std::any_of(frame.assetMetadata.begin(),frame.assetMetadata.end(),
+			[](const RemasterFrameAssetMetadata &m) { return !m.combineEmitters.empty(); });
+		auto placements = hasLinks ? S9xRemasterEmitterPlacements(frame) : std::vector<RemasterEmitterPlacement>{};
+		placements.erase(std::remove_if(placements.begin(),placements.end(),[&](const RemasterEmitterPlacement &p) {
+			auto m = S9xRemasterFrameMetadataForTile(frame,p.tileId); return !m || m->combineEmitters.empty();
+		}),placements.end());
+		std::vector<size_t> parent(placements.size());
+		for (size_t i = 0; i < parent.size(); i++) parent[i] = i;
+		auto root = [&](size_t i) { while (parent[i] != i) i = parent[i]; return i; };
+		std::map<std::pair<bool,uint32_t>,size_t> placementIndex;
+		std::map<std::tuple<bool,RemasterSourceType,int,int>,std::vector<size_t>> origins;
+		for (size_t i = 0; i < placements.size(); i++) {
+			const auto &a = placements[i]; placementIndex[{a.sub,a.instance}] = i;
+			origins[{a.sub,a.source,a.x,a.y}].push_back(i);
+		}
+		for (size_t i = 0; i < placements.size(); i++) {
+			const auto &a = placements[i]; auto ma = S9xRemasterFrameMetadataForTile(frame,a.tileId);
+			if (!ma || ma->combineEmitters.empty()) continue;
+			for (auto delta : {std::make_pair(8,0), std::make_pair(0,8)}) {
+				auto adjacent = origins.find({a.sub,a.source,a.x+delta.first,a.y+delta.second});
+				if (adjacent == origins.end()) continue;
+				for (size_t j : adjacent->second) {
+					const auto &b = placements[j]; auto mb = S9xRemasterFrameMetadataForTile(frame,b.tileId);
+					if (!mb || !S9xRemasterEmitterAdjacent(a,b) ||
+						std::find(ma->combineEmitters.begin(),ma->combineEmitters.end(),b.tileId) == ma->combineEmitters.end() ||
+						std::find(mb->combineEmitters.begin(),mb->combineEmitters.end(),a.tileId) == mb->combineEmitters.end()) continue;
+					size_t ra = root(i), rb = root(j); parent[std::max(ra,rb)] = std::min(ra,rb);
+				}
+			}
+		}
 		for (uint32_t i = 0; i < size; i++) if (active(i)) {
 			const auto &p = pixelAt(i);
 			if (!p.instanceId || p.tilePixel >= 64) {
 				RemasterEmitterPatch singleton; singleton.count = 1; singleton.mode = 1u | (mesh[i].emissionDepth > 0 ? 2u : 0u);
 				singleton.members[0] = i; result.push_back(singleton); continue;
 			}
-			instances[{&p == &frame.subPixels[i], p.owner, p.instanceId}].push_back(i);
+			bool sub = &p == &frame.subPixels[i];
+			auto placement = placementIndex.find({sub,p.instanceId});
+			if (placement != placementIndex.end()) {
+				const auto &group = placements[root(placement->second)];
+				instances[{sub,0,group.instance}].push_back(i);
+			} else instances[{sub,p.owner,p.instanceId}].push_back(i);
 		}
 		for (auto &entry : instances) {
 			auto &pixels = entry.second;
+			bool combinedShape = false;
+			for (auto p : pixels) combinedShape |= pixelAt(p).instanceId != pixelAt(pixels.front()).instanceId;
 			std::sort(pixels.begin(), pixels.end(), [&](uint32_t a, uint32_t b) {
-				return std::make_pair(pixelAt(a).tilePixel, a) < std::make_pair(pixelAt(b).tilePixel, b);
+				return combinedShape ? a < b : std::make_pair(pixelAt(a).tilePixel,a) < std::make_pair(pixelAt(b).tilePixel,b);
 			});
-			// A normal tile has <=64 visible pixels. Oversized/duplicated inputs are
-			// conservatively chunked rather than overflowing/truncating membership.
-			for (size_t start = 0; start < pixels.size(); start += 64) {
-				unsigned n = unsigned(std::min<size_t>(64, pixels.size()-start));
+			// Four complete tiles fit in one cluster. Larger shapes still cluster
+			// together; only an oversized resulting cluster is split for GPU capacity.
+			{
+				unsigned n = unsigned(pixels.size()); size_t start = 0;
 				unsigned k = std::min(n, unsigned(std::min<uint8_t>(8, frame.representativeEmitters)));
-				std::array<std::array<float,5>,64> features = {};
-				std::array<float,64> powers = {};
+				std::vector<std::array<float,5>> features(n);
+				std::vector<float> powers(n);
+				unsigned minX = frame.width, minY = frame.height, maxX = 0, maxY = 0;
+				for (auto p : pixels) { minX = std::min(minX,p%frame.width); minY = std::min(minY,p/frame.width); maxX = std::max(maxX,p%frame.width); maxY = std::max(maxY,p/frame.width); }
 				for (unsigned j = 0; j < n; j++) {
-					uint32_t p = pixels[start+j]; unsigned xy = pixelAt(p).tilePixel;
-					features[j] = {float(xy%8)/7, float(xy/8)/7, colors[p][0], colors[p][1], colors[p][2]};
+					uint32_t p = pixels[start+j];
+					features[j] = {float(p%frame.width-minX)/std::max(7u,maxX-minX), float(p/frame.width-minY)/std::max(7u,maxY-minY), colors[p][0], colors[p][1], colors[p][2]};
+					if (!combinedShape) { features[j][0] = float(pixelAt(p).tilePixel%8)/7; features[j][1] = float(pixelAt(p).tilePixel/8)/7; }
 					float maximum = float(std::max(emission[p*4], std::max(emission[p*4+1], emission[p*4+2])))/255;
 					powers[j] = std::pow(maximum,2.2f)*float(emission[p*4+3])/255;
 				}
@@ -70,7 +111,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 					float d = 0; for (unsigned c = 0; c < 5; c++) d += (a[c]-b[c])*(a[c]-b[c]); return d;
 				};
 				std::array<std::array<float,5>,8> centers = {};
-				std::array<bool,64> seeded = {};
+				std::vector<bool> seeded(n,false);
 				for (unsigned c = 0; c < k; c++) {
 					unsigned best = 0; float score = -1;
 					for (unsigned j = 0; j < n; j++) if (!seeded[j]) {
@@ -81,7 +122,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 					}
 					seeded[best] = true; centers[c] = features[best];
 				}
-				std::array<unsigned,64> assignment = {};
+				std::vector<unsigned> assignment(n);
 				for (unsigned iteration = 0; iteration < 6; iteration++) {
 					std::array<std::array<float,5>,8> sums = {}; std::array<float,8> weights = {};
 					for (unsigned j = 0; j < n; j++) {
@@ -96,6 +137,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 				std::array<RemasterEmitterPatch,8> clusters;
 				for (unsigned j = 0; j < n; j++) {
 					auto &cluster = clusters[assignment[j]]; uint32_t p = pixels[start+j];
+					if (cluster.count == cluster.members.size()) { result.push_back(cluster); cluster = RemasterEmitterPatch{}; }
 					cluster.members[cluster.count++] = p; cluster.mode |= 1u | (mesh[p].emissionDepth > 0 ? 2u : 0u);
 				}
 				for (unsigned c = 0; c < k; c++) if (clusters[c].count) result.push_back(clusters[c]);

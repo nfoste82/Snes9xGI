@@ -104,12 +104,14 @@ inline bool S9xRemasterOcclusionNeedsStorage (bool hasOcclusion, const std::arra
 struct RemasterAssetMetadata
 {
 	RemasterTileContentId tileId;
+	RemasterTileRole tileRole = RemasterTileRole::Unknown;
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
 	std::array<uint8_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
 	float emissionDepth = 0.0f;
+	std::vector<RemasterTileContentId> combineEmitters;
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
 	bool hasHeight = false;
@@ -827,6 +829,16 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				else
 					asset = &inserted.first->second;
 			}
+			else if (key == "tile_role")
+			{
+				bool valid = false;
+				if (ParseString(value, stringValue))
+					for (unsigned i = 0; i < static_cast<unsigned>(RemasterTileRole::Count); i++)
+						if (stringValue == S9xRemasterTileRoleName(static_cast<RemasterTileRole>(i)))
+						{ asset->tileRole = static_cast<RemasterTileRole>(i); valid = true; }
+				if (!valid) fail(lineNumber, "tile_role must be a supported authored tile role");
+				if (parsed.schemaVersion < 18) fail(lineNumber, "tile_role requires schema_version 18");
+			}
 			else if (key == "materials")
 			{
 				std::vector<std::string> selectors;
@@ -880,6 +892,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			{
 				if (!ParseBool(value, asset->directLightingOppositeFacing))
 					fail(lineNumber, "direct_lighting_opposite_facing must be true or false");
+			}
+			else if (key == "combine_emitters")
+			{
+				std::vector<std::string> hashes;
+				if (!ParseStringArray(value, hashes) || hashes.empty()) fail(lineNumber, "combine_emitters requires a nonempty tile hash list");
+				else for (const auto &hash : hashes) {
+					RemasterTileContentId id;
+					if (!ParseTileId(hash, id) || std::find(asset->combineEmitters.begin(), asset->combineEmitters.end(), id) != asset->combineEmitters.end())
+						fail(lineNumber, "combine_emitters contains an invalid or duplicate tile hash");
+					else asset->combineEmitters.push_back(id);
+				}
 			}
 			else if (key == "emission_depth")
 			{
@@ -942,8 +965,13 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 16)
-		fail(0, "schema_version must be an integer in [1, 16]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 18)
+		fail(0, "schema_version must be an integer in [1, 18]");
+	for (const auto &entry : parsed.assets) {
+		if (!entry.second.combineEmitters.empty() && parsed.schemaVersion < 17) fail(0, "combine_emitters requires schema_version 17");
+		for (const auto &id : entry.second.combineEmitters)
+			if (id == entry.first) fail(0, "combine_emitters must list other tile types, not itself");
+	}
 	for (const auto &entry : parsed.assets)
 		if (entry.second.emissionDepth > 0 && parsed.schemaVersion < 14)
 			fail(0, "emission_depth requires schema_version 14");
@@ -1030,7 +1058,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		const RemasterAssetMetadata &item = entry.second;
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
-		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 &&
+		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && item.combineEmitters.empty() &&
 			!item.directLightingOppositeFacing)
 			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, or direct_lighting_opposite_facing");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
@@ -1149,11 +1177,13 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	bool hasOppositeFacingDirectLighting = false;
 	bool hasDiffuseReflectance = false;
 	bool hasEmissionDepth = false;
+	bool hasCombinedEmitters = false;
 	for (const auto &entry : profile.assets)
 	{
 		if (!std::isfinite(entry.second.emissionDepth) || entry.second.emissionDepth < 0 || entry.second.emissionDepth > 64) return false;
 		hasEmission |= entry.second.hasEmission;
 		hasEmissionDepth |= entry.second.emissionDepth > 0;
+		hasCombinedEmitters |= !entry.second.combineEmitters.empty();
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 	}
@@ -1163,7 +1193,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
-	output << "schema_version = " << std::max(profile.representativeEmitters ? 16u : 15u, std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
+	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
+	output << "schema_version = " << std::max(hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u)), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1216,7 +1247,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(asset.hasOcclusion, asset.occlusion);
 		// A tile with only default coverage needs no asset table at all.
 		if (asset.hasOcclusion && !storeOcclusion && !asset.hasMaterialSelectors && !asset.hasHeight &&
-			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.directLightingOppositeFacing)
+			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing)
 			continue;
 		output << "\n[[assets]]\n";
 		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
@@ -1259,7 +1290,15 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 				output << (i ? ", " : "") << unsigned(asset.emissionRgba[i]);
 			output << "]\n";
 		}
+		if (asset.tileRole != RemasterTileRole::Unknown)
+			output << "tile_role = " << Quote(S9xRemasterTileRoleName(asset.tileRole)) << "\n";
 		if (asset.emissionDepth > 0) output << "emission_depth = " << asset.emissionDepth << "\n";
+		if (!asset.combineEmitters.empty()) {
+			output << "combine_emitters = [";
+			auto peers = asset.combineEmitters; std::sort(peers.begin(), peers.end());
+			for (size_t i = 0; i < peers.size(); i++) output << (i ? ", " : "") << Quote(TileId(peers[i]));
+			output << "]\n";
+		}
 	}
 	for (const RemasterProfileRule &rule : profile.rules)
 	{

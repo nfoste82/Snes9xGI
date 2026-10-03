@@ -693,8 +693,13 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.submodule = Memory.RAM[0x11];
 				dungeonFloor.roomTransitionFlags = Memory.RAM[0xef];
 				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
-				dungeonFloor.backgroundScrollY = PPU.BG[1].VOffset;
+				// DrawBackground samples LineData.VOffset, which includes the SNES
+				// one-scanline bias. Placement lookup must use that same origin.
+				dungeonFloor.backgroundScrollY = PPU.BG[1].VOffset + 1;
 				dungeonFloor.collisionAttributes = Memory.RAM + 0x12000;
+				dungeonFloor.constructedMaps = Memory.RAM + 0x2000;
+				dungeonFloor.graphics = Memory.VRAM;
+				dungeonFloor.graphicsBase = PPU.BG[1].NameBase << 1;
 				auto word = [&] (int address) {
 					return Memory.RAM[address] | (Memory.RAM[address + 1] << 8);
 				};
@@ -737,7 +742,9 @@ void S9xEndScreenRefresh (void)
 			S9xDeinitUpdate(IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
 			if (remasterCapture & RemasterCaptureFrame)
 			{
-				GFX.InfoString = "Remaster frame capture written";
+				const std::string &path = S9xRemasterState().lastWrittenCapturePath;
+				const size_t slash = path.find_last_of("/\\");
+				GFX.InfoString = "Capture written: " + path.substr(slash == std::string::npos ? 0 : slash + 1);
 				GFX.InfoStringTimeout = 180;
 			}
 			else if (remasterCapture & RemasterCaptureInventory)

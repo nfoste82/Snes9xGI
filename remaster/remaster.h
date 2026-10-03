@@ -8,6 +8,7 @@
 #define _REMASTER_H_
 
 #include "frame.h"
+#include "capture_path.h"
 #include "profile.h"
 
 #include <algorithm>
@@ -126,6 +127,7 @@ struct RemasterState
 
 	std::atomic<RemasterDebugMode> requestedDebugMode { RemasterDebugMode::Original };
 	std::atomic<bool> requestedLiveFrames { false };
+	std::atomic<bool> requestedInspectableFrames { false };
 	std::atomic<bool> performanceMetricsEnabled { false };
 	std::chrono::steady_clock::time_point performanceFrameStarted;
 	std::chrono::steady_clock::time_point performanceLastFrameStarted;
@@ -154,6 +156,17 @@ struct RemasterState
 	uint64_t runtimeDungeonObservedInputKey = 0;
 	uint64_t runtimeDungeonHeightEpoch = 0;
 	bool runtimeDungeonHeightValid = false;
+	uint64_t dungeonGeometryProfileKey = 0;
+	bool dungeonGeometryProfileDirty = true;
+	std::array<uint8_t, 16384> dungeonObservedMaps = {};
+	std::array<uint8_t, 8192> dungeonObservedAttributes = {};
+	std::array<uint8_t, 65536> dungeonObservedGraphics = {};
+	std::array<RemasterDungeonFloorContext::Stair, 32> dungeonObservedStairs = {};
+	uint8_t dungeonObservedStairCount = 255;
+	uint16_t dungeonObservedGraphicsBase = 0xffff;
+	uint8_t dungeonObservedRise = 255;
+	uint8_t dungeonObservedPlane = 255;
+	bool dungeonSnapshotValid = false;
 	bool dungeonHeightMapsPending = false;
 	bool profilePending = false;
 	RemasterSceneSettings requestedSceneSettings;
@@ -166,6 +179,7 @@ struct RemasterState
 	RemasterAnimationCapture animationCapture;
 	uint32_t requestedFrameCount = 1;
 	uint32_t activeFrameCount = 0;
+	std::string lastWrittenCapturePath;
 	std::map<uint64_t, ObservedTile> observedTiles;
 	std::map<ProfileMatchKey, RemasterProfileMatch> profileMatchCache;
 	std::vector<RemasterFrameTileInstance> tileInstances;
@@ -208,6 +222,21 @@ inline uint64_t S9xRemasterDungeonHeightInputKey (const RemasterDungeonFloorCont
 	auto mix = [&key] (uint8_t value) { key = (key ^ value) * UINT64_C(1099511628211); };
 	mix(context.roomIndex & 255); mix(context.roomIndex >> 8);
 	mix(context.collisionMode); mix(floorRise);
+	mix(context.linkPlane & 1);
+	if (context.constructedMaps)
+		for (size_t i = 0; i < 16384; i++) mix(context.constructedMaps[i]);
+	if (context.graphics && context.constructedMaps)
+	{
+		std::array<bool, 1024> used = {};
+		for (int i = 0; i < 4096; i++)
+		{
+			const int tile = (context.constructedMaps[i * 2] | (context.constructedMaps[i * 2 + 1] << 8)) & 1023;
+			if (used[tile]) continue;
+			used[tile] = true;
+			for (int b = 0; b < 32; b++) mix(context.graphics[static_cast<uint16_t>(context.graphicsBase + tile * 32 + b)]);
+		}
+	}
+	mix(context.graphicsBase & 255); mix(context.graphicsBase >> 8);
 	if (context.collisionAttributes)
 		for (size_t i = 0; i < 8192; i++) mix(context.collisionAttributes[i]);
 	for (uint8_t i = 0; i < context.stairCount; i++)
@@ -222,8 +251,10 @@ inline uint64_t S9xRemasterDungeonHeightInputKey (const RemasterDungeonFloorCont
 inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloorContext &context,
 	uint16_t publishedRoom)
 {
-	return context.collisionAttributes && context.collisionMode == 0 && context.stairCount != 0 &&
-		(!context.submodule || context.roomIndex == publishedRoom);
+	return context.collisionAttributes && context.collisionMode == 0 &&
+		context.verifiedAlttpRom && context.indoors &&
+		(context.stairCount != 0 || context.constructedMaps) &&
+		(context.constructedMaps ? !context.submodule : (!context.submodule || context.roomIndex == publishedRoom));
 }
 
 inline bool S9xRemasterObserving (void)
@@ -271,7 +302,7 @@ inline RemasterDebugMode S9xRemasterGetDebugMode (void)
 inline RemasterDebugMode S9xRemasterCycleDebugMode (void)
 {
 	RemasterState &state = S9xRemasterState();
-	int next = (static_cast<int>(state.requestedDebugMode.load(std::memory_order_relaxed)) + 1) % 3;
+	int next = (static_cast<int>(state.requestedDebugMode.load(std::memory_order_relaxed)) + 1) % static_cast<int>(RemasterDebugMode::Count);
 	RemasterDebugMode mode = static_cast<RemasterDebugMode>(next);
 	state.requestedDebugMode.store(mode, std::memory_order_relaxed);
 	return mode;
@@ -281,13 +312,16 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 {
 	RemasterState &state = S9xRemasterState();
 	state.activeDebugMode = state.requestedDebugMode.load(std::memory_order_relaxed);
-	state.liveFramesActive = state.requestedLiveFrames.load(std::memory_order_relaxed);
+	state.liveFramesActive = state.requestedLiveFrames.load(std::memory_order_relaxed) ||
+		state.requestedInspectableFrames.load(std::memory_order_relaxed) ||
+		state.activeDebugMode == RemasterDebugMode::TileTypes;
 	state.completedFrameAvailable = false;
 	{
 		std::lock_guard<std::mutex> lock(state.inventoryMutex);
 		if (state.profilePending)
 		{
 			state.activeProfile = std::move(state.requestedProfile);
+			state.dungeonGeometryProfileDirty = true;
 			state.profileMatchCache.clear();
 			state.profilePending = false;
 		}
@@ -299,6 +333,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		if (state.sceneSettingsPending)
 		{
 			S9xRemasterApplySceneSettings(state.activeProfile, state.requestedSceneSettings);
+			state.dungeonGeometryProfileDirty = true;
 			state.sceneSettingsPending = false;
 		}
 		if (!state.requestedInventoryPath.empty())
@@ -472,6 +507,58 @@ inline uint64_t S9xRemasterHashTile (uint8_t bitDepth, const uint8_t *indices)
 		hash *= UINT64_C(1099511628211);
 	}
 	return hash;
+}
+
+inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &context,
+	const RemasterProfile &profile, std::array<RemasterDungeonFloorContext::Placement, 4096> &output)
+{
+	using Surface = RemasterDungeonFloorContext::Surface;
+	std::map<RemasterTileContentId, Surface> surfaces;
+	for (const auto &group : profile.assetGroups)
+	{
+		Surface role = Surface::Unknown;
+		if (group.first == "wall_faces") role = Surface::Wall;
+		else if (group.first == "dungeon_floor" || group.first == "wall_tops") role = Surface::Floor;
+		else if (group.first == "obstacles") role = Surface::Obstacle;
+		else if (group.first == "stair_treads" || group.first == "stair_rails") role = Surface::Stair;
+		if (role == Surface::Unknown) continue;
+		auto priority = [] (Surface s) {
+			return s == Surface::Obstacle ? 4 : s == Surface::Stair ? 3 : s == Surface::Wall ? 2 : s == Surface::Floor ? 1 : 0;
+		};
+		for (const auto &id : group.second.tileIds)
+			if (!surfaces.count(id) || priority(role) > priority(surfaces[id])) surfaces[id] = role;
+	}
+	std::map<uint16_t, RemasterTileContentId> hashes;
+	for (int i = 0; i < 4096; i++)
+	{
+		const uint16_t word = context.constructedMaps[i * 2] | (context.constructedMaps[i * 2 + 1] << 8);
+		const uint16_t address = static_cast<uint16_t>(context.graphicsBase + (word & 1023) * 32);
+		if (!hashes.count(address))
+		{
+			uint8_t pixels[64];
+			for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++)
+			{
+				uint8_t index = 0;
+				for (int plane = 0; plane < 4; plane++)
+					index |= ((context.graphics[static_cast<uint16_t>(address + (plane / 2) * 16 + y * 2 + plane % 2)] >> (7 - x)) & 1) << plane;
+				pixels[y * 8 + x] = index;
+			}
+			hashes[address] = {S9xRemasterHashTile(4, pixels), 1, 4};
+		}
+		auto &placed = output[i];
+		placed = RemasterDungeonFloorContext::Placement{};
+		const auto id = hashes[address];
+		if (surfaces.count(id)) placed.surface = surfaces[id];
+		auto asset = profile.assets.find(id);
+		if (asset != profile.assets.end() && asset->second.hasHeight)
+		{ placed.hasHeight = true; placed.height = asset->second.height; }
+		// A wall-top group is not permission to turn a ramp or relief into a
+		// plateau. Only authored flat regions participate in flat continuation.
+		if (placed.surface == Surface::Floor && placed.hasHeight &&
+			!std::all_of(placed.height.begin(), placed.height.end(), [&] (uint8_t h) { return h == placed.height[0]; }))
+			placed.surface = Surface::Unknown;
+		placed.hflip = (word & 0x4000) != 0; placed.vflip = (word & 0x8000) != 0;
+	}
 }
 
 inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, uint16_t vramAddress, uint16_t tileWord)
@@ -952,19 +1039,91 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				}
 			runtimeInputsPublishable = S9xRemasterDungeonHeightInputsPublishable(*dungeonFloor,
 				state.runtimeDungeonHeightValid ? state.runtimeDungeonHeightMap.roomIndex : 0xffff);
-			state.runtimeDungeonObservedInputKey = S9xRemasterDungeonHeightInputKey(*dungeonFloor,
-				state.activeProfile.upperFloorHeight);
+			bool inputChanged = roomChanged || !state.dungeonSnapshotValid || state.dungeonGeometryProfileDirty ||
+				state.dungeonObservedPlane != (dungeonFloor->linkPlane & 1) ||
+				state.dungeonObservedRise != state.activeProfile.upperFloorHeight ||
+				state.dungeonObservedGraphicsBase != dungeonFloor->graphicsBase ||
+				state.dungeonObservedStairCount != dungeonFloor->stairCount;
+			if (dungeonFloor->constructedMaps && dungeonFloor->graphics && dungeonFloor->collisionAttributes)
+			{
+				// memcmp is vectorized and avoids serial FNV and profile scans on
+				// unchanged frames. Hash/decode/solve only after a state change.
+				inputChanged |= std::memcmp(state.dungeonObservedMaps.data(), dungeonFloor->constructedMaps, 16384) != 0 ||
+					std::memcmp(state.dungeonObservedAttributes.data(), dungeonFloor->collisionAttributes, 8192) != 0;
+				std::array<bool, 1024> used = {};
+				for (int i = 0; !inputChanged && i < 4096; i++)
+				{
+					const int tile = (dungeonFloor->constructedMaps[i * 2] | (dungeonFloor->constructedMaps[i * 2 + 1] << 8)) & 1023;
+					if (used[tile]) continue;
+					used[tile] = true;
+					for (int b = 0; b < 32; b++)
+					{
+						const uint16_t address = static_cast<uint16_t>(dungeonFloor->graphicsBase + tile * 32 + b);
+						if (state.dungeonObservedGraphics[address] != dungeonFloor->graphics[address]) inputChanged = true;
+					}
+				}
+			}
+			for (uint8_t i = 0; i < dungeonFloor->stairCount; i++)
+			{
+				const auto &a = state.dungeonObservedStairs[i], &b = dungeonFloor->stairs[i];
+				inputChanged |= a.x != b.x || a.y != b.y || a.table != b.table || a.tableEntry != b.tableEntry ||
+					a.highIsNorth != b.highIsNorth || a.changesPlane != b.changesPlane;
+			}
+			// Authored semantics/relief are geometry inputs as well as room RAM.
+			if (state.dungeonGeometryProfileDirty)
+			{
+			state.dungeonGeometryProfileKey = UINT64_C(1469598103934665603);
+			for (const auto &asset : state.activeProfile.assets)
+			{
+				state.dungeonGeometryProfileKey ^= asset.first.hash;
+				state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ asset.second.hasHeight) * UINT64_C(1099511628211);
+				for (uint8_t h : asset.second.height)
+					state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ h) * UINT64_C(1099511628211);
+			}
+			for (const auto &group : state.activeProfile.assetGroups)
+			{
+				for (char c : group.first) state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ c) * UINT64_C(1099511628211);
+				for (const auto &id : group.second.tileIds) state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ id.hash) * UINT64_C(1099511628211);
+			}
+			state.dungeonGeometryProfileDirty = false;
+			}
+			if (inputChanged && runtimeInputsPublishable)
+			{
+				state.runtimeDungeonObservedInputKey = S9xRemasterDungeonHeightInputKey(*dungeonFloor,
+					state.activeProfile.upperFloorHeight) ^ state.dungeonGeometryProfileKey;
+				if (dungeonFloor->constructedMaps && dungeonFloor->graphics && dungeonFloor->collisionAttributes)
+				{
+					std::copy_n(dungeonFloor->constructedMaps, 16384, state.dungeonObservedMaps.begin());
+					std::copy_n(dungeonFloor->collisionAttributes, 8192, state.dungeonObservedAttributes.begin());
+					std::copy_n(dungeonFloor->graphics, 65536, state.dungeonObservedGraphics.begin());
+					state.dungeonSnapshotValid = true;
+				}
+				state.dungeonObservedStairs = dungeonFloor->stairs;
+				state.dungeonObservedStairCount = dungeonFloor->stairCount;
+				state.dungeonObservedGraphicsBase = dungeonFloor->graphicsBase;
+				state.dungeonObservedRise = state.activeProfile.upperFloorHeight;
+				state.dungeonObservedPlane = dungeonFloor->linkPlane & 1;
+			}
 			if (!reviewMap && runtimeInputsPublishable)
 			{
 				const uint64_t key = state.runtimeDungeonObservedInputKey;
 				if (key != state.runtimeDungeonHeightKey)
 				{
-					RemasterDungeonHeightMap candidate;
-					if (S9xRemasterBuildDungeonHeightMap(*dungeonFloor,
-						state.activeProfile.upperFloorHeight, candidate) &&
-						candidate.roomIndex == dungeonFloor->roomIndex)
+					// Both buffers remain alive through the solve, but must not share
+					// the emulation thread's small stack with solver scratch.
+					auto candidate = std::make_unique<RemasterDungeonHeightMap>();
+					RemasterDungeonFloorContext constructed = *dungeonFloor;
+					auto placements = std::make_unique<std::array<RemasterDungeonFloorContext::Placement, 4096>>();
+					if (constructed.constructedMaps && constructed.graphics)
 					{
-						state.runtimeDungeonHeightMap = std::move(candidate);
+						S9xRemasterDungeonPlacements(constructed, state.activeProfile, *placements);
+						constructed.placements = placements->data();
+					}
+					if (S9xRemasterBuildDungeonHeightMap(constructed,
+						state.activeProfile.upperFloorHeight, *candidate) &&
+						candidate->roomIndex == dungeonFloor->roomIndex)
+					{
+						state.runtimeDungeonHeightMap = std::move(*candidate);
 						state.runtimeDungeonHeightKey = key;
 						state.runtimeDungeonHeightEpoch++;
 						state.runtimeDungeonHeightValid = true;
@@ -1023,6 +1182,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 						<< ",\"constraints\":" << map.constraintCount
 						<< ",\"conflicting_components\":" << map.conflictingComponentCount
 						<< ",\"solved_plane_cells\":[" << map.solvedPlaneCells[0] << ',' << map.solvedPlaneCells[1] << ']'
+						<< ",\"required_plane_cells\":[" << map.requiredPlaneCells[0] << ',' << map.requiredPlaneCells[1] << ']'
+						<< ",\"unknown_plane_cells\":[" << map.unknownPlaneCells[0] << ',' << map.unknownPlaneCells[1] << ']'
+						<< ",\"structural_conflicts\":" << map.structuralConflicts
+						<< ",\"solved_wall_cells\":" << map.solvedWallCells
+						<< ",\"unknown_wall_cells\":" << map.unknownWallCells
 						<< ",\"applied\":{\"destination_pixels\":" << dungeonHeightDiagnostics.destinationPixels
 						<< ",\"source_pixels\":" << dungeonHeightDiagnostics.sourcePixels
 						<< ",\"destination_raised\":" << dungeonHeightDiagnostics.destinationRaisedPixels
@@ -1049,11 +1213,18 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		if (state.frameCaptureActive)
 		{
+			if (!state.animationCapture.frameCount)
+				state.activeFramePath = S9xRemasterCaptureLocationPath(state.activeFramePath,
+					dungeonFloor && dungeonFloor->verifiedAlttpRom, dungeonFloor && dungeonFloor->indoors,
+					dungeonFloor ? dungeonFloor->roomIndex : 0, dungeonFloor ? dungeonFloor->linkX : 0,
+					dungeonFloor ? dungeonFloor->linkY : 0);
 			S9xRemasterAddAnimationCaptureFrame(state.animationCapture, frame);
 			if (state.animationCapture.frameCount >= state.activeFrameCount)
 			{
 				RemasterFrame captured = S9xRemasterFinishAnimationCapture(std::move(state.animationCapture));
-				if (S9xWriteRemasterFrame(captured, state.activeFramePath))
+				std::vector<uint8_t> bytes;
+				if (S9xSerializeRemasterFrame(captured, bytes) &&
+					S9xRemasterWriteUniqueCapture(bytes, state.activeFramePath, state.lastWrittenCapturePath))
 					result |= RemasterCaptureFrame;
 				state.frameCaptureActive = false;
 			}

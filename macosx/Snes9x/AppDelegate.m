@@ -44,6 +44,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                            keyEquivalent:@"d"];
 	debugItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	debugItem.target = self;
+	debugItem.toolTip = @"Cycle Original, Surface Overlay, Surface IDs, Tile Types. Tile Types: floor green; wall blue; wall corner purple; obstacle orange; stair top cyan; stair bottom pink; other gray; unknown red.";
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
 	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
@@ -81,6 +82,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                              keyEquivalent:@""];
 	profileItem.target = self;
 	[viewMenuItem.submenu addItem:profileItem];
+	NSMenu *windowMenu = NSApp.windowsMenu;
+	[windowMenu addItem:[NSMenuItem separatorItem]];
+	NSMenuItem *tileEditorItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Tile Editor", nil)
+	                                                        action:@selector(showRemasterTileEditor:)
+	                                                 keyEquivalent:@""];
+	tileEditorItem.target = self;
+	[windowMenu addItem:tileEditorItem];
+	NSMenuItem *profileSettingsItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Profile Settings", nil)
+	                                                             action:@selector(showRemasterProfileSettings:)
+	                                                      keyEquivalent:@""];
+	profileSettingsItem.target = self;
+	[windowMenu addItem:profileSettingsItem];
     [self importRecentItems];
 
     NSWindow *gameWindow = [[NSWindow alloc] initWithContentRect:s9xView.frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -628,6 +641,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	else if (action == @selector(openRemasterFrame:)) {
 		return ![self.s9xEngine isRunning] || [self.s9xEngine isPaused];
 	}
+	else if (action == @selector(showRemasterTileEditor:)) {
+		return [self.s9xEngine canShowRemasterTileEditor];
+	}
+	else if (action == @selector(showRemasterProfileSettings:)) {
+		return [self.s9xEngine isRemasterProfileLoaded];
+	}
 	else if (action == @selector(updateDeviceSetting:)) {
 		menuItem.state = (self.deviceSetting == (S9xDeviceSetting)menuItem.tag) ? NSOnState : NSOffState;
 	}
@@ -743,7 +762,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	}
 	NSString *path = [self.s9xEngine captureRemasterFrame];
 	if (path)
-		NSLog(@"Remaster animation capture requested: %@", path);
+		NSLog(@"Remaster capture destination: %@ (room/coordinates and unused index are selected when written)", path);
 }
 
 - (IBAction)loadRemasterProfile:(id)sender
@@ -756,6 +775,16 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return;
 
 	[self openURL:panel.URL];
+}
+
+- (IBAction)showRemasterTileEditor:(id)sender
+{
+	[self.s9xEngine showRemasterTileEditor];
+}
+
+- (IBAction)showRemasterProfileSettings:(id)sender
+{
+	[self.s9xEngine showRemasterProfileSettings];
 }
 
 - (IBAction)openRemasterFrame:(id)sender

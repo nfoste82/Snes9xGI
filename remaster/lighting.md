@@ -30,6 +30,36 @@ retain the expanded representation. No profile or capture schema change.
 
 ### Emitter patches
 
+**Explicit multi-tile emitters:** in the tile inspector's Emission layer,
+Cmd-click two or more tile types in the scene and choose **Combine Emitters**.
+All selected types must occur in one cardinal-edge-connected shape in the current
+frame (a2x2 shape is valid; diagonal-only contact is not). Otherwise an alert is
+shown and no metadata changes. The button is disabled for one selected type and
+has a selection reminder tooltip. The action applies live, is undoable, and saves
+reciprocal `combine_emitters` tile-hash lists in asset metadata (profile17,
+capture24). Older profiles/captures have no links. Existing links are retained
+when adding peers; use Undo to reverse the authoring action.
+
+With representative mode enabled, mutually listed tile types join only when their
+actual8x8 footprints share a cardinal edge in the selected screen channel and
+source domain (backgrounds also require the same BG layer). Non-emitting pixel
+gaps do not break adjacency; disconnected copies never join remotely. Tile flips
+and clipped visibility are accounted for when reconstructing footprint origins.
+Inconsistent origins are excluded from joining. Only explicit hash peers are
+allowed, so other animation hashes must be authored separately. Selection is by
+tile type, not individual occurrence; one connected occurrence containing every
+selected type is enough to validate the action.
+
+Each connected shape sharesK representatives rather thanK per tile. Summed RGB,
+normalization area, actual-member endpoints and receiver exclusion are retained.
+GPU membership capacity is256 (1032-byte CPU/Metal patch ABI), covering four full
+tiles even atK=1. Larger shapes cluster together but any resulting cluster over
+256 members is split to retain every source, potentially exceedingK. Off retains
+the existing rectangular patch algorithm; authored links take effect when
+representative mode is enabled. Identity links are not transferred by paint-layer
+copy/paste or Apply to Animation, and normal/height resets retain them. Reset Tile
+removes that tile's links; reciprocity prevents leftover incoming links merging.
+
 Scene Controls also offers opt-in **Representative Emitters per Tile**: enable
 the checkbox and choose1..8, initially4. Off retains rectangular patch grouping;
 patch-size controls are disabled while representative mode is enabled. Profile
