@@ -15,7 +15,10 @@ def main():
     parser.add_argument("--fixtures", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--rom", type=Path)
     args = parser.parse_args()
+    if args.rom and hashlib.sha256(args.rom.read_bytes()).hexdigest() != '66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb':
+        parser.error('unsupported ROM fingerprint')
     if not args.output.is_dir():
         parser.error("output directory must already exist")
     # Shared authoring may regenerate the selected candidate while a fixture
@@ -39,6 +42,8 @@ def main():
         for stair in state["stairs"]:
             command += [*map(str, stair["tile_xy"]), str(int(stair["high_side"] == "north")),
                         str(int(state["stair_kind"] == 1))]
+        if args.rom:
+            command += ['--rom', str(args.rom)]
         solution = args.output / f"room-{room:03x}-runtime.json"
         with solution.open("w") as output:
             subprocess.run(command, stdout=output, check=True)
@@ -52,18 +57,20 @@ def main():
         for placement in solved["structural_placements"]:
             visible[placement["y"] * 64 + placement["x"]] = placement["floor_base"]
         compiled = args.output / f"room-{room:03x}-runtime.bin"
-        compiled.write_bytes(b"ALTPHM2\0" + struct.pack("<H", room) +
-                             bytes(visible) + bytes(planes[0]) + bytes(planes[1]))
+        compiled.write_bytes(b"ALTPHM3\0" + struct.pack("<H", room) +
+                             struct.pack("<12288i", *(visible + planes[0] + planes[1])))
         report = args.output / f"room-{room:03x}-validation-v2.json"
-        validation = [sys.executable, "-B", "tools/alttp_validate_room_heights.py",
+        validation = [sys.executable, "-B", "tools/ALttP/alttp_validate_room_heights.py",
                       "--graph", str(prefix) + "-doorway-graph.json", "--snapshot", str(raw),
                       "--attributes", str(raw) + ".attr", "--state", str(state_path),
                       "--profile", str(args.profile), "--runtime-solution", str(solution),
                       "--height-map", str(compiled),
                       "--output", str(report), "--diagnostic-svg", str(report.with_suffix(".svg"))]
+        if args.rom:
+            validation += ['--rom', str(args.rom)]
         result = subprocess.run(validation, stdout=subprocess.DEVNULL)
         failed |= result.returncode != 0
-        if report.exists():
+        if result.returncode != 2 and report.exists():
             data = json.loads(report.read_text())
             print(f"room {room:03x}: exit={result.returncode} support={data['valid_walkable_placements']}/"
                   f"{data['required_walkable_placements']} missing={len(data['missing_placements'])} "
@@ -73,6 +80,8 @@ def main():
     (args.output / "fixture-input-manifest.json").write_text(json.dumps({
         "source_profile": str(source_profile), "pinned_profile": str(pinned_profile),
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        "template_rom": str(args.rom) if args.rom else None,
+        "template_rom_sha256": hashlib.sha256(args.rom.read_bytes()).hexdigest() if args.rom else None,
         "source_changed_during_run": changed,
         "validation_failed": failed}, indent=2) + "\n")
     if changed:

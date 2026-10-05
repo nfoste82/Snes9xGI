@@ -179,7 +179,8 @@ int main()
                               const Light *debugLight = nullptr, bool referenceVisibility = false,
                                bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f,
                                 const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr, bool sampleDirect = false,
-                                const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false) {
+                                 const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false,
+                                  float originalContribution = 0.65f, const std::vector<Light> *sceneLights = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -215,8 +216,8 @@ int main()
                         [textures[i] replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
                             withBytes:s[bindings[i]].data() bytesPerRow:width * sizeof(simd_float4)];
                 }
-                Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, 1, passIndex, diagnosticStage,
-					indirectRoughness, 0.65f, 8.0f, lambertianDirect ? 1.0f : 0.0f, sampleIndex, sampleCount, randomSeed, reflectanceBoost,
+                Uniforms uniforms = {width, height, composing ? unsigned(compositeView) : 0, sceneLights ? uint32_t(sceneLights->size()) : 0, passIndex, diagnosticStage,
+					indirectRoughness, originalContribution, 8.0f, lambertianDirect ? 1.0f : 0.0f, sampleIndex, sampleCount, randomSeed, reflectanceBoost,
                     {cameraDirection.x, cameraDirection.y, cameraDirection.z, 0}, {}, {}};
                 if (debugLight)
                 {
@@ -226,11 +227,7 @@ int main()
                         std::pow(debugLight->color.y, 2.2f), std::pow(debugLight->color.z, 2.2f),
                         debugLight->intensity / 25.0f};
                 }
-                Light light = {};
-                light.position = {26.5f, receiverY + 0.5f, lightZ};
-                light.radius = 64;
-                light.intensity = 1;
-                light.color = {1, 0.5f, 0.25f};
+                (void)lightZ; // Legacy point-light argument; transport uses explicit sources.
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLTexture> visibilityBlocks = nil;
                 id<MTLBuffer> sourcePower = nil;
@@ -305,8 +302,10 @@ int main()
                 if (bounce && !composing)
                     [encoder setTexture:visibilityBlocks atIndex:10];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-                if (!bounce && !composing)
-                    [encoder setBytes:&light length:sizeof(light) atIndex:1];
+                Light emptySceneLight = {};
+                id<MTLBuffer> sceneLightBuffer = [device newBufferWithBytes:sceneLights && !sceneLights->empty() ? sceneLights->data() : &emptySceneLight
+                    length:std::max<size_t>(1, uniforms.lightCount) * sizeof(Light) options:MTLResourceStorageModeShared];
+                [encoder setBuffer:sceneLightBuffer offset:0 atIndex:composing || !bounce ? 1 : 8];
                 if (bounce && !composing && sampled)
                 {
                     [encoder setBuffer:sourcePower offset:0 atIndex:1];
@@ -390,7 +389,7 @@ int main()
                     [encoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
                     if (batched)
                     {
-                        batchCount = std::max(1u, (emitterCount + (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0 ? 128u : 0u) + 7) / 8);
+                        batchCount = std::max(1u, (emitterCount + uniforms.lightCount * 128u + (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0 ? 128u : 0u) + 7) / 8);
                         partials = [device newBufferWithLength:size_t(width) * height * batchCount * 16 options:MTLResourceStorageModePrivate];
                         require(partials != nil, @"Direct partial allocation failed");
                         [encoder setBuffer:partials offset:0 atIndex:5];
@@ -1084,6 +1083,51 @@ int main()
             s[Emission][receiver] = {0.25f, 0.5f, 0.75f, 50.0f / 255.0f};
             near("self emission decodes color once and ignores absorbing albedo", run(s, false).bounce,
                 reflectance * (200.0f / 0.9f));
+            {
+                Scene flame = scene();
+                flame[Source][receiver] = {};
+                flame[Emission][receiver] = {0.8f, 0.4f, 0.1f, 25.0f / 255.0f};
+                const auto standard = run(flame, false);
+                near("standard flame displays authored RGB while retaining HDR transport", standard.accumulated,
+                    simd_float4{0.8f, 0.4f, 0.1f, 1});
+                flame[Source][receiver] = {1, 1, 1, 1};
+                near("baked white artwork does not wash out authored orange emission", run(flame, false).accumulated,
+                    standard.accumulated);
+                flame[Direct][receiver] = standard.bounce;
+                near("composite replaces baked white flame with authored emission",
+                    run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, 0).accumulated, standard.accumulated);
+                flame[NextBounce][receiver] = {0.05f, 0.025f, 0.01f, 1};
+                const auto litFlame = run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                    simd_float3{0, 0, -1}, 3).accumulated;
+                check("emissive pixels also receive direct illumination", litFlame.x > standard.accumulated.x &&
+                    litFlame.y > standard.accumulated.y && litFlame.z > standard.accumulated.z, litFlame, standard.accumulated);
+                flame[NextBounce][receiver] = {};
+                near("zero-original composite shows the same flame as Direct-only",
+                    run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, 0, nullptr, false, false, false, 0, nullptr,
+                        false, nullptr, false, 0).accumulated, standard.accumulated);
+                flame[Emission][receiver].w = 250.0f / 255.0f;
+                const auto powerful = run(flame, false);
+                near("higher flame intensity increases transport power linearly", powerful.bounce, standard.bounce * 10);
+                check("bright flame stays bounded and colored", powerful.accumulated.x <= 1 &&
+                    powerful.accumulated.x > powerful.accumulated.y && powerful.accumulated.y > powerful.accumulated.z,
+                    powerful.accumulated, {});
+                near("highlight compression preserves flame channel ratios",
+                    simd_float4{powerful.accumulated.y / powerful.accumulated.x,
+                        powerful.accumulated.z / powerful.accumulated.x, 0, 0},
+                    simd_float4{0.5f, 0.125f, 0, 0});
+                flame[Direct][receiver] = powerful.bounce;
+                near("final composite uses the same flame appearance as the emission pass",
+                    run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, 0).accumulated, powerful.accumulated);
+                near("Direct view includes colored flame self emission",
+                    run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, 3).accumulated, powerful.accumulated);
+                near("Direct plus Indirect view includes colored flame self emission",
+                    run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, 8).accumulated, powerful.accumulated);
+            }
             near("passIndex 0 classifies first collision as direct", clear.accumulated, {});
             s[PreviousBounce][emitter] = {};
             near("indirect needs radiance from previousBounce", run(s, true).bounce, {});
@@ -1103,6 +1147,61 @@ int main()
 
             for (bool half : {false, true})
             {
+                {
+                    Scene flame = scene();
+                    flame[Surface][receiver] = {0, 0, 0, 1};
+                    flame[Surface][emitter] = {16, 0, 0, 1};
+                    std::vector<RemasterSurfaceMesh::Cell> cells(width * height);
+                    for (unsigned p = 0; p < width * height; p++)
+                        for (float &z : cells[p].corners) z = flame[Surface][p].x;
+                    auto illuminate = [&](bool sampled, const std::vector<RemasterEmitterPatch> *patches = nullptr) {
+                        return run(flame, true, 0, 8, -1, nullptr, half, 0, 1, 0, 16, 19,
+                            simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, &cells,
+                            sampled, patches).bounce;
+                    };
+                    near("one-sided planar emitter facing away from floor remains dark", illuminate(false), {});
+                    cells[emitter].emissionOmnidirectional = 1;
+                    const auto omni = illuminate(false);
+                    positive("omnidirectional planar flame illuminates floor without changing normals", omni);
+                    flame[Height][emitter] = {16, 1, 0, 0};
+                    flame[Occlusion][emitter] = {1, 1, 0, 0};
+                    cells[emitter].thickness = 2;
+                    near("opaque elevated omnidirectional flame does not shadow itself", illuminate(false), omni);
+                    near("sampled opaque elevated flame does not shadow itself", illuminate(true), omni);
+                    flame[Surface][emitter] = {16, 0, 0, -1};
+                    near("opaque flame lighting is unchanged when normal reverses Z", illuminate(false), omni);
+                    flame[Surface][emitter] = {16, 0, 0, 1};
+                    near("sampled omnidirectional flame matches exhaustive power", illuminate(true), omni);
+                    RemasterEmitterPatch patch; patch.count = 1; patch.members[0] = emitter;
+                    std::vector<RemasterEmitterPatch> patches {patch};
+                    near("rectangular patch preserves omnidirectional power", illuminate(false, &patches), omni);
+                    near("sampled rectangular patch preserves omnidirectional power", illuminate(true, &patches), omni);
+                    patches[0].mode = 1;
+                    near("representative patch preserves omnidirectional power", illuminate(false, &patches), omni);
+                    near("sampled representative patch preserves omnidirectional power", illuminate(true, &patches), omni);
+                    cells[emitter].thickness = 0;
+                    near("zero-thickness opaque flame does not shadow itself", illuminate(false), omni);
+                    cells[emitter].thickness = 2;
+                    flame[Surface][emitter] = {16, 0, 1, 0};
+                    near("flame emission is independent of shading normal direction", illuminate(false), omni);
+                    flame[Surface][emitter] = {16, 0, -1, 0};
+                    near("reversing flame shading normal does not turn off emission", illuminate(true), omni);
+                    flame[Surface][emitter] = {16, 0, 0, 1};
+                    blocker(flame, 10, 0.5f, true, 8);
+                    for (float &z : cells[receiver + 10].corners) z = 8;
+                    cells[receiver + 10].thickness = 20;
+                    near("omnidirectional flame retains fractional blocker attenuation", illuminate(false), omni * 0.5f);
+                    near("sampled omnidirectional flame retains fractional attenuation", illuminate(true), omni * 0.5f);
+                    flame[Occlusion][receiver + 10] = {};
+                    flame[Surface][receiver] = {0, 0, 0, -1};
+                    near("omnidirectional source still respects receiver normal", illuminate(false), {});
+                    flame[Surface][receiver] = {0, 0, 0, 1};
+                    blocker(flame, 10, 1, true, 8);
+                    for (unsigned p = 0; p < width * height; p++)
+                        for (float &z : cells[p].corners) z = flame[Surface][p].x;
+                    cells[receiver + 10].thickness = 20;
+                    near("omnidirectional flame still respects opaque blockers", illuminate(false), {});
+                }
                 Scene torch = scene();
                 torch[Surface][receiver] = {0, 0, 0, 1};
                 torch[Surface][emitter] = {0, 0, 0, 1};
@@ -1429,7 +1528,8 @@ int main()
                 sphere[Surface][receiver] = {10, 0, 0, 1};
                 sphere[Direct][receiver] = {0, 0, 0, 1};
                 check("sphere front surface remains visible above center height",
-                    illuminate(0).accumulated.x > 1, illuminate(0).accumulated, {});
+                    illuminate(0).accumulated.x > 0.9f && illuminate(0).accumulated.x <= 1,
+                    illuminate(0).accumulated, {});
                 sphere[Surface][receiver].x = 13;
                 const float ambient = std::pow(0.65f, 1.0f / 2.2f);
                 near("geometry above sphere front surface hides glow", illuminate(0).accumulated,
@@ -1507,7 +1607,7 @@ int main()
                 light.position.x = receiverX + 0.5f;
                 disk[Direct][receiver] = {0, 0, 0, 1};
                 const auto glow = illuminate(0, 0, 0).accumulated;
-                check("composite displays debug sphere without altering scene pixels", glow.x > 1, glow, {});
+                check("composite displays bounded debug sphere glow", glow.x > 0.9f && glow.x <= 1, glow, {});
                 near("Direct diagnostic excludes sphere self-emission", illuminate(0, 0, 3).accumulated, {});
                 disk[Surface][receiver].x = 50;
                 const float ambient = std::pow(0.65f, 1.0f / 2.2f);
@@ -1615,11 +1715,21 @@ int main()
                         for (unsigned pixel = 0; pixel < width * height; ++pixel)
                             for (unsigned c = 0; c < 3; ++c)
                             {
-                                float linear = view == 3 ? firstCollision[pixel][c] * 4 :
+                                float linear = view == 3 ? firstCollision[pixel][c] + s[Direct][pixel][c] / 100.0f :
                                     view == 6 ? s[NextIndirect][pixel][c] * 4 :
-                                    view == 8 ? (firstCollision[pixel][c] + s[NextIndirect][pixel][c]) * 4 :
-                                    std::pow(s[Source][pixel][c], 2.2f) * 0.65f + s[Direct][pixel][c] +
+                                    view == 8 ? firstCollision[pixel][c] + s[NextIndirect][pixel][c] + s[Direct][pixel][c] / 100.0f :
+                                    (s[Direct][pixel].x > 0 ? 0 : std::pow(s[Source][pixel][c], 2.2f) * 0.65f) + s[Direct][pixel][c] / 100.0f +
                                         firstCollision[pixel][c] + s[NextIndirect][pixel][c];
+                                if (view == 0 || view == 3 || view == 8)
+                                {
+                                    float peak = 0;
+                                    for (unsigned channel = 0; channel < 3; channel++)
+                                        peak = std::max(peak, (view == 0 && s[Direct][pixel].x <= 0 ? std::pow(s[Source][pixel][channel], 2.2f) * 0.65f : 0) +
+                                            s[Direct][pixel][channel] / 100.0f + firstCollision[pixel][channel] +
+                                            (view == 3 ? 0 : s[NextIndirect][pixel][channel]));
+                                    if (peak > 0.75f)
+                                        linear *= (0.75f + 0.25f * (1 - std::exp(-(peak - 0.75f) / 0.25f))) / peak;
+                                }
                                 const float expected = s[Direct][pixel].w < 0.5f ? s[Source][pixel][c] :
                                     std::pow(linear, 1.0f / 2.2f);
                                 matches &= std::isfinite(s[Output][pixel][c]) &&
@@ -2119,6 +2229,51 @@ kernel void probePatch(const device PatchProbe *inputs [[buffer(0)]],
             }
             std::printf("Patch candidate probes: %zu; reference hits=%u mismatches=%u\n", probes.size(), probeHits, probeMismatch);
             check("raw patch candidate rejection matches independent triangle expansion", probeMismatch == 0, {}, {});
+            // Captured authored lamp sources share the session sphere's physical
+            // transport without requiring a debug light. A Link-height silhouette
+            // between hand and receiver must shadow this source.
+            for (bool half : {false, true}) {
+                Scene lamp = scene();
+                lamp[PreviousBounce].assign(width * height, {});
+                lamp[Surface][receiver] = {0, 0, 0, 1};
+                Light held = {};
+                held.position = {26.5f, receiverY + 0.5f, 12};
+                held.radius = 2; held.intensity = 8; held.color = {1, 0.5f, 0.125f};
+                std::vector<Light> sources{held};
+                auto illuminate = [&](const Scene &s, unsigned stage = 0) {
+                    return run(s, true, 0, 8, -1, nullptr, half, stage, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, nullptr,
+                        false, nullptr, false, 0, &sources).bounce;
+                };
+                const auto clear = illuminate(lamp);
+                positive("authored held lamp emits without debug light", clear);
+                check("authored lamp keeps warm transport color", std::abs(clear.y / clear.x - 0.5f) < 0.001f, clear, {});
+                for (unsigned y = 0; y < height; y++) {
+                    const unsigned p = y * width + receiverX + 10;
+                    lamp[Height][p] = {6, 1, 0, 0};
+                    lamp[Surface][p] = {6, 0, 0, 1};
+                    lamp[Occlusion][p] = {1, 1, 0, 0};
+                }
+                dimmed("Link silhouette shadows authored held lamp", illuminate(lamp), clear);
+                sources.push_back(held);
+                Scene unblocked = scene();
+                unblocked[PreviousBounce].assign(width * height, {});
+                unblocked[Surface][receiver] = {0, 0, 0, 1};
+                near("two authored lamps add direct energy", illuminate(unblocked), clear * 2);
+                Scene noLight = unblocked;
+                noLight[Direct][receiver] = {0, 0, 0, 1};
+                near("zero original contribution darkens unlit world", run(noLight, false, 0, 8, -1,
+                    nullptr, half, 0, 1, 0, 1, 1, simd_float3{0, 0, -1}, 0,
+                    nullptr, false, false, false, 0, nullptr, false, nullptr, false, 0).accumulated,
+                    simd_float4{0, 0, 0, 1});
+                unblocked[Participation][receiver] = {};
+                near("HUD excluded from lamp transport", illuminate(unblocked), {});
+                unblocked[Direct][receiver] = {}; // emission alpha zero marks HUD bypass
+                const auto hud = run(unblocked, false, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                    simd_float3{0, 0, -1}, 0, nullptr, false, false, false, 0, nullptr,
+                    false, nullptr, false, 0, &sources).accumulated;
+                near("HUD retains original artwork at zero scene contribution", hud, unblocked[Source][receiver]);
+            }
             std::printf("%u/%u checks passed; %u failed\n", checks - failures, checks, failures);
             return failures ? 1 : 0;
         }

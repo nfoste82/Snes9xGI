@@ -14,7 +14,7 @@ python3 tools/run_remaster_benchmark.py \
 
 Defaults use `~/Downloads/Zelda_ALTTP.zip`,
 `~/Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.004.frz`, and the
-repository's `alttp-profile.toml`. Override with `--rom`, `--state`, `--profile`.
+repository's `Profiles/ALttP/alttp-profile.toml`. Override with `--rom`, `--state`, `--profile`.
 The output directory must be new. `--connections` overrides the profile setting.
 
 Cases: Direct lighting only; Direct + Indirect at 0/1/8 bounces; Composite at

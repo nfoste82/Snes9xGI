@@ -1,10 +1,27 @@
 import struct
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from alttp_compile_room_height_map import UNKNOWN, compile_map
+from alttp_validate_room_heights import load_height_map
 
 
 class CompileRoomHeightMapTest(unittest.TestCase):
+    def test_signed_map_preserves_negative_and_large_bases(self):
+        report = {"format": "alttp-room-height-validation-v2", "success": True, "room_id": 7,
+                  "placements": [{"x": 1, "y": 2, "plane": 0, "floor_base": -24},
+                                 {"x": 2, "y": 2, "plane": 0, "floor_base": 512}]}
+        data = compile_map(report)
+        self.assertEqual(data[:8], b"ALTPHM3\0")
+        self.assertEqual(struct.unpack_from("<i", data, 10+129*4)[0], -24)
+        self.assertEqual(struct.unpack_from("<i", data, 10+130*4)[0], 512)
+        with patch.object(Path, "read_bytes", return_value=data):
+            decoded = load_height_map(Path("signed-review.bin"), 7)
+        self.assertEqual(decoded["visible"][129], -24)
+        self.assertEqual(decoded["planes"][0][130], 512)
+        self.assertEqual(decoded["planes"][1][129], UNKNOWN)
+
     def test_overlapping_planes_remain_distinct_and_visible_uses_highest(self):
         report = {"format": "alttp-room-height-validation-v2", "success": True, "room_id": 0x60,
                   "placements": [

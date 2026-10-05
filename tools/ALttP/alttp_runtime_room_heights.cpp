@@ -1,7 +1,9 @@
 // Exercise the exact cached runtime solver against a complete linked fixture.
-#include "../remaster/remaster.h"
+#include "../../remaster/remaster.h"
 #include <iostream>
 #include <stdexcept>
+// Existing portable SHA implementation, kept local to this standalone adapter.
+#include "../../sha256.cpp"
 
 static std::vector<uint8_t> read(const char *path)
 {
@@ -18,7 +20,9 @@ static uint64_t digest(const std::vector<uint8_t> &bytes)
 int main(int argc, char **argv)
 {
 	try {
-		if (argc < 7 || (argc - 7) % 4) throw std::runtime_error("usage: snapshot attr profile linkX linkY plane [stairX stairY highNorth changesPlane]...");
+		std::vector<uint8_t> rom;
+		if(argc>=3 && std::string(argv[argc-2])=="--rom") {rom=read(argv[argc-1]);argc-=2;}
+		if (argc < 7 || (argc - 7) % 4) throw std::runtime_error("usage: snapshot attr profile linkX linkY plane [stairX stairY highNorth changesPlane]... [--rom verified-USA-ROM]");
 		auto raw = read(argv[1]), attr = read(argv[2]);
 		const size_t vramOffset = 14 + 224 * (30 + 256 * 6);
 		if (raw.size() != vramOffset + 65536 + 512 || std::memcmp(raw.data(), "ALTPPD1\0", 8) ||
@@ -30,6 +34,14 @@ int main(int argc, char **argv)
 		context.linkX = std::stoi(argv[4]); context.linkY = std::stoi(argv[5]); context.linkPlane = std::stoi(argv[6]);
 		context.collisionAttributes = attr.data() + 10; context.graphics = raw.data() + vramOffset;
 		context.graphicsBase = word(30) * 2;
+		if(!rom.empty()) {
+			if(rom.size()!=1048576)throw std::runtime_error("expected unheadered supported ROM");
+			unsigned char hash[32];sha256sum(rom.data(),static_cast<unsigned>(rom.size()),hash);
+			const unsigned char expected[]={0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
+			if(std::memcmp(hash,expected,32))throw std::runtime_error("unsupported template ROM fingerprint");
+			context.dungeonTemplateData=rom.data()+0x1b52;
+		}
+		context.bg1GraphicsBase = word(20) * 2;
 		if ((word(32) & 3) != 3) throw std::runtime_error("not a complete 64x64 map");
 		std::array<uint8_t, 16384> maps = {};
 		for (int layer = 0; layer < 2; layer++) for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++)
@@ -46,6 +58,7 @@ int main(int argc, char **argv)
 			stair.x = std::stoi(argv[i]); stair.y = std::stoi(argv[i + 1]);
 			stair.highIsNorth = std::stoi(argv[i + 2]); stair.changesPlane = std::stoi(argv[i + 3]);
 		}
+		S9xRemasterDungeonStairsFromAttributes(context);
 		RemasterProfile profile; std::vector<RemasterProfileDiagnostic> errors;
 		if (!S9xRemasterLoadProfile(argv[3], profile, errors)) throw std::runtime_error(errors.front().message);
 		std::array<RemasterDungeonFloorContext::Placement, 4096> tiles = {};
@@ -54,14 +67,39 @@ int main(int argc, char **argv)
 		std::array<uint16_t, 4096> tileWords = {};
 		for (int i = 0; i < 4096; i++) tileWords[i] = maps[i * 2] | (maps[i * 2 + 1] << 8);
 		RemasterDungeonHeightMap map;
+		// Reproduce the runtime's other-BG evidence pass before solving BG2.
+		auto lowerMap=std::make_unique<RemasterDungeonHeightMap>();
+		std::rotate(maps.begin(),maps.begin()+8192,maps.end());
+		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=0;
+		S9xRemasterDungeonPlacements(context,profile,tiles);
+		if(!S9xRemasterBuildDungeonHeightMap(context,profile.upperFloorHeight,*lowerMap))throw std::runtime_error("BG1 solve failed");
+		std::rotate(maps.begin(),maps.begin()+8192,maps.end());
+		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=1;
+		context.supportRelations=&lowerMap->authoredSupportRelations;
+		S9xRemasterDungeonPlacements(context,profile,tiles);
 		if (!S9xRemasterBuildDungeonHeightMap(context, profile.upperFloorHeight, map)) throw std::runtime_error("unsupported room");
 		std::cout << "{\"format\":\"alttp-runtime-room-heights-v1\",\"room_id\":" << context.roomIndex
 			<< ",\"bg2_words_fnv1a64\":\"" << std::hex << digest(std::vector<uint8_t>(maps.begin(), maps.begin() + 8192)) << "\"" << std::dec
 			<< ",\"link_xy\":[" << context.linkX << ',' << context.linkY << "],\"plane\":" << int(context.linkPlane)
 			<< ",\"snapshot_fnv1a64\":\"" << std::hex << digest(raw) << "\",\"attributes_fnv1a64\":\"" << digest(attr)
 			<< "\",\"profile_fnv1a64\":\"" << digest(read(argv[3])) << "\"" << std::dec
+			<< ",\"template_input_present\":" << (context.dungeonTemplateData?"true":"false")
 			<< ",\"structural_conflicts\":" << map.structuralConflicts << ",\"solved_wall_cells\":" << map.solvedWallCells
-			<< ",\"unknown_wall_cells\":" << map.unknownWallCells << ",\"cells_plane_x_y_base\":[";
+			<< ",\"unknown_wall_cells\":" << map.unknownWallCells
+			<< ",\"configured_stair_fallbacks\":" << map.configuredStairFallbacks
+			<< ",\"other_bg_authored_relations\":" << lowerMap->authoredSupportRelations.size()
+			<< ",\"required_planes\":[" << map.requiredPlaneCells[0] << ',' << map.requiredPlaneCells[1]
+			<< "],\"missing_planes\":[" << map.unknownPlaneCells[0] << ',' << map.unknownPlaneCells[1]
+			<< "],\"stairs\":[";
+		for (int i=0;i<context.stairCount;i++) {
+			if(i) std::cout << ','; const auto &s=context.stairs[i];
+			std::cout << '[' << int(s.x) << ',' << int(s.y) << ',' << s.highIsNorth << ',' << s.changesPlane << ']';
+		}
+		std::cout << "],\"candidate_floor_cells\":[" << map.candidateFloorCells[0] << ',' << map.candidateFloorCells[1]
+			<< "],\"unobserved_floor_cells\":[" << map.unobservedFloorCells[0] << ',' << map.unobservedFloorCells[1]
+			<< "],\"disconnected_plane_candidates\":" << (map.disconnectedPlaneCandidates?"true":"false")
+			<< ",\"plane_relationship_unresolved\":" << (map.planeRelationshipUnresolved?"true":"false")
+			<< ",\"cells_plane_x_y_base\":[";
 		bool first = true;
 		for (int p = 0; p < 2; p++) for (int i = 0; i < 4096; i++) if (map.planeOffsets[p][i] != 255)
 		{
@@ -79,7 +117,26 @@ int main(int argc, char **argv)
 			for (int p = 0; p < 2; p++) if ((tiles[i].surface == RemasterDungeonFloorContext::Surface::Wall ?
 				map.structuralPlaneOffsets[p][i] : map.planeOffsets[p][i]) == map.offsets[i])
 			{ if (!firstPlane) std::cout << ','; firstPlane = false; std::cout << p; }
-			std::cout << "]}";
+			const auto floor=S9xRemasterMixedFloorBase(map,i);
+			std::cout << "]";
+			if(tiles[i].wallTemplateOffset)std::cout << ",\"wall_template_offset\":" << tiles[i].wallTemplateOffset;
+			if (floor != 255)
+			{
+				const auto local=S9xRemasterMixedFloorHeight(tiles[i].height,map.offsets[i],floor);
+				std::cout << ",\"attached_floor_base\":" << int(floor) << ",\"local_source\":\"placement_grounded_floor_clamp\",\"local_height\":[";
+				for (int k=0;k<64;k++) { if (k) std::cout << ','; std::cout << int(local[k]); }
+				std::cout << ']';
+			}
+			std::cout << '}';
+		}
+		std::cout << "],\"mixed_floor_unknown\":" << map.mixedFloorUnknown << ",\"mixed_floor_conflicts\":" << map.mixedFloorConflicts
+			<< ",\"mixed_floor_placements\":["; first=true;
+		for (int p=0;p<2;p++) for (int i=0;i<4096;i++) if (tiles[i].groundedFloorMask && map.structuralPlaneOffsets[p][i] != 255)
+		{
+			if (!first) std::cout << ','; first=false;
+			std::cout << "{\"plane\":" << p << ",\"x\":" << i%64 << ",\"y\":" << i/64 << ",\"attached_floor_base\":";
+			if (map.mixedFloorBases[p][i] == 255) std::cout << "null"; else std::cout << int(map.mixedFloorBases[p][i]);
+			std::cout << '}';
 		}
 		std::cout << "],\"relative_anchor_provenance\":["; first = true;
 		for (const auto &anchor : map.relativeAnchors)
@@ -129,6 +186,27 @@ int main(int argc, char **argv)
 					<< ',' << int(context.collisionAttributes[4096 + j]) << "]}";
 			}
 			std::cout << "]}";
+		}
+		std::cout << "],\"directional_geometry\":[";first=true;
+		// Complete placed inventory on BOTH BG layers, each gameplay plane.
+		// The validator independently samples authored/override pixels and seams.
+		for(int layer=1;layer>=0;layer--)
+		{
+			if(layer==0){context.placementBackgroundIndex=0;std::rotate(maps.begin(),maps.begin()+8192,maps.end());std::swap(context.graphicsBase,context.bg1GraphicsBase);
+				S9xRemasterDungeonPlacements(context,profile,tiles);context.placements=tiles.data();
+				map=*lowerMap;}
+			for(int p=0;p<2;p++)for(int i=0;i<4096;i++){
+				if(!first)std::cout<<',';first=false;
+				const auto &t=tiles[i];int base=map.structuralPlaneOffsets[p][i];
+				if(base==255)base=map.planeOffsets[p][i];
+				if(base==255 && map.fallbackDirections[i] &&
+					(context.collisionAttributes[p*4096+i]==1 || context.collisionAttributes[p*4096+i]==2))
+					base=map.offsets[i];
+				const int floor=map.mixedFloorBases[p][i];
+				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<p<<",\"x\":"<<i%64<<",\"y\":"<<i/64
+					<<",\"role\":"<<int(t.surface)<<",\"base\":"<<base<<",\"fallback_directions\":"<<int(map.fallbackDirections[i])
+					<<",\"has_local\":"<<(t.hasHeight?"true":"false")<<",\"floor_datum\":"<<floor<<'}';
+			}
 		}
 		std::cout << "]}\n";
 	} catch (const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }

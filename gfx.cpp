@@ -628,7 +628,8 @@ void S9xStartScreenRefresh (void)
 		memset(GFX.ZBuffer, 0, GFX.ScreenSize);
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
 		S9xRemasterBeginFrame(GFX.ScreenSize, GFX.RealPPL,
-			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight);
+			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight,
+			Memory.RAM[0x458] && Memory.RAM[0x1b] && Memory.RAM[0x10] == 7);
 	}
 
 	if (++IPPU.FrameCount == (uint32)Memory.ROMFramesPerSecond)
@@ -686,11 +687,17 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.collisionMode = Memory.RAM[0x46c];
 				dungeonFloor.linkFacing = Memory.RAM[0x2f];
 				dungeonFloor.linkPlane = Memory.RAM[0xee] & 1;
+				dungeonFloor.romIdentity = UINT64_C(0x66871d66be19ad2c);
+				// USA WRAM: z=-1 is ordinary grounded, auxiliary/player states0.
+				dungeonFloor.groundedEvidence = Memory.RAM[0x24] == 0xff && Memory.RAM[0x25] == 0xff &&
+					Memory.RAM[0x4d] == 0 && Memory.RAM[0x5d] == 0;
 				dungeonFloor.linkY = Memory.RAM[0x20] | (Memory.RAM[0x21] << 8);
 				dungeonFloor.linkX = Memory.RAM[0x22] | (Memory.RAM[0x23] << 8);
 				dungeonFloor.roomIndex = Memory.RAM[0xa0] | (Memory.RAM[0xa1] << 8);
 				dungeonFloor.previousRoomIndex = Memory.RAM[0xa2] | (Memory.RAM[0xa3] << 8);
 				dungeonFloor.submodule = Memory.RAM[0x11];
+				dungeonFloor.module = Memory.RAM[0x10];
+				dungeonFloor.constructionPhase = Memory.RAM[0xb0];
 				dungeonFloor.roomTransitionFlags = Memory.RAM[0xef];
 				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
 				// DrawBackground samples LineData.VOffset, which includes the SNES
@@ -699,31 +706,32 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.collisionAttributes = Memory.RAM + 0x12000;
 				dungeonFloor.constructedMaps = Memory.RAM + 0x2000;
 				dungeonFloor.graphics = Memory.VRAM;
+				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
 				dungeonFloor.graphicsBase = PPU.BG[1].NameBase << 1;
-				auto word = [&] (int address) {
-					return Memory.RAM[address] | (Memory.RAM[address + 1] << 8);
-				};
-				auto addStairs = [&] (int table, int firstEnd, int secondEnd, int thirdEnd) {
-					const int base = table ? 0x6ec : 0x6b8;
-					for (int i = 0; i < thirdEnd && dungeonFloor.stairCount < dungeonFloor.stairs.size(); i += 2)
-					{
-						const int position = word(base + i);
-						RemasterDungeonFloorContext::Stair &stair =
-							dungeonFloor.stairs[dungeonFloor.stairCount++];
-						stair.x = position & 63;
-						stair.y = (position >> 6) & 63;
-						stair.table = static_cast<uint8_t>(table);
-						stair.tableEntry = static_cast<uint8_t>(i / 2);
-						stair.changesPlane = i < secondEnd;
-						stair.highIsNorth = i < firstEnd || (!table && i >= secondEnd);
-					}
-				};
-				addStairs(0, word(0x43c), word(0x43e), word(0x440));
-				addStairs(1, word(0x49a), word(0x49c), word(0x49e));
+				dungeonFloor.bg1GraphicsBase = PPU.BG[0].NameBase << 1;
+				for (int layer = 0; layer < 2; layer++)
+				{
+					dungeonFloor.ppuMapBase[layer] = PPU.BG[layer].SCBase;
+					dungeonFloor.ppuMapSize[layer] = PPU.BG[layer].SCSize;
+				}
+				// Decode the completed handler overrides, not cumulative endpoints:
+				// e.g. $49c=2, $49e=0 is one south plane-changing stair,
+				// not an empty table. Wet ladders without this signature stay unknown.
+				S9xRemasterDungeonStairsFromAttributes(dungeonFloor);
+			}
+			RemasterHeldLampState heldLamp;
+			heldLamp.verifiedRom = dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && dungeonFloor.module == 7;
+			if (heldLamp.verifiedRom)
+			{
+				heldLamp.darkWithLantern = Memory.RAM[0x458] != 0;
+				heldLamp.submodule = dungeonFloor.submodule;
+				heldLamp.facing = dungeonFloor.linkFacing;
+				heldLamp.linkScreenX = static_cast<int16_t>(dungeonFloor.linkX - dungeonFloor.backgroundScrollX);
+				heldLamp.linkScreenY = static_cast<int16_t>(dungeonFloor.linkY - dungeonFloor.backgroundScrollY);
 			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
-				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor);
+				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];
@@ -874,6 +882,28 @@ static inline void RenderScreen (bool8 sub)
 		GFX.Clip = IPPU.Clip[1];
 		BGActive = Memory.FillRAM[0x212d] & ~Settings.BG_Forced;
 		D = (Memory.FillRAM[0x2130] & 2) << 4; // 'do math' depth flag
+	}
+	// Independent remaster scene target. Never alter PPU state or stock buffers.
+	ClipData sceneClip[6];
+	if (S9xRemasterState().scenePass)
+	{
+		auto &state = S9xRemasterState();
+		GFX.S = state.sceneRgb.data();
+		GFX.DB = state.sceneDepth.data();
+		BGActive = (Memory.FillRAM[0x212c] | Memory.FillRAM[0x212d]) & 0x16 & ~Settings.BG_Forced;
+		for (auto &clip : sceneClip)
+		{
+			clip = {};
+			clip.Count = raster_span_count ? raster_span_count : 1;
+			for (int i = 0; i < clip.Count; i++)
+			{
+				clip.Left[i] = raster_span_count ? raster_span_l[i] : 0;
+				clip.Right[i] = raster_span_count ? raster_span_r[i] : 256;
+				clip.DrawMode[i] = 1;
+			}
+		}
+		GFX.Clip = sceneClip;
+		D = 32;
 	}
 
 	if (BGActive & 0x10)
@@ -1046,10 +1076,62 @@ void S9xUpdateScreen (void)
 			RenderScreen(TRUE);
 
 		RenderScreen(FALSE);
+
+		// Verified ALTTP lamp scene: bounded Mode-1 ordinary-width rerender of
+		// BG2 + BG3 + OBJ, without scrolled BG1 cone or dark color math/windows.
+		static const uint8 alttpUsSha256[32] = {
+			0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,
+			0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
+		if (S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
+			!IPPU.DoubleWidthPixels && !IPPU.Interlace && !IPPU.PseudoHires &&
+			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2])) &&
+			Memory.RAM[0x458] && Memory.RAM[0x1b] && Memory.RAM[0x10] == 7 &&
+			!Memory.RAM[0x11] && !Memory.RAM[0xb0] &&
+			!std::memcmp(Memory.ROMSHA256, alttpUsSha256, 32))
+		{
+			auto &state = S9xRemasterState();
+			if (state.sceneRgb.empty())
+			{
+				state.sceneRgb.assign(GFX.ScreenSize, 0);
+				state.sceneDepth.assign(GFX.ScreenSize, 0);
+				state.scenePixels.assign(GFX.ScreenSize, RemasterFramePixel{});
+			}
+			for (uint32 y = GFX.StartY; y <= GFX.EndY; y++)
+				for (int span = 0; span < (raster_span_count ? raster_span_count : 1); span++)
+				{
+					const size_t offset = y * GFX.PPL + (raster_span_count ? raster_span_l[span] : 0);
+					const size_t width = raster_span_count ? raster_span_r[span] - raster_span_l[span] : 256;
+					std::fill_n(state.sceneDepth.begin() + offset, width, 0);
+					std::fill_n(state.scenePixels.begin() + offset, width, RemasterFramePixel{});
+				}
+			// Save only renderer working state; no large screen-buffer copy.
+			const auto savedBG = BG;
+			auto *savedS = GFX.S; auto *savedDB = GFX.DB; auto *savedClip = GFX.Clip;
+			auto *savedColors = GFX.ScreenColors; auto *savedRealColors = GFX.RealScreenColors;
+			const auto savedClipColors = GFX.ClipColors;
+			const auto savedZ1 = GFX.Z1, savedZ2 = GFX.Z2;
+			state.scenePass = true;
+			RenderScreen(FALSE);
+			state.scenePass = false;
+			BG = savedBG;
+			GFX.S = savedS; GFX.DB = savedDB; GFX.Clip = savedClip;
+			GFX.ScreenColors = savedColors; GFX.RealScreenColors = savedRealColors;
+			GFX.ClipColors = savedClipColors; GFX.Z1 = savedZ1; GFX.Z2 = savedZ2;
+		}
+		else if (!S9xRemasterState().scenePixels.empty())
+		{
+			// A mode/lamp/transition change invalidates this display packet.
+			S9xRemasterState().scenePixels.clear();
+			S9xRemasterState().sceneRgb.clear();
+			S9xRemasterState().sceneDepth.clear();
+		}
 	}
 	else
 	{
 		const uint16	black = BUILD_PIXEL(0, 0, 0);
+		S9xRemasterState().scenePixels.clear();
+		S9xRemasterState().sceneRgb.clear();
+		S9xRemasterState().sceneDepth.clear();
 
 		GFX.S = GFX.Screen + GFX.StartY * GFX.PPL;
 		uint32 ownerOffset = GFX.StartY * GFX.PPL;

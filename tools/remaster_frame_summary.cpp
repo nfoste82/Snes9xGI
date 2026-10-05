@@ -85,9 +85,9 @@ int main (int argc, char **argv)
 	{
 		uint64_t pixels = 0;
 		int minX = 10000, minY = 10000, maxX = -1, maxY = -1;
-		int minEffectiveHeight = 255, maxEffectiveHeight = 0;
+		int minEffectiveHeight = INT_MAX, maxEffectiveHeight = INT_MIN;
 	};
-	using Key = std::tuple<uint8_t, RemasterSourceType, uint8_t, std::string, std::string, uint64_t>;
+	using Key = std::tuple<int32_t, RemasterSourceType, uint8_t, std::string, std::string, uint64_t>;
 	auto sourceName = [] (RemasterSourceType source) {
 		switch (source)
 		{
@@ -116,9 +116,9 @@ int main (int argc, char **argv)
 			int effectiveHeight = instance.heightOffset;
 			const auto found = metadata.find(instance.tileId);
 			if (pixel.tilePixel < 64 && instance.hasPlacementHeight)
-				effectiveHeight = std::min(255, effectiveHeight + instance.placementHeight[pixel.tilePixel]);
+				effectiveHeight += instance.placementHeight[pixel.tilePixel];
 			else if (found != metadata.end() && found->second->hasHeight && pixel.tilePixel < 64)
-				effectiveHeight = std::min(255, effectiveHeight + found->second->height[pixel.tilePixel]);
+				effectiveHeight += found->second->height[pixel.tilePixel];
 			summary.minEffectiveHeight = std::min(summary.minEffectiveHeight, effectiveHeight);
 			summary.maxEffectiveHeight = std::max(summary.maxEffectiveHeight, effectiveHeight);
 		}
@@ -201,7 +201,7 @@ int main (int argc, char **argv)
 	for (const auto &entry : summaries)
 	{
 		const Summary &summary = entry.second;
-		std::cout << "height=" << unsigned(std::get<0>(entry.first))
+		std::cout << "height=" << std::get<0>(entry.first)
 			<< " source=" << sourceName(std::get<1>(entry.first))
 			<< " source_index=" << unsigned(std::get<2>(entry.first))
 			<< " material=" << (std::get<3>(entry.first).empty() ? "-" : std::get<3>(entry.first))
@@ -234,6 +234,8 @@ int main (int argc, char **argv)
 		std::ofstream heights(std::string(argv[3]) + "-heights.ppm", std::ios::binary);
 		scene << "P6\n" << frame.width << " " << frame.height << "\n255\n";
 		heights << "P6\n" << frame.width << " " << frame.height << "\n255\n";
+		const auto range = S9xRemasterFrameHeightRange(frame);
+		std::cout << "height image display range=" << range.first << ".." << range.second << '\n';
 		for (size_t i = 0; i < frame.mainPixels.size(); i++)
 		{
 			const uint16_t color = i < frame.originalRgb555.size() ? frame.originalRgb555[i] : 0;
@@ -243,7 +245,7 @@ int main (int argc, char **argv)
 				static_cast<char>((color & 31) * 255 / 31)
 			};
 			scene.write(rgb, sizeof(rgb));
-			uint8_t height = 0;
+			int height = 0;
 			const RemasterFramePixel &pixel = frame.mainPixels[i];
 			if (pixel.instanceId && pixel.instanceId <= frame.tileInstances.size())
 			{
@@ -251,11 +253,11 @@ int main (int argc, char **argv)
 				height = instance.heightOffset;
 				const auto found = metadata.find(instance.tileId);
 				if (pixel.tilePixel < 64 && instance.hasPlacementHeight)
-					height = static_cast<uint8_t>(std::min(255,
-						static_cast<int>(height) + instance.placementHeight[pixel.tilePixel]));
+					height += instance.placementHeight[pixel.tilePixel];
 				else if (found != metadata.end() && found->second->hasHeight && pixel.tilePixel < 64)
-					height = static_cast<uint8_t>(std::min(255,
-						static_cast<int>(height) + found->second->height[pixel.tilePixel]));
+					height += found->second->height[pixel.tilePixel];
+				// PPM is only a display projection; signed numbers remain in the summary.
+				height = std::max(0, std::min(255, (height-range.first)*255/(range.second-range.first)));
 			}
 			const char heightRgb[3] = { static_cast<char>(height), static_cast<char>(height), static_cast<char>(height) };
 			heights.write(heightRgb, sizeof(heightRgb));

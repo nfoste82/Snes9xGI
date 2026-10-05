@@ -41,6 +41,16 @@ int main()
 	mesh[0].emissionDepth = 2;
 	assert(build()[0].count == 1);
 	mesh[0].emissionDepth = 0;
+	mesh[0].emissionOmnidirectional = 1;
+	assert(build()[0].count == 1);
+	frame.representativeEmitters = 1;
+	auto mixedDirections = build();
+	assert(mixedDirections.size() == 2);
+	for (const auto &patch : mixedDirections)
+		for (unsigned i = 1; i < patch.count; i++)
+			assert(mesh[patch.members[i]].emissionOmnidirectional == mesh[patch.members[0]].emissionOmnidirectional);
+	frame.representativeEmitters = 0;
+	mesh[0].emissionOmnidirectional = 0;
 	surface[0] = 0.5f;
 	for (auto &corner : mesh[0].corners) corner = 0.5f;
 	assert(build()[0].count == 1);

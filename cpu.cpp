@@ -13,6 +13,7 @@
 #include "srtc.h"
 #include "snapshot.h"
 #include "cheats.h"
+#include "remaster/remaster.h"
 #ifdef DEBUGGER
 #include "debug.h"
 #endif
@@ -96,6 +97,7 @@ static void S9xSoftResetCPU (void)
 
 void S9xReset (void)
 {
+	S9xRemasterInvalidateDungeonContinuity();
 	S9xResetSaveTimer(FALSE);
 
 	memset(Memory.RAM, 0x55, sizeof(Memory.RAM));
@@ -133,6 +135,7 @@ void S9xReset (void)
 
 void S9xSoftReset (void)
 {
+	S9xRemasterInvalidateDungeonContinuity();
 	S9xResetSaveTimer(FALSE);
 
 	memset(Memory.FillRAM, 0, 0x8000);

@@ -46,7 +46,7 @@ bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
 	const std::vector<RemasterTileContentId> * = nullptr, bool lighting = false,
 	RemasterLightingView = RemasterLightingView::Composite, bool asynchronous = false);
 void SetLiveRemasterPresentation (bool, RemasterLightingView);
-void SetRemasterHeightPreviewRange (uint16_t minimum, uint16_t maximum);
+void SetRemasterHeightPreviewRange (int32_t minimum, int32_t maximum);
 // Session-only light. XY is normalized to the scene; radius and height use source pixels.
 struct RemasterDebugLight
 {

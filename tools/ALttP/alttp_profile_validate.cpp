@@ -1,5 +1,5 @@
 /* Validate a generated ALTTP profile with the same parser used by Snes9x. */
-#include "../remaster/profile.h"
+#include "../../remaster/profile.h"
 
 #include <iostream>
 #include <string>

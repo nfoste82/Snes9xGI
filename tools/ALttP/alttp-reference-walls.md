@@ -13,14 +13,14 @@ are retained for transferred normals; every merged-source normal is preserved in
 the candidate. Root and user backup remain untouched.
 
 ```
-python3 -B tools/alttp_reference_source_merge.py --current alttp-profile.toml \
-  --backup alttp-profile_backup.toml \
+python3 -B tools/ALttP/alttp_reference_source_merge.py --current Profiles/ALttP/alttp-profile.toml \
+  --backup Profiles/ALttP/alttp-profile_backup.toml \
   --output build/remaster-geometry/alttp-profile-reference-diagonal-merged-source.toml \
   --report build/remaster-geometry/reference-diagonal-source-merge.json
-python3 -B tools/alttp_atlas_profile.py --atlas build/remaster-geometry/alttp-atlas.sqlite \
+python3 -B tools/ALttP/alttp_atlas_profile.py --atlas build/remaster-geometry/alttp-atlas.sqlite \
   --source build/remaster-geometry/alttp-profile-reference-diagonal-merged-source.toml \
   --output build/remaster-geometry/alttp-profile-reference-diagonal-v2.toml \
-  --reference-templates tools/alttp-reference-wall-templates-v1.json \
+  --reference-templates tools/ALttP/alttp-reference-wall-templates-v1.json \
   --report build/remaster-geometry/reference-diagonal-generation-v2.json
 ```
 
@@ -99,16 +99,16 @@ previous reference candidate, not the new diagonal-v2 result.
 Generate from the **current edited** profile, never an old generated artifact:
 
 ```sh
-python3 -B tools/alttp_atlas_profile.py \
+python3 -B tools/ALttP/alttp_atlas_profile.py \
   --atlas build/remaster-geometry/alttp-atlas.sqlite \
-  --source alttp-profile.toml \
+  --source Profiles/ALttP/alttp-profile.toml \
   --output build/remaster-geometry/alttp-profile-reference-walls.toml \
-  --reference-templates tools/alttp-reference-wall-templates-v1.json \
+  --reference-templates tools/ALttP/alttp-reference-wall-templates-v1.json \
   --report build/remaster-geometry/reference-wall-generation.json
-python3 -B tools/alttp_reference_candidate_check.py \
-  --source alttp-profile.toml \
+python3 -B tools/ALttP/alttp_reference_candidate_check.py \
+  --source Profiles/ALttP/alttp-profile.toml \
   --candidate build/remaster-geometry/alttp-profile-reference-walls.toml
-python3 -B tools/alttp_reference_wall_audit.py \
+python3 -B tools/ALttP/alttp_reference_wall_audit.py \
   --atlas build/remaster-geometry/alttp-atlas.sqlite \
   --fixtures build/remaster-geometry/surface-audit-room-local \
   --output build/remaster-geometry/reference-wall-evidence.json
@@ -173,7 +173,7 @@ missing authoring decisions; normals will remain unchanged.
 ## Required complete-room gate
 
 Compile the existing fixture adapter, then run
-`tools/alttp_run_runtime_height_fixtures.py` using this candidate. It invokes
+`tools/ALttP/alttp_run_runtime_height_fixtures.py` using this candidate. It invokes
 validation v2 over complete ALTPPD1/ALTPAT1, pinned state and doorway graph, and
 writes runtime solutions, complete effective-placement JSON and diagnostic SVGs.
 Current candidate results (055/060/061): supports 439/439, 711/711, 1570/1570;

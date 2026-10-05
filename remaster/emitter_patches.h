@@ -40,7 +40,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 	}
 	if (frame.representativeEmitters) {
 		// Separate screen channels and placements even when their tile hashes match.
-		std::map<std::tuple<bool, uint32_t, uint32_t>, std::vector<uint32_t>> instances;
+		std::map<std::tuple<bool, uint32_t, uint32_t, bool>, std::vector<uint32_t>> instances;
 		bool hasLinks = std::any_of(frame.assetMetadata.begin(),frame.assetMetadata.end(),
 			[](const RemasterFrameAssetMetadata &m) { return !m.combineEmitters.empty(); });
 		auto placements = hasLinks ? S9xRemasterEmitterPlacements(frame) : std::vector<RemasterEmitterPlacement>{};
@@ -81,8 +81,8 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 			auto placement = placementIndex.find({sub,p.instanceId});
 			if (placement != placementIndex.end()) {
 				const auto &group = placements[root(placement->second)];
-				instances[{sub,0,group.instance}].push_back(i);
-			} else instances[{sub,p.owner,p.instanceId}].push_back(i);
+				instances[{sub,0,group.instance,mesh[i].emissionOmnidirectional > 0.5f}].push_back(i);
+			} else instances[{sub,p.owner,p.instanceId,mesh[i].emissionOmnidirectional > 0.5f}].push_back(i);
 		}
 		for (auto &entry : instances) {
 			auto &pixels = entry.second;
@@ -169,6 +169,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 					p.instanceId == owner.instanceId && p.tilePixel%8/extent == owner.tilePixel%8/extent &&
 					p.tilePixel/8/extent == owner.tilePixel/8/extent &&
 					mesh[i].emissionDepth == mesh[origin].emissionDepth &&
+					mesh[i].emissionOmnidirectional == mesh[origin].emissionOmnidirectional &&
 					mesh[i].thickness == mesh[origin].thickness && mesh[i].solidWall == mesh[origin].solidWall &&
 					surface[i*4] == surface[origin*4];
 				if (!compatible) break;

@@ -2,7 +2,7 @@
  * RemasterFrame. This is an inspection capture, not an emulated Snes9x frame:
  * BG1/BG2 owner links are reconstructed from the winning PPU priority word;
  * sprites and the HUD retain their painted color but have no owner link. */
-#include "../remaster/remaster.h"
+#include "../../remaster/remaster.h"
 
 #include <algorithm>
 #include <cstring>
@@ -49,18 +49,16 @@ struct Raw {
 
 struct HeightMap {
   uint16_t room = 0xffff;
-  std::vector<uint8_t> offsets;
+  std::vector<int32_t> offsets;
 };
 
 HeightMap readHeightMap(const std::string &path) {
-  Reader reader(path);
-  if (reader.bytes.size() != 8 + 2 + 64 * 64 ||
-      std::memcmp(reader.bytes.data(), "ALTPHM1\0", 8))
+  auto decoded = std::make_unique<RemasterDungeonHeightMap>();
+  if (!S9xRemasterReadDungeonHeightMap(path, *decoded))
     throw std::runtime_error("invalid room height proposal map");
-  reader.at = 8;
   HeightMap map;
-  map.room = reader.u16();
-  map.offsets.assign(reader.bytes.begin() + 10, reader.bytes.end());
+  map.room = decoded->roomIndex;
+  map.offsets.assign(decoded->offsets.begin(), decoded->offsets.end());
   return map;
 }
 
@@ -207,10 +205,9 @@ RemasterFrame makeFrame(const Raw &raw, const RemasterProfile &profile,
       RemasterFrameTileInstance &instance = frame.tileInstances[i];
       if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1)
         continue;
-      const uint8_t offset = heightMap->offsets[instanceCells[i]];
+      const int32_t offset = heightMap->offsets[instanceCells[i]];
       if (offset != 255)
-        instance.heightOffset = static_cast<uint8_t>(std::min(255,
-          static_cast<int>(instance.heightOffset) + offset));
+        instance.heightOffset += offset;
     }
   } else {
     S9xRemasterApplyDungeonFloorHeight(frame, floor, profile.upperFloorHeight);

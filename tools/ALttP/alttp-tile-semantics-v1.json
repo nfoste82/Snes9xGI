@@ -2,20 +2,26 @@
   "format": "alttp-tile-semantics-v1",
   "rom_sha256": "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
   "tiles": {
-    "v1:4bpp:503ab068dfa941d3": {
-      "role": "wall",
-      "normals": ["south_east"],
-      "context_dependent": false,
-      "note": "User ceiling/out-of-bounds diagonal join; authored exact-up cap pixels x+y<=1. Reference generator retains cap and proposes local unit-slope face, not solved assembly offsets."
-    },
-    "v1:4bpp:a4aa6ebd24fefeb7": {
-      "role": "wall",
-      "normals": ["south_east"],
-      "context_dependent": false,
-      "note": "User-authored capped diagonal local height 0..5 and normals; preserve both arrays verbatim. Runtime attachment must solve placement, never bake global height."
-    },
     "v1:4bpp:00424c3d9ab4463f": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:005e3bf944dd741c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0097973ecf3d5b20": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:00dcf3250c9dba68": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -36,6 +42,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:01a9f3a3aa4f21d2": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:01d0461aa2af8d1b": {
       "role": "other",
       "normals": [],
@@ -50,7 +64,19 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:024977a13bd58030": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:02573dbbc4bfce9f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:02c15284fa0b247a": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -154,6 +180,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:073648fb78b2ede2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:0755be1ce9d2fddd": {
       "role": "other",
       "normals": [],
@@ -198,8 +230,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:08daaff3523383fc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:08faf0cec9732531": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:091f3cf2f2035c65": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -218,11 +262,29 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:0a345cf7f9c3edbc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0a3942586cb7618c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:0a5d1f19bc3770cc": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0a8d9a817267d4f2": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -242,8 +304,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:0b7a6011f3524d04": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:0bb732ad72328ce2": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0bd101bbd6cb617a": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -285,6 +359,18 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0d04f33c538e6996": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0d9a4bce8ee32ba1": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -334,6 +420,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:10747a8049969ae4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:10d30a092acc5db1": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:10d8ff9519d1bcfd": {
       "role": "wall",
       "normals": [
@@ -372,6 +470,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:125926cbfb8f3f5c": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:12be8ba858354c87": {
       "role": "obstacle",
       "normals": [],
@@ -386,7 +490,27 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:12ddb70b8043efe5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:13144b471f5e64b2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:133f891e3d7fa137": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:13b4ab5cd1185b84": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -407,6 +531,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:14724022f0e2c0b8": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -443,6 +573,20 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:15ce56d106f4ba79": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:15d3f433744798ce": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -520,6 +664,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:19088620e4b960cc": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:190cd1f95324f94e": {
       "role": "wall",
       "normals": [
@@ -552,6 +702,12 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:199ba34cd8e72b69": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1a032ad7756c49db": {
       "role": "floor",
       "normals": [],
@@ -580,6 +736,12 @@
     },
     "v1:4bpp:1a6a9e665d3a0bf5": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1a90afba36398dc7": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -614,6 +776,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1bab741a61a85b90": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1bbe8acc2c842592": {
       "role": "wall",
       "normals": [
@@ -640,6 +808,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1cdbbf9633a9969a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1d6d4514021bea54": {
       "role": "wall_corner",
       "normals": [
@@ -652,6 +826,18 @@
     },
     "v1:4bpp:1e1b8c552a9533c5": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1e3b547b6e1483e0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1e8ecf68bb15430c": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -697,6 +883,12 @@
       "note": ""
     },
     "v1:4bpp:205108f7853fbe2a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:207ceef2813f0c26": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -764,6 +956,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:225e72c5d7385b6f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2297f5dc953b6f5f": {
       "role": "obstacle",
       "normals": [],
@@ -806,8 +1004,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:24644fe5a27688e2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2483ebaf510255d4": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:249ac6c0b75e44c4": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -834,11 +1044,25 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:25b414f2340a85a6": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:25f1034b62117422": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2605b78ba4a884b8": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -870,6 +1094,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:274163956c46eea8": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2766247e287d023d": {
       "role": "floor",
       "normals": [],
@@ -886,6 +1116,12 @@
     },
     "v1:4bpp:28fd40d68af0d64d": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:293f7cd6134c8af6": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -912,6 +1148,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2a5b6df117850179": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2a5d1d49d9a6cf24": {
       "role": "wall",
       "normals": [
@@ -921,6 +1163,26 @@
       "note": ""
     },
     "v1:4bpp:2a7998d6cb3fd69b": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2abc16406c267d9d": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2ad1f20fcf91c9b3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2b0e2de3b27b1b23": {
       "role": "wall",
       "normals": [
         "east"
@@ -962,6 +1224,18 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:2cadcc84b8b80889": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2cc72544b47c8804": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2d4666ab6848db32": {
       "role": "wall",
       "normals": [
@@ -976,6 +1250,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2d929648d30923b4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2e74c84915747445": {
       "role": "wall_corner",
       "normals": [
@@ -985,6 +1265,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:2ecc6446930aff83": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:2efac886731575a5": {
       "role": "floor",
@@ -1003,6 +1289,32 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2fd3eada43bdfcd4": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2ff1e249201dfe5b": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3079f63871135977": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:30ef1683a4ac19d6": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1048,6 +1360,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3367090f9b610207": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:336e6ecb983a2702": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:34b57c62502ba769": {
       "role": "floor",
       "normals": [],
@@ -1060,11 +1384,29 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:34e961e999f06d4b": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:34f3d031f0688735": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3525d99714b9149b": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:35a44883ee190a3d": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1090,6 +1432,18 @@
       "note": "",
       "corner_type": "unknown"
     },
+    "v1:4bpp:3620c29571c66fe0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:363f87b82fc100e5": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:368d08116af7da59": {
       "role": "obstacle",
       "normals": [],
@@ -1114,6 +1468,12 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:37c0e3a006a48fb9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:380abeeacdae5ecd": {
       "role": "floor",
       "normals": [],
@@ -1125,6 +1485,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:39442cc2cfde1186": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1232,8 +1598,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3d3f85a163fa049f": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3dab67a878c7b6bd": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3e39baa459422cb2": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -1243,6 +1621,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3e5e2d32e878fec6": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1302,6 +1686,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:40fdfa3cc57f79c9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:411c03160b32443a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4143e89c398d1c8d": {
       "role": "obstacle",
       "normals": [],
@@ -1352,6 +1748,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:42e2b6b762948306": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:42e7f90dfa4efae2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:43ecfb30d33274db": {
       "role": "wall",
       "normals": [
@@ -1369,6 +1777,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "inside"
+    },
+    "v1:4bpp:444691e7930247d5": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:44be7136c6dbb2c5": {
       "role": "wall",
@@ -1402,6 +1816,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:455f61dea4fdc0e2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:45c2318e2eba3831": {
       "role": "obstacle",
       "normals": [],
@@ -1410,6 +1830,12 @@
     },
     "v1:4bpp:45c6c91d706d6c76": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:46e5f12c4cc599e5": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -1455,6 +1881,20 @@
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4952263cea5a838f": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:497f2a80c2a05034": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1542,6 +1982,12 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:4d5247551edca28e": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4dc1cd16e8b5967e": {
       "role": "wall",
       "normals": [
@@ -1550,7 +1996,25 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:4e29638b6b6722c6": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4e7609d3c1554219": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4eb30d7fcca954da": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4f2ee0616c8b9c17": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -1563,6 +2027,20 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:501d74a32a118cb5": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:503ab068dfa941d3": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
+      "context_dependent": false,
+      "note": "User ceiling/out-of-bounds diagonal join; authored exact-up cap pixels x+y<=1. Reference generator retains cap and proposes local unit-slope face, not solved assembly offsets."
     },
     "v1:4bpp:5064ef8fc0402b55": {
       "role": "wall_corner",
@@ -1582,6 +2060,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:50d8f12d7fd87fcc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:511ad685bc8fa5fc": {
       "role": "wall_corner",
       "normals": [
@@ -1591,6 +2075,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "inside"
+    },
+    "v1:4bpp:514b40d88ed636e4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:51be6fd2b65d97e4": {
       "role": "wall",
@@ -1658,6 +2148,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:539084f4ee659950": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:53abca7f0db51ea2": {
       "role": "wall",
       "normals": [
@@ -1690,8 +2186,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:555f439aad96be32": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:557ee61e8a60c5db": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:557f5df5ffb08755": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -1742,6 +2250,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:57b2536744967526": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:57c423d3865c1bd8": {
       "role": "other",
       "normals": [],
@@ -1773,6 +2287,12 @@
       "note": ""
     },
     "v1:4bpp:58f7c1b4e4eb59cd": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:590f83a51a97b512": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -1830,11 +2350,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5c21f2997156854b": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5c88599aa1a97f75": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5caaa9c99c6addba": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1854,8 +2386,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5d462eebbd5fbec2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5e2b907ab6873b98": {
       "role": "stair_bottom",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5e2cbcc20bc729ca": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -1865,6 +2409,18 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5f2dda7feedd95ba": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5f48b87482915df0": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -1914,8 +2470,20 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:61777495d97a668c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:61da01eb56b7edb5": {
       "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:62f4cf4015ff148f": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -1982,6 +2550,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:654f183be3db8752": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:65de435f21532a4b": {
       "role": "floor",
       "normals": [],
@@ -1992,6 +2566,20 @@
       "role": "wall",
       "normals": [
         "south_east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:66127edc3c6462df": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:6653847a2b03b492": {
+      "role": "wall",
+      "normals": [
+        "east"
       ],
       "context_dependent": false,
       "note": ""
@@ -2017,6 +2605,20 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:67587b195b5685f0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:678a67fa6a5a2cf0": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": "Has glass material, those pixels will need to be updated eventually."
     },
     "v1:4bpp:67a8e0217479f44f": {
       "role": "obstacle",
@@ -2072,6 +2674,20 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:69e474b933f73379": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:6a7c202e65189180": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:6a8700a537e64855": {
       "role": "wall",
       "normals": [
@@ -2122,6 +2738,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:6d8d8d59d7a6850c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:6db831c2b318efa1": {
       "role": "floor",
       "normals": [],
@@ -2133,6 +2755,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:6dfa537202470259": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2176,14 +2804,32 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7051de6b0249b168": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:706d0520c36af5a7": {
       "role": "unknown",
       "normals": [],
       "context_dependent": false,
       "note": "\n"
     },
+    "v1:4bpp:708960f468cdf977": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:70d8e4724e5cb892": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:70e19971ecadccb4": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -2197,6 +2843,24 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "inside"
+    },
+    "v1:4bpp:723cde2b2a78f49f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7292f9ad1f5be4b4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:73fe810c206c5d51": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:74335a45536659ce": {
       "role": "wall",
@@ -2264,6 +2928,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:76d5e0d933405116": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:773dcf4a53f87b93": {
       "role": "floor",
       "normals": [],
@@ -2275,6 +2945,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7881c567c6392400": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2297,6 +2973,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7a99d4061af260b9": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2324,6 +3006,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7bcc271c1ca46bcd": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7c529949d7f5913e": {
       "role": "wall",
       "normals": [
@@ -2346,11 +3034,29 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7d19b64df361d373": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7d925c19a8bcd8ed": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7f11b8b3a13e619a": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7f26a67d07d11613": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2376,6 +3082,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7fdbd4934ca1c427": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:80df51854c4ede41": {
       "role": "floor",
       "normals": [],
@@ -2384,6 +3096,24 @@
     },
     "v1:4bpp:810254e9c5fd34b8": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:810d672fdabc4677": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:819fbfab1173ce32": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:81dc6b68ea82eadc": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -2426,11 +3156,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:838ecbe9d867d0d7": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:83ff6d16868aaa72": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:8492ae4337d23c85": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2448,13 +3190,39 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:856f1117785093af": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:85821253f03588e3": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:85a5af7a7bf987ab": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:85de6137bbe930e0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:85ec550136896622": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:860471e5226c6009": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -2508,6 +3276,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:8810cedcc0f0faa6": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:882add71a16665f1": {
       "role": "floor",
       "normals": [],
@@ -2523,6 +3297,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:89013ff368c944a9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:89ec4ff4b008d6ea": {
       "role": "wall",
@@ -2552,6 +3332,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:8a6c251c5ad7fcb1": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8aa1bace332ff268": {
       "role": "floor",
       "normals": [],
@@ -2569,6 +3357,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:8b56c8f63f4e154c": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2666,6 +3460,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:8f51e4c121e10e20": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8f58cabc138b01af": {
       "role": "floor",
       "normals": [],
@@ -2680,11 +3480,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:8fa4f6567f546da2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8feb762c5592aad5": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:90af71f8c486a3de": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2848,11 +3660,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9897258d66fb9807": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:992f67f9a12a9f04": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9943c286d5e45726": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2896,8 +3720,22 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9b24c497a03ae1a7": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": "Has glass material, those pixels need to be updated eventually."
+    },
     "v1:4bpp:9ba640c20b55dd2d": {
       "role": "stair_top",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9c8a1e10362481e4": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -2907,6 +3745,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9cecf6dc5e1a5bf5": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -2930,6 +3774,12 @@
     },
     "v1:4bpp:9e243282c8900330": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9e7a219e296b468a": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -3002,11 +3852,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9fea079fed12bc45": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:9ff2d937dfcc2198": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a021d39f7ea1cc33": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3027,6 +3889,20 @@
     "v1:4bpp:a0c61230769fc43e": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a101154082c4a85a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a19ae88181451d61": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -3064,6 +3940,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:a2b13ed85f4ef8cd": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a2e1aa026c8e9693": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:a3163bd83e247da5": {
       "role": "wall",
       "normals": [
@@ -3080,7 +3968,19 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:a38f5b22a06e3aae": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:a3a46f64c1ab4d8d": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a3b184df410fbdd7": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -3095,6 +3995,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:a3d081fd4459f12c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:a3e333279fbb78e5": {
       "role": "wall",
@@ -3118,6 +4024,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:a4aa6ebd24fefeb7": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
+      "context_dependent": false,
+      "note": "User-authored capped diagonal local height 0..5 and normals; preserve both arrays verbatim. Runtime attachment must solve placement, never bake global height."
+    },
     "v1:4bpp:a4b26c1d9e0f7768": {
       "role": "obstacle",
       "normals": [],
@@ -3126,6 +4040,24 @@
     },
     "v1:4bpp:a4ce766db4acef3d": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a5291de45c48f342": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a5404f9856c020c3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a5ab67b85bfdeecc": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -3141,6 +4073,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a60be53f5ef57310": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3187,6 +4125,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a8046086dba6b884": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3244,6 +4188,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ab3839ad9a238483": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ab42dc3c85a3e858": {
       "role": "wall",
       "normals": [
@@ -3268,6 +4218,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:abe85623ae3f8007": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:abffa071075ff08e": {
       "role": "wall",
       "normals": [
@@ -3279,6 +4235,14 @@
     "v1:4bpp:ac13f8781a2577c3": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ac17d39b93bc9093": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -3374,11 +4338,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:af35b6cd4f8deb1e": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:af4355ed2eeabb43": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:af6a011543904cb4": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3396,6 +4372,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b0ae061e18215c12": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b1bd75852345300b": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b1cf2984b9fa1337": {
       "role": "obstacle",
       "normals": [],
@@ -3404,6 +4394,18 @@
     },
     "v1:4bpp:b1fb0710653c9ac1": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b29c9e6a6ee2b523": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b2e1b56dd3888158": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -3427,6 +4429,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b42525032a5b940a": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3478,6 +4486,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b602eb6b9e4afb42": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b6e1193329607647": {
       "role": "floor",
       "normals": [],
@@ -3489,6 +4503,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b70c0b4e8c4279d9": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3528,6 +4548,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b8baddb1c5d6fc12": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b8c97e2cd7e8119d": {
       "role": "obstacle",
       "normals": [],
@@ -3544,11 +4570,23 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:b911bda1a4596614": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b961c1ccf2116432": {
       "role": "wall",
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b971fb714231899c": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3586,11 +4624,61 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ba4694946b93ee92": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ba9ae254ddbade17": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bb7f9547d0b7047a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bbdcf328e4c49978": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bbdeed781f743979": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:bc40a103a0ac7857": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bd03e560d2da6155": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bd333531e19e04fc": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bd44a64de5f3d3f1": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3607,6 +4695,14 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:bdeb37e5a839fb97": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": "Has glass material, those pixels need to be updated eventually."
     },
     "v1:4bpp:bdf0072d8b5553a9": {
       "role": "wall",
@@ -3656,6 +4752,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:bf1c89d50bce3dc8": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:bf7c3751c2ccc853": {
       "role": "obstacle",
       "normals": [],
@@ -3667,6 +4769,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bfb559ef9f520ffa": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3688,11 +4796,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c0f30aacac214382": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c17c792273745868": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c1927457909db533": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3709,6 +4829,18 @@
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c1c54214cb634d5a": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c1ea7b54a4aa9dc4": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3746,6 +4878,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c267d4288b0480fc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c288a5a0228db653": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c3003ca1e4f90970": {
       "role": "obstacle",
       "normals": [],
@@ -3761,6 +4905,14 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:c33b5aee7c66e590": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": "Has glass material, those pixels will need to be updated eventually."
     },
     "v1:4bpp:c48762c93f76702f": {
       "role": "wall_corner",
@@ -3802,6 +4954,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c60f38e7ef27a004": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c6302444456d5af0": {
       "role": "wall_corner",
       "normals": [
@@ -3820,6 +4978,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c6ce6c351df75c0e": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c71154c75bf0924b": {
       "role": "wall",
       "normals": [
@@ -3833,6 +4997,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c783f69d18e6d060": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3862,6 +5032,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c94eebb141e06c47": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c9bcac11364a12f6": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ca6f9392284deacc": {
       "role": "wall_corner",
       "normals": [
@@ -3886,11 +5068,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:cbb339fe12ffde8c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:cc0f8f3007ae36bb": {
       "role": "wall",
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:cc1a0891ace20844": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3925,6 +5119,18 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ce09ab9b4122965f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ce25652460f059b9": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -3970,7 +5176,45 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:cf677d67ebdb0700": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:cf899f09670f015d": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:cf8a25e2b6d5af4e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:cfb944869bc9ac79": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d00ecd4b62335cb1": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d01647b1ae216a12": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d074e95af701ea57": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -4014,6 +5258,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:d25ab9740f5571e4": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:d2a93b009a9974d3": {
       "role": "wall_corner",
       "normals": [
@@ -4035,6 +5285,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d2ef88b0a91300d6": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4124,6 +5380,12 @@
     },
     "v1:4bpp:d6a559386133236c": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d6c76b6e3cd36c37": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4220,6 +5482,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:d9278dd2ab9f6cb7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d9b03e1abc8864e5": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:d9f4d32b7b98109f": {
       "role": "obstacle",
       "normals": [],
@@ -4258,6 +5532,12 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:da3a0090f2111c82": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:da454f4756283914": {
       "role": "wall_corner",
       "normals": [
@@ -4276,6 +5556,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:dadca153c8035700": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:db7e3cd404e5dc18": {
       "role": "wall",
       "normals": [
@@ -4289,6 +5575,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:dc7bf58b99075c4c": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4325,6 +5617,12 @@
       "note": ""
     },
     "v1:4bpp:ddbf5ddbde072461": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:deae19fce4fb08ef": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -4378,6 +5676,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:e1d685c2e343a7d0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:e30fad99ea0cb032": {
       "role": "wall",
       "normals": [
@@ -4388,6 +5692,12 @@
     },
     "v1:4bpp:e34ebadb2ec97441": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e35c0d4bb8baf182": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4444,8 +5754,26 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:e5ca311911aabb33": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e5d6a70e83a62485": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:e5e93032c5d9bb6b": {
       "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e66fcd514e825e96": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4484,6 +5812,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:e7a3e830535f0586": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e7bd73d6f8416444": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:e8136906ef536e89": {
       "role": "floor",
       "normals": [],
@@ -4501,6 +5843,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e88c85494c6124f2": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4522,6 +5870,18 @@
     },
     "v1:4bpp:e9be0c88f635305a": {
       "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e9f01a69b9657d19": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:e9f8444b3af50ba3": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4572,6 +5932,24 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:ec6fe05b3e3e2d24": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ecb623983b123e82": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ecccd6d86f527910": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ece5aa9c0835c92f": {
       "role": "floor",
       "normals": [],
@@ -4600,6 +5978,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ed44988bdd18f759": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ed71fcb09d321d30": {
       "role": "wall",
       "normals": [
@@ -4609,6 +5993,12 @@
       "note": ""
     },
     "v1:4bpp:eda72d0311ba1b48": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:edca0d5c66f1457a": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -4644,6 +6034,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ef0307c769ca32f0": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ef38aec82870af1e": {
       "role": "wall_corner",
       "normals": [
@@ -4660,6 +6056,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ef56428c976ad9c4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:efacae21e0e1374a": {
       "role": "floor",
       "normals": [],
@@ -4667,6 +6069,18 @@
       "note": ""
     },
     "v1:4bpp:efaf82eb85b4c449": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:eff6f17a9f4420d9": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f0483cc2a3b2aef2": {
       "role": "floor",
       "normals": [],
       "context_dependent": false,
@@ -4686,6 +6100,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f105c9a9889035dc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f151965fe2203689": {
       "role": "wall",
       "normals": [
@@ -4696,6 +6116,30 @@
     },
     "v1:4bpp:f170fc98b4003b1d": {
       "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f1ac85dd83714eb7": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f1bffc96b8f14a69": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f255bd1c320f44c7": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f35e6ddc9e81ffbb": {
+      "role": "floor",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4726,14 +6170,38 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f469af2e094f55c4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f48a23f13b7326b9": {
       "role": "other",
       "normals": [],
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f4bdf6d638ccd264": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f4cfc0eedf9d9985": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f4e3adaa3502ef33": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f5592f9c715a4cc7": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4752,6 +6220,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f5f84f806c1f9ea2": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f6064a133e61262e": {
       "role": "wall",
       "normals": [
@@ -4765,6 +6239,18 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f6670e9ff29e8ef9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f6eaa0c7bbe7520c": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4854,6 +6340,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f8c4663d407eadc6": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f8dd3cd336d542e0": {
       "role": "wall",
       "normals": [
@@ -4894,6 +6386,20 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:fa626ea717315a62": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fa9cae81c7fd9561": {
+      "role": "wall",
+      "normals": [
+        "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:fac649ca8e8140a1": {
       "role": "wall",
       "normals": [
@@ -4902,11 +6408,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:facc6c11e83e2575": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:fad8903afb5ad095": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fafde6ee6fab36b7": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4924,11 +6442,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:fc071fe30ee91bdb": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:fc1411981eef6439": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fca0626aec934633": {
+      "role": "floor",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -4948,6 +6478,24 @@
     },
     "v1:4bpp:fd1fb97b829ab4ad": {
       "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fd30daaca07c0eaa": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fd4f16336596320c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fd86d3ed217c0d03": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""

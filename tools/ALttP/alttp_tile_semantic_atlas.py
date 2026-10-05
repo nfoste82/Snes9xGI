@@ -427,7 +427,7 @@ function complete(a){let count=a.role==='wall'?1:a.role==='wall_corner'?2:0;retu
 function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall'?1:2,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
 function update(a){byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function scheduleSave(){clearTimeout(saveTimer);pendingId=selected;let state=document.getElementById('saveState');if(state)state.textContent='Unsaved...';saveTimer=setTimeout(()=>save(pendingId),350)}async function save(id){if(!id)return;let t=byId.get(id),snapshot=t.annotation;if(!complete(snapshot)){pendingId=null;return}let response=await fetch('/api/annotation/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)}),value=await response.json();if(pendingId===id)pendingId=null;let state=id===selected?document.getElementById('saveState'):null;if(!response.ok){if(state)state.textContent='Not saved: '+value.error;return}let stored=(value.annotation.role==='unknown'&&!value.annotation.note&&!value.annotation.context_dependent)?null:value.annotation;for(let alias of value.content_ids)if(byId.has(alias))byId.get(alias).annotation=stored;if(state)state.textContent=`Saved to ${value.content_ids.length} runtime identit${value.content_ids.length===1?'y':'ies'}`;renderGrid()}
 for(let id of ['search','roleFilter','packFilter','reviewed','reused','contextOnly','showLow'])document.getElementById(id).addEventListener(id==='search'?'input':'change',()=>{pageSize=1000;renderGrid()});document.getElementById('export').onclick=()=>location.href='/api/export';
-fetch('/api/catalog').then(r=>r.json()).then(data=>{meta=data;tiles=data.tiles;for(let t of tiles)byId.set(t.content_id,t);let packs=[...new Set(tiles.flatMap(t=>t.packs))].sort((a,b)=>a-b),select=document.getElementById('packFilter');for(let pack of packs){let option=document.createElement('option');option.value=pack;option.textContent='Pack '+pack;select.append(option)}document.getElementById('subtitle').textContent=`${tiles.length} unique background tiles · ROM ${data.rom_sha256.slice(0,12)}… · autosaves to ${data.annotation_path}`;renderGrid();let wanted=new URLSearchParams(location.search).get('tile');if(wanted&&byId.has(wanted))select(wanted)}).catch(e=>{document.getElementById('subtitle').textContent='Could not load atlas: '+e});
+fetch('/api/catalog').then(r=>r.json()).then(data=>{meta=data;tiles=data.tiles;for(let t of tiles)byId.set(t.content_id,t);let packs=[...new Set(tiles.flatMap(t=>t.packs))].sort((a,b)=>a-b),packSelect=document.getElementById('packFilter');for(let pack of packs){let option=document.createElement('option');option.value=pack;option.textContent='Pack '+pack;packSelect.append(option)}document.getElementById('subtitle').textContent=`${tiles.length} unique background tiles · ROM ${data.rom_sha256.slice(0,12)}… · autosaves to ${data.annotation_path}`;renderGrid();let wanted=new URLSearchParams(location.search).get('tile');if(wanted&&byId.has(wanted))select(wanted)}).catch(e=>{document.getElementById('subtitle').textContent='Could not load atlas: '+e});
 </script></body></html>'''
 
 
@@ -461,6 +461,8 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/api/status":
+                self.json_response({"tool": "alttp-tile-semantics", "rom_sha256": catalog.rom_sha256})
             elif path == "/api/catalog":
                 self.json_response({"format": FORMAT, "rom_sha256": catalog.rom_sha256,
                                     "annotation_path": str(store.path),
@@ -557,7 +559,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--atlas", type=Path, required=True)
     parser.add_argument("--annotations", type=Path,
-                        default=Path("tools/alttp-tile-semantics-v1.json"))
+                        default=Path("tools/ALttP/alttp-tile-semantics-v1.json"))
     parser.add_argument("--room-index", type=Path,
                         default=Path("build/remaster-geometry/tile-room-occurrences.sqlite"))
     parser.add_argument("--room-renderer", type=Path,

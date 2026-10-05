@@ -424,9 +424,9 @@ int main ()
 		output.write("ALTPHM2\0", 8);
 		const char roomBytes[2] = { 0x60, 0 };
 		output.write(roomBytes, 2);
-		output.write(reinterpret_cast<const char *>(cached60.offsets.data()), cached60.offsets.size());
+		for (int32_t value : cached60.offsets) output.put(static_cast<char>(value));
 		for (const auto &plane : cached60.planeOffsets)
-			output.write(reinterpret_cast<const char *>(plane.data()), plane.size());
+			for (int32_t value : plane) output.put(static_cast<char>(value));
 	}
 	RemasterDungeonHeightMap compiledMap;
 	assert(S9xRemasterReadDungeonHeightMap(compiledMapPath, compiledMap));
@@ -727,8 +727,8 @@ int main ()
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());
-	previousVersionBytes.erase(emissionStart + 256, emissionStart + 265); // v21 depth, v24 empty peer count, v25 role
-	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end());
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 266); // v21 depth, v24 peer count, v25 role, v27 omni
+	previousVersionBytes.erase(previousVersionBytes.end() - 7, previousVersionBytes.end()); // v18 priority/offset (now 4 bytes), yaw, placement flag
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v23 representatives
@@ -763,7 +763,7 @@ int main ()
 	S9xRemasterInferLegacyTileInstanceFlips(legacyFlipFrame);
 	assert(legacyFlipFrame.tileInstances[0].hFlip && legacyFlipFrame.tileInstances[0].vFlip);
 	assert(decodedFrame.mainPixels[0].tilePixel == 9);
-	assert(decodedFrame.schemaVersion == 25);
+	assert(decodedFrame.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION);
 	assert(decodedFrame.artworkColors.size() == 1);
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, frameAsset.tileId)->rgb555[9] == 0x4210);
 	assert(!S9xRemasterFrameArtworkColorsForTile(decodedFrame, secondFrameAsset.tileId));
@@ -1213,7 +1213,7 @@ material = "wet_stone"
 	assert(finalizedFrame.originalRgb555 == decodedFrame.originalRgb555);
 	assert(finalizedFrame.mainPixels[0].instanceId == decodedFrame.mainPixels[0].instanceId);
 	assert(finalizedFrame.tileInstances.size() == decodedFrame.tileInstances.size());
-	assert(decodedFrame.schemaVersion == 25);
+	assert(decodedFrame.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 0);
 	assert(decodedFrame.tileInstances[0].heightOffset == 0);
 	assert(decodedFrame.lightingCoordinateScale == profile.lightingCoordinateScale);
@@ -1292,6 +1292,15 @@ material = "wet_stone"
 	assert(S9xSerializeRemasterFrame(animationResult, secondFrameBytes));
 	assert(S9xDeserializeRemasterFrame(secondFrameBytes, decodedFrame));
 	assert(S9xRemasterFrameArtworkColorsForTile(decodedFrame, { 2, 1, 4 })->rgb555[0] == 0x7c00);
+	RemasterProfile animationEditingProfile;
+	for (int refresh = 0; refresh < 2; refresh++)
+	{
+		S9xRemasterApplyProfileToFrame(animationEditingProfile, animationResult);
+		assert(S9xRemasterFrameAssetGroupVariants(animationResult,
+			animationResult.tileInstances[0].assetGroup) ==
+			(std::vector<RemasterTileContentId> { { 1, 1, 4 }, { 2, 1, 4 } }));
+		assert(animationResult.assetGroups.size() == 2);
+	}
 	RemasterAnimationCapture classifiedAnimationCapture;
 	animationFrame.artworkColors.clear();
 	animationFrame.assetGroups = { { "misclassified", { { 50, 1, 4 }, { 60, 1, 4 } } } };
@@ -1439,9 +1448,9 @@ material = "missing"
 	assert(!S9xRemasterParseProfile(invalidProfile, profile, diagnostics));
 	assert(diagnostics.size() >= 3);
 
-	assert(S9xRemasterLoadProfile("alttp-profile.toml", profile, diagnostics));
+	assert(S9xRemasterLoadProfile("Profiles/ALttP/alttp-profile.toml", profile, diagnostics));
 	assert(profile.materials.size() == 10);
-	assert(profile.assetGroups.size() == 11);
+	assert(profile.assetGroups.size() == 12);
 	assert(profile.rules.size() == 11);
 	context = {};
 	context.tileId = { UINT64_C(0xded4f16afe03288a), 1, 4 };
@@ -1480,7 +1489,12 @@ material = "missing"
 	profile.assets[flame].emissionDepth = 3.25f;
 	profile.emitterPatchSize = 2; // Explicit fixture; loaded user profile may change.
 	profile.schemaVersion = 15; profile.representativeEmitters = 0;
-	for (auto &entry : profile.assets) entry.second.combineEmitters.clear();
+	for (auto &entry : profile.assets)
+	{
+		entry.second.combineEmitters.clear();
+		entry.second.tileRole = RemasterTileRole::Unknown;
+		entry.second.emissionOmnidirectional = false;
+	}
 	std::string volumeText;
 	std::vector<RemasterProfileDiagnostic> volumeDiagnostics;
 	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
@@ -1509,7 +1523,8 @@ material = "missing"
 	S9xRemasterApplyProfileToFrame(volumeProfile, volumeFrame);
 	assert(volumeFrame.representativeEmitters == 4);
 	std::vector<uint8_t> representativeBytes;
-	RemasterFrame representativeFrame = decodedFrame;
+	RemasterFrame representativeFrame;
+	assert(S9xDeserializeRemasterFrame(firstFrameBytes, representativeFrame)); // fixed singleton wire fixture
 	representativeFrame.representativeEmitters = 4;
 	assert(S9xSerializeRemasterFrame(representativeFrame, representativeBytes));
 	RemasterFrame representativeDecoded;
@@ -1520,7 +1535,9 @@ material = "missing"
 	const auto representativeEmission = std::search(representativeBytes.begin(),representativeBytes.end(),
 		representativeFrame.assetMetadata[0].emissionRgba.begin(),representativeFrame.assetMetadata[0].emissionRgba.end());
 	assert(representativeEmission != representativeBytes.end());
-	representativeBytes.erase(representativeEmission+260,representativeEmission+265);
+	representativeBytes.erase(representativeEmission+260,representativeEmission+266);
+	const auto representativeTail = representativeBytes.end() - representativeFrame.lights.size() * 32;
+	representativeBytes.erase(representativeTail-5,representativeTail-2); // pre-v26 offset
 	representativeBytes[8] = 23;
 	assert(S9xDeserializeRemasterFrame(representativeBytes,representativeDecoded));
 	assert(representativeDecoded.assetMetadata[0].combineEmitters.empty());
@@ -1556,7 +1573,9 @@ material = "missing"
 	const auto roleEmission = std::search(representativeBytes.begin(), representativeBytes.end(),
 		representativeFrame.assetMetadata[0].emissionRgba.begin(), representativeFrame.assetMetadata[0].emissionRgba.end());
 	assert(roleEmission != representativeBytes.end());
-	representativeBytes.erase(roleEmission + 274); // 256 RGBA + 4 depth + 4 count + 10 peer
+	representativeBytes.erase(roleEmission + 274, roleEmission + 276); // v25 role + v27 omni
+	const auto roleTail = representativeBytes.end() - representativeFrame.lights.size() * 32;
+	representativeBytes.erase(roleTail-5,roleTail-2); // pre-v26 offset
 	representativeBytes[8] = 24;
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.assetMetadata[0].tileRole == RemasterTileRole::Unknown);

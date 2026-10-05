@@ -17,7 +17,7 @@ then run:
 
 ```sh
 /tmp/remaster-geometry \
-  --profile alttp-profile.toml \
+  --profile Profiles/ALttP/alttp-profile.toml \
   --capture "/path/to/authored-pose.s9xrmf" \
   --capture "/path/to/other-poses.s9xrmf" \
   --group link_sprite --palette 7 --replace-flat \

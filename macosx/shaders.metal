@@ -103,6 +103,28 @@ static float3 remasterToDisplay(float3 color)
 	return pow(max(color, 0.0), float3(1.0 / 2.2));
 }
 
+// Keep transport radiance HDR, but show the emitter in artwork-scale units.
+// Intensity 25 reproduces the authored RGB; higher power can light the room
+// without multiplying the visible flame by the 100x transport calibration.
+static float3 remasterEmissionAppearance(float3 radiance)
+{
+	return radiance / remasterEmissionRadiance;
+}
+
+static float3 remasterCompositeToDisplay(float3 color)
+{
+	color = max(color, 0.0);
+	float peak = max(color.r, max(color.g, color.b));
+	// A shared RGB scale preserves hue; channel-by-channel clipping makes warm
+	// highlights white. Leave darker artwork and reflected light unchanged.
+	if (peak > 0.75)
+	{
+		float shoulder = 0.75 + 0.25 * (1.0 - exp(-(peak - 0.75) / 0.25));
+		color *= shoulder / peak;
+	}
+	return remasterToDisplay(color);
+}
+
 static float3 remasterAlbedo(float3 paintedColor)
 {
 	// Preserve artwork value and hue. Baked-shadow removal belongs in authored material data.
@@ -145,7 +167,7 @@ struct RemasterMeshCell
 	float wallBase;
 	float solidWall;
 	float emissionDepth;
-	float reserved;
+	float emissionOmnidirectional;
 };
 
 kernel void remasterBuildVisibilityBlocks(
@@ -207,6 +229,30 @@ static float3 remasterSurfaceRayEndpoint(uint2 pixel, float4 surface,
 			point.z += side * (patch.thickness * 0.5 + 0.0001);
 		}
 	}
+	return point;
+}
+
+// A zero-depth omnidirectional emitter has no shading-selected face. Keep its
+// prepared endpoint at the center, then bias toward the receiver for visibility.
+static float3 remasterEmissionRayEndpoint(uint2 pixel, float4 surface,
+	texture2d<float, access::read> occlusion, texture2d<float, access::read> heightField,
+	const device RemasterMeshCell *mesh)
+{
+	RemasterMeshCell patch = mesh[pixel.y * occlusion.get_width() + pixel.x];
+	if (patch.emissionOmnidirectional > 0.5 && patch.emissionDepth <= 0.0)
+		return float3(float2(pixel) + 0.5, surface.r);
+	return remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh);
+}
+
+static float3 remasterOmnidirectionalRayEndpoint(float3 point, uint2 pixel, float3 receiver,
+	texture2d<float, access::read> heightField, const device RemasterMeshCell *mesh)
+{
+	if (heightField.read(pixel).g < 0.5) return point;
+	RemasterMeshCell patch = mesh[pixel.y * heightField.get_width() + pixel.x];
+	float3 geometricNormal = float3(patch.normal);
+	float side = dot(geometricNormal, receiver - point) < 0.0 ? -1.0 : 1.0;
+	if (patch.thickness == 0.0) point += geometricNormal * (side * 0.0001);
+	else point.z += side * (patch.thickness * 0.5 + 0.0001);
 	return point;
 }
 
@@ -598,13 +644,17 @@ kernel void remasterDirectLighting(
 	float3 ambient = remasterToLinear(original) * uniforms.originalSceneContribution;
 	float4 authoredEmission = emission.read(pixel);
 	float3 selfEmission = remasterToLinear(authoredEmission.rgb) * authoredEmission.a * (255.0 / 25.0) * remasterEmissionRadiance;
-	float3 composite = ambient + direct + selfEmission;
+	// Authored glow replaces the flame's baked artwork brightness. Adding both
+	// washes low-power orange emission out when the original highlight is white.
+	if (any(selfEmission > 0.0)) ambient = 0.0;
+	float3 composite = ambient + direct + remasterEmissionAppearance(selfEmission);
 	directField.write(float4(direct + selfEmission, 1.0), pixel);
 	if (uniforms.view == 5)
 	{
 		float2 field = heightField.read(pixel).rg;
-		float heightByte = field.r * 255.0;
-		float heightValue = saturate((heightByte - uniforms.heightPreviewRange.x) /
+		// RG32Float v2 retains signed effective heights; local profile bytes are unchanged.
+		float signedHeight = field.r * 255.0;
+		float heightValue = saturate((signedHeight - uniforms.heightPreviewRange.x) /
 			max(1.0, uniforms.heightPreviewRange.y - uniforms.heightPreviewRange.x) *
 			uniforms.heightPreviewMultiplier / 8.0);
 		output.write(float4(field.g > 0.5 ? float3(heightValue) :
@@ -618,7 +668,7 @@ kernel void remasterDirectLighting(
 		output.write(float4(coverage, 1.0), pixel);
 	}
 	else if (uniforms.view == 3 || uniforms.view == 8)
-		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
+		output.write(float4(remasterCompositeToDisplay(direct + remasterEmissionAppearance(selfEmission)), 1.0), pixel);
 	else if (uniforms.view == 4)
 		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
 	else if (uniforms.view == 6)
@@ -629,10 +679,15 @@ kernel void remasterDirectLighting(
 	{
 		float3 debugEmission = remasterDebugSphereVisible(float2(pixel) + 0.5, surface.r, uniforms.debugPositionRadius) ?
 			uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : float3(0.0);
-		output.write(float4(remasterToDisplay(selfEmission + debugEmission), 1.0), pixel);
+		for (uint i = 0; i < uniforms.lightCount; i++) {
+			RemasterGpuLight light = lights[i];
+			if (remasterDebugSphereVisible(float2(pixel) + 0.5, surface.r, float4(light.position, light.radius)))
+				debugEmission += light.color * light.intensity * remasterEmissionRadiance;
+		}
+		output.write(float4(remasterCompositeToDisplay(remasterEmissionAppearance(selfEmission + debugEmission)), 1.0), pixel);
 	}
 	else
-		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
+		output.write(float4(remasterCompositeToDisplay(composite), 1.0), pixel);
 }
 
 // Sources are invariant across receivers. Prepare only the actual planar/depth
@@ -682,8 +737,9 @@ static RemasterDirectSample remasterRepresentativeSample(uint2 source, uint excl
 	// Layout stays fixed even if receiver exclusion changes the representative's depth.
 	float fraction = !collapsed && (patch.mode & 2u) ? 0.25 : 1.0;
 	float3 offset = !collapsed && depth > 0 ? surface.gba*depth*(float(source.y & 3)+0.5)/4 : float3(0);
-	sample.position = float4(float3(float2(pixel)+0.5,surface.r)+offset,depth > 0 ? 1.0 : 0.0);
-	sample.endpoint = float4(remasterSurfaceRayEndpoint(pixel,surface,occlusion,heightField,mesh)+offset,weight);
+	sample.position = float4(float3(float2(pixel)+0.5,surface.r)+offset,
+		depth > 0 ? 1.0 : mesh[representative].emissionOmnidirectional > 0.5 ? 2.0 : 0.0);
+	sample.endpoint = float4(remasterEmissionRayEndpoint(pixel,surface,occlusion,heightField,mesh)+offset,weight);
 	sample.normal = float4(surface.gba,collapsed ? depth : 0);
 	sample.radiance = float4(radiance*fraction,float(count)*fraction);
 	return sample;
@@ -721,7 +777,7 @@ kernel void remasterPrepareEmitterPatches(
 		float power = max(value.r, max(value.g, value.b));
 		float3 offset = depth > 0 && !collapsed ? surface.gba * depth * (float(source.y & 3) + 0.5) / 4.0 : float3(0);
 		position += (float3(float2(pixel) + 0.5, surface.r) + offset) * power;
-		endpoint += (remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset) * power;
+		endpoint += (remasterEmissionRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset) * power;
 		normal += surface.gba * power;
 		radiance += value;
 		weight += power;
@@ -729,7 +785,8 @@ kernel void remasterPrepareEmitterPatches(
 	float fraction = depth > 0 && !collapsed ? 0.25 : 1.0;
 	float area = float(patch.count) * fraction;
 	RemasterDirectSample sample;
-	sample.position = float4(position / max(weight, 1e-20), depth > 0 ? 1.0 : 0.0);
+	sample.position = float4(position / max(weight, 1e-20),
+		depth > 0 ? 1.0 : mesh[source.x].emissionOmnidirectional > 0.5 ? 2.0 : 0.0);
 	sample.endpoint = float4(endpoint / max(weight, 1e-20), weight);
 	sample.normal = float4(normal / max(weight, 1e-20), collapsed ? depth : 0);
 	sample.radiance = float4(radiance * fraction, area);
@@ -764,7 +821,7 @@ static RemasterDirectSample remasterExcludeEmitterReceiver(RemasterDirectSample 
 		sample.position.xyz = (sample.position.xyz * sample.endpoint.w -
 			(float3(float2(pixel)+0.5, receiverSurface.r)+offset)*power) / remaining;
 		sample.endpoint.xyz = (sample.endpoint.xyz * sample.endpoint.w -
-			(remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh)+offset)*power) / remaining;
+			(remasterEmissionRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh)+offset)*power) / remaining;
 		sample.endpoint.w = remaining;
 		sample.radiance.rgb = max(float3(0), sample.radiance.rgb - value*fraction);
 		sample.radiance.w -= fraction;
@@ -800,8 +857,9 @@ kernel void remasterPrepareDirectSamples(
 	float depth = mesh[source.x].emissionDepth;
 	float3 offset = depth > 0.0 && !collapsed ? surface.gba * depth * (float(source.y) + 0.5) / 4.0 : float3(0.0);
 	RemasterDirectSample sample;
-	sample.position = float4(float3(float2(pixel) + 0.5, surface.r) + offset, depth > 0.0 ? 1.0 : 0.0);
-	sample.endpoint = float4(remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset, 0.0);
+	sample.position = float4(float3(float2(pixel) + 0.5, surface.r) + offset,
+		depth > 0.0 ? 1.0 : mesh[source.x].emissionOmnidirectional > 0.5 ? 2.0 : 0.0);
+	sample.endpoint = float4(remasterEmissionRayEndpoint(pixel, surface, occlusion, heightField, mesh) + offset, 0.0);
 	sample.normal = float4(surface.gba, collapsed ? depth : 0.0);
 	sample.radiance = float4(emissionSeed.read(pixel).rgb * (depth > 0.0 && !collapsed ? 0.25 : 1.0), 0.0);
 	samples[index] = sample;
@@ -880,7 +938,7 @@ kernel void remasterSampledDirect(
 		else if (sources[i].x == receiverIndex) continue;
 		if (all(sample.radiance.rgb <= 0)) continue;
 		float factor = dot(remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample), float4(0.25));
-		totalFormFactor += factor * (sample.radiance.w > 0 ? sample.radiance.w : sample.normal.w > 0 ? 1.0 : sample.position.w > 0.5 ? 0.25 : 1.0);
+		totalFormFactor += factor * (sample.radiance.w > 0 ? sample.radiance.w : sample.normal.w > 0 ? 1.0 : sample.position.w == 1.0 ? 0.25 : 1.0);
 		totalWeight += factor * max(sample.radiance.r, max(sample.radiance.g, sample.radiance.b));
 	}
 	float3 incoming = 0.0;
@@ -923,7 +981,12 @@ kernel void remasterSampledDirect(
 			}
 			for (uint k = 0; k < 4; k++) if (multiplicities[k]) {
 				float3 depthOffset = sample.normal.xyz * sample.normal.w * (float(k) + 0.5) / 4.0;
-				float visibility = remasterVisibility(endpoint, sample.endpoint.xyz + depthOffset,
+				uint2 sourcePixel = uint2(clamp(floor(sample.endpoint.xy), float2(0.0),
+					float2(uniforms.width - 1, uniforms.height - 1)));
+				float3 sourceEndpoint = sample.endpoint.xyz + depthOffset;
+				if (sample.position.w == 2.0) sourceEndpoint = remasterOmnidirectionalRayEndpoint(
+					sourceEndpoint, sourcePixel, receiver, heightField, mesh);
+				float visibility = remasterVisibility(endpoint, sourceEndpoint,
 					occlusion, heightField, surfaceField, visibilityBlocks, mesh);
 				// Joint source/stratum probability cancels its form factor.
 				incoming += (sample.radiance.rgb / power) * visibility *
@@ -959,6 +1022,7 @@ kernel void remasterIndirectBounce(
 	const device RemasterDirectSample *directSamples [[buffer(4)]],
 	device float4 *directPartials [[buffer(5)]],
 	const device RemasterEmitterPatch *emitterPatches [[buffer(7)]],
+	const device RemasterGpuLight *sceneLights [[buffer(8)]],
 	uint3 grid [[thread_position_in_grid]])
 {
 	uint2 pixel = grid.xy;
@@ -1001,18 +1065,10 @@ kernel void remasterIndirectBounce(
 	// Sample the sphere's subtended solid angle, avoiding missed tiny emitters
 	// and unstable near-surface area/distance weights. Interior receivers see
 	// an enclosing emissive boundary (the session light is two-sided).
-	uint sphereSamples = directCollision && uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0 ? 128 : 0;
+	bool sessionSphere = uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0;
+	uint sphereSamples = directCollision ? (uniforms.lightCount + uint(sessionSphere)) * 128 : 0;
 	float3 receiverPosition = float3(float2(pixel) + 0.5, receiverSurface.r);
 	float3 receiverRayEndpoint = remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh);
-	float3 sphereDelta = uniforms.debugPositionRadius.xyz - receiverPosition;
-	float sphereDistanceSquared = dot(sphereDelta, sphereDelta);
-	float sphereRadiusSquared = uniforms.debugPositionRadius.w * uniforms.debugPositionRadius.w;
-	bool insideSphere = sphereDistanceSquared < sphereRadiusSquared;
-	float3 sphereAxis = sphereDistanceSquared > 0.000001 ? sphereDelta * rsqrt(sphereDistanceSquared) : float3(0.0, 0.0, 1.0);
-	float3 sphereTangent = normalize(cross(abs(sphereAxis.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0), sphereAxis));
-	float3 sphereBitangent = cross(sphereAxis, sphereTangent);
-	float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
-	float coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
 	bool preparedDirect = specializedDirect || (directCollision && abs(uniforms.padding) > 1.5);
 	uint authoredSamples = preparedDirect ? emitterCount : emitterCount * 4;
 	uint sampleTotal = directCollision ? authoredSamples + sphereSamples : 16 * radialSteps * 3;
@@ -1026,13 +1082,32 @@ kernel void remasterIndirectBounce(
 		float2 samplePoint;
 		float3 debugPoint = 0.0;
 		float3 debugDirection = 0.0;
+		float4 sphereColor = 0.0;
+		float coneExtent = 0.0;
 		bool debugSample = directCollision && sampleIndex >= authoredSamples;
 		float3 emissionOffset = 0.0;
 		RemasterDirectSample preparedSample;
 		if (debugSample)
 		{
-			float index = float(sampleIndex - authoredSamples) + 0.5;
-			float cosineOffset = coneExtent * index / float(sphereSamples);
+			uint sphereIndex = (sampleIndex - authoredSamples) / 128;
+			float4 sphere = uniforms.debugPositionRadius;
+			sphereColor = uniforms.debugColorIntensity;
+			if (sphereIndex < uniforms.lightCount) {
+				RemasterGpuLight light = sceneLights[sphereIndex];
+				sphere = float4(light.position, light.radius);
+				sphereColor = float4(light.color, light.intensity);
+			}
+			float3 sphereDelta = sphere.xyz - receiverPosition;
+			float sphereDistanceSquared = dot(sphereDelta, sphereDelta);
+			float sphereRadiusSquared = sphere.w * sphere.w;
+			bool insideSphere = sphereDistanceSquared < sphereRadiusSquared;
+			float3 sphereAxis = sphereDistanceSquared > 0.000001 ? sphereDelta * rsqrt(sphereDistanceSquared) : float3(0.0, 0.0, 1.0);
+			float3 sphereTangent = normalize(cross(abs(sphereAxis.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0), sphereAxis));
+			float3 sphereBitangent = cross(sphereAxis, sphereTangent);
+			float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
+			coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
+			float index = float((sampleIndex - authoredSamples) % 128) + 0.5;
+			float cosineOffset = coneExtent * index / 128.0;
 			float cosine = 1.0 - cosineOffset;
 			float sineSquared = cosineOffset * (2.0 - cosineOffset);
 			float sine = sqrt(max(0.0, sineSquared));
@@ -1130,11 +1205,20 @@ kernel void remasterIndirectBounce(
 		}
 		float2 planarSegment = samplePoint - (float2(pixel) + 0.5);
 		float planarDistance = length(planarSegment);
-		float3 radiance = debugSample ? uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance :
+		float3 radiance = debugSample ? sphereColor.rgb * sphereColor.a * remasterEmissionRadiance :
 			preparedDirect ? preparedSample.radiance.rgb : previousBounce.read(samplePixel).rgb;
-		bool volumeSample = !debugSample && directCollision && (preparedDirect ? preparedSample.position.w > 0.5 :
+		bool volumeSample = !debugSample && directCollision && (preparedDirect ? preparedSample.position.w == 1.0 :
 			mesh[samplePixel.y * uniforms.width + samplePixel.x].emissionDepth > 0.0);
+		bool omnidirectionalSample = !debugSample && directCollision && (preparedDirect ? preparedSample.position.w > 0.5 :
+			volumeSample || mesh[samplePixel.y * uniforms.width + samplePixel.x].emissionOmnidirectional > 0.5);
 		if (volumeSample && !preparedDirect) radiance *= 0.25;
+		if (omnidirectionalSample && !volumeSample)
+		{
+			if (!preparedDirect) sourceRayEndpoint = float3(samplePoint, sampleSurface.r);
+			sourceRayEndpoint = remasterOmnidirectionalRayEndpoint(sourceRayEndpoint,
+				uint2(clamp(floor(sourceRayEndpoint.xy), float2(0.0),
+					float2(uniforms.width - 1, uniforms.height - 1))), receiverPosition, heightField, mesh);
+		}
 		if (visibilityDiagnostic)
 		{
 			// Diagnose shadowing separately from facing, BRDF, and material absorption.
@@ -1149,7 +1233,7 @@ kernel void remasterIndirectBounce(
 		float distanceSquared = dot(toSource, toSource);
 		float3 segmentDirection = debugSample ? debugDirection : toSource * rsqrt(max(distanceSquared, 0.0001));
 		float receiverResponse = saturate(dot(normal, segmentDirection));
-		float sourceResponse = debugSample || volumeSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
+		float sourceResponse = debugSample || omnidirectionalSample ? 1.0 : saturate(dot(sampleSurface.gba, -segmentDirection));
 		float receiverScattering = specializedDirect || (directCollision && uniforms.padding > 0.5) ? receiverResponse :
 			receiverResponse * remasterRoughDiffuse(normal, segmentDirection,
 				viewDirection, uniforms.indirectRoughness);
@@ -1165,7 +1249,7 @@ kernel void remasterIndirectBounce(
 		float sampleArea = directCollision ? 1.0 : planarDistance * float(distanceStep) * angularStep / 3.0;
 		// Sphere source cosine, area, and inverse-square distance are already
 		// included in the solid-angle measure; do not apply them a second time.
-		float distanceFormFactor = debugSample ? 2.0 * coneExtent / float(sphereSamples) :
+		float distanceFormFactor = debugSample ? 2.0 * coneExtent / 128.0 :
 			min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
 		float formFactor = distanceFormFactor * receiverScattering * sourceResponse;
 		if (!specializedDirect && uniforms.diagnosticStage != 0 && any(radiance > 0.0))
@@ -1245,6 +1329,7 @@ kernel void remasterCompositeLighting(
 	texture2d<float, access::write> output [[texture(4)]],
 	texture2d<float, access::read> surfaceField [[texture(5)]],
 	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	const device RemasterGpuLight *sceneLights [[buffer(1)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
@@ -1259,22 +1344,28 @@ kernel void remasterCompositeLighting(
 	float3 emission = emissionSample.rgb;
 	float3 direct = directField.read(pixel).rgb;
 	float3 indirect = indirectField.read(pixel).rgb;
-	float3 composite = remasterToLinear(original) * uniforms.originalSceneContribution + emission + direct + indirect;
+	float3 composite = (any(emission > 0.0) ? float3(0.0) : remasterToLinear(original) * uniforms.originalSceneContribution) +
+		remasterEmissionAppearance(emission) + direct + indirect;
 	// The sphere's visible glow is presentation-only; its samples seed Direct above.
 	if (remasterDebugSphereVisible(float2(pixel) + 0.5, surfaceField.read(pixel).r, uniforms.debugPositionRadius))
-		composite += uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance;
+		composite += uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a;
+	for (uint i = 0; i < uniforms.lightCount; i++) {
+		RemasterGpuLight light = sceneLights[i];
+		if (remasterDebugSphereVisible(float2(pixel) + 0.5, surfaceField.read(pixel).r, float4(light.position, light.radius)))
+			composite += light.color * light.intensity;
+	}
 	if (uniforms.view == 2)
 		output.write(float4(float3(0.0, 0.85, 1.0) * direct.r, 1.0), pixel);
 	else if (uniforms.view == 3)
-		output.write(float4(remasterToDisplay(direct * 4.0), 1.0), pixel);
+		output.write(float4(remasterCompositeToDisplay(direct + remasterEmissionAppearance(emission)), 1.0), pixel);
 	else if (uniforms.view == 4)
 		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
 	else if (uniforms.view == 6)
 		output.write(float4(remasterToDisplay(indirect * 4.0), 1.0), pixel);
 	else if (uniforms.view == 8)
-		output.write(float4(remasterToDisplay((direct + indirect) * 4.0), 1.0), pixel);
+		output.write(float4(remasterCompositeToDisplay(direct + indirect + remasterEmissionAppearance(emission)), 1.0), pixel);
 	else
-		output.write(float4(remasterToDisplay(composite), 1.0), pixel);
+		output.write(float4(remasterCompositeToDisplay(composite), 1.0), pixel);
 }
 
 kernel void remasterAccumulateSamples(

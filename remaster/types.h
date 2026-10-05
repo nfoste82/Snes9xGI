@@ -15,6 +15,7 @@ enum class RemasterDebugMode : uint8_t
 	Overlay,
 	SurfaceIds,
 	TileTypes,
+	FloorWalls,
 	Count
 };
 

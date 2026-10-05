@@ -41,10 +41,10 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSMenuItem *viewMenuItem = [NSApp.mainMenu itemWithTitle:NSLocalizedString(@"View", nil)];
 	NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Debug: Original", nil)
 	                                                   action:@selector(cycleRemasterDebugMode:)
-	                                            keyEquivalent:@"d"];
+	                                            keyEquivalent:@"k"];
 	debugItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	debugItem.target = self;
-	debugItem.toolTip = @"Cycle Original, Surface Overlay, Surface IDs, Tile Types. Tile Types: floor green; wall blue; wall corner purple; obstacle orange; stair top cyan; stair bottom pink; other gray; unknown red.";
+	debugItem.toolTip = @"Cycle Original, Surface Overlay, Surface IDs, Tile Types, Floors / Wall Distances. Floors: separate support colors. Walls: cyan arrow uphill, orange arrow downhill; number is tile distance from lower floor, ? unknown, ! conflict.";
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
 	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
@@ -56,7 +56,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	[viewMenuItem.submenu addItem:lightingItem];
 	NSMenuItem *lightingViewItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"GI Debug: Composite", nil)
 	                                                          action:@selector(cycleRemasterLightingView:)
-	                                                   keyEquivalent:@"k"];
+	                                                   keyEquivalent:@"d"];
 	lightingViewItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	lightingViewItem.target = self;
 	[viewMenuItem.submenu addItem:lightingViewItem];

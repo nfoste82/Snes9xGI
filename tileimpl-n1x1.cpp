@@ -16,9 +16,13 @@ namespace TileImpl {
 		(void) OffsetInLine;
 		if (Z1 > GFX.DB[Offset + N] && (M))
 		{
-			GFX.S[Offset + N] = MATH::Calc(GFX.ScreenColors[Pix], GFX.SubScreen[Offset + N], GFX.SubZBuffer[Offset + N]);
+			GFX.S[Offset + N] = S9xRemasterState().scenePass ? GFX.RealScreenColors[Pix] :
+				MATH::Calc(GFX.ScreenColors[Pix], GFX.SubScreen[Offset + N], GFX.SubZBuffer[Offset + N]);
 			GFX.DB[Offset + N] = Z2;
 			S9xRemasterWriteOwner(Offset + N);
+			auto &state = S9xRemasterState();
+			if (!state.scenePass && !state.currentSubscreen && Offset + N < state.mainPreMathRgb.size())
+				state.mainPreMathRgb[Offset + N] = GFX.RealScreenColors[Pix];
 		}
 	}
 

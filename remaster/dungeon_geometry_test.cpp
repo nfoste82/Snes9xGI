@@ -41,6 +41,18 @@ int main()
 	assert(frame.tileInstances[0].heightOffset == 32);
 	assert(map.structuralConflicts == 0);
 	assert(map.unknownPlaneCells[0] == 0);
+	// Authored overlay relief over occupied support must not change that
+	// support's seam level. It remains visual metadata, not a floor height.
+	for (int x=8;x<18;x++) {
+		tiles[19*64+x].surface=Surface::Unknown;
+		tiles[19*64+x].height.fill(3);
+	}
+	assert(S9xRemasterBuildDungeonHeightMap(context,50,map));
+	const auto coveredBases=map.offsets;
+	for(int x=8;x<18;x++)tiles[19*64+x].height.fill(0);
+	assert(S9xRemasterBuildDungeonHeightMap(context,50,map));
+	assert(map.offsets==coveredBases);
+	for (int x=8;x<18;x++) { tiles[19*64+x].surface=Surface::Floor; tiles[19*64+x].height.fill(0); }
 	// A horizontal wall face beside a solved identical face shares a full
 	// tangent seam. It must not need its own direct floor contact.
 	tiles[17 * 64 + 18] = tiles[17 * 64 + 17];
@@ -109,6 +121,29 @@ int main()
 	profile.assetGroups.erase("obstacles");
 	S9xRemasterDungeonPlacements(context, profile, classified);
 	assert(classified[0].surface == Surface::Wall);
+	// A repeated dungeon pattern in solid space is not an isolated floor
+	// datum. Test each plane separately and leave explicit wall tops intact.
+	profile.assetGroups.clear();
+	profile.assetGroups["dungeon_floor"].tileIds.push_back(id);
+	RemasterAssetMetadata patternMetadata; patternMetadata.hasHeight = true;
+	profile.assets[id] = patternMetadata;
+	attributes[0] = 1; attributes[4096] = 0;
+	S9xRemasterDungeonPlacements(context, profile, classified);
+	assert(classified[0].surface == Surface::Floor);
+	assert(classified[0].structuralFloorPlaneMask == 2);
+	attributes[4096] = 2;
+	S9xRemasterDungeonPlacements(context, profile, classified);
+	assert(classified[0].structuralFloorPlaneMask == 0);
+	assert(classified[0].height == patternMetadata.height);
+	profile.assetGroups["wall_tops"].tileIds.push_back(id);
+	S9xRemasterDungeonPlacements(context, profile, classified);
+	assert(classified[0].structuralFloorPlaneMask == 3);
+	// The graph must actually consume the per-plane restriction, not merely
+	// expose a diagnostic flag. An unsupported cap cannot ground its wall.
+	tiles[2*64+3].structuralFloorPlaneMask = 0;
+	assert(S9xRemasterBuildDungeonHeightMap(context, 50, map));
+	assert(map.offsets[2*64+3] == 255 && map.offsets[2*64+2] == 255);
+	tiles[2*64+3].structuralFloorPlaneMask = 3;
 	context.collisionMode = 1;
 	assert(!S9xRemasterBuildDungeonHeightMap(context, 50, map));
 	context.collisionMode = 0;

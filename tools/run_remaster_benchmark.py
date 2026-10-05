@@ -12,7 +12,7 @@ def main():
     parser.add_argument("--app", required=True, type=Path, help="Snes9x.app or its executable")
     parser.add_argument("--rom", type=Path, default=Path.home() / "Downloads/Zelda_ALTTP.zip")
     parser.add_argument("--state", type=Path, default=Path.home() / "Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.004.frz")
-    parser.add_argument("--profile", type=Path, default=Path(__file__).resolve().parents[1] / "alttp-profile.toml")
+    parser.add_argument("--profile", type=Path, default=Path(__file__).resolve().parents[1] / "Profiles/ALttP/alttp-profile.toml")
     parser.add_argument("--output", required=True, type=Path, help="New results directory")
     parser.add_argument("--seconds", type=float, default=3, help="Emulated seconds per measured case")
     parser.add_argument("--warmup-seconds", type=float, default=0.5)

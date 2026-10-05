@@ -156,7 +156,11 @@ int main(int argc, const char **argv) {
             require(pixels * batches * 16 <= 64 * 1024 * 1024, @"Snapshot exceeds production scratch bound");
             id<MTLBuffer> sources = buffer(@"sources.bin", 8, count);
             NSData *meshData = read(@"mesh.bin"), *surfaceData = read(@"surface.bin");
-            NSData *occlusionData = read(@"occlusion.bin"), *heightData = read(@"height.bin");
+            NSData *occlusionData = read(@"occlusion.bin");
+            const bool signedHeight = [[NSFileManager defaultManager] fileExistsAtPath:
+                [directory stringByAppendingPathComponent:@"height-rg32float-v2.bin"]];
+            NSString *heightName = signedHeight ? @"height-rg32float-v2.bin" : @"height.bin";
+            NSData *heightData = read(heightName);
             require(meshData.length == pixels * 48, @"Invalid mesh snapshot");
             id<MTLBuffer> mesh = [device newBufferWithBytes:meshData.bytes length:meshData.length options:MTLResourceStorageModeShared];
             require(mesh != nil, @"Mesh allocation failed");
@@ -176,7 +180,7 @@ int main(int argc, const char **argv) {
                 if (name) {
                     NSData *data = [name isEqualToString:@"surface.bin"] ? surfaceData :
                         [name isEqualToString:@"occlusion.bin"] ? occlusionData :
-                        [name isEqualToString:@"height.bin"] ? heightData : read(name);
+                        [name isEqualToString:heightName] ? heightData : read(name);
                     require(data.length == size_t(w) * h * bpp, [@"Invalid texture snapshot: " stringByAppendingString:name]);
                     std::printf("input %s bytes=%lu fnv=%016llx\n", name.UTF8String, (unsigned long)data.length,
                         (unsigned long long)hash(data.bytes, data.length));
@@ -188,7 +192,8 @@ int main(int argc, const char **argv) {
             t[0] = texture(MTLPixelFormatRGBA8Unorm, u.width, u.height, @"source.bin", 4);
             t[1] = texture(MTLPixelFormatRG8Unorm, u.width, u.height, @"occlusion.bin", 2);
             t[2] = texture(MTLPixelFormatRGBA32Float, u.width, u.height, @"surface.bin", 16);
-            t[3] = texture(MTLPixelFormatRG8Unorm, u.width, u.height, @"height.bin", 2);
+            t[3] = texture(signedHeight ? MTLPixelFormatRG32Float : MTLPixelFormatRG8Unorm,
+                u.width, u.height, heightName, signedHeight ? 8 : 2);
             t[4] = texture(MTLPixelFormatRG8Unorm, u.width, u.height, @"participation.bin", 2);
             for (unsigned i = 5; i <= 8; i++) t[i] = texture(MTLPixelFormatRGBA16Float, u.width, u.height, nil, 8);
             t[9] = texture(MTLPixelFormatR8Unorm, u.width, u.height, @"opposite.bin", 1);

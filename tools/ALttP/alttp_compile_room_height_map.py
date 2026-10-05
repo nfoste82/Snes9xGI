@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile a successful validation-v2 placement report to plane-aware ALTPHM2."""
+"""Compile successful validation-v2 to ALTPHM2 bytes or signed ALTPHM3."""
 
 import argparse
 import json
@@ -20,7 +20,7 @@ def compile_map(report: dict) -> bytes:
     planes = [[UNKNOWN] * (SIZE * SIZE) for _ in range(2)]
     for placement in report.get("placements", []):
         x, y, base = placement.get("x"), placement.get("y"), placement.get("floor_base")
-        if not all(isinstance(value, int) for value in (x, y, base)) or not (0 <= x < SIZE and 0 <= y < SIZE and 0 <= base < UNKNOWN):
+        if not all(isinstance(value, int) for value in (x, y, base)) or not (0 <= x < SIZE and 0 <= y < SIZE and -32767 <= base <= 32767 and base != UNKNOWN):
             raise ValueError("invalid placement coordinate or floor base")
         placement_planes = [placement["plane"]] if "plane" in placement else placement.get("planes", [])
         if not placement_planes or any(plane not in (0, 1) for plane in placement_planes):
@@ -32,7 +32,10 @@ def compile_map(report: dict) -> bytes:
                 raise ValueError(f"conflicting plane base at ({x},{y}) plane {plane}")
             planes[plane][index] = base
         visible[index] = base if visible[index] == UNKNOWN else max(visible[index], base)
-    return b"ALTPHM2\0" + struct.pack("<H", room) + bytes(visible + planes[0] + planes[1])
+    values = visible + planes[0] + planes[1]
+    if all(0 <= value <= 255 for value in values):
+        return b"ALTPHM2\0" + struct.pack("<H", room) + bytes(values)
+    return b"ALTPHM3\0" + struct.pack("<H", room) + struct.pack("<12288i", *values)
 
 
 def main() -> None:

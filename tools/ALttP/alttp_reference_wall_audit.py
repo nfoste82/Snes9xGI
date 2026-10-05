@@ -21,7 +21,7 @@ def audit(source, backup, database, config, fixtures):
     assets = {a['tile_hash']: a for a in profile['assets']}
     originals = {a['tile_hash']: a for a in tomllib.loads(backup.read_text())['assets']}
     refs = json.loads(config.read_text())['templates']
-    semantics = AnnotationStore(Path('tools/alttp-tile-semantics-v1.json'), profile['game']['rom_sha256']).tiles
+    semantics = AnnotationStore(Path('tools/ALttP/alttp-tile-semantics-v1.json'), profile['game']['rom_sha256']).tiles
     catalog = TileCatalog(database)
     expanded = {}
     for key, annotation in semantics.items():
@@ -174,10 +174,10 @@ def write_diagonal_preview(report, output):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--source', type=Path, default=Path('alttp-profile.toml'))
-    p.add_argument('--backup', type=Path, default=Path('alttp-profile.before-heights.toml'))
+    p.add_argument('--source', type=Path, default=Path('Profiles/ALttP/alttp-profile.toml'))
+    p.add_argument('--backup', type=Path, default=Path('Profiles/ALttP/alttp-profile.before-heights.toml'))
     p.add_argument('--atlas', type=Path, required=True)
-    p.add_argument('--templates', type=Path, default=Path('tools/alttp-reference-wall-templates-v1.json'))
+    p.add_argument('--templates', type=Path, default=Path('tools/ALttP/alttp-reference-wall-templates-v1.json'))
     p.add_argument('--fixtures', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--preview', type=Path, help='optional PNG canonical diagonal artwork/height sample sheet')

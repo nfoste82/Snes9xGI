@@ -450,7 +450,7 @@ def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, in
         return source_text, existing
     height = 50  # Leave room above the tallest authored wall (47).
     updated, count = re.subn(r"(?m)^schema_version\s*=\s*\d+\s*$",
-                             "schema_version = 13", source_text, count=1)
+                             f"schema_version = {max(13, profile.get('schema_version', 1))}", source_text, count=1)
     if count != 1:
         raise ProfileGenerationError("could not update candidate schema")
     updated, count = re.subn(r"(?m)^\[lighting_space\]\s*$",
@@ -462,7 +462,8 @@ def _enable_upper_floor_height(source_text: str, profile: dict) -> tuple[str, in
 
 def generate_profile(database: Path, source: Path, output: Path,
                      semantics_path: Path | None = None,
-                     reference_templates_path: Path | None = None) -> dict:
+                     reference_templates_path: Path | None = None,
+                     preserve_authored_geometry: bool = False) -> dict:
     if output.resolve() in {database.resolve(), source.resolve()}:
         raise ProfileGenerationError("candidate profile must be distinct from inputs")
     source_snapshot = source.read_bytes()
@@ -503,6 +504,35 @@ def generate_profile(database: Path, source: Path, output: Path,
             "FROM decoded_tile d JOIN graphics_source s USING(content_id) "
             "GROUP BY d.content_id ORDER BY d.content_id"))
         source_text, new_hud_ids = _complete_hud_group(source_text, profile, connection)
+        deferred_semantics = {}
+        if preserve_authored_geometry:
+            # Activation adds missing semantics; it must not erase already
+            # authored structural usage contracts. Report disagreements rather
+            # than silently replacing a wall/stair with a global floor label.
+            source_roles = {key: a['tile_role'] for key, a in authored.items()
+                            if a.get('tile_role') not in (None, 'unknown', 'other')}
+            for name, role in {'wall_faces': 'wall', 'wall_tops': 'floor',
+                               'dungeon_floor': 'floor', 'obstacles': 'obstacle',
+                               'stair_treads': 'stair_top', 'stair_rails': 'stair_top'}.items():
+                for key in profile.get('asset_groups', {}).get(name, {}).get('tile_hashes', []):
+                    source_roles.setdefault(key, role)
+            for key, role in source_roles.items():
+                annotation = semantics.get(key)
+                if annotation and annotation['role'] != role and not (
+                        role in ('wall', 'wall_corner') and annotation['role'] in ('wall', 'wall_corner')):
+                    deferred_semantics[key] = {'source_role': role, 'annotation_role': annotation['role']}
+                    semantics.pop(key)
+            for key, annotation in list(semantics.items()):
+                a = authored.get(key, {})
+                if (key not in source_roles and annotation['role'] in ('wall', 'wall_corner') and
+                        any(a.get('height', []))):
+                    # Existing nonzero unclassified relief can be an absolute
+                    # multi-tile template member, not a globally local wall.
+                    # Preserve its assembly-only usage until reauthoring or
+                    # explicit placement ownership resolves the disagreement.
+                    deferred_semantics[key] = {'source_role': 'assembly_only_authored_relief',
+                                               'annotation_role': annotation['role']}
+                    semantics.pop(key)
         source_text, semantic_group_additions = _complete_semantic_groups(
             source_text, profile, semantics) if semantics else (source_text, {})
         source_text, upper_floor_height = _enable_upper_floor_height(source_text, profile)
@@ -601,6 +631,9 @@ def generate_profile(database: Path, source: Path, output: Path,
             # generated arrays. No geometry path may regenerate it.
             if "normal_xyz" in existing:
                 proposal["normal_xyz"] = tuple(existing["normal_xyz"])
+            if preserve_authored_geometry and "height" in existing:
+                proposal["height"] = tuple(existing["height"])
+                geometry_overrides.discard(content_id)
             generated[content_id] = proposal
     finally:
         connection.close()
@@ -608,14 +641,18 @@ def generate_profile(database: Path, source: Path, output: Path,
         raise ProfileGenerationError("profile contains assets absent from ROM atlas")
     tile_roles = {content_id: annotation["role"] for content_id, annotation in semantics.items()
                   if not annotation["context_dependent"] and annotation.get("corner_type") != "unknown"}
+    if preserve_authored_geometry:
+        tile_roles = {**tile_roles, **{key: a['tile_role'] for key, a in authored.items()
+                                     if a.get('tile_role') not in (None, 'unknown')}}
     candidate = _render_profile(source_text, authored, generated, geometry_overrides,
                                 tile_roles if semantics_path else None)
     if semantics_path:
-        candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$', 'schema_version = 18', candidate, count=1)
+        candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$',
+                           f"schema_version = {max(18, profile.get('schema_version', 1))}", candidate, count=1)
     parsed = tomllib.loads(candidate)
     for key, value in profile.items():
         if key == "schema_version" and semantics_path:
-            value = 18
+            value = max(18, value)
         if key == "schema_version" and upper_floor_height and value < 13:
             value = 13
         if key == "lighting_space" and upper_floor_height:
@@ -666,6 +703,12 @@ def generate_profile(database: Path, source: Path, output: Path,
              "source_sha256": hashlib.sha256(source_snapshot).hexdigest(),
              "candidate_sha256": hashlib.sha256(candidate.encode()).hexdigest(),
              "normal_arrays_changed": 0,
+             "height_arrays_changed": sum(a.get('height') != authored[a['tile_hash']].get('height')
+                                          for a in candidate_assets if a['tile_hash'] in authored),
+             "raw_semantic_annotations": len(authored_semantics) if semantics_path else 0,
+             "expanded_semantic_annotations": len(semantics) + len(deferred_semantics),
+             "preserve_authored_geometry": preserve_authored_geometry,
+             "deferred_semantic_role_conflicts": deferred_semantics,
             "assets": len(generated), "new_assets": len(generated) - len(authored),
             "authored_assets_preserved": len(authored),
             "authored_layer_counts": dict(authored_layer_counts),
@@ -685,15 +728,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--atlas", type=Path, required=True)
-    parser.add_argument("--source", type=Path, default=Path("alttp-profile.toml"))
+    parser.add_argument("--source", type=Path, default=Path("Profiles/ALttP/alttp-profile.toml"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tile-semantics", type=Path,
-                        default=Path("tools/alttp-tile-semantics-v1.json"))
+                        default=Path("tools/ALttP/alttp-tile-semantics-v1.json"))
     parser.add_argument("--update-source", action="store_true",
                         help="promote the candidate to --source, keeping a unique byte-exact backup")
     parser.add_argument("--reference-templates", type=Path,
                         help="opt-in reference-derived local wall geometry; never replaces existing normals")
     parser.add_argument("--report", type=Path, help="write reproducible generation/evidence report")
+    parser.add_argument("--preserve-authored-geometry", action="store_true",
+                        help="activate semantic roles without replacing existing height arrays (including zero arrays)")
     args = parser.parse_args()
     try:
         if args.report and args.report.resolve() in {p.resolve() for p in
@@ -702,7 +747,7 @@ if __name__ == "__main__":
             raise ProfileGenerationError("report must be distinct from all inputs and candidate")
         source_snapshot = args.source.read_bytes() if args.update_source else None
         report = generate_profile(args.atlas, args.source, args.output, args.tile_semantics,
-                                  args.reference_templates)
+                                  args.reference_templates, args.preserve_authored_geometry)
         if args.report:
             args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         if args.update_source:

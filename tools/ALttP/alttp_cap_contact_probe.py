@@ -58,7 +58,7 @@ def review(snapshot_path, profile_path, solution_path):
                 'south': [sample(cell, k, 7) for k in range(8)],
                 'west': [sample(cell, 0, k) for k in range(8)],
                 'east': [sample(cell, 7, k) for k in range(8)]}
-    templates = json.loads(Path('tools/alttp-reference-wall-templates-v1.json').read_text())
+    templates = json.loads(Path('tools/ALttP/alttp-reference-wall-templates-v1.json').read_text())
     targets = [v['reference'] for v in templates['templates'] if v.get('id') == 'diagonal-authored-cap']
     contacts, caps = [], []
     for y in range(64):

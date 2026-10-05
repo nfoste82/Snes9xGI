@@ -20,7 +20,7 @@ struct Cell
 	float wallBase = 0;
 	float solidWall = 0;
 	float emissionDepth = 0;
-	float reserved = 0;
+	float emissionOmnidirectional = 0;
 };
 static_assert(sizeof(Cell) == 48, "Metal mesh cell ABI");
 

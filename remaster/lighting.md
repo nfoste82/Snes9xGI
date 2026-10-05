@@ -1,5 +1,69 @@
 # Pixel-derived triangle occlusion
 
+## Emission presentation
+
+### Flame emission direction
+
+Emission mode now has an undoable, multi-edit **Omnidirectional Emission** checkbox.
+It decouples direct source angular response from the authored shading normal, so
+zero-depth flames can illuminate floors without pointing their normals down.
+Receiver cosine, surface reflection, and visibility still apply; depth samples
+still extend along the authored normal. Positive depth retains its existing
+omnidirectional volume behavior. Reflected light in later bounces remains diffuse
+surface transport. Rectangular and representative patches keep distinct direction
+modes separate, including explicitly combined multi-tile emitters.
+
+Profile schema19 adds per-asset `emission_omnidirectional = true`; frame schema27
+appends a validated boolean after each asset's role. Older files retain directional
+zero-depth emission. The option follows Emission layer/full-tile copy and reset,
+animation metadata copying, undo, and profile save/replay.
+
+Zero-depth omnidirectional sources choose their visibility endpoint toward the
+receiver using geometric shell thickness, independently of shading normals.
+This fixes opaque elevated flames self-shadowing toward the floor when their
+normals point +Z. Receiver endpoints and intervening blocker attenuation retain
+their surface semantics; positive-depth geometry still follows authored normals.
+
+Direct Light and Direct + Indirect views now include visible self-emission and
+use Composite's exposure and hue-preserving highlight mapping, without the
+original scene contribution. Indirect-only remains a reflected-light diagnostic.
+Emissive pixels also receive direct/reflected illumination through normal material
+response. Their self-emission replaces baked artwork brightness in Composite,
+preventing white baked highlights from washing out low-intensity orange glow.
+The inspector preview now uses intensity/25 and shared-RGB compression, matching
+runtime emission rather than the old intensity*4/channel-clipping preview.
+
+Validation: direction/profile/frame round trips, legacy frame compatibility,
+mixed-direction patch isolation, and 1294/1294 Metal checks (full/half float,
+sampled/exhaustive, rectangular/representative, normal independence, receiver and
+blocker behavior, opaque emitter shells, lighting-only self-emission, baked-white
+replacement and zero-original Composite). Preview checks cover all intensities
+1–255. Interactive scene appearance still needs review.
+
+Authored intensity byte 25 still seeds 100 linear radiance units for transport.
+The visible emitter uses artwork-scale radiance (transport divided by 100), so
+raising its lighting power no longer applies that transport calibration directly
+to its displayed flame. Composite and Emission views compress highlights above
+0.75 linear using one shared RGB scale, preserving channel ratios instead of
+clipping warm highlights to white. Direct and Direct + Indirect presentation use
+the same mapping. Transport buffers retain their existing HDR energy calibration.
+
+Profile refreshes preserve capture-local `capture_animation_*` groups and instance
+membership, so replay Previous/Next browsing survives loading or editing a profile.
+The room061_001 capture contains nine such tracks, including three-frame tracks.
+Its stored metadata has no authored emission, and its stored scene settings have
+zero indirect bounces; reproducing subsequent emission edits requires the matching
+edited profile. Light transport has inverse-square-style falloff, with no fixed
+torch range cutoff. Extra bounces are needed for indirect room fill.
+
+Validation: Metal lighting harness 1254/1254 checks, including high-intensity flame
+color/transport separation and final-composite agreement; macOS arm64 Debug build.
+All nine actual room061_001 animation tracks and their instance memberships survive
+three successive profile refreshes. The broad portable suite is blocked by legacy
+fixture assumptions (11 profile groups versus the current 12, and old-version
+binary conversion); its new synthetic animation-refresh assertions pass.
+Interactive scene appearance and inspector navigation still need visual review.
+
 ## Sampled Direct lighting
 
 ### Single-record sampled emission depth
