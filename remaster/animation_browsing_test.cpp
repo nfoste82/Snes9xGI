@@ -38,6 +38,50 @@ int main (int argc, char **argv)
 		require(frame.tileInstances[0].assetGroup == "capture_animation_1", "profile refresh retains instance track");
 	}
 
+	// A click capture contains only the currently displayed phase. Refreshing
+	// and editing it must never turn the full profile into a visible-only subset.
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	profile.gameTitle = "Animation preservation fixture";
+	profile.romSha256.assign(64, '0');
+	for (const auto &tile : { first, second, fixed })
+	{
+		auto &metadata = profile.assets[tile];
+		metadata.tileId = tile;
+		metadata.hasHeight = metadata.hasNormals = metadata.hasEmission = true;
+		metadata.height.fill(static_cast<uint8_t>(18 + tile.hash));
+		metadata.normalXyz.fill(128);
+		metadata.emissionRgba.fill(static_cast<uint8_t>(35 + tile.hash));
+		metadata.emissionDepth = float(tile.hash);
+		metadata.emissionOmnidirectional = true;
+	}
+	std::string beforeCapture;
+	require(S9xRemasterSerializeProfile(profile, beforeCapture, diagnostics), "serialize all authored phases");
+	RemasterFrame singleFrame;
+	singleFrame.tileInstances.push_back(instance);
+	for (int refresh = 0; refresh < 3; refresh++)
+	{
+		S9xRemasterApplyProfileToFrame(profile, singleFrame);
+		require(singleFrame.assetMetadata.size() == 1, "single frame only needs visible phase metadata");
+		std::string afterCapture;
+		require(S9xRemasterSerializeProfile(profile, afterCapture, diagnostics) && afterCapture == beforeCapture,
+			"capture/profile refresh preserves unseen authored phases byte-for-byte");
+	}
+	profile.assets[first].height[0] = 42;
+	std::string saved;
+	RemasterProfile reloaded;
+	require(S9xRemasterSerializeProfile(profile, saved, diagnostics) &&
+		S9xRemasterParseProfile(saved, reloaded, diagnostics), "save/reload after single-frame edit");
+	require(reloaded.assets[first].height[0] == 42, "visible edit survives save/reload");
+	for (const auto &tile : { second, fixed })
+	{
+		const auto &original = profile.assets.at(tile);
+		const auto &retained = reloaded.assets.at(tile);
+		require(retained.hasHeight && retained.height == original.height && retained.hasNormals &&
+			retained.normalXyz == original.normalXyz && retained.hasEmission &&
+			retained.emissionRgba == original.emissionRgba && retained.emissionDepth == original.emissionDepth &&
+			retained.emissionOmnidirectional, "unseen phase layers and emission options survive save/reload");
+	}
+
 	if (argc == 3)
 	{
 		require(S9xReadRemasterFrame(argv[1], frame), "read room061_007 capture");

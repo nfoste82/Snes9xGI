@@ -63,8 +63,31 @@ int main(){
   }
   S9xRemasterDungeonPlacements(c,profile,tiles);
   assert(tiles[40*64+25].supportingTrim && tiles[40*64+25].wallTemplateOffset==0x694);
-  maps[(41*64+32)*2]=1;S9xRemasterDungeonPlacements(c,profile,tiles);
-  assert(!tiles[40*64+25].supportingTrim);
+   maps[(41*64+32)*2]=1;S9xRemasterDungeonPlacements(c,profile,tiles);
+   assert(!tiles[40*64+25].supportingTrim);
+   // Early rejection must neither accept a prefix at another candidate width
+   // nor skip a later valid width. Exercise both dispatch orientations and
+   // every supported length; reject first/middle/last face and trim overwrites.
+   const auto savedMaps=maps;
+   for(int kind=0;kind<2;kind++)for(int width=14;width<=29;width++) {
+    maps=savedMaps;
+    for(int y=20;y<=21;y++)for(int x=20;x<64;x++)maps[(y*64+x)*2]=7;
+    const int faceY=20+kind,trimY=21-kind,off=kind?0x694:0x688;
+    for(int k=0;k<width;k++) {
+     const int n=k<2?k+1:k>=width-2?k-width+6:3;
+     maps[(faceY*64+20+k)*2]=railWords[n];
+    }
+    const auto intact=maps;
+    S9xRemasterDungeonPlacements(c,profile,tiles);
+    for(int k=0;k<width;k++)assert(tiles[trimY*64+20+k].supportingTrim &&
+     tiles[trimY*64+20+k].wallTemplateOffset==off);
+    for(int row:{faceY,trimY})for(int k:{0,width/2,width-1}) {
+     maps=intact;maps[(row*64+20+k)*2]=1;
+     S9xRemasterDungeonPlacements(c,profile,tiles);
+     for(int j=0;j<width;j++)assert(!tiles[trimY*64+20+j].supportingTrim);
+    }
+   }
+   maps=savedMaps;
   // Outer-corner bounded strip: exact three ordered words and two wall seeds.
   for(int n=0;n<16;n++){templates[0xbc6+n*2]=n%8;templates[0xbc7+n*2]=0;}
   for(int k=0;k<3;k++)maps[((30+k)*64+30)*2]=k;

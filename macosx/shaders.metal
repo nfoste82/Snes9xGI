@@ -29,6 +29,8 @@ typedef struct
 	float3 position;
 	float radius;
 	float intensity;
+	uint sampleCount;
+	uint firstSample;
 	float3 color;
 } RemasterGpuLight;
 
@@ -740,7 +742,7 @@ static RemasterDirectSample remasterRepresentativeSample(uint2 source, uint excl
 	sample.position = float4(float3(float2(pixel)+0.5,surface.r)+offset,
 		depth > 0 ? 1.0 : mesh[representative].emissionOmnidirectional > 0.5 ? 2.0 : 0.0);
 	sample.endpoint = float4(remasterEmissionRayEndpoint(pixel,surface,occlusion,heightField,mesh)+offset,weight);
-	sample.normal = float4(surface.gba,collapsed ? depth : 0);
+	sample.normal = float4(surface.gba,collapsed ? depth : -depth);
 	sample.radiance = float4(radiance*fraction,float(count)*fraction);
 	return sample;
 }
@@ -788,7 +790,7 @@ kernel void remasterPrepareEmitterPatches(
 	sample.position = float4(position / max(weight, 1e-20),
 		depth > 0 ? 1.0 : mesh[source.x].emissionOmnidirectional > 0.5 ? 2.0 : 0.0);
 	sample.endpoint = float4(endpoint / max(weight, 1e-20), weight);
-	sample.normal = float4(normal / max(weight, 1e-20), collapsed ? depth : 0);
+	sample.normal = float4(normal / max(weight, 1e-20), collapsed ? depth : -depth);
 	sample.radiance = float4(radiance * fraction, area);
 	samples[index] = sample;
 }
@@ -836,6 +838,8 @@ static RemasterDirectSample remasterExcludeEmitterReceiver(RemasterDirectSample 
 constant bool remasterPreparedDirectPass [[function_constant(0)]];
 constant bool remasterBatchedDirectPass [[function_constant(1)]];
 constant bool remasterClusteredDirectPass [[function_constant(3)]];
+constant bool remasterAdaptiveSpherePass [[function_constant(4)]];
+constant bool remasterAdaptiveDepthPass [[function_constant(6)]];
 
 kernel void remasterPrepareDirectSamples(
 	texture2d<float, access::read> occlusion [[texture(0)]],
@@ -980,7 +984,7 @@ kernel void remasterSampledDirect(
 				target = (float(connection) + remasterRandom(random)) * totalWeight / float(connections);
 			}
 			for (uint k = 0; k < 4; k++) if (multiplicities[k]) {
-				float3 depthOffset = sample.normal.xyz * sample.normal.w * (float(k) + 0.5) / 4.0;
+				float3 depthOffset = sample.normal.xyz * max(0.0, sample.normal.w) * (float(k) + 0.5) / 4.0;
 				uint2 sourcePixel = uint2(clamp(floor(sample.endpoint.xy), float2(0.0),
 					float2(uniforms.width - 1, uniforms.height - 1)));
 				float3 sourceEndpoint = sample.endpoint.xyz + depthOffset;
@@ -1066,7 +1070,9 @@ kernel void remasterIndirectBounce(
 	// and unstable near-surface area/distance weights. Interior receivers see
 	// an enclosing emissive boundary (the session light is two-sided).
 	bool sessionSphere = uniforms.debugColorIntensity.a > 0.0 && uniforms.debugPositionRadius.w > 0.0;
-	uint sphereSamples = directCollision ? (uniforms.lightCount + uint(sessionSphere)) * 128 : 0;
+	bool adaptiveSpheres = is_function_constant_defined(remasterAdaptiveSpherePass) ? remasterAdaptiveSpherePass : false;
+	uint sphereSamples = directCollision ? (adaptiveSpheres ? uint(uniforms.heightPreviewRange.z) :
+		(uniforms.lightCount + uint(sessionSphere)) * 128) : 0;
 	float3 receiverPosition = float3(float2(pixel) + 0.5, receiverSurface.r);
 	float3 receiverRayEndpoint = remasterSurfaceRayEndpoint(pixel, receiverSurface, occlusion, heightField, mesh);
 	bool preparedDirect = specializedDirect || (directCollision && abs(uniforms.padding) > 1.5);
@@ -1075,8 +1081,10 @@ kernel void remasterIndirectBounce(
 	uint directionStart = 0, directionEnd = 0, nextDirectionSample = 0, randomBase = 0;
 	float2 direction = float2(0.0), perpendicular = float2(0.0);
 	// Exhaustive direct transport: batches partition all samples, never subsample.
-	uint firstSample = batched ? grid.z * 8 : 0;
-	uint endSample = batched ? min(sampleTotal, firstSample + 8) : sampleTotal;
+	uint batchSize = max(8u, uniforms.sampleCount);
+	uint firstSample = batched ? grid.z * batchSize : 0;
+	uint endSample = batched ? min(sampleTotal, firstSample + batchSize) : sampleTotal;
+	bool adaptiveDepth = is_function_constant_defined(remasterAdaptiveDepthPass) ? remasterAdaptiveDepthPass : false;
 	for (uint sampleIndex = firstSample; sampleIndex < endSample; sampleIndex++)
 	{
 		float2 samplePoint;
@@ -1084,12 +1092,29 @@ kernel void remasterIndirectBounce(
 		float3 debugDirection = 0.0;
 		float4 sphereColor = 0.0;
 		float coneExtent = 0.0;
+		uint sphereSampleCount = 128;
 		bool debugSample = directCollision && sampleIndex >= authoredSamples;
 		float3 emissionOffset = 0.0;
 		RemasterDirectSample preparedSample;
 		if (debugSample)
 		{
 			uint sphereIndex = (sampleIndex - authoredSamples) / 128;
+			uint sphereLocalSample = (sampleIndex - authoredSamples) % 128;
+			if (adaptiveSpheres) {
+				uint sphereSample = sampleIndex - authoredSamples;
+				sphereIndex = uniforms.lightCount;
+				uint sceneSamples = sphereSamples - uint(sessionSphere) * 128;
+				sphereLocalSample = sphereSample - min(sphereSample, sceneSamples);
+				for (uint i = 0; i < uniforms.lightCount; i++) {
+					RemasterGpuLight light = sceneLights[i];
+					if (sphereSample >= light.firstSample && sphereSample - light.firstSample < light.sampleCount) {
+						sphereIndex = i;
+						sphereSampleCount = light.sampleCount;
+						sphereLocalSample = sphereSample - light.firstSample;
+						break;
+					}
+				}
+			}
 			float4 sphere = uniforms.debugPositionRadius;
 			sphereColor = uniforms.debugColorIntensity;
 			if (sphereIndex < uniforms.lightCount) {
@@ -1100,14 +1125,24 @@ kernel void remasterIndirectBounce(
 			float3 sphereDelta = sphere.xyz - receiverPosition;
 			float sphereDistanceSquared = dot(sphereDelta, sphereDelta);
 			float sphereRadiusSquared = sphere.w * sphere.w;
+			// A viewport-edge light can be near one receiver but tiny for most of
+			// the frame. Refine the conservative CPU budget per receiver, retaining
+			// deterministic quadrature and its solid-angle energy normalization.
+			if (adaptiveSpheres && sphereIndex < uniforms.lightCount) {
+				float angularSquared = sphereRadiusSquared / max(sphereDistanceSquared, 0.000001);
+				uint receiverSamples = angularSquared < 0.0001 ? 8 : angularSquared < 0.000625 ? 16 :
+					angularSquared < 0.0025 ? 32 : angularSquared < 0.01 ? 64 : 128;
+				sphereSampleCount = min(sphereSampleCount, receiverSamples);
+				if (sphereLocalSample >= sphereSampleCount) continue;
+			}
 			bool insideSphere = sphereDistanceSquared < sphereRadiusSquared;
 			float3 sphereAxis = sphereDistanceSquared > 0.000001 ? sphereDelta * rsqrt(sphereDistanceSquared) : float3(0.0, 0.0, 1.0);
 			float3 sphereTangent = normalize(cross(abs(sphereAxis.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0), sphereAxis));
 			float3 sphereBitangent = cross(sphereAxis, sphereTangent);
 			float sinSquared = min(1.0, sphereRadiusSquared / max(sphereDistanceSquared, 0.000001));
 			coneExtent = insideSphere ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
-			float index = float((sampleIndex - authoredSamples) % 128) + 0.5;
-			float cosineOffset = coneExtent * index / 128.0;
+			float index = float(sphereLocalSample) + 0.5;
+			float cosineOffset = coneExtent * index / float(sphereSampleCount);
 			float cosine = 1.0 - cosineOffset;
 			float sineSquared = cosineOffset * (2.0 - cosineOffset);
 			float sine = sqrt(max(0.0, sineSquared));
@@ -1129,6 +1164,20 @@ kernel void remasterIndirectBounce(
 				preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
 					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
 				if (all(preparedSample.radiance.rgb <= 0)) continue;
+				if (adaptiveDepth && preparedSample.normal.w < 0.0) {
+					float depth = -preparedSample.normal.w;
+					uint stratum = sourceRecord.y & 3u;
+					float3 axis = preparedSample.normal.xyz * depth;
+					float3 base = preparedSample.position.xyz - axis * (float(stratum) + 0.5) / 4.0;
+					float3 center = base + axis * 0.5;
+					float ratioSquared = depth * depth / max(dot(center-receiverPosition, center-receiverPosition), 0.0001);
+					uint depthSamples = ratioSquared < 0.0025 ? 2u : 4u;
+					if (stratum >= depthSamples) continue;
+					float3 shift = axis * ((float(stratum)+0.5)/float(depthSamples) - (float(stratum)+0.5)/4.0);
+					preparedSample.position.xyz += shift;
+					preparedSample.endpoint.xyz += shift;
+					preparedSample.radiance *= 4.0 / float(depthSamples);
+				}
 			}
 			samplePoint = preparedSample.position.xy;
 		}
@@ -1249,7 +1298,7 @@ kernel void remasterIndirectBounce(
 		float sampleArea = directCollision ? 1.0 : planarDistance * float(distanceStep) * angularStep / 3.0;
 		// Sphere source cosine, area, and inverse-square distance are already
 		// included in the solid-angle measure; do not apply them a second time.
-		float distanceFormFactor = debugSample ? 2.0 * coneExtent / 128.0 :
+		float distanceFormFactor = debugSample ? 2.0 * coneExtent / float(sphereSampleCount) :
 			min(0.25, sampleArea / (M_PI_F * (distanceSquared + 1.0)));
 		float formFactor = distanceFormFactor * receiverScattering * sourceResponse;
 		if (!specializedDirect && uniforms.diagnosticStage != 0 && any(radiance > 0.0))

@@ -15,6 +15,7 @@
 #include "../remaster/indirect_lighting_reference.h"
 #include "../remaster/surface_mesh_material.h"
 #include "../remaster/emitter_patches.h"
+#include "../remaster/sphere_samples.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light
@@ -22,6 +23,7 @@ struct Light
     simd_float3 position;
     float radius;
     float intensity;
+    uint32_t sampleCount, firstSample;
     simd_float3 color;
 };
 struct Uniforms
@@ -105,7 +107,9 @@ int main()
             require(sampledDirectTransport != nil, error.localizedDescription);
             id<MTLComputePipelineState> preparePatches = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
-            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:3];
+			[directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:3];
+			bool adaptiveDepth = getenv("S9X_REMASTER_TEST_ADAPTIVE_DEPTH") != nullptr;
+			[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
             id<MTLComputePipelineState> clusteredTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             bool noClusters = false;
@@ -117,6 +121,10 @@ int main()
             id<MTLComputePipelineState> reduceDirect = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterReduceDirectPartials"] error:&error];
             require(batchedTransport && reduceDirect, error.localizedDescription);
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:4];
+            id<MTLComputePipelineState> adaptiveTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            require(adaptiveTransport != nil, error.localizedDescription);
             id<MTLComputePipelineState> powerLeaves = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
             id<MTLComputePipelineState> powerReduce = [device newComputePipelineStateWithFunction:
@@ -180,7 +188,8 @@ int main()
                                bool sampled = false, bool lambertianDirect = false, float reflectanceBoost = 0.0f,
                                 const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr, bool sampleDirect = false,
                                  const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false,
-                                  float originalContribution = 0.65f, const std::vector<Light> *sceneLights = nullptr) {
+                                   float originalContribution = 0.65f, const std::vector<Light> *sceneLights = nullptr,
+                                    unsigned directBatchSize = 8, bool adaptiveSpheres = false) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -287,14 +296,14 @@ int main()
                     }
                 }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-                const bool batched = !customPatches && !sampleDirect && bounce && !composing && !referenceVisibility && getenv("S9X_REMASTER_TEST_BATCHED") &&
+                const bool batched = !customPatches && !sampleDirect && bounce && !composing && !referenceVisibility && (getenv("S9X_REMASTER_TEST_BATCHED") || directBatchSize > 8 || adaptiveSpheres) &&
                     (sampled || (passIndex == 0 && lambertianDirect && diagnosticStage == 0));
                 uint32_t batchCount = 1;
                 id<MTLBuffer> partials = nil;
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
                     bounce ? (sampleDirect ? sampledDirectTransport : customPatches ? clusteredTransport : sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
-                        passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? (batched ? batchedTransport : directTransport) : indirect) : direct];
+                        passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? (adaptiveSpheres ? adaptiveTransport : batched ? batchedTransport : directTransport) : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
                 if (bounce && !composing)
@@ -303,7 +312,18 @@ int main()
                     [encoder setTexture:visibilityBlocks atIndex:10];
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
                 Light emptySceneLight = {};
-                id<MTLBuffer> sceneLightBuffer = [device newBufferWithBytes:sceneLights && !sceneLights->empty() ? sceneLights->data() : &emptySceneLight
+                std::vector<Light> adaptiveLights = sceneLights ? *sceneLights : std::vector<Light>{};
+                unsigned sphereSamples = 0;
+                for (auto &light : adaptiveLights) {
+                    light.sampleCount = adaptiveSpheres ? S9xRemasterSphereSamples(light.position.x, light.position.y,
+                        light.radius, width, height) : 128;
+                    light.firstSample = sphereSamples;
+                    sphereSamples += light.sampleCount;
+                }
+                if (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0) sphereSamples += 128;
+                uniforms.heightPreviewRange.z = sphereSamples;
+                [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+                id<MTLBuffer> sceneLightBuffer = [device newBufferWithBytes:!adaptiveLights.empty() ? adaptiveLights.data() : &emptySceneLight
                     length:std::max<size_t>(1, uniforms.lightCount) * sizeof(Light) options:MTLResourceStorageModeShared];
                 [encoder setBuffer:sceneLightBuffer offset:0 atIndex:composing || !bounce ? 1 : 8];
                 if (bounce && !composing && sampled)
@@ -389,7 +409,10 @@ int main()
                     [encoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
                     if (batched)
                     {
-                        batchCount = std::max(1u, (emitterCount + uniforms.lightCount * 128u + (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0 ? 128u : 0u) + 7) / 8);
+                        const unsigned total = emitterCount + sphereSamples;
+                        batchCount = std::max(1u, (total + directBatchSize - 1) / directBatchSize);
+                        uniforms.sampleCount = directBatchSize;
+                        [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
                         partials = [device newBufferWithLength:size_t(width) * height * batchCount * 16 options:MTLResourceStorageModePrivate];
                         require(partials != nil, @"Direct partial allocation failed");
                         [encoder setBuffer:partials offset:0 atIndex:5];
@@ -663,6 +686,24 @@ int main()
                 for (unsigned p = 0; p < width*height; p++) if (p != receiver) depthMesh[p].emissionDepth = 2;
                 denseExact = directTrial(dense, false, 1, 1, &depthMesh);
                 near("collapsed depth exact clamped denominator", directTrial(dense, true, 8, 19, &depthMesh), denseExact);
+				// Thin distant depth selects two midpoint strata in the production
+				// approximation; compare energy against full four-stratum transport.
+				Scene thin = scene();
+				depthMesh.assign(width*height, RemasterSurfaceMesh::Cell{});
+				for (unsigned p = 0; p < width*height; p++)
+					for (auto &corner : depthMesh[p].corners) corner = thin[Surface][p].x;
+				depthMesh[emitter].emissionDepth = 0.1f;
+				depthPatches[0].count = 1; depthPatches[0].mode = 3;
+				auto thinFull = depthRun(thin, 1, nullptr, -1, false, false, false);
+				auto thinReduced = depthRun(thin, 1, &depthPatches, -1, false, false, false);
+				check("adaptive thin depth unblocked energy", simd_length(thinReduced.xyz-thinFull.xyz) <=
+					simd_length(thinFull.xyz)*0.005f, thinReduced, thinFull);
+				blocker(thin, 8, 1, true, 8);
+				depthMesh[receiver+8].thickness = 100;
+				for (auto &corner : depthMesh[receiver+8].corners) corner = 8;
+				near("adaptive depth thick opaque wall", depthRun(thin, 1, &depthPatches, -1, false, false, false), {});
+				thin[Occlusion][receiver+8].x = 0.5f;
+				near("adaptive depth fractional wall", depthRun(thin, 1, &depthPatches, -1, false, false, false), thinReduced*0.5f);
             }
             Scene s = scene();
             {
@@ -2260,6 +2301,65 @@ kernel void probePatch(const device PatchProbe *inputs [[buffer(0)]],
                 unblocked[PreviousBounce].assign(width * height, {});
                 unblocked[Surface][receiver] = {0, 0, 0, 1};
                 near("two authored lamps add direct energy", illuminate(unblocked), clear * 2);
+                const auto nearAdaptive = run(unblocked, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                    simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, nullptr,
+                    false, nullptr, false, 0, &sources, 8, true).bounce;
+                const auto nearReference = illuminate(unblocked);
+                check("nearby sphere quadrature retains energy",
+                    simd_length(nearAdaptive.xyz - nearReference.xyz) <= simd_length(nearReference.xyz) * 0.005f,
+                    nearAdaptive, nearReference);
+                for (unsigned batchSize : {9u, 29u, 36u}) {
+                    const auto adaptive = run(unblocked, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, nullptr,
+                        false, nullptr, false, 0, &sources, batchSize).bounce;
+                    near("adaptive sphere batches retain all source energy", adaptive, clear * 2);
+                    const auto blocked = run(lamp, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, nullptr,
+                        false, nullptr, false, 0, &sources, batchSize).bounce;
+                    near("adaptive sphere batches preserve blockers", blocked, illuminate(lamp));
+                }
+                for (float distance : {10.0f, 30.0f, 60.0f, 120.0f, 300.0f}) {
+                    sources.assign(1, held);
+                    sources[0].position = {width + distance, receiverY + 0.5f, 12};
+                    sources[0].radius = 1;
+                    sources[0].intensity = 100;
+                    const auto reference = illuminate(unblocked);
+                    const auto adaptive = run(unblocked, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, nullptr,
+                        false, nullptr, false, 0, &sources, 8, true).bounce;
+                    check("adaptive offscreen quadrature preserves unblocked energy",
+                        simd_length(adaptive.xyz - reference.xyz) <= simd_length(reference.xyz) * 0.005f + 0.000001f,
+                        adaptive, reference);
+                    std::vector<RemasterSurfaceMesh::Cell> wallMesh(width * height);
+                    for (unsigned p = 0; p < width * height; p++) {
+                        for (float &corner : wallMesh[p].corners) corner = lamp[Surface][p].x;
+                        if (lamp[Occlusion][p].x > 0) wallMesh[p].thickness = 100;
+                    }
+                    const auto blocked = run(lamp, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, &wallMesh,
+                        false, nullptr, false, 0, &sources, 8, true).bounce;
+                    near("adaptive offscreen quadrature preserves opaque shadows", blocked, simd_float4{0, 0, 0, 1});
+                    Scene fractional = lamp;
+                    for (auto &coverage : fractional[Occlusion]) coverage.x *= 0.5f;
+                    const auto transmitted = run(fractional, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, nullptr, false, false, true, 0, &wallMesh,
+                        false, nullptr, false, 0, &sources, 8, true).bounce;
+                    check("adaptive sphere quadrature retains fractional coverage",
+                        simd_length(transmitted.xyz - adaptive.xyz * 0.5f) <= simd_length(adaptive.xyz) * 0.005f + 0.000001f,
+                        transmitted, adaptive * 0.5f);
+                }
+                sources.push_back(held);
+                Scene mixed = unblocked;
+                mixed[PreviousBounce][emitter] = {1, 0.5f, 0.25f, 1};
+                auto mixedRun = [&](bool adaptive) {
+                    return run(mixed, true, 0, 8, -1, nullptr, half, 0, 1, 0, 1, 1,
+                        simd_float3{0, 0, -1}, -1, &held, false, false, true, 0, nullptr,
+                        false, nullptr, false, 0, &sources, 8, adaptive).bounce;
+                };
+                const auto mixedReference = mixedRun(false), mixedAdaptive = mixedRun(true);
+                check("mixed sphere budgets, debug sphere and authored emitters retain energy",
+                    simd_length(mixedAdaptive.xyz - mixedReference.xyz) <= simd_length(mixedReference.xyz) * 0.005f + 0.000001f,
+                    mixedAdaptive, mixedReference);
                 Scene noLight = unblocked;
                 noLight[Direct][receiver] = {0, 0, 0, 1};
                 near("zero original contribution darkens unlit world", run(noLight, false, 0, 8, -1,

@@ -55,6 +55,52 @@ int main()
 	require(run().lights==1,"omnidirectional source supports zero depth");
 	(*graphics)[32]=0; require(run().lights==0,"current animation graphics replace prior identity without cache"); (*graphics)[32]=0x80;
 	(*maps)[cell*2]=0; (*maps)[8192+cell*2]=0; require(run().lights==0,"extinguished/removed tile does not persist");
+	// Two linked parts of a fixture: combine missing pixels, retaining emitting
+	// area and linear RGB power. Runtime graphics animation selects current links.
+	(*graphics)[64]=0x40;
+	indices[0]=0; indices[1]=1;
+	const RemasterTileContentId peer={S9xRemasterHashTile(4,indices),1,4};
+	a.combineEmitters={peer};
+	auto b=a; b.tileId=peer; b.combineEmitters={id};
+	b.emissionRgba.fill(0); b.emissionRgba[4+2]=255; b.emissionRgba[4+3]=50;
+	profile.assets[peer]=b;
+	(*maps)[cell*2]=1; (*maps)[cell*2+1]=0;
+	(*maps)[(cell+1)*2]=2;
+	height->offsets[cell+1]=48;
+	c.backgroundScrollX=0;
+	frame.representativeEmitters=0;
+	require(run().lights==2,"combining off preserves separate missing-pixel sources");
+	frame.representativeEmitters=1;
+	require(run().lights==1,"reciprocal adjacent offscreen tiles combine");
+	light=frame.lights[0];
+	require(std::fabs(4*3.14159265358979323846f*light.radius*light.radius-2)<0.00001f &&
+		light.intensity==37.5f,"combined sphere preserves total area and power");
+	require(std::fabs(std::pow(light.red,2.2f)*75-25)<0.0001f &&
+		std::fabs(std::pow(light.blue,2.2f)*75-50)<0.0001f,"combined linear RGB power preserved");
+	profile.assets[peer].combineEmitters.clear();
+	require(run().lights==2,"one-way offscreen links do not combine");
+	profile.assets[peer].combineEmitters={id};
+	profile.assets[peer].emissionOmnidirectional=false; profile.assets[peer].emissionDepth=2;
+	require(run().lights==2,"different emission-direction modes remain separate");
+	profile.assets[peer].emissionOmnidirectional=true;
+	(*maps)[(cell+1)*2]=0; (*maps)[8192+(cell+1)*2]=2;
+	require(run().lights==2,"offscreen sources on different BG planes remain separate");
+	(*maps)[8192+(cell+1)*2]=0; (*maps)[(cell+1)*2]=2;
+	(*maps)[(cell+1)*2]=0; (*maps)[(cell+3)*2]=2; height->offsets[cell+3]=48;
+	require(run().lights==2,"disconnected offscreen copies never combine remotely");
+	(*maps)[(cell+3)*2]=0; (*maps)[(cell+1)*2]=2;
+	const RemasterTileContentId next={id.hash+123,1,4};
+	auto nextAsset=a; nextAsset.tileId=next; profile.assets[next]=nextAsset;
+	profile.assets[peer].combineEmitters.push_back(next);
+	frame.lights.clear();
+	auto animatedHash=[&](uint8_t depth,const uint8_t *pixels) {
+		const auto hash=S9xRemasterHashTile(depth,pixels); return hash==id.hash ? next.hash : hash;
+	};
+	require(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==1,
+		"animated identity uses its own authored reciprocal combination links");
+	profile.assets[next].combineEmitters.clear(); frame.lights.clear();
+	require(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==2,
+		"animation does not reuse previous frame links");
 	RemasterHeldLampState lamp; lamp.verifiedRom=lamp.darkWithLantern=true;
 	lamp.facing=6; lamp.linkScreenX=100; lamp.linkScreenY=80; lamp.floorHeight=3;
 	S9xRemasterSetProfile(profile); S9xRemasterSetLiveFramesEnabled(true);

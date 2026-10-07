@@ -7,6 +7,10 @@ guard CommandLine.arguments.count == 3 else {
 }
 let dirs = CommandLine.arguments.dropFirst()
 for c in 1...7 {
+    let paths = dirs.map { "\($0)/case-\(String(format: "%02d", c)).png" }
+    let present = paths.map { FileManager.default.fileExists(atPath: $0) }
+    if !present.contains(true) { continue }
+    precondition(present.allSatisfy { $0 }, "Case exists in only one benchmark: \(c)")
     let images = try dirs.map { directory -> NSBitmapImageRep in
         let url = URL(fileURLWithPath: "\(directory)/case-\(String(format: "%02d", c)).png")
         guard let image = NSBitmapImageRep(data: try Data(contentsOf: url)) else {

@@ -1,5 +1,60 @@
 # Live application lighting benchmark
 
+The next direct-only 60 FPS milestone and end-to-end timing/acceptance plan are
+in [Room 061 performance plan](room061-performance-plan.md).
+
+## Visible Room 061 torches, slot 006 (October 6)
+
+User's near-torch view requires `Zelda_ALTTP.006.frz`; slot 002 initially contains
+no visible emitters. Root backup profile has three representatives. In 180
+deterministic frames, 117 have 848 emitting pixels/108 prepared direct samples;
+63 have 1008 pixels/348 samples. The heavy flame identity `85dd6cce93173861`
+has depth 2 and no combination links, whereas peers `9943c286d5e45726` and
+`73caad274b5bb270` have depth 0 and links. Four depth strata and separated fixtures
+explain the animation-dependent workload. Inspect with
+`tools/inspect_emitter_sources.cpp`.
+
+`tools/expand_emitter_animation_links.cpp` takes an animation capture, input
+profile and new output profile. It expands existing links through captured
+tracks without copying emission/height/normal metadata or replacing the original.
+Using `frame_room061_001.s9xrmf` adds 38 links; heavy frames then have 240 prepared
+samples. Candidate remains in the session temporary directory as
+`room061-expanded-links.toml`. It does not correct authored depth/direction
+differences: those need visual/author review.
+
+Distance-adaptive depth quadrature retains three spatial/color representatives,
+but uses two midpoint depth rays for depth/distance < 0.05, otherwise four.
+Intensity and normalization area retain full weight. `S9X_REMASTER_FULL_DEPTH_SAMPLES=1`
+restores full quadrature; reports record it. Prepared sample count is unchanged,
+executed shadow rays fall. See lighting contract for the approximation.
+
+Same-build counter-free candidate-profile pair, 30 warmup/180 measured frames:
+full depth GPU median/p95 8.12/19.51 ms, mean 10.62, p99/max 26.20/28.00;
+adaptive depth 8.90/15.98, mean 8.97, p99/max 20.04/24.05. Final image is identical
+because its selected animation phase has no depth. An earlier 6 warmup/60-frame
+pair ending on the depth phase differs in 6596 channels, total absolute byte
+difference 7781, max 12. Spatial representatives remain 3. Quality review of
+moving shadow edges is still pending.
+
+Live candidate, 30 warmup/300 frames: GPU median/p95 8.98/21.01 ms, p99/max
+35.73/42.03, fields/mesh 3.11/0.42, completion throughput 43.73 FPS. Still fails
+the under-16-ms/no-stutter goal. Drawable p95/p99/max 11.25/16.63/22.80 ms;
+zero in-flight-slot drops do not prove zero emulator skips/display misses.
+
+Timing fluctuated considerably across experiment runs; do not compare distant
+absolute measurements as a controlled speedup. Larger batches, endpoint-read
+hoisting, bounds/membership indexing and sphere-free specialization did not
+produce repeatable gains and were removed. Existing 64-connection sampled Direct
+was slower (26.06/68.42 ms versus first exhaustive 8.00/33.92) and stays opt-in.
+Initial stage counters identify direct transport as dominant (median 16.25 ms;
+prepare 0.066, reduce 0.082), but counters strongly perturb this workload.
+
+Validation: serial/batched adaptive-depth Metal suites 1357/1357, including
+thin-depth energy (<0.5%), thick opaque and fractional blockers, existing mixed
+representative self-exclusion, 456 visibility comparisons and 65536 patch probes.
+Corrected stale CPU sphere ABI assertion to actual 48 bytes/color offset 32.
+No geometry/profile authoring data is changed by runtime optimization.
+
 Run from an unlocked macOS desktop session. The runner opens the specified ROM,
 loads its matching profile, restores the save state on the emulator thread before
 each case, and ignores physical controller/keyboard input during the benchmark.
@@ -988,3 +1043,46 @@ See `remaster/lighting.md` for semantics and larger-shape capacity fallback.
 Portable grouping/profile/capture checks pass; Metal1249 checks pass in serial
 and batched modes including256-member energy/ABI. Debug/Release build verified.
 Interactive button/alert and combined-torch visual review remain pending.
+
+## Room 061 offscreen-sphere performance repair (October 6, 2026)
+
+Reproduced with root `alttp-profile_backup.toml`, slot002, Composite0, debug
+sphere disabled. The profile in `Profiles/ALttP/alttp-profile.toml` did not reproduce
+the workload. Zero visible emitters/prepared samples hid **16–20 physical scene
+spheres**, originally 2048–2560 quadrature samples per receiver. Eight-source
+partials exceeded the 64 MiB limit, causing serial transport. Adaptive batch
+sizes29/36 eliminate that cliff while retaining all samples. Initial GPU median
+177.13/p95219.07 ms became107.84/140.03; final PNG byte-identical.
+
+User approved implementing adaptive sphere sampling. Production now reduces
+quadrature by angular radius at each receiver (8..128), retaining solid-angle
+energy normalization, near/interior128, session-debug128 and full diagnostic
+paths. CPU conservative viewport budgets reduce dispatched work for fully distant
+lights. See `remaster/lighting.md` for approximation/override contracts. Reports
+and panel include sphere counts/max samples/batch size. Full quadrature can be
+restored with `S9X_REMASTER_FULL_SPHERE_SAMPLES=1` at launch.
+
+Final Release/M3Max, counters off, same slot/profile,6warmup+60measured frames:
+full quadrature/adaptive batching92.11/124.73 ms versus adaptive sphere quadrature
+**8.34/14.25 ms** (median/p95). Initial serial177.13 baseline was earlier, so
+the nearer full/adaptive pair is the better approximation-cost comparison.
+All state/original hashes match; reduced-quadrature lighting intentionally differs.
+Final Composite image differs in164channels, each by exactly one8-bit value.
+Live mode30warmup+180measured: GPU9.53/22.85 ms, fields3.47/mesh0.43 ms,
+43.05 completed frames/s. This is a substantial repair, not sustained60FPS or5ms
+total lighting. Manual gameplay/visual acceptance remains pending.
+
+Validation: portable batch-budget/source-conservation and sphere-budget tests;
+serial and batched Metal suites1354/1354 each,456visibility comparisons and65536
+raw patch probes. Added full/half near/distant energy, opaque/fractional blockers,
+mixed budgets plus authored/debug sources and variable batches. Debug/Release
+builds and diff check pass. A receiver-band stripe experiment offered no gain
+over larger batches and was removed. No height metadata changed in this work.
+
+Artifacts under the standard session temporary directory: `room061-backup-before/`,
+`room061-backup-adaptive/`, `room061-final-full-spheres/`, `room061-final-adaptive/`,
+`room061-final-live/`. Reproduce with `tools/run_remaster_benchmark.py`,
+`--state "$HOME/Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.002.frz"`,
+`--profile alttp-profile_backup.toml --composite-only --move none`,
+`S9X_REMASTER_DISABLE_STAGE_COUNTERS=1`; compare override on/off. Image comparison
+tool now supports Composite-only outputs.

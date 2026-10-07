@@ -64,7 +64,7 @@ int main(int argc,char **argv){try {
   auto words=std::make_unique<std::array<uint8_t,16384>>();auto lc=c;lc.placementBackgroundIndex=bg;
   if(!bg){std::copy_n(c.constructedMaps+8192,8192,words->begin());std::copy_n(c.constructedMaps,8192,words->begin()+8192);lc.constructedMaps=words->data();std::swap(lc.graphicsBase,lc.bg1GraphicsBase);}
   auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();S9xRemasterDungeonPlacements(lc,profile,*tiles);lc.placements=tiles->data();
-   if(bg)lc.supportRelations=&maps[0]->authoredSupportRelations;
+    if(bg){lc.supportRelations=&maps[0]->authoredSupportRelations;lc.wallSupportRelations=&maps[0]->authoredWallSupportRelations;}
    maps[bg]=std::make_unique<RemasterDungeonHeightMap>();auto &m=*maps[bg];require(S9xRemasterBuildDungeonHeightMap(lc,profile.upperFloorHeight,m),"solve");
   if(std::getenv("ALTTP_RUNTIME024_REGRESSION")) {
    require(c.roomIndex==0x60 && c.linkPlane==1 && hex.str()=="650c170f8c4a746e","024 regression pin");
@@ -102,6 +102,27 @@ int main(int argc,char **argv){try {
   require(b.sourceIndex==0 && b.tileId.hash==UINT64_C(0x9836d0b8491c70b9) && b.heightOffset==0 && !b.hasPlacementHeight,"packet decorated runtime offset");
  }
   image("-recomputed-composed-height");
+  if(std::getenv("ALTTP_RUNTIME032_REGRESSION")) {
+   require(c.roomIndex==0x60 && hex.str()=="312c06256d6ecf0e","032 pin");
+   for(int y:{16,21})for(int x:{42,44,51,53}) {
+    const int i=y*64+x;
+    require(maps[1]->offsets[i]==24 && maps[1]->planeOffsets[0][i]==24 &&
+      maps[1]->planeOffsets[1][i]==0 && !maps[1]->fallbackDirections[i],"rail solved bases erased");
+   }
+   for(int y=26;y<=39;y++)for(int x:{59,60,61})require(maps[1]->offsets[y*64+x]==0,"east complete face");
+   for(int y=31;y<=34;y++)require(maps[1]->offsets[y*64+58]==24,"split door terminal cover");
+   for(int bg=0;bg<2;bg++)require(maps[bg]->planeOffsets[0][47*64+47]==24 &&
+     maps[bg]->configuredStairFallbacks==0,"variable rise regression");
+   require(maps[0]->offsets[34*64+42]==8,"024 middle regression");
+  }
+  if(std::getenv("ALTTP_RUNTIME034_REGRESSION")) {
+   require(c.roomIndex==0x60 && hex.str()=="cb9799c716a1a39c","034 pin");
+   for(auto xy:{std::array<int,2>{58,26},{58,40},{41,45},{54,45},{41,15},{54,15},{41,22},{54,22}})
+    require(maps[1]->offsets[xy[1]*64+xy[0]]==16 && maps[1]->fallbackDirections[xy[1]*64+xy[0]]==0,"two-face corner effective base");
+   for(int x:{44,45,50,51})require(maps[1]->offsets[54*64+x]==24,"torch cap base");
+   for(int y:{15,18,23,26,31,34,39,42,47,50})require(maps[1]->offsets[y*64+35]==32,"column end base");
+   require(maps[0]->structuralConflicts==4,"unrelated BG1 conflicts changed");
+  }
   if(std::getenv("ALTTP_RUNTIME028_REGRESSION")) {
    require(c.roomIndex==0x60 && hex.str()=="650c170f8c4a746e","028 pin");
    for(int bg=0;bg<2;bg++) {

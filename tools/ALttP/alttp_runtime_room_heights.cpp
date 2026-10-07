@@ -76,6 +76,7 @@ int main(int argc, char **argv)
 		std::rotate(maps.begin(),maps.begin()+8192,maps.end());
 		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=1;
 		context.supportRelations=&lowerMap->authoredSupportRelations;
+		context.wallSupportRelations=&lowerMap->authoredWallSupportRelations;
 		S9xRemasterDungeonPlacements(context,profile,tiles);
 		if (!S9xRemasterBuildDungeonHeightMap(context, profile.upperFloorHeight, map)) throw std::runtime_error("unsupported room");
 		std::cout << "{\"format\":\"alttp-runtime-room-heights-v1\",\"room_id\":" << context.roomIndex
@@ -88,6 +89,12 @@ int main(int argc, char **argv)
 			<< ",\"unknown_wall_cells\":" << map.unknownWallCells
 			<< ",\"configured_stair_fallbacks\":" << map.configuredStairFallbacks
 			<< ",\"other_bg_authored_relations\":" << lowerMap->authoredSupportRelations.size()
+			<< ",\"other_bg_wall_support_relations\":[";
+		for(size_t n=0;n<lowerMap->authoredWallSupportRelations.size();n++) {
+			if(n)std::cout<<',';const auto &r=lowerMap->authoredWallSupportRelations[n];
+			std::cout<<"{\"wall\":"<<r.wall<<",\"support\":"<<r.support<<",\"rise\":"<<r.rise<<",\"word\":"<<r.word<<'}';
+		}
+		std::cout<<']'
 			<< ",\"required_planes\":[" << map.requiredPlaneCells[0] << ',' << map.requiredPlaneCells[1]
 			<< "],\"missing_planes\":[" << map.unknownPlaneCells[0] << ',' << map.unknownPlaneCells[1]
 			<< "],\"stairs\":[";
@@ -120,6 +127,15 @@ int main(int argc, char **argv)
 			const auto floor=S9xRemasterMixedFloorBase(map,i);
 			std::cout << "]";
 			if(tiles[i].wallTemplateOffset)std::cout << ",\"wall_template_offset\":" << tiles[i].wallTemplateOffset;
+			if(tiles[i].lowerDoorWallPart)std::cout << ",\"door_wall_part\":true";
+			if(tiles[i].terminalCorner)std::cout << ",\"terminal_corner\":true";
+			if(tiles[i].terminalCorner) {
+				std::cout<<",\"corner_branch_relations\":[";bool firstBranch=true;
+				for(const auto &b:map.cornerBranches)if(b.corner==i && map.structuralPlaneOffsets[b.plane][i]==map.offsets[i]) {
+					if(!firstBranch)std::cout<<',';firstBranch=false;
+					std::cout<<"{\"x\":"<<b.branch%64<<",\"y\":"<<b.branch/64<<",\"plane\":"<<b.plane<<",\"floor_base\":"<<b.base<<",\"support\":"<<b.support<<",\"rise\":"<<b.rise<<'}';
+				}std::cout<<']';
+			}
 			if (floor != 255)
 			{
 				const auto local=S9xRemasterMixedFloorHeight(tiles[i].height,map.offsets[i],floor);

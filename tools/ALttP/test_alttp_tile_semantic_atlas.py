@@ -8,10 +8,15 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+import tomllib
+from http.server import ThreadingHTTPServer
+import threading
+import urllib.request
+import urllib.error
 
 from alttp_tile_semantic_atlas import (AnnotationStore, AtlasError, ROOM_INDEX_FORMAT,
                                        RoomOccurrenceIndex, TileCatalog,
-                                       validate_annotation)
+                                       validate_annotation, make_handler)
 
 
 ROM_SHA256 = "1" * 64
@@ -45,6 +50,72 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    def test_stale_browser_put_is_rejected_after_native_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / 'atlas.sqlite'
+            make_database(database)
+            store = AnnotationStore(root / 'annotations.json', ROM_SHA256)
+            server = ThreadingHTTPServer(('127.0.0.1', 0),
+                                         make_handler(TileCatalog(database), store, None, root))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f'http://127.0.0.1:{server.server_port}'
+            try:
+                with urllib.request.urlopen(url + '/api/catalog') as response:
+                    revision = json.load(response)['revision']
+                external = AnnotationStore(store.path, ROM_SHA256)
+                external.save('bg', {'role': 'obstacle'})
+                request = urllib.request.Request(url + '/api/annotation/bg',
+                                                 data=b'{"role":"floor"}', method='PUT',
+                                                 headers={'If-Match': revision})
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(request)
+                self.assertEqual(error.exception.code, 409)
+                error.exception.close()
+                self.assertEqual(AnnotationStore(store.path, ROM_SHA256).tiles['bg']['role'], 'obstacle')
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
+    def test_profile_refresh_and_bidirectional_save_preserve_other_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'profile.toml'
+            profile.write_text('schema_version = 20\n[game]\nrom_sha256 = "' + ROM_SHA256 +
+                               '"\n[[assets]]\ntile_hash = "bg"\nheight = [1, 2, 3]\n'
+                               'tile_role = "wall"\ntile_semantics_authored = true\n'
+                               'tile_semantic_normals = ["north"]\n')
+            marker = root / 'marker.json'
+            marker.write_text(json.dumps({'profile': str(profile)}))
+            store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
+            old_revision = store.refresh()
+            self.assertEqual(store.tiles['bg']['normals'], ['north'])
+            store.save_group(['bg'], {'role': 'obstacle', 'note': 'changed\nsecond line'}, old_revision)
+            parsed = tomllib.loads(profile.read_text())
+            self.assertEqual(parsed['assets'][0]['height'], [1, 2, 3])
+            self.assertEqual(parsed['assets'][0]['tile_role'], 'obstacle')
+            self.assertEqual(parsed['assets'][0]['tile_semantic_note'], 'changed\nsecond line')
+            with self.assertRaisesRegex(AtlasError, 'metadata changed'):
+                store.save_group(['bg'], {'role': 'floor'}, old_revision)
+            profile.write_text(profile.read_text().replace('"obstacle"', '"floor"'))
+            with self.assertRaisesRegex(AtlasError, 'profile changed'):
+                store.save_group(['bg'], {'role': 'other'})
+            store.refresh()
+            self.assertEqual(store.tiles['bg']['role'], 'floor')
+            self.assertEqual(json.loads(store.path.read_text())['tiles']['bg']['role'], 'floor')
+            store.save_group(['bg'], {'role': 'unknown'})
+            store.refresh()
+            self.assertEqual(store.tiles['bg']['role'], 'unknown')
+            profile.write_text(profile.read_text() + '\n[[rules]]\ntile_hash = "bg"\nmaterial = "stone"\n')
+            store.refresh()
+            store.save_group(['new'], {'role': 'floor'})
+            parsed = tomllib.loads(profile.read_text())
+            self.assertEqual(parsed['assets'][-1]['tile_hash'], 'new')
+            self.assertEqual(parsed['rules'][0]['material'], 'stone')
+            self.assertLess(profile.read_text().index('tile_hash = "new"'), profile.read_text().index('[[rules]]'))
+
     def test_roles_require_their_exact_wall_normals(self) -> None:
         self.assertEqual(validate_annotation(
             {"role": "wall", "normals": ["north"]})["normals"], ["north"])

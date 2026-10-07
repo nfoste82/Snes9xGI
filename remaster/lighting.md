@@ -66,7 +66,42 @@ Interactive scene appearance and inspector navigation still need visual review.
 
 ## Sampled Direct lighting
 
+### Distance-adaptive sphere quadrature
+
+Physical `frame.lights` use deterministic 8/16/32/64/128-sample solid-angle
+quadrature according to angular radius: below 0.01/0.025/0.05/0.1 radians uses
+8/16/32/64, otherwise 128. CPU preparation bounds the budget using distance to
+the nearest viewport pixel center; the shader refines it at each receiver using
+3D distance. Near/inside spheres retain 128, and the session debug sphere always
+retains 128. Visibility and GI diagnostic paths retain full quadrature.
+
+Every retained sample uses `2 * coneExtent / sampleCount`; source power, receiver
+response, fractional blocker attenuation and the existing normalization clamp
+remain. Reduced quadrature approximates penumbra edges and facing integration;
+it does not impose a light range cutoff or reuse temporal history. Sampling is
+deterministic, so there is no per-frame random noise, but budget transitions can
+change shadow edges. `S9X_REMASTER_FULL_SPHERE_SAMPLES=1` at launch restores 128
+samples for all lights for comparison.
+
+Exhaustive transport now grows samples per batch when its float32 partials would
+exceed 64 MiB per in-flight slot, rather than falling back to serial transport.
+All sources remain represented; summation grouping can change rounding. Metrics
+include sphere count, maximum dispatched sphere samples, and direct batch size;
+the actual per-receiver ray count can be lower after angular/facing rejection.
+
 ### Single-record sampled emission depth
+
+Production representative Direct additionally uses deterministic distance-adaptive
+depth quadrature: retain four strata when depth/distance is at least 0.05, otherwise
+use two midpoint strata with twice the quarter-stratum RGB and normalization area.
+All spatial/color representatives remain; this only reduces depth rays at each
+receiver. Expanded source records retain negative depth in `normal.w`; sampled
+collapsed records retain positive depth, with expanded sampled endpoints ignoring
+the negative metadata. Diagnostics and unclustered reference transport remain full.
+`S9X_REMASTER_FULL_DEPTH_SAMPLES=1` at launch restores all four depth strata.
+This approximates distant depth shadows and can change shadow edges/animation
+transitions; it does not preserve every blocked ray exactly. The Direct Samples
+metric still counts prepared records, not the lower executed ray count.
 
 Sampled Direct now prepares one base record per pixel/patch, including positive
 emission depth. Exhaustive Direct retains four quarter-energy depth records.
@@ -100,7 +135,8 @@ All selected types must occur in one cardinal-edge-connected shape in the curren
 frame (a2x2 shape is valid; diagonal-only contact is not). Otherwise an alert is
 shown and no metadata changes. The button is disabled for one selected type and
 has a selection reminder tooltip. The action applies live, is undoable, and saves
-reciprocal `combine_emitters` tile-hash lists in asset metadata (profile17,
+reciprocal `combine_emitters` tile-hash lists for all known animation variants
+of each selected type in asset metadata (profile17,
 capture24). Older profiles/captures have no links. Existing links are retained
 when adding peers; use Undo to reverse the authoring action.
 
@@ -110,7 +146,12 @@ source domain (backgrounds also require the same BG layer). Non-emitting pixel
 gaps do not break adjacency; disconnected copies never join remotely. Tile flips
 and clipped visibility are accounted for when reconstructing footprint origins.
 Inconsistent origins are excluded from joining. Only explicit hash peers are
-allowed, so other animation hashes must be authored separately. Selection is by
+allowed. Captured animation tracks take precedence over semantic asset groups;
+each part's variants are linked to all peers so asynchronously animated parts
+also combine. Frames not present in the capture/group cannot be inferred: capture
+a full animation cycle and repeat Combine Emitters when discovering new variants.
+Previously saved current-frame-only links are expanded by repeating the action.
+Selection is by
 tile type, not individual occurrence; one connected occurrence containing every
 selected type is enough to validate the action.
 
@@ -123,6 +164,18 @@ the existing rectangular patch algorithm; authored links take effect when
 representative mode is enabled. Identity links are not transferred by paint-layer
 copy/paste or Apply to Animation, and normal/height resets retain them. Reset Tile
 removes that tile's links; reciprocity prevents leftover incoming links merging.
+
+Completed-room offscreen sources also honor reciprocal links when representative
+mode is enabled. Cardinally connected missing-pixel placements on the same BG
+plane reduce to one sphere per connected shape, retaining total emitting area,
+intensity-weighted center/height and linear RGB power. Disconnected fixtures,
+one-way links and different emission-direction modes remain separate. This is
+the existing offscreen sphere approximation applied to a larger fixture, not
+an exact preservation of its near-field shadows. Visible pixels remain exclusively
+in the visible path; partially visible shapes can still have both visible
+representatives and a missing-pixel sphere. Larger merged spheres can require
+more angular samples, so source-count reduction must be benchmarked rather than
+assumed to improve frame time.
 
 Scene Controls also offers opt-in **Representative Emitters per Tile**: enable
 the checkbox and choose1..8, initially4. Off retains rectangular patch grouping;

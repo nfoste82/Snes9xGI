@@ -34,6 +34,16 @@ on-screen artwork. A partially entering flame contributes only its missing
 pixels through the adapter. No historical room lights survive a transition,
 defrost, extinction, graphics animation or profile edit.
 
+With Representative Emitters enabled, reciprocal `combine_emitters` identities
+join cardinally adjacent missing-pixel placements within one BG plane before
+sphere reduction. One connected fixture becomes one sphere with summed emitting
+area and linear RGB power and intensity-weighted position/height. Combining in
+the inspector authors all known animation variants, so the current VRAM identity
+keeps its links as the fixture animates. The approximation can change near-field
+shadows; visible and missing-pixel sources are still separate. Off preserves
+one sphere per placement. Different directional modes, disconnected copies and
+one-way links do not merge. No frame/profile schema change.
+
 ## Held lamp
 
 The completed-frame hook reads `$0458`, Link Y/X `$20/$22`, facing `$2f`, and

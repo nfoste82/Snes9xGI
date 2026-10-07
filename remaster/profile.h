@@ -105,6 +105,11 @@ struct RemasterAssetMetadata
 {
 	RemasterTileContentId tileId;
 	RemasterTileRole tileRole = RemasterTileRole::Unknown;
+	bool hasTileSemantics = false;
+	std::vector<std::string> tileSemanticNormals;
+	std::string tileSemanticCorner;
+	bool tileSemanticContextDependent = false;
+	std::string tileSemanticNote;
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
 	std::array<uint8_t, 64> height = {};
@@ -290,8 +295,12 @@ namespace RemasterProfileParsing
 				return false;
 			if (value[i] == '\\')
 			{
-				if (++i + 1 >= value.size() || (value[i] != '\\' && value[i] != '"'))
+				if (++i + 1 >= value.size())
 					return false;
+				if (value[i] == 'n') { parsed.push_back('\n'); continue; }
+				if (value[i] == 'r') { parsed.push_back('\r'); continue; }
+				if (value[i] == 't') { parsed.push_back('\t'); continue; }
+				if (value[i] != '\\' && value[i] != '"') return false;
 			}
 			parsed.push_back(value[i]);
 		}
@@ -840,6 +849,28 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!valid) fail(lineNumber, "tile_role must be a supported authored tile role");
 				if (parsed.schemaVersion < 18) fail(lineNumber, "tile_role requires schema_version 18");
 			}
+			else if (key == "tile_semantics_authored" || key == "tile_semantic_normals" ||
+				key == "tile_semantic_corner" || key == "tile_semantic_context_dependent" || key == "tile_semantic_note")
+			{
+				if (parsed.schemaVersion < 20) fail(lineNumber, "tile semantic annotation requires schema_version 20");
+				if (key == "tile_semantics_authored")
+				{
+					if (!ParseBool(value, asset->hasTileSemantics)) fail(lineNumber, "invalid tile_semantics_authored");
+				}
+				else if (key == "tile_semantic_context_dependent")
+				{
+					if (!ParseBool(value, asset->tileSemanticContextDependent)) fail(lineNumber, "invalid tile_semantic_context_dependent");
+				}
+				else if (key == "tile_semantic_normals")
+				{
+					if (!ParseStringArray(value, asset->tileSemanticNormals)) fail(lineNumber, "invalid tile_semantic_normals");
+				}
+				else if (key == "tile_semantic_corner")
+				{
+					if (!ParseString(value, asset->tileSemanticCorner)) fail(lineNumber, "invalid tile_semantic_corner");
+				}
+				else if (!ParseString(value, asset->tileSemanticNote)) fail(lineNumber, "invalid tile_semantic_note");
+			}
 			else if (key == "materials")
 			{
 				std::vector<std::string> selectors;
@@ -972,8 +1003,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 19)
-		fail(0, "schema_version must be an integer in [1, 19]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 20)
+		fail(0, "schema_version must be an integer in [1, 20]");
 	for (const auto &entry : parsed.assets) {
 		if (!entry.second.combineEmitters.empty() && parsed.schemaVersion < 17) fail(0, "combine_emitters requires schema_version 17");
 		for (const auto &id : entry.second.combineEmitters)
@@ -1066,10 +1097,31 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
 		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && !item.emissionOmnidirectional && item.combineEmitters.empty() &&
-			!item.directLightingOppositeFacing && item.tileRole == RemasterTileRole::Unknown)
+			!item.directLightingOppositeFacing && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
 			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, direct_lighting_opposite_facing, or a known tile_role");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
+		if (!item.hasTileSemantics && (!item.tileSemanticNormals.empty() || !item.tileSemanticCorner.empty() ||
+			item.tileSemanticContextDependent || !item.tileSemanticNote.empty()))
+			fail(0, "tile semantic fields require tile_semantics_authored = true");
+		if (item.hasTileSemantics)
+		{
+			const size_t expected = item.tileRole == RemasterTileRole::Wall ? 1 :
+				(item.tileRole == RemasterTileRole::WallCorner ? 2 : 0);
+			std::set<std::string> unique;
+			for (const auto &normal : item.tileSemanticNormals)
+			{
+				const bool cardinal = normal == "north" || normal == "east" || normal == "south" || normal == "west";
+				const bool diagonal = normal == "north_east" || normal == "south_east" || normal == "south_west" || normal == "north_west";
+				if ((!cardinal && !diagonal) || (expected == 2 && !cardinal) || !unique.insert(normal).second)
+					fail(0, "invalid or duplicate tile semantic normal");
+			}
+			if (item.tileSemanticNormals.size() != expected) fail(0, "tile role requires its exact wall normal count");
+			if (item.tileRole == RemasterTileRole::WallCorner ?
+				(item.tileSemanticCorner != "inside" && item.tileSemanticCorner != "outside") : !item.tileSemanticCorner.empty())
+				fail(0, "tile semantic corner must be inside/outside for wall_corner only");
+			if (item.tileSemanticNote.size() > 4000) fail(0, "tile semantic note is too long");
+		}
 		for (const std::string &name : item.materialSelectors)
 			if (!name.empty() && !parsed.materials.count(name))
 				fail(0, "asset references unknown material '" + name + "'");
@@ -1129,6 +1181,9 @@ namespace RemasterProfileSerialization
 		std::string result = "\"";
 		for (char character : value)
 		{
+			if (character == '\n') { result += "\\n"; continue; }
+			if (character == '\r') { result += "\\r"; continue; }
+			if (character == '\t') { result += "\\t"; continue; }
 			if (character == '\\' || character == '"')
 				result.push_back('\\');
 			result.push_back(character);
@@ -1203,7 +1258,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
-	output << "schema_version = " << std::max(hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
+	const bool hasTileSemantics = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.hasTileSemantics; });
+	output << "schema_version = " << std::max(hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u)))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1256,7 +1312,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(asset.hasOcclusion, asset.occlusion);
 		// A tile with only default coverage needs no asset table at all.
 		if (asset.hasOcclusion && !storeOcclusion && !asset.hasMaterialSelectors && !asset.hasHeight &&
-			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing)
+			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing && !asset.hasTileSemantics && asset.tileRole == RemasterTileRole::Unknown)
 			continue;
 		output << "\n[[assets]]\n";
 		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
@@ -1301,6 +1357,15 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 		if (asset.tileRole != RemasterTileRole::Unknown)
 			output << "tile_role = " << Quote(S9xRemasterTileRoleName(asset.tileRole)) << "\n";
+		if (asset.hasTileSemantics)
+		{
+			output << "tile_semantics_authored = true\ntile_semantic_normals = [";
+			for (size_t i = 0; i < asset.tileSemanticNormals.size(); i++)
+				output << (i ? ", " : "") << Quote(asset.tileSemanticNormals[i]);
+			output << "]\ntile_semantic_context_dependent = " << (asset.tileSemanticContextDependent ? "true" : "false") << "\n";
+			if (!asset.tileSemanticCorner.empty()) output << "tile_semantic_corner = " << Quote(asset.tileSemanticCorner) << "\n";
+			output << "tile_semantic_note = " << Quote(asset.tileSemanticNote) << "\n";
+		}
 		if (asset.emissionDepth > 0) output << "emission_depth = " << asset.emissionDepth << "\n";
 		if (asset.emissionOmnidirectional) output << "emission_omnidirectional = true\n";
 		if (!asset.combineEmitters.empty()) {

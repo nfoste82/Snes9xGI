@@ -36,6 +36,13 @@ int main(){
  assert(S9xRemasterBuildDungeonHeightMap(c,50,*m));
  assert(m->planeOffsets[0][obstacle]==50 && m->planeOffsets[1][obstacle]==0);
  assert(m->offsets[obstacle]==50 && !m->fallbackDirections[obstacle]);
+ // Solid rail above two independently solved contacts: its geometric solve
+ // owns visible base50; lower-plane contact0 must not erase that result.
+ (*attrs)[obstacle]=2;(*attrs)[4096+obstacle]=1;
+ assert(S9xRemasterBuildDungeonHeightMap(c,50,*m));
+ assert(m->planeOffsets[0][obstacle]==50 && m->planeOffsets[1][obstacle]==0);
+ assert(m->offsets[obstacle]==50 && !m->fallbackDirections[obstacle]);
+ (*attrs)[obstacle]=0x27;(*attrs)[4096+obstacle]=0;
  // Unknown usage is not obstacle evidence: no automatic lift through artwork.
  t.surface=Surface::Unknown;
  assert(S9xRemasterBuildDungeonHeightMap(c,50,*m));

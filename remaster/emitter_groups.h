@@ -73,4 +73,22 @@ inline bool S9xRemasterEmitterSelectionConnected(const RemasterFrame &frame,
 	}
 	return false;
 }
+
+// Expand each selected identity independently: different parts of a fixture may
+// animate asynchronously. Author all cross-frame peers, then runtime adjacency
+// decides which currently present placements actually join.
+inline std::vector<RemasterTileContentId> S9xRemasterEmitterSelectionAnimationVariants(
+	const RemasterFrame &frame, const std::vector<RemasterTileContentId> &selected)
+{
+	std::set<RemasterTileContentId> expanded(selected.begin(), selected.end());
+	for (const auto &tile : selected) {
+		std::string groupName;
+		for (const auto &instance : frame.tileInstances) if (instance.tileId == tile) {
+			groupName = instance.assetGroup; break;
+		}
+		const auto variants = S9xRemasterFrameAnimationVariants(frame, tile, groupName);
+		expanded.insert(variants.begin(), variants.end());
+	}
+	return {expanded.begin(), expanded.end()};
+}
 #endif

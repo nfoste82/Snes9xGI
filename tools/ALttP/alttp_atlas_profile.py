@@ -318,7 +318,7 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         content_id = hashes[0]
         seen.add(content_id)
         additions = generated.get(content_id, {})
-        if tile_roles is not None:
+        if tile_roles is not None and not authored[content_id].get('tile_semantics_authored'):
             block = re.sub(r'(?m)^tile_role\s*=\s*[^\n]*\n?', '', block)
             if content_id in tile_roles:
                 block += '\ntile_role = ' + json.dumps(tile_roles[content_id])
@@ -486,6 +486,17 @@ def generate_profile(database: Path, source: Path, output: Path,
         if semantics_path:
             authored_semantics = AnnotationStore(semantics_path, run["rom_sha256"]).tiles
             catalog = TileCatalog(database)
+            # Explicit native/profile annotations take precedence over stale HTML sidecars.
+            for key, asset in authored.items():
+                if asset.get('tile_semantics_authored'):
+                    annotation = {'role': asset.get('tile_role', 'unknown'),
+                                  'normals': asset.get('tile_semantic_normals', []),
+                                  'context_dependent': asset.get('tile_semantic_context_dependent', False),
+                                  'note': asset.get('tile_semantic_note', '')}
+                    if asset.get('tile_semantic_corner'):
+                        annotation['corner_type'] = asset['tile_semantic_corner']
+                    for alias in catalog.semantic_group(key):
+                        authored_semantics[alias] = annotation
             if templates:
                 for entry in templates.entries:
                     if 'tile_hashes' in entry:

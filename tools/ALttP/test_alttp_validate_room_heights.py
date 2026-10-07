@@ -37,6 +37,111 @@ SOLVED = [[0, 1, 2, 1], [0, 2, 2, 1], [1, 1, 2, 0]]
 
 
 class RoomHeightValidationTests(unittest.TestCase):
+    def test_terminal_corner_two_transformed_face_seams(self):
+        for flip in range(4):
+            snapshot=Snapshot();snapshot.cells[0]=[Cell(x,y) for y in range(64) for x in range(64)]
+            for layer in snapshot.cells:
+                for c in layer:c.word=0xffff
+            data=bytearray([255]*12876);kind=(2 if flip&1 else 0)+(1 if flip&2 else 0);off=0xbe6+kind*0x20
+            profile={'assets':PROFILE['assets']+[{'tile_hash':'corner','height':[max(7-x,7-y) for y in range(8) for x in range(8)]},
+                {'tile_hash':'xface','height':[23-y for y in range(8) for x in range(8)]},
+                {'tile_hash':'yface','height':[23-x for y in range(8) for x in range(8)]}],
+                'asset_groups':{'wall_faces':{'tile_hashes':['xface','yface']}}}
+            for yy in range(3):
+                for xx in range(4-yy):
+                    tx=3-xx if kind>=2 else xx;ty=3-yy if kind%2 else yy;word=100+xx*3+yy
+                    data[off+(tx*4+ty)*2:off+(tx*4+ty)*2+2]=word.to_bytes(2,'little')
+                    for layer in (0,1):
+                        c=snapshot.cell(layer,20+tx,20+ty);c.word=word;c.hflip=bool(flip&1);c.vflip=bool(flip&2)
+                        c.tile_hash='corner' if not xx and not yy else 'xface' if xx else 'yface'
+            x=20+(3 if flip&1 else 0);y=20+(3 if flip&2 else 0);dx=-1 if flip&1 else 1;dy=-1 if flip&2 else 1
+            fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+            fixture['elevation']['structural_placements']=[dict(x=x,y=y,floor_base=16,kind='authored_wall',planes=[0],terminal_corner=True),
+                dict(x=x+dx,y=y,floor_base=0,kind='authored_wall',planes=[0]),dict(x=x,y=y+dy,floor_base=0,kind='authored_wall',planes=[0])]
+            validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+            fixture['elevation']['structural_placements'][2]['floor_base']=1
+            with self.assertRaisesRegex(ValueError,'seam disagreement'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
+    def test_complete_torch_cap_requires_same_plane_support(self):
+        snapshot=Snapshot()
+        for c in snapshot.cells[1]:c.word=0xffff
+        data=bytearray([255]*12876)
+        profile={'assets':PROFILE['assets']+[{'tile_hash':'cap','height':[5]*64},{'tile_hash':'foot','height':[3]*64}],
+                 'asset_groups':{'obstacles':{'tile_hashes':['foot']}}}
+        for n in range(4):
+            data[0xeca+n*2:0xecc+n*2]=(100+n).to_bytes(2,'little')
+            c=snapshot.cell(1,1+n//2,n%2);c.word=100+n;c.tile_hash='cap' if n%2==0 else 'foot'
+        fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+        fixture['elevation']['structural_placements']=[{'x':1,'y':1,'floor_base':50,'kind':'authored_obstacle','planes':[0]}]
+        report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        self.assertTrue(any(p.get('assembly_source')=='verified_complete_floor_torch' for p in report['placements']))
+        fixture['elevation']['structural_placements'][0]['floor_base']=49
+        with self.assertRaisesRegex(ValueError,'same-plane support'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
+    def test_complete_column_endpoints_require_nonplaceholder_local_and_full_ownership(self):
+        snapshot=Snapshot()
+        for c in snapshot.cells[1]:c.word=0xffff
+        data=bytearray([255]*12876)
+        profile={'assets':PROFILE['assets']+[{'tile_hash':f'w{n}','height':[7-x for y in range(8) for x in range(8)]} for n in range(12)],
+                 'asset_groups':{'wall_faces':{'tile_hashes':['w0','w8']}}}
+        for n in range(12):
+            data[0x89a+n*2:0x89c+n*2]=(100+n).to_bytes(2,'little')
+            c=snapshot.cell(1,20+n//4,20+n%4);c.word=100+n;c.tile_hash=f'w{n}'
+        fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+        fixture['elevation']['structural_placements']=[{'x':21,'y':20,'floor_base':32,'kind':'authored_wall','planes':[0]}]
+        report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        self.assertEqual(next(p for p in report['placements'] if p['kind']=='authored_wall')['effective_max'],39)
+        snapshot.cell(1,22,23).word^=1
+        with self.assertRaisesRegex(ValueError,'not classified'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        snapshot.cell(1,22,23).word^=1
+        profile['assets'][5]['height']=[0]*64
+        with self.assertRaisesRegex(ValueError,'not classified'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
+    def test_split_lower_door_priority_preserves_high_face_not_foot(self):
+        snapshot=Snapshot();snapshot.cells[0]=[Cell(x,y) for y in range(64) for x in range(64)]
+        for layer in snapshot.cells:
+            for c in layer:c.word=0xffff
+        data=bytearray([255]*12876)
+        profile={'assets':PROFILE['assets']+[{'tile_hash':'face','height':[24+x for y in range(8) for x in range(8)]}], 'asset_groups':{}}
+        for n in range(8):data[0x2d8+n*2:0x2da+n*2]=(100+n).to_bytes(2,'little')
+        for n in range(12):
+            word=200+n
+            data[0x2e82+n*2:0x2e84+n*2]=word.to_bytes(2,'little')
+            snapshot.cell(1 if n//4==2 else 0,10+n//4,20+n%4).word=word
+        for row in range(-1,5):
+            for col in range(1,4):
+                c=snapshot.cell(1,12+col,20+row);c.word=(100+((row+2)%2)*4+col)|0x2000;c.tile_hash='face'
+        fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+        fixture['elevation']['structural_placements']=[{'x':14,'y':21,'floor_base':0,'kind':'authored_wall','planes':[0]}]
+        report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        self.assertEqual(next(p for p in report['placements'] if p['kind']=='authored_wall')['effective_min'],24)
+        snapshot.cell(0,10,21).word^=1
+        with self.assertRaisesRegex(ValueError,'not classified'):
+            validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
+    def test_perimeter_flank_ownership_priority_and_transformed_seam(self):
+        for flip in (False,True):
+            snapshot=Snapshot()
+            for c in snapshot.cells[1]: c.word=0xffff
+            data=bytearray([255]*12876)
+            profile={'assets':PROFILE['assets']+[{'tile_hash':'foot','height':[16+(7-x if flip else x) for y in range(8) for x in range(8)]}],
+                     'asset_groups':{'wall_faces':{'tile_hashes':['foot']}}}
+            for yy in range(2):
+                foot=snapshot.cell(1,10,10+yy);foot.tile_hash='foot';foot.hflip=flip
+                for xx in range(1,4):
+                    word=100+yy*4+xx
+                    data[0x2d8+(yy*4+xx)*2:0x2da+(yy*4+xx)*2]=word.to_bytes(2,'little')
+                    c=snapshot.cell(1,10+xx,10+yy);c.word=word^0x2000;c.tile_hash=f'face{xx}';c.hflip=flip
+            for xx in range(1,4):
+                profile['assets'].append({'tile_hash':f'face{xx}','height':[24+(xx-1)*8+(7-x if flip else x) for y in range(8) for x in range(8)]})
+            fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+            fixture['elevation']['structural_placements']=[{'x':11,'y':10,'floor_base':0,'kind':'authored_wall','planes':[0]}]
+            report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+            self.assertEqual(next(p for p in report['placements'] if p['kind']=='authored_wall')['effective_max'],31)
+            snapshot.cell(1,12,11).word^=0x4000
+            with self.assertRaisesRegex(ValueError,'not classified'):
+                validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
     def test_other_plane_occupied_support_is_not_identityless_fallback(self):
         fixture = graph(SOLVED)
         collision = [bytearray(p) for p in attrs()]

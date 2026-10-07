@@ -103,6 +103,15 @@ class SemanticProfileTests(unittest.TestCase):
         rendered = _render_profile(source, authored, {}, tile_roles={})
         self.assertNotIn("tile_role", tomllib.loads(rendered)["assets"][0])
 
+    def test_explicit_native_annotation_survives_stale_compiler_labels(self):
+        key = 'v1:4bpp:0123456789abcdef'
+        source = (f'[[assets]]\ntile_hash = "{key}"\ntile_role = "obstacle"\n'
+                  'tile_semantics_authored = true\ntile_semantic_normals = []\n'
+                  'tile_semantic_note = "native evidence"\n')
+        authored = {key: tomllib.loads(source)['assets'][0]}
+        rendered = _render_profile(source, authored, {}, tile_roles={key: 'floor'})
+        self.assertEqual(tomllib.loads(rendered)['assets'][0], authored[key])
+
     def test_corner_topology_combines_directional_ramps(self) -> None:
         outside = _semantic_wall_layers({"role": "wall_corner", "normals": ["east", "south"],
                                          "corner_type": "outside"})["height"]

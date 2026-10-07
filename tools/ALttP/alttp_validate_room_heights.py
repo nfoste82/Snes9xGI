@@ -87,18 +87,51 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     forbidden_template_hashes -= wall_hashes
     for name in ('obstacles','stair_treads','stair_rails'):
         forbidden_template_hashes.update(groups.get(name,{}).get('tile_hashes',[]))
+    forbidden_template_hashes.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role') == 'floor')
     template_walls = set()
     template_trims = set()
+    template_door_parts = set()
+    template_torches = set()
+    template_corners = set()
     template_data = graph.get('_verified_rom_template_data')
     if template_data is not None:
         for offset, w, h, sx, sy in ((0x2e8,2,3,0,0),(0x2f8,2,3,0,1),(0x2c8,3,2,0,0),(0x2d8,3,2,1,0)):
             for y in range(65-h):
                 for x in range(65-w):
                     cells = [snapshot.cell(1,x+xx,y+yy) for yy in range(h) for xx in range(w)]
-                    exact = all(c.word == int.from_bytes(template_data[offset+((c.x-x)*4+c.y-y+sy if w==2 else (c.y-y)*4+c.x-x+sx)*2:offset+((c.x-x)*4+c.y-y+sy if w==2 else (c.y-y)*4+c.x-x+sx)*2+2], 'little') and
+                    exact = all((c.word & 0xdfff) == (int.from_bytes(template_data[offset+((c.x-x)*4+c.y-y+sy if w==2 else (c.y-y)*4+c.x-x+sx)*2:offset+((c.x-x)*4+c.y-y+sy if w==2 else (c.y-y)*4+c.x-x+sx)*2+2], 'little') & 0xdfff) and
                                 c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes for c in cells)
-                    if exact and any(c.tile_hash in wall_hashes for c in cells):
+                    seed = any(c.tile_hash in wall_hashes for c in cells)
+                    if exact and not seed and w == 3:
+                        foot_x = x + 3 if offset == 0x2c8 else x - 1
+                        face_x = x + 2 if offset == 0x2c8 else x
+                        if 0 <= foot_x < 64:
+                            for yy in range(h):
+                                foot,face = snapshot.cell(1,foot_x,y+yy),snapshot.cell(1,face_x,y+yy)
+                                if foot.tile_hash not in wall_hashes:
+                                    continue
+                                def height(c,xx,k):
+                                    local=assets.get(c.tile_hash,[])
+                                    return local[(7-k if c.vflip else k)*8+(7-xx if c.hflip else xx)] if len(local)==64 else None
+                                ax,bx=(0,7) if offset==0x2c8 else (7,0)
+                                samples=[(height(foot,ax,k),height(foot,7-ax,k),height(face,bx,k),height(face,7-bx,k)) for k in range(8)]
+                                if all(None not in v and v[0]>v[1] and v[2]<v[3] for v in samples) and len({v[0]-v[2] for v in samples})==1:
+                                    seed=True
+                    if exact and seed:
                         template_walls.update((c.x,c.y) for c in cells)
+        # Independently attest split lower east door writes and preserved high
+        # perimeter, including priority-only operation and alternating row phase.
+        for offset in (0x2e82,0x2f72):
+            for phase in range(2):
+                for y in range(1,59):
+                    for x in range(2,61):
+                        if not snapshot.cells[0]:
+                            continue
+                        exact=all(snapshot.cell(1 if col==2 else 0,x-2+col,y+row).word==int.from_bytes(template_data[offset+(col*4+row)*2:offset+(col*4+row)*2+2],'little') for col in range(3) for row in range(4))
+                        cells=[snapshot.cell(1,x+col,y+row) for row in range(-1,5) for col in range(1,4)]
+                        if exact and all((c.word&0xdfff)==(int.from_bytes(template_data[0x2d8+(((c.y-y+phase+2)%2)*4+c.x-x)*2:0x2da+(((c.y-y+phase+2)%2)*4+c.x-x)*2],'little')&0xdfff) and c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes for c in cells):
+                            template_walls.update((c.x,c.y) for c in cells)
+                            template_door_parts.update((x,y+row) for row in range(4))
         for offset, vertical, start in ((0x2e8,True,0),(0x2f8,True,1),(0x2c8,False,0),(0x2d8,False,1)):
             for column in range(2):
                 words = [int.from_bytes(template_data[offset+(column*4+start+k)*2:offset+(column*4+start+k)*2+2],'little') for k in range(3)]
@@ -118,6 +151,70 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                             if (all(c.word == word and c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes for c, word in zip(cells,words)) and
                                 all(c.tile_hash in wall_hashes or (c.x,c.y) in template_walls for c in (cells[0],cells[2]))):
                                 template_walls.update((c.x,c.y) for c in cells)
+        # Complete handler-emitted freestanding columns, including end rows.
+        # Independent final-word proof; runtime assertions are not evidence.
+        for offset in (0x89a,0x8b2,0xa54,0xa6c,0xa84,0xa9c):
+            for y in range(61):
+                for x in range(62):
+                    cells=[snapshot.cell(1,x+xx,y+yy) for xx in range(3) for yy in range(4)]
+                    words=[int.from_bytes(template_data[offset+n*2:offset+n*2+2],'little') for n in range(12)]
+                    if (all(c.word==w and len(assets.get(c.tile_hash,[]))==64 and c.tile_hash not in forbidden_template_hashes and
+                            (c.tile_hash in wall_hashes or min(assets[c.tile_hash])!=max(assets[c.tile_hash])) for c,w in zip(cells,words)) and
+                        any(c.tile_hash in wall_hashes for c in cells)):
+                        template_walls.update((c.x,c.y) for c in cells)
+        # Low-corner triangle and its two surviving tangent branches. The
+        # counterpart witnesses ownership only, never a placement base.
+        for kind,offset in enumerate((0xbe6,0xc06,0xc26,0xc46)):
+            for y in range(61):
+                for x in range(61):
+                    cells=[];original=[True,True];branches=[]
+                    for yy in range(3):
+                        for xx in range(4-yy):
+                            tx=3-xx if kind>=2 else xx;ty=3-yy if kind%2 else yy
+                            word=int.from_bytes(template_data[offset+(tx*4+ty)*2:offset+(tx*4+ty)*2+2],'little')
+                            c=snapshot.cell(1,x+tx,y+ty)
+                            original[0]&=c.word==word
+                            original[1]&=bool(snapshot.cells[0]) and snapshot.cell(0,x+tx,y+ty).word==word
+                            if xx==0 or yy==0:
+                                cells.append((c,word))
+                                if xx:branches.append((0,c.tile_hash in wall_hashes))
+                                if yy:branches.append((1,c.tile_hash in wall_hashes))
+                    cx=x+(3 if kind>=2 else 0);cy=y+(3 if kind%2 else 0)
+                    corner=snapshot.cell(1,cx,cy)
+                    if (any(original) and all(c.word==w and len(assets.get(c.tile_hash,[]))==64 and c.tile_hash not in forbidden_template_hashes and (c.tile_hash in wall_hashes or min(assets[c.tile_hash])!=max(assets[c.tile_hash])) for c,w in cells) and
+                        all(any(a==axis and seed for a,seed in branches) for axis in (0,1)) and
+                        assets.get(corner.tile_hash)==[max(7-xx,7-yy) for yy in range(8) for xx in range(8)]):
+                        template_walls.update((c.x,c.y) for c,w in cells)
+                        template_corners.add((cx,cy))
+        obstacle_seeds=set(groups.get('obstacles',{}).get('tile_hashes',[]))
+        obstacle_seeds.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role')=='obstacle')
+        for kind,offset in enumerate((0x688,0x694)):
+            words=[int.from_bytes(template_data[offset+n*2:offset+n*2+2],'little') for n in range(6)]
+            for y in range(2,62):
+                for x in range(51):
+                    for width in range(14,min(29,64-x)+1):
+                        cells=[snapshot.cell(1,x+k,y) for k in range(width)]
+                        trims=[snapshot.cell(1,x+k,y+(-1 if kind else 1)) for k in range(width)]
+                        expected=[words[k+1 if k<2 else k-width+6 if k>=width-2 else 3] for k in range(width)]
+                        if not(all(c.word==w and len(assets.get(c.tile_hash,[]))==64 and c.tile_hash not in forbidden_template_hashes for c,w in zip(cells,expected)) and
+                            all(c.word==words[0] and c.tile_hash in obstacle_seeds and c.tile_hash in assets for c in trims)):continue
+                        for end in (0,1):
+                            cx=x+(width-1 if end else 0);dy=1 if kind else -1;co=0xbe6+(0x40 if end else 0)+(0 if kind else 0x20)
+                            branch=[snapshot.cell(1,cx,y+dy*k) for k in (1,2)]
+                            expected=[int.from_bytes(template_data[co+((3 if end else 0)*4+(k if kind else 3-k))*2:co+((3 if end else 0)*4+(k if kind else 3-k))*2+2],'little') for k in (1,2)]
+                            corner=snapshot.cell(1,cx,y)
+                            if (all(c.word==w and c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes and (c.tile_hash in wall_hashes or min(assets[c.tile_hash])!=max(assets[c.tile_hash])) for c,w in zip(branch,expected)) and
+                                any(c.tile_hash in wall_hashes for c in branch) and assets.get(corner.tile_hash)==[max(7-xx,7-yy) for yy in range(8) for xx in range(8)]):
+                                template_corners.add((cx,y));template_walls.update((c.x,c.y) for c in branch+[corner,cells[width-2 if end else 1]])
+        for offset in (0xec2,0xeca):
+            for y in range(63):
+                for x in range(63):
+                    cells=[snapshot.cell(1,x+xx,y+yy) for xx in range(2) for yy in range(2)]
+                    words=[int.from_bytes(template_data[offset+n*2:offset+n*2+2],'little') for n in range(4)]
+                    if (all(c.word==w and len(assets.get(c.tile_hash,[]))==64 and
+                            (c.tile_hash in obstacle_seeds or c.tile_hash not in forbidden_template_hashes|wall_hashes) for c,w in zip(cells,words)) and
+                        any(c.tile_hash in obstacle_seeds for c in cells)):
+                        template_torches.update((c.x,c.y) for c in cells)
         for rail_kind, offset in enumerate((0x688,0x694)):
             rail = [int.from_bytes(template_data[offset+n*2:offset+n*2+2],'little') for n in range(6)]
             for y in range(63):
@@ -280,6 +377,17 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
         if not all(isinstance(v, int) for v in (x, y, base)) or not (0 <= x < 64 and 0 <= y < 64 and -32767 <= base <= 32767 and base != UNKNOWN):
             raise ValueError("invalid structural placement")
         cell = snapshot.cell(1, x, y)
+        if record.get('kind')=='authored_obstacle' and (x,y) in template_torches:
+            local=assets[cell.tile_hash];planes_here=record.get('planes',[])
+            if not planes_here or any(p not in (0,1) for p in planes_here):
+                raise ValueError('torch requires an independently solved plane')
+            for p in planes_here:
+                contacts={solved[p,x+dx,y+dy] for dx,dy,_ in DIRS if (p,x+dx,y+dy) in walkable and (p,x+dx,y+dy) in solved}
+                if contacts!={base}:raise ValueError('torch lacks unanimous same-plane support')
+            placements.append(dict(kind='authored_obstacle',x=x,y=y,planes=planes_here,floor_base=base,
+                tile_hash=cell.tile_hash,local_source='authored_asset',local_min=min(local),local_max=max(local),
+                effective_min=base+min(local),effective_max=base+max(local),assembly_source='verified_complete_floor_torch'))
+            continue
         if record.get('kind') == 'authored_obstacle' and record.get('wall_template_offset') in (0x688,0x694):
             if (x,y) not in template_trims:
                 raise ValueError('runtime rail trim lacks verified complete handler2f/30 run')
@@ -303,10 +411,47 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                                'local_min':min(local),'local_max':max(local),'effective_min':base+min(local),
                                 'effective_max':base+max(local),'assembly_source':'verified_rom_handler2f_trim' if record.get('wall_template_offset')==0x688 else 'verified_rom_handler30_trim'})
             continue
+        if record.get('kind')=='authored_obstacle' and record.get('door_wall_part'):
+            if (x,y) not in template_door_parts:
+                raise ValueError('door part lacks exact split template operation')
+            neighbor=snapshot.cell(1,x+1,y)
+            local=assets.get(cell.tile_hash,[]);other=assets.get(neighbor.tile_hash,[])
+            face=next((r for r in elevation.get('structural_placements',[]) if r.get('x')==x+1 and r.get('y')==y and r.get('kind')=='authored_wall'),None)
+            def sample(c,a,xx,k):return a[(7-k if c.vflip else k)*8+(7-xx if c.hflip else xx)]
+            if len(local)!=64 or len(other)!=64 or face is None or any(base+sample(cell,local,7,k)!=face['floor_base']+sample(neighbor,other,0,k) for k in range(8)):
+                raise ValueError('door part lacks preserved authored seam')
+            placements.append(dict(kind='authored_obstacle',x=x,y=y,planes=record.get('planes',[]),floor_base=base,tile_hash=cell.tile_hash,local_source='authored_asset',local_min=min(local),local_max=max(local),effective_min=base+min(local),effective_max=base+max(local),assembly_source='verified_split_lower_east_door_wall_cover'))
+            continue
         if record.get("kind") != "authored_wall":
             continue # Obstacles are independently verified from support contacts above.
         if cell.tile_hash not in wall_hashes and (x,y) not in template_walls:
             raise ValueError("runtime wall is not classified in pinned profile")
+        if record.get('terminal_corner'):
+            if (x,y) not in template_corners:raise ValueError('corner lacks both surviving ROM branches')
+            # Require both transformed face seams, not an offset assertion.
+            for dx,dy in ((-1 if cell.hflip else 1,0),(0,-1 if cell.vflip else 1)):
+                n=snapshot.cell(1,x+dx,y+dy);a=assets[cell.tile_hash];b=assets.get(n.tile_hash,[])
+                neighbor=next((r for r in elevation.get('structural_placements',[]) if r.get('x')==x+dx and r.get('y')==y+dy and r.get('kind')=='authored_wall'),None)
+                def sample(c,h,xx,yy):return h[(7-yy if c.vflip else yy)*8+(7-xx if c.hflip else xx)]
+                # A missing visible branch base requires the original signed
+                # counterpart path. Runtime serializes it independently below.
+                if neighbor is None:
+                    evidence=record.get('corner_branch_relations',[])
+                    neighbor=next((r for r in evidence if r.get('x')==x+dx and r.get('y')==y+dy),None)
+                    if neighbor is not None:
+                        support=neighbor.get('support',-1);plane=neighbor.get('plane')
+                        if not isinstance(support,int) or not 0<=support<8192 or plane not in (0,1):
+                            raise ValueError('corner counterpart lacks signed support identity')
+                        counterpart=snapshot.cell(0,n.x,n.y)
+                        if counterpart.word!=n.word or assets.get(counterpart.tile_hash)!=b:
+                            raise ValueError('corner counterpart identity/local mismatch')
+                        support_base=solved.get((support//4096,support%64,(support%4096)//64))
+                        if support_base is None or support_base+neighbor.get('rise',0)!=neighbor['floor_base']:
+                            raise ValueError('corner signed support relation disagrees with reproduced support')
+                if neighbor is None or len(b)!=64:raise ValueError('corner missing independently solved branch')
+                if any(base+sample(cell,a,(7 if dx>0 else 0) if dx else k,(7 if dy>0 else 0) if dy else k)!=
+                       neighbor['floor_base']+sample(n,b,(0 if dx>0 else 7) if dx else k,(0 if dy>0 else 7) if dy else k) for k in range(8)):
+                    raise ValueError('corner face seam disagreement')
         local = assets.get(cell.tile_hash)
         if local is None:
             missing.append({"x": x, "y": y, "reason": "missing_wall_local_height"})

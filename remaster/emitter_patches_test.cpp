@@ -145,4 +145,36 @@ int main()
 		if (x%8 == 3) for (unsigned c = 0; c < 4; c++) emission[i*4+c] = 255;
 	}
 	assert(build().size() == 2);
+	// Combining a current shape authors every captured frame, including frames
+	// absent from the current viewport. Broad semantic groups must not override
+	// the observed animation track.
+	const RemasterTileContentId animatedA = {200,1,4}, animatedB = {201,1,4};
+	RemasterFrameAssetGroup groupA; groupA.name = "capture_animation_1";
+	groupA.tileIds = {selected[0], animatedA};
+	RemasterFrameAssetGroup groupB; groupB.name = "capture_animation_2";
+	groupB.tileIds = {selected[1], animatedB};
+	frame.assetGroups = {groupA, groupB};
+	RemasterFrameAssetGroup semantic; semantic.name = "all_torches";
+	semantic.tileIds = selected;
+	frame.assetGroups.push_back(semantic);
+	for (auto &instance : frame.tileInstances) instance.assetGroup = semantic.name;
+	auto expanded = S9xRemasterEmitterSelectionAnimationVariants(frame, {selected[0],selected[1]});
+	assert(expanded.size() == 4);
+	frame.assetMetadata.clear();
+	for (const auto &tile : expanded) {
+		RemasterFrameAssetMetadata metadata; metadata.tileId = tile;
+		for (const auto &peer : expanded) if (!(tile == peer)) metadata.combineEmitters.push_back(peer);
+		frame.assetMetadata.push_back(metadata);
+	}
+	for (unsigned phase = 0; phase < 4; phase++) {
+		for (unsigned t = 0; t < 4; t++) frame.tileInstances[t].tileId = t%2 ?
+			(phase & 2 ? animatedB : selected[1]) : (phase & 1 ? animatedA : selected[0]);
+		auto patches = build();
+		assert(patches.size() == 2); // independent fixtures, even when out of phase
+		unsigned members = 0;
+		for (const auto &patch : patches) members += patch.count;
+		assert(members == 32);
+	}
+	assert(S9xRemasterEmitterSelectionAnimationVariants(frame, {selected[2]}) ==
+		std::vector<RemasterTileContentId>{selected[2]}); // static tile remains itself
 }

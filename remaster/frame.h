@@ -202,6 +202,12 @@ struct RemasterDungeonFloorContext
 		uint16_t wallTemplateOffset = 0;
 		uint64_t tileHash = 0;
 		bool supportingTrim = false;
+		// Exact surviving low-corner branches own two separate tangent seams.
+		// The corner is terminal: its folded shell is not an obstacle support
+		// node and must not join the otherwise independent gameplay planes.
+		bool terminalCorner = false;
+		bool highPerimeterFace = false; // exact surviving high perimeter, including door priority writes
+		bool lowerDoorWallPart = false; // terminal split-door cover at preserved high face seam
 		// Observer-only evidence. Does not promote a deferred assembly member
 		// into the absolute-height graph or alter runtime placement offsets.
 		uint16_t diagnosticWallTemplateOffset = 0;
@@ -258,6 +264,10 @@ struct RemasterDungeonFloorContext
 	// support cells, not visible artwork or a gameplay-plane elevation label.
 	struct SupportRelation { int a, b, rise; };
 	const std::vector<SupportRelation> *supportRelations = nullptr;
+	// Other-BG authored structural path to a reproduced support, not a copied
+	// visible base. Consumers require identical final wall identity/transform.
+	struct WallSupportRelation { int wall, support, rise; uint16_t word; std::array<uint8_t,64> height; };
+	const std::vector<WallSupportRelation> *wallSupportRelations = nullptr;
 	// Adapter-supplied completed transition evidence. Never synthesize from
 	// Link's current position/plane or a remembered room ID. The destination
 	// support cell must be reproduced by this solve; pins expire on input change.
@@ -283,7 +293,8 @@ inline uint64_t S9xRemasterDungeonEntryStateKey(const RemasterDungeonFloorContex
 	for(int i=0;i<4096;i++) {
 		const auto &t=c.placements[i];mix(t.tileHash);mix(int(t.surface));mix(t.hasHeight);mix(t.hflip);mix(t.vflip);
 		mix(t.wallTemplateOffset);mix(t.distinctLowerUsage);mix(t.structuralFloorPlaneMask);mix(t.floorPlaneMask);
-		mix(t.supportingTrim);mix(t.groundedFloorMask);
+		mix(t.supportingTrim);mix(t.highPerimeterFace);mix(t.lowerDoorWallPart);mix(t.groundedFloorMask);
+		mix(t.terminalCorner);
 		for(auto h:t.height)mix(h);
 	}
 	for(int i=0;i<c.stairCount;i++){const auto &s=c.stairs[i];mix(s.x);mix(s.y);mix(s.highIsNorth);mix(s.changesPlane);}
@@ -373,6 +384,7 @@ struct RemasterDungeonHeightMap
 	bool hasRoomGeometry = false;
 	std::array<uint8_t, 4096> fallbackDirections = {};
 	std::array<std::array<int32_t, 4096>, 2> structuralPlaneOffsets = {};
+	std::vector<RemasterDungeonFloorContext::WallSupportRelation> authoredWallSupportRelations;
 	std::array<std::array<int32_t, 4096>, 2> mixedFloorBases = {};
 	uint16_t mixedFloorUnknown = 0, mixedFloorConflicts = 0;
 	std::array<uint16_t, 2> requiredPlaneCells = {};
@@ -386,6 +398,8 @@ struct RemasterDungeonHeightMap
 	bool planeRelationshipUnresolved = false;
 	struct Conflict { int node, other, expected, actual; };
 	std::vector<Conflict> geometryConflicts;
+	struct CornerBranch { int corner, plane, branch, base, support, rise; };
+	std::vector<CornerBranch> cornerBranches;
 	std::vector<std::array<int, 4>> geometryIssuePlacements;
 	struct RelativeAnchor { int node, minimum, supportNodes; bool isolatedFlat; };
 	std::vector<RelativeAnchor> relativeAnchors;
@@ -738,6 +752,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		// geometric connections without adding illegal movement edges.
 		struct Edge { int a, b, rise; };
 		std::vector<Edge> edges;
+		std::vector<int> ownedHighFaceSeeds;
 		std::vector<RemasterRoomDiagnosticContact> diagnosticContacts;
 		auto nodeStorage = std::make_unique<std::array<int, 8192>>();
 		auto &nodes = *nodeStorage;
@@ -747,6 +762,11 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		{
 			if (!activePlanes[p]) continue;
 			const auto &tile = context.placements[i];
+			// A proven fold is terminal region geometry, solved from BOTH face
+			// contacts below. It cannot supply a floor graph edge/datum through
+			// an outward obstacle support node. Ordinary authored corners retain
+			// the existing graph and its legitimate conflicting constraints.
+			if(tile.terminalCorner)continue;
 			if (tile.surface == RemasterDungeonFloorContext::Surface::Floor &&
 				!(tile.structuralFloorPlaneMask & (1 << p)) && components[p * 4096 + i] < 0) continue;
 			if (tile.hasHeight && tile.surface == RemasterDungeonFloorContext::Surface::Wall)
@@ -1013,6 +1033,60 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			if(a>=0 && b>=0 && r.rise>0 && std::any_of(constraints.begin(),constraints.end(),
 				[&](const Constraint &e){return e.low==a && e.high==b;}))add(a,b,r.rise);
 		}
+		if(context.placementBackgroundIndex==1 && context.wallSupportRelations && context.constructedMaps &&
+			(context.bg1GraphicsBase==0xffff || context.bg1GraphicsBase==context.graphicsBase))
+			for(const auto &r:*context.wallSupportRelations) {
+				if(r.wall<0 || r.wall>=8192 || r.support<0 || r.support>=8192)continue;
+				const int i=r.wall%4096,p=0;
+				const auto &t=context.placements[i];
+				// Complementary high perimeter / low face seam only. Other BG wall
+				// paths do not establish ownership of arbitrary visible structures.
+				bool perimeter=false;
+				for(int dx:{-1,1})if(i%64+dx>=0 && i%64+dx<64) {
+					const auto &face=context.placements[i+dx];
+					if(face.surface!=RemasterDungeonFloorContext::Surface::Wall || !face.highPerimeterFace ||
+						!face.hasHeight)continue;
+					bool seam=true;int delta=INT_MIN;
+					for(int k=0;k<8;k++) {
+						const int edge=height(i,dx>0?7:0,k),otherEdge=height(i+dx,dx>0?0:7,k);
+						if(edge<=height(i,dx>0?0:7,k) || otherEdge>=height(i+dx,dx>0?7:0,k))seam=false;
+						const int v=edge-otherEdge;if(delta!=INT_MIN && delta!=v)seam=false;delta=v;
+					}
+					perimeter|=seam;
+				}
+				if(!perimeter || r.wall/4096!=1)continue;
+				const int word=context.constructedMaps[i*2]|context.constructedMaps[i*2+1]<<8;
+				const int other=context.constructedMaps[8192+i*2]|context.constructedMaps[8193+i*2]<<8;
+				if(t.surface!=RemasterDungeonFloorContext::Surface::Wall || !t.hasHeight ||
+					t.height!=r.height ||
+					(word&0xdfff)!=(r.word&0xdfff) || (other&0xdfff)!=(r.word&0xdfff) ||
+					!solidFace(context.collisionAttributes[p*4096+i]) || nodes[i]<0 || components[r.support]<0)continue;
+				add(components[r.support],nodes[i],r.rise);
+				ownedHighFaceSeeds.push_back(nodes[i]);
+			}
+		// Export a signed structural path only from a consistent authored graph
+		// with established support. No configured stair relation or datum enters it.
+		if(context.placementBackgroundIndex==0 && context.constructedMaps) {
+			std::vector<int> value(count,INT_MIN);
+			for(size_t start=0;start<cells.size();start++) {
+				if(cells[start].empty() || value[start]!=INT_MIN)continue;
+				std::vector<int> queue(1,int(start));value[start]=0;bool conflict=false;
+				for(size_t k=0;k<queue.size();k++)for(auto next:adjacency[queue[k]]) {
+					const int v=value[queue[k]]+next.second;
+					if(value[next.first]==INT_MIN){value[next.first]=v;queue.push_back(next.first);}
+					else if(value[next.first]!=v)conflict=true;
+				}
+				if(conflict)continue;
+				for(int encoded=0;encoded<8192;encoded++) {
+					const int i=encoded%4096,n=nodes[encoded];const auto &t=context.placements[i];
+					if(n<0 || std::find(queue.begin(),queue.end(),n)==queue.end() ||
+						t.surface!=RemasterDungeonFloorContext::Surface::Wall || t.distinctLowerUsage ||
+						!solidFace(context.collisionAttributes[encoded]))continue;
+					const int word=context.constructedMaps[i*2]|context.constructedMaps[i*2+1]<<8;
+					result.authoredWallSupportRelations.push_back({encoded,cells[start][0],value[n],uint16_t(word),t.height});
+				}
+			}
+		}
 		// Export only consistent authored-path differences between signed stair
 		// endpoints, never configured rises or normalized placement bases.
 		std::vector<int> representative(cells.size(),-1), authoredBase(count,INT_MIN);
@@ -1206,6 +1280,36 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				}
 			}
 		}
+		// A proved complementary high face is visible on its own structural
+		// plane, not the independently anchored cap/underpass geometry on plane1.
+		// Retain both arrays; select only ROM high faces connected by accepted seams.
+		std::vector<bool> ownedHighNodes(count,false);
+		for(int n:ownedHighFaceSeeds)if(!ownedHighNodes[n]) {
+			std::vector<int> queue(1,n);ownedHighNodes[n]=true;
+			for(size_t k=0;k<queue.size();k++)for(auto e:adjacency[queue[k]])
+				if(!ownedHighNodes[e.first]){ownedHighNodes[e.first]=true;queue.push_back(e.first);}
+		}
+		for(int i=0;i<4096;i++) {
+			const auto &t=context.placements[i];
+			if((t.highPerimeterFace || std::find(ownedHighFaceSeeds.begin(),ownedHighFaceSeeds.end(),nodes[i])!=ownedHighFaceSeeds.end()) &&
+				nodes[i]>=0 && ownedHighNodes[nodes[i]] && result.structuralPlaneOffsets[0][i]!=255)
+				result.offsets[i]=result.structuralPlaneOffsets[0][i];
+		}
+		// Exact split-door cover is terminal ownership, not a passable support
+		// or replacement wall ramp. Attach only its full authored edge to the
+		// preserved, support-backed high face, never to neighboring floor color.
+		for(int i=0;i<4096;i++)if(context.placements[i].lowerDoorWallPart) {
+			if(i%64==63)continue;const int j=i+1;
+			if(!context.placements[j].highPerimeterFace || result.structuralPlaneOffsets[0][j]==255)continue;
+			int base=INT_MIN;bool compatible=true;
+			for(int k=0;k<8;k++) {
+				const int v=result.structuralPlaneOffsets[0][j]+height(j,0,k)-height(i,7,k);
+				if(base!=INT_MIN && base!=v)compatible=false;base=v;
+			}
+			if(compatible && base!=255 && base>=-32767 && base<=32767) {
+				result.offsets[i]=base;result.planeOffsets[0][i]=base;
+			}
+		}
 		// A solid floor-pattern cap is not a support datum. Attach it only to
 		// the high edge of an already solved, ROM-template-proven face. This
 		// one-cell terminal attachment cannot join independent wall chains or
@@ -1306,6 +1410,73 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				if (status > 1) result.mixedFloorBases[p][cell]=255;
 			}
 		}
+		// A folded terminal has separate X/Y-owned faces. Its inward branches
+		// are tangent seams, not permission to join outward obstacle SUPPORT
+		// nodes through the shell. Require both complete transformed edges to
+		// independently solve to the same offset on each structural plane.
+		for(int i=0;i<4096;i++)if(context.placements[i].terminalCorner) {
+			const auto &t=context.placements[i];result.offsets[i]=255;
+			for(int p=0;p<2;p++) {
+				if(!activePlanes[p] || !solidFace(context.collisionAttributes[p*4096+i]))continue;
+				int candidate=INT_MIN;bool compatible=true,seamConflict=false;
+				for(int axis=0;axis<2;axis++) {
+					const int dx=axis?0:(t.hflip?-1:1),dy=axis?(t.vflip?-1:1):0;
+					const int x=i%64+dx,y=i/64+dy;if(x<0 || x>=64 || y<0 || y>=64){compatible=false;continue;}
+					const int j=y*64+x;const auto &other=context.placements[j];
+					if(other.surface!=RemasterDungeonFloorContext::Surface::Wall || other.wallTemplateOffset!=t.wallTemplateOffset ||
+						other.terminalCorner || !solidFace(context.collisionAttributes[p*4096+j])) {
+						// Missing inward branch is not an unknown floor. An exact
+						// complementary high face can constrain that region from its
+						// opposite edge; preserve the existing boundary extension.
+						const int hdx=axis?(t.hflip?-1:1):0,hdy=axis?0:(t.vflip?-1:1);
+						const int hx=i%64-hdx,hy=i/64-hdy;
+						if(hx<0 || hx>=64 || hy<0 || hy>=64){compatible=false;continue;}
+						const int high=hy*64+hx;const auto &ht=context.placements[high];
+						if(ht.surface!=RemasterDungeonFloorContext::Surface::Wall || !ht.hasHeight ||
+							result.structuralPlaneOffsets[p][high]==255 || !solidFace(context.collisionAttributes[p*4096+high])){compatible=false;continue;}
+						for(int k=0;k<8;k++) {
+							const int cx=hdx?(hdx>0?0:7):k,cy=hdy?(hdy>0?0:7):k;
+							const int nx=hdx?(hdx>0?7:0):k,ny=hdy?(hdy>0?7:0):k;
+							const int value=result.structuralPlaneOffsets[p][high]+height(high,nx,ny)-boundaryStep(i,-hdx,-hdy,k)-height(i,cx,cy);
+							if(candidate!=INT_MIN && candidate!=value){compatible=false;seamConflict=true;}candidate=value;
+						}
+						continue;
+					}
+					int branchBase=result.structuralPlaneOffsets[p][j],branchSupport=-1,branchRise=0;
+					// Do not resurrect an explicitly contradictory structural node.
+					if(nodes[p*4096+j]>=0 && bad[nodes[p*4096+j]]){compatible=false;continue;}
+					// Missing visible branch anchors can be witnessed by the exact
+					// original same-graphics BG assembly's SIGNED support relation.
+					// It supplies neither a borrowed visible base nor a new datum.
+					if(branchBase==255 && context.placementBackgroundIndex==1 && context.wallSupportRelations &&
+						context.constructedMaps && (context.bg1GraphicsBase==0xffff || context.bg1GraphicsBase==context.graphicsBase)) {
+						const int word=context.constructedMaps[j*2]|context.constructedMaps[j*2+1]<<8;
+						const int counterpart=context.constructedMaps[8192+j*2]|context.constructedMaps[8193+j*2]<<8;
+						int proposed=INT_MIN;bool consistent=true;
+						for(const auto &r:*context.wallSupportRelations)if(r.wall/4096==1 && r.wall%4096==j && r.support>=0 && r.support<8192 &&
+							r.height==other.height && r.word==word && counterpart==word && result.planeOffsets[r.support/4096][r.support%4096]!=255) {
+							const int v=result.planeOffsets[r.support/4096][r.support%4096]+r.rise;
+							branchSupport=r.support;branchRise=r.rise;
+							if(proposed!=INT_MIN && proposed!=v)consistent=false;proposed=v;
+						}
+						if(consistent && proposed!=INT_MIN)branchBase=proposed;
+					}
+					if(branchBase==255){compatible=false;continue;}
+					result.cornerBranches.push_back({i,p,j,branchBase,branchSupport,branchRise});
+					for(int k=0;k<8;k++) {
+						const int cx=dx?(dx>0?7:0):k,cy=dy?(dy>0?7:0):k;
+						const int nx=dx?(dx>0?0:7):k,ny=dy?(dy>0?0:7):k;
+						const int value=branchBase+height(j,nx,ny)-height(i,cx,cy);
+						if(candidate!=INT_MIN && candidate!=value){compatible=false;seamConflict=true;}candidate=value;
+					}
+				}
+				if(compatible && candidate!=INT_MIN && candidate!=255 && candidate>=-32767 && candidate<=32767) {
+					result.structuralPlaneOffsets[p][i]=candidate;
+					if(result.offsets[i]==255 || candidate>result.offsets[i])result.offsets[i]=candidate;
+				}
+				else if(seamConflict)result.structuralConflicts++;
+			}
+		}
 		for (int i = 0; i < 4096; i++)
 		{
 			const auto &tile = context.placements[i];
@@ -1322,6 +1493,10 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			// Verified rail trim already has independent plane-specific assembly
 			// support. Do not erase it with the identity-less one-cell fallback.
 			if(tile.supportingTrim) continue;
+			// An authored obstacle already attached by plane-specific support
+			// constraints is not an identity-less border fallback. Rechecking
+			// adjacent contacts across planes erased proved bridge rail bases.
+			if(tile.surface==RemasterDungeonFloorContext::Surface::Obstacle && result.offsets[i]!=255) continue;
 			int base = -1, planeIdentity = -1;
 			uint8_t directions = 0; bool conflict = false;
 			for (int p = 0; p < 2; p++) for (int d = 0; d < 4; d++)
@@ -2144,7 +2319,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.emissionDepth = source.emissionDepth;
 		metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 		metadata.combineEmitters = source.combineEmitters;
-		metadata.tileRole = source.tileRole;
+		metadata.tileRole = source.tileSemanticContextDependent ? RemasterTileRole::Unknown : source.tileRole;
 		metadata.hasMaterialSelectors = source.hasMaterialSelectors;
 		metadata.hasOcclusion = source.hasOcclusion;
 		metadata.hasHeight = source.hasHeight;

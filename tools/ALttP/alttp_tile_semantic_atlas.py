@@ -15,6 +15,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import urllib.parse
 import webbrowser
+import hashlib
+import re
+import tomllib
 
 from alttp_room_geometry import RoomSnapshot
 
@@ -74,10 +77,14 @@ def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
 
 
 class AnnotationStore:
-    def __init__(self, path: Path, rom_sha256: str):
+    def __init__(self, path: Path, rom_sha256: str, profile_marker: Path | None = None):
         self.path = path
         self.rom_sha256 = rom_sha256
         self.lock = threading.Lock()
+        self.profile_marker = profile_marker
+        self.profile_path = None
+        self.profile_bytes = None
+        self._refresh_signature = None
         self.tiles: dict[str, dict] = {}
         if path.exists():
             value = json.loads(path.read_text())
@@ -93,14 +100,107 @@ class AnnotationStore:
 
     def document(self) -> dict:
         return {"format": FORMAT, "rom_sha256": self.rom_sha256,
-                "tiles": {key: self.tiles[key] for key in sorted(self.tiles)}}
+                 "tiles": {key: self.tiles[key] for key in sorted(self.tiles)}}
+
+    def refresh(self) -> str:
+        """Read external edits and mirror explicit profile annotations into the sidecar."""
+        with self.lock:
+            def stamp(path):
+                if path is None or not path.exists():
+                    return None
+                stat = path.stat()
+                return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+            signature = (stamp(self.path), stamp(self.profile_marker), stamp(self.profile_path))
+            if signature == self._refresh_signature:
+                return self.revision()
+            if self.path.exists():
+                document = json.loads(self.path.read_text())
+                if document.get("rom_sha256") != self.rom_sha256:
+                    raise AtlasError("annotation ROM fingerprint differs from atlas")
+                self.tiles = {key: validate_annotation(item, allow_incomplete=True)
+                              for key, item in document["tiles"].items()}
+            self.profile_path = None
+            self.profile_bytes = None
+            if self.profile_marker and self.profile_marker.exists():
+                path = Path(json.loads(self.profile_marker.read_text())["profile"])
+                snapshot = path.read_bytes()
+                profile = tomllib.loads(snapshot.decode())
+                if profile.get("game", {}).get("rom_sha256") == self.rom_sha256:
+                    self.profile_path, self.profile_bytes = path, snapshot
+                    changed = False
+                    for asset in profile.get("assets", []):
+                        if not asset.get("tile_semantics_authored"):
+                            continue
+                        value = {"role": asset.get("tile_role", "unknown"),
+                                 "normals": asset.get("tile_semantic_normals", []),
+                                 "context_dependent": asset.get("tile_semantic_context_dependent", False),
+                                 "note": asset.get("tile_semantic_note", "")}
+                        if asset.get("tile_semantic_corner"):
+                            value["corner_type"] = asset["tile_semantic_corner"]
+                        value = validate_annotation(value)
+                        key = asset["tile_hash"]
+                        if self.tiles.get(key) != value:
+                            self.tiles[key] = value
+                            changed = True
+                    if changed:
+                        self._write()
+            self._refresh_signature = (stamp(self.path), stamp(self.profile_marker), stamp(self.profile_path))
+            return self.revision()
+
+    def revision(self) -> str:
+        return hashlib.sha256(json.dumps(self.document(), sort_keys=True).encode() +
+                              (self.profile_bytes or b"")).hexdigest()
+
+    def _save_profile(self, content_ids: list[str], annotation: dict) -> None:
+        if self.profile_path is None:
+            return
+        if self.profile_path.read_bytes() != self.profile_bytes:
+            raise AtlasError("profile changed; refresh before saving")
+        text = self.profile_bytes.decode()
+        version = tomllib.loads(text)["schema_version"]
+        text = re.sub(r"(?m)^schema_version\s*=\s*\d+\s*$",
+                      f"schema_version = {max(20, version)}", text, count=1)
+        quote = lambda value: '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
+        fields = (f'tile_role = {quote(annotation["role"])}\n'
+                  'tile_semantics_authored = true\n'
+                  'tile_semantic_normals = [' + ', '.join(map(quote, annotation["normals"])) + ']\n'
+                  f'tile_semantic_context_dependent = {str(annotation["context_dependent"]).lower()}\n'
+                  f'tile_semantic_note = {quote(annotation["note"])}\n')
+        if "corner_type" in annotation:
+            fields += f'tile_semantic_corner = {quote(annotation["corner_type"])}\n'
+        remaining = set(content_ids)
+        def replace(match):
+            block = match.group()
+            key = re.search(r'(?m)^tile_hash\s*=\s*"([^"]+)"', block)
+            if not key or key[1] not in remaining:
+                return block
+            remaining.remove(key[1])
+            block = re.sub(r'(?m)^(tile_role|tile_semantics_authored|tile_semantic_\w+)\s*=.*\n?', '', block)
+            return block.rstrip() + '\n' + fields + '\n'
+        text = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', replace, text)
+        additions = ''.join('\n[[assets]]\ntile_hash = ' + quote(key) + '\n' + fields
+                            for key in sorted(remaining))
+        rule = re.search(r'(?m)^\[\[rules\]\]', text)
+        offset = rule.start() if rule else len(text)
+        text = text[:offset] + additions + '\n' + text[offset:]
+        tomllib.loads(text)
+        temporary = self.profile_path.with_name(self.profile_path.name + '.semantics.tmp')
+        temporary.write_text(text)
+        if self.profile_path.read_bytes() != self.profile_bytes:
+            temporary.unlink()
+            raise AtlasError("profile changed; refresh before saving")
+        os.replace(temporary, self.profile_path)
+        self.profile_bytes = text.encode()
 
     def save(self, content_id: str, value: object) -> dict:
         return self.save_group([content_id], value)
 
-    def save_group(self, content_ids: list[str], value: object) -> dict:
+    def save_group(self, content_ids: list[str], value: object, expected_revision: str | None = None) -> dict:
         annotation = validate_annotation(value)
         with self.lock:
+            if expected_revision is not None and expected_revision != self.revision():
+                raise AtlasError("metadata changed; refresh before saving")
+            self._save_profile(content_ids, annotation)
             for content_id in content_ids:
                 if (annotation["role"] == "unknown" and not annotation["note"]
                         and not annotation["context_dependent"]):
@@ -425,7 +525,8 @@ function renderRoomContext(){let box=document.createElement('div');box.className
 async function loadRoom(canvas,room){let id=selected,response=await fetch(`/api/room/${room}/${encodeURIComponent(id)}`),data=await response.json();if(id!==selected)return;let image=new Image();image.onload=()=>{let c=canvas.getContext('2d');c.drawImage(image,0,0,512,512);c.lineWidth=2;for(let cell of data.cells){c.fillStyle=cell.layer?'rgba(255,210,63,.36)':'rgba(53,230,255,.36)';c.strokeStyle=cell.layer?'#ffd23f':'#35e6ff';c.fillRect(cell.x*8,cell.y*8,8,8);c.strokeRect(cell.x*8+1,cell.y*8+1,6,6)}};image.src=`/room-image/${room.toString(16).padStart(3,'0')}.png`}
 function complete(a){let count=a.role==='wall'?1:a.role==='wall_corner'?2:0;return a.normals.length===count&&(a.role!=='wall_corner'||['inside','outside'].includes(a.corner_type))}function showCompletionState(a){let state=document.getElementById('saveState');if(!state||complete(a))return;if(a.normals.length<(a.role==='wall_corner'?2:1))state.textContent='Choose the required wall normal'+(a.role==='wall_corner'?'s':'')+' to save';else if(a.role==='wall_corner')state.textContent='Choose inside or outside to save'}
 function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall'?1:2,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
-function update(a){byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function scheduleSave(){clearTimeout(saveTimer);pendingId=selected;let state=document.getElementById('saveState');if(state)state.textContent='Unsaved...';saveTimer=setTimeout(()=>save(pendingId),350)}async function save(id){if(!id)return;let t=byId.get(id),snapshot=t.annotation;if(!complete(snapshot)){pendingId=null;return}let response=await fetch('/api/annotation/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(snapshot)}),value=await response.json();if(pendingId===id)pendingId=null;let state=id===selected?document.getElementById('saveState'):null;if(!response.ok){if(state)state.textContent='Not saved: '+value.error;return}let stored=(value.annotation.role==='unknown'&&!value.annotation.note&&!value.annotation.context_dependent)?null:value.annotation;for(let alias of value.content_ids)if(byId.has(alias))byId.get(alias).annotation=stored;if(state)state.textContent=`Saved to ${value.content_ids.length} runtime identit${value.content_ids.length===1?'y':'ies'}`;renderGrid()}
+function update(a){byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function scheduleSave(){clearTimeout(saveTimer);pendingId=selected;let state=document.getElementById('saveState');if(state)state.textContent='Unsaved...';saveTimer=setTimeout(()=>save(pendingId),350)}async function save(id){if(!id)return;let t=byId.get(id),snapshot=t.annotation;if(!complete(snapshot)){pendingId=null;return}saving=true;let response;try{response=await fetch('/api/annotation/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json','If-Match':meta.revision},body:JSON.stringify(snapshot)})}catch(e){saving=false;return}let value=await response.json();saving=false;if(pendingId===id)pendingId=null;let state=id===selected?document.getElementById('saveState'):null;if(!response.ok){if(state)state.textContent='Not saved: '+value.error;if(response.status===409)document.getElementById('subtitle').textContent='Metadata changed elsewhere. Reload this page to review the current data.';return}meta.revision=value.revision;let stored=(value.annotation.role==='unknown'&&!value.annotation.note&&!value.annotation.context_dependent)?null:value.annotation;for(let alias of value.content_ids)if(byId.has(alias))byId.get(alias).annotation=stored;if(state)state.textContent=`Saved to ${value.content_ids.length} runtime identit${value.content_ids.length===1?'y':'ies'}`;renderGrid()}
+let saving=false;setInterval(async()=>{if(!meta||pendingId||saving||document.activeElement?.tagName==='TEXTAREA'||(selected&&!complete(annotation())))return;try{let r=await fetch('/api/revision'),v=await r.json();if(r.ok&&v.revision!==meta.revision)location.reload()}catch(e){}},2000);
 for(let id of ['search','roleFilter','packFilter','reviewed','reused','contextOnly','showLow'])document.getElementById(id).addEventListener(id==='search'?'input':'change',()=>{pageSize=1000;renderGrid()});document.getElementById('export').onclick=()=>location.href='/api/export';
 fetch('/api/catalog').then(r=>r.json()).then(data=>{meta=data;tiles=data.tiles;for(let t of tiles)byId.set(t.content_id,t);let packs=[...new Set(tiles.flatMap(t=>t.packs))].sort((a,b)=>a-b),packSelect=document.getElementById('packFilter');for(let pack of packs){let option=document.createElement('option');option.value=pack;option.textContent='Pack '+pack;packSelect.append(option)}document.getElementById('subtitle').textContent=`${tiles.length} unique background tiles · ROM ${data.rom_sha256.slice(0,12)}… · autosaves to ${data.annotation_path}`;renderGrid();let wanted=new URLSearchParams(location.search).get('tile');if(wanted&&byId.has(wanted))select(wanted)}).catch(e=>{document.getElementById('subtitle').textContent='Could not load atlas: '+e});
 </script></body></html>'''
@@ -454,6 +555,12 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
 
         def do_GET(self) -> None:
             path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/api/"):
+                try:
+                    store.refresh()
+                except (OSError, ValueError, KeyError) as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+                    return
             if path == "/":
                 body = PAGE.encode()
                 self.send_response(HTTPStatus.OK)
@@ -462,11 +569,14 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 self.end_headers()
                 self.wfile.write(body)
             elif path == "/api/status":
-                self.json_response({"tool": "alttp-tile-semantics", "rom_sha256": catalog.rom_sha256})
+                self.json_response({"tool": "alttp-tile-semantics", "protocol_version": 2, "rom_sha256": catalog.rom_sha256})
             elif path == "/api/catalog":
                 self.json_response({"format": FORMAT, "rom_sha256": catalog.rom_sha256,
+                                    "revision": store.revision(),
                                     "annotation_path": str(store.path),
                                     "tiles": catalog.tiles(store.tiles)})
+            elif path == "/api/revision":
+                self.json_response({"revision": store.revision()})
             elif path == "/api/export":
                 self.json_response(store.document(), attachment=True)
             elif path.startswith("/api/tile/"):
@@ -546,10 +656,14 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 if length <= 0 or length > MAX_BODY:
                     raise AtlasError("invalid request body size")
                 value = json.loads(self.rfile.read(length))
+                revision = store.refresh()
+                if self.headers.get("If-Match") != revision:
+                    self.error(HTTPStatus.CONFLICT, "Metadata changed elsewhere; refresh before saving")
+                    return
                 aliases = catalog.semantic_group(content_id)
-                annotation = store.save_group(aliases, value)
-                self.json_response({"annotation": annotation, "content_ids": aliases})
-            except (AtlasError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                annotation = store.save_group(aliases, value, revision)
+                self.json_response({"annotation": annotation, "content_ids": aliases, "revision": store.revision()})
+            except (ValueError, OSError, KeyError) as exc:
                 self.error(HTTPStatus.BAD_REQUEST, str(exc))
 
     return Handler
@@ -568,10 +682,12 @@ def main() -> None:
     parser.add_argument("--room-images", type=Path,
                         default=Path("build/remaster-geometry/room-gallery-room-local/images"))
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--profile-marker", type=Path,
+                        default=Path(__file__).resolve().parents[2] / "build/remaster-geometry/semantic-profile.json")
     parser.add_argument("--open", action="store_true", help="open the browser")
     args = parser.parse_args()
     catalog = TileCatalog(args.atlas)
-    store = AnnotationStore(args.annotations, catalog.rom_sha256)
+    store = AnnotationStore(args.annotations, catalog.rom_sha256, args.profile_marker)
     room_images = args.room_images.resolve()
     if not room_images.is_dir():
         parser.error(f"room image directory does not exist: {room_images}")

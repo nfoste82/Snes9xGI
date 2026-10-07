@@ -28,6 +28,8 @@
 #include "blit.h"
 #include "remaster/remaster.h"
 #include "remaster/held_lamp.h"
+#include "remaster/direct_batches.h"
+#include "remaster/sphere_samples.h"
 #include "remaster/room_debug_view.h"
 
 #include <algorithm>
@@ -53,8 +55,12 @@ typedef struct
 	vector_float3 position;
 	float radius;
 	float intensity;
+	uint32_t sampleCount;
+	uint32_t firstSample;
 	vector_float3 color;
 } RemasterGpuLight;
+static_assert(sizeof(RemasterGpuLight) == 48 && offsetof(RemasterGpuLight, color) == 32,
+	"Metal sphere-light ABI");
 
 // Opt-in metrics stage counters. Each producing frame owns its sample buffer,
 // so asynchronous completions cannot resolve another frame's samples.
@@ -738,6 +744,8 @@ static void S9xInitMetal (void)
 	MTLFunctionConstantValues *directConstants = [MTLFunctionConstantValues new];
 	bool preparedDirect = true;
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:0];
+	bool adaptiveSpheres = !std::getenv("S9X_REMASTER_FULL_SPHERE_SAMPLES");
+	[directConstants setConstantValue:&adaptiveSpheres type:MTLDataTypeBool atIndex:4];
 	id<MTLFunction> directTransport = [defaultLibrary newFunctionWithName:@"remasterIndirectBounce"
 		constantValues:directConstants error:&error];
 	remasterDirectTransportPipelineState = [metalDevice newComputePipelineStateWithFunction:directTransport error:&error];
@@ -749,6 +757,8 @@ static void S9xInitMetal (void)
 	remasterPreparePatchesPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:3];
+	bool adaptiveDepth = !std::getenv("S9X_REMASTER_FULL_DEPTH_SAMPLES");
+	[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
 	remasterClusteredBatchedPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
 	[directConstants setConstantValue:&unpreparedDirect type:MTLDataTypeBool atIndex:1];
@@ -995,6 +1005,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	double accumulationEncodeMs = 0.0;
 	double compositeEncodeMs = 0.0;
 	uint32_t frameEmitterCount = 0, frameDirectSampleCount = 0;
+	uint32_t frameSphereCount = 0, frameSphereSampleCount = 0, frameDirectBatchSize = 0;
 	uint32_t frameDepthEmitterCount = 0;
 	uint64_t frameEmitterSignature = 14695981039346656037ull;
 	double sourceBuildMs = 0;
@@ -1307,6 +1318,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					sphere.radius = source.radius;
 					sphere.intensity = source.intensity / 25.0f;
 					sphere.color = {std::pow(source.red, 2.2f), std::pow(source.green, 2.2f), std::pow(source.blue, 2.2f)};
+					sphere.sampleCount = lightingView == RemasterLightingView::Visibility || measureGi ||
+						std::getenv("S9X_REMASTER_FULL_SPHERE_SAMPLES") ? 128 :
+						S9xRemasterSphereSamples(source.x, source.y, source.radius, width, height);
+					sphere.firstSample = frameSphereSampleCount;
+					frameSphereSampleCount += sphere.sampleCount;
 					sceneLights.push_back(sphere);
 					if (panelMetrics)
 					{
@@ -1351,6 +1367,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				for (uint32_t sample = 0, count = !collapsedDepth && (*mesh)[pixel].emissionDepth > 0.0f ? 4 : 1; sample < count; sample++)
 					directSources.push_back(vector_uint2{pixel, sample | sourceFlag});
 			const uint32_t directSampleCount = static_cast<uint32_t>(directSources.size());
+			frameSphereCount = static_cast<uint32_t>(sceneLights.size()) + uint32_t(light.enabled);
+			if (light.enabled) frameSphereSampleCount += 128;
 			sourceBuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sourceBuildStarted).count();
 			frameEmitterCount = emitterCount;
 			frameDirectSampleCount = directSampleCount;
@@ -1380,7 +1398,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			const uint64_t previewRange = remasterHeightPreviewRange.load(std::memory_order_relaxed);
 			uniforms.lightCount = static_cast<uint32_t>(sceneLights.size());
 			uniforms.heightPreviewRange = { static_cast<float>(int32_t(uint32_t(previewRange))),
-				static_cast<float>(int32_t(uint32_t(previewRange >> 32))), 0.0f, 0.0f };
+				static_cast<float>(int32_t(uint32_t(previewRange >> 32))), float(frameSphereSampleCount), 0.0f };
 			if (light.enabled)
 			{
 				uniforms.debugPositionRadius = { light.x * width, light.y * height, light.height, light.radius };
@@ -1483,18 +1501,22 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					{
 						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : directMeanTextures[0];
 						diagnosticDirectTexture = measureGi ? finalDirect : nil;
-						id<MTLComputeCommandEncoder> directEncoder = stageCounters.encoder(commandBuffer, "direct_transport");
 						if (sampledDirect) uniforms.sampleCount = sampledDirectConnections;
-						const uint32_t batchCount = std::max(1u, (directSampleCount + (uniforms.lightCount + (light.enabled ? 1u : 0u)) * 128u + 7) / 8);
-						const size_t partialBytes = size_t(width) * height * batchCount * sizeof(vector_float4);
+						const auto batches = S9xRemasterDirectBatches(size_t(width) * height,
+							directSampleCount + frameSphereSampleCount);
+						const uint32_t batchCount = batches.count;
+						const size_t partialBytes = batches.bytes;
 						const bool batchedDirect = !sampledDirect && !visibilityView && !measureGi && batchCount > 1 &&
 							partialBytes <= 64 * 1024 * 1024 && !std::getenv("S9X_REMASTER_SERIAL_DIRECT");
 						if (batchedDirect)
 						{
+							uniforms.sampleCount = batches.samples;
+							frameDirectBatchSize = batches.samples;
 							if (!resources->directPartials || resources->directPartials.length < partialBytes)
 								resources->directPartials = [metalDevice newBufferWithLength:partialBytes options:MTLResourceStorageModePrivate];
 							if (!resources->directPartials) return false;
 						}
+						id<MTLComputeCommandEncoder> directEncoder = stageCounters.encoder(commandBuffer, "direct_transport");
 						directEncoder.label = @"Direct light transport";
 						const auto directEncodeStarted = std::chrono::steady_clock::now();
 						[directEncoder setComputePipelineState:sampledDirect ? remasterSampledDirectPipelineState : visibilityView ? remasterIndirectPipelineState : clustered ? (batchedDirect ? remasterClusteredBatchedPipelineState : remasterClusteredDirectPipelineState) : batchedDirect ? remasterBatchedDirectPipelineState : remasterDirectTransportPipelineState];
@@ -1738,6 +1760,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			state.performanceMetrics.compositeEncodeMs = compositeEncodeMs;
 			state.performanceMetrics.directEmitterCount = frameEmitterCount;
 			state.performanceMetrics.directSampleCount = frameDirectSampleCount;
+			state.performanceMetrics.directSphereCount = frameSphereCount;
+			state.performanceMetrics.directSphereSampleCount = frameSphereSampleCount;
+			state.performanceMetrics.directBatchSize = frameDirectBatchSize;
 			state.performanceMetrics.directDepthEmitterCount = frameDepthEmitterCount;
 			state.performanceMetrics.directEmitterSignature = frameEmitterSignature;
 			state.performanceMetrics.directSourceBuildMs = sourceBuildMs;
