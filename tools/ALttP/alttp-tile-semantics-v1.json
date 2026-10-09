@@ -64,6 +64,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:022af348d55b1a59": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:024977a13bd58030": {
       "role": "obstacle",
       "normals": [],
@@ -350,6 +358,14 @@
       "role": "wall",
       "normals": [
         "south_east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0c9662bf9776eaff": {
+      "role": "wall",
+      "normals": [
+        "south"
       ],
       "context_dependent": false,
       "note": ""
@@ -814,6 +830,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1d1d21bba4282b17": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1d6d4514021bea54": {
       "role": "wall_corner",
       "normals": [
@@ -1100,6 +1124,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2760aea1a605832c": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2766247e287d023d": {
       "role": "floor",
       "normals": [],
@@ -1372,6 +1404,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:340a4407d6533bc1": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "0000ffffffffffff"
+    },
     "v1:4bpp:34b57c62502ba769": {
       "role": "floor",
       "normals": [],
@@ -1543,6 +1582,14 @@
     "v1:4bpp:3a7d3c3fe8d35721": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3a8e21ad63732905": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -1760,6 +1807,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:42f17089396b9f54": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "0000e0feffffffff"
+    },
     "v1:4bpp:43ecfb30d33274db": {
       "role": "wall",
       "normals": [
@@ -1972,6 +2026,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:4c4a9006dd7fa38c": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4d2dacf002c8da9e": {
       "role": "wall_corner",
       "normals": [
@@ -2040,7 +2102,7 @@
         "south_east"
       ],
       "context_dependent": false,
-      "note": "User ceiling/out-of-bounds diagonal join; authored exact-up cap pixels x+y<=1. Reference generator retains cap and proposes local unit-slope face, not solved assembly offsets."
+      "note": ""
     },
     "v1:4bpp:5064ef8fc0402b55": {
       "role": "wall_corner",
@@ -2482,6 +2544,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:62112d6380887711": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:62f4cf4015ff148f": {
       "role": "obstacle",
       "normals": [],
@@ -2878,6 +2948,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7518595e103dbf40": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7546db6da784b687": {
       "role": "floor",
       "normals": [],
@@ -3046,6 +3124,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7ed060bc66bd24cb": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "ffffffffffffffff"
+    },
     "v1:4bpp:7f11b8b3a13e619a": {
       "role": "wall",
       "normals": [
@@ -3213,6 +3298,13 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:85dfb167918c7691": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "ffffffffffffffff"
     },
     "v1:4bpp:85ec550136896622": {
       "role": "wall",
@@ -3778,6 +3870,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9e757414854d83b5": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "ffffffffffffffff"
+    },
     "v1:4bpp:9e7a219e296b468a": {
       "role": "floor",
       "normals": [],
@@ -3791,6 +3890,13 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:9eb947628ab00ab3": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "3f3f3f3f3f3f3f3f"
     },
     "v1:4bpp:9eee0326ba2aed1f": {
       "role": "wall",
@@ -4030,7 +4136,7 @@
         "south_east"
       ],
       "context_dependent": false,
-      "note": "User-authored capped diagonal local height 0..5 and normals; preserve both arrays verbatim. Runtime attachment must solve placement, never bake global height."
+      "note": ""
     },
     "v1:4bpp:a4b26c1d9e0f7768": {
       "role": "obstacle",
@@ -4970,6 +5076,13 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:c6b1ff4ed0392e82": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "ffffffffffffffff"
+    },
     "v1:4bpp:c6c8bc5f9a10e349": {
       "role": "wall",
       "normals": [
@@ -4999,6 +5112,13 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:c72c0d2c90678917": {
+      "role": "door",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "doorframe_mask": "3f3f3f3f1f1f1f1f"
     },
     "v1:4bpp:c783f69d18e6d060": {
       "role": "floor",
@@ -6107,6 +6227,14 @@
       "note": ""
     },
     "v1:4bpp:f151965fe2203689": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f1555212da242c3e": {
       "role": "wall",
       "normals": [
         "south"

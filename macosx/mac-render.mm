@@ -253,6 +253,8 @@ static void LogRemasterRadianceMetrics (const char *label, uint32_t bounce,
 
 #include "../remaster/surface_mesh_material.h"
 #include "../remaster/surface_mesh_cache.h"
+#include "../remaster/lighting_field_cache.h"
+#include "../remaster/field_upload_cache.h"
 #include "../remaster/emitter_patches.h"
 
 static void S9xInitMetal (void);
@@ -358,6 +360,7 @@ struct RemasterMetalResources
 	id<MTLBuffer> emitterPatches = nil;
 	id<MTLBuffer> directPartials = nil;
 	uint32_t sourceLeafCount = 0;
+	std::array<RemasterFieldUploadCache, 8> fieldUploads;
 };
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
 static uint32_t remasterRandomSeed = 0;
@@ -537,122 +540,23 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			for (uint32_t offset : S9xRemasterFrameOccurrences(frame, tileId))
 				highlights[offset] = 1;
 	}
-	static std::vector<uint8_t> lightingField, emissionField, participationField, oppositeFacingField, authoredNormals;
-	static std::vector<float> heightField; // RG32Float: signed height/255, known
-	static std::vector<float> surfaceField, reflectanceField, emissionDepths, emissionOmnidirectional;
-	static std::vector<RemasterSurfaceMesh::Sample> meshSamples;
+	static RemasterLightingFieldCache fieldCache;
+	auto &lightingField = fieldCache.occlusion;
+	auto &emissionField = fieldCache.emission;
+	auto &participationField = fieldCache.participation;
+	auto &oppositeFacingField = fieldCache.opposite;
+	auto &authoredNormals = fieldCache.authoredNormals;
+	auto &heightField = fieldCache.height;
+	auto &surfaceField = fieldCache.surface;
+	auto &reflectanceField = fieldCache.reflectance;
+	auto &emissionDepths = fieldCache.depths;
+	auto &emissionOmnidirectional = fieldCache.omnidirectional;
+	auto &meshSamples = fieldCache.samples;
 	static std::vector<RemasterSurfaceMesh::Cell> mesh;
-	lightingField.assign(frame.mainPixels.size() * 2, 0);
-	emissionField.assign(frame.mainPixels.size() * 4, 0);
-	heightField.assign(frame.mainPixels.size() * 2, 0);
-	participationField.assign(frame.mainPixels.size() * 2, 255);
-	oppositeFacingField.assign(frame.mainPixels.size(), 0);
-	surfaceField.assign(frame.mainPixels.size() * 4, 0.0f);
-	reflectanceField.assign(frame.mainPixels.size() * 4, 0.0f);
-	meshSamples.assign(frame.mainPixels.size(), RemasterSurfaceMesh::Sample{});
-	authoredNormals.assign(frame.mainPixels.size(), 0);
-	emissionDepths.assign(frame.mainPixels.size(), 0);
-	emissionOmnidirectional.assign(frame.mainPixels.size(), 0);
 	mesh.clear();
 	if (lighting && frame.schemaVersion >= 5)
 	{
-		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadataByTile;
-		for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
-			metadataByTile.emplace(metadata.tileId, &metadata);
-		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size(), nullptr);
-		for (size_t i = 0; i < frame.tileInstances.size(); i++)
-		{
-			const auto found = metadataByTile.find(frame.tileInstances[i].tileId);
-			if (found != metadataByTile.end())
-				instanceMetadata[i] = found->second;
-		}
-		std::unordered_map<std::string, const RemasterFrameMaterial *> materials;
-		for (const RemasterFrameMaterial &material : frame.materials)
-			materials.emplace(material.name, &material);
-		// Resolve selector names once per instance/tile pixel, rather than hashing
-		// material strings for every visible screen pixel.
-		std::vector<std::array<const RemasterFrameMaterial *, 64>> instanceMaterials(frame.tileInstances.size());
-		for (size_t i = 0; i < frame.tileInstances.size(); i++)
-		{
-			const auto &instance = frame.tileInstances[i];
-			const auto *metadata = instanceMetadata[i];
-			const auto base = materials.find(instance.material);
-			instanceMaterials[i].fill(instance.material.empty() || base == materials.end() ? nullptr : base->second);
-			if (metadata && metadata->hasMaterialSelectors)
-				for (size_t p = 0; p < 64; p++)
-					if (!metadata->materialSelectors[p].empty())
-					{
-						const auto found = materials.find(metadata->materialSelectors[p]);
-						instanceMaterials[i][p] = found == materials.end() ? nullptr : found->second;
-					}
-		}
-		for (size_t i = 0; i < frame.mainPixels.size(); i++)
-		{
-			if (S9xRemasterHeldLampHudPixel(frame, i))
-			{
-				participationField[i * 2] = participationField[i * 2 + 1] = 0;
-				continue;
-			}
-			const RemasterFramePixel &mainPixel = scenePixels[i];
-			const bool useSubscreen = !useScene && !mainPixel.instanceId &&
-				static_cast<uint8_t>(mainPixel.owner >> 24) == static_cast<uint8_t>(RemasterSourceType::Backdrop);
-			const RemasterFramePixel &pixel = useSubscreen ? frame.subPixels[i] : mainPixel;
-			if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size() || pixel.tilePixel >= 64)
-				continue;
-			const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
-			const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
-			const RemasterFrameMaterial *material = instanceMaterials[pixel.instanceId - 1][pixel.tilePixel];
-			const RemasterSurfaceClass surfaceClass = material ? material->surfaceClass : RemasterSurfaceClass::Unclassified;
-			RemasterSurfaceMesh::Sample &meshSample = meshSamples[i];
-			RemasterSurfaceMesh::classify(meshSample, instance.source, instance.sourceIndex,
-				surfaceClass, instance.assetGroup, pixel.instanceId);
-			meshSample.wallBase = instance.heightOffset / 255.0f * frame.lightingCoordinateScale;
-			emissionDepths[i] = metadata ? metadata->emissionDepth : 0;
-			emissionOmnidirectional[i] = metadata && metadata->emissionOmnidirectional ? 1.0f : 0.0f;
-			if (material && material->surfaceClass == RemasterSurfaceClass::UserInterface)
-				participationField[i * 2] = participationField[i * 2 + 1] = 0;
-			else if (material && !material->receivesGi)
-				participationField[i * 2 + 1] = 0;
-			if (material && material->hasDiffuseReflectance)
-			{
-				std::copy(material->diffuseReflectance.begin(), material->diffuseReflectance.end(),
-					reflectanceField.begin() + i * 4);
-				reflectanceField[i * 4 + 3] = 1.0f;
-			}
-			lightingField[i * 2] = metadata && metadata->hasOcclusion ? metadata->occlusion[pixel.tilePixel] : 255;
-			lightingField[i * 2 + 1] = 255;
-			if (metadata && metadata->directLightingOppositeFacing)
-				oppositeFacingField[i] = 255;
-			if (metadata && metadata->hasEmission)
-				std::copy(metadata->emissionRgba.begin() + pixel.tilePixel * 4,
-					metadata->emissionRgba.begin() + pixel.tilePixel * 4 + 4, emissionField.begin() + i * 4);
-			if ((metadata && metadata->hasHeight) || instance.hasPlacementHeight || instance.heightOffset)
-			{
-				const int baseHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
-					(metadata && metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
-				heightField[i * 2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<uint8_t>(baseHeight));
-				heightField[i * 2 + 1] = 1.0f;
-			}
-			const float center = heightField[i * 2] * frame.lightingCoordinateScale;
-			surfaceField[i * 4] = center;
-			if (metadata && metadata->hasNormals)
-			{
-				authoredNormals[i] = 1;
-				const size_t offset = pixel.tilePixel * 3;
-				float nx = metadata->normalXyz[offset] / 127.5f - 1.0f;
-				float ny = metadata->normalXyz[offset + 1] / 127.5f - 1.0f;
-				float nz = metadata->normalXyz[offset + 2] / 127.5f - 1.0f;
-				S9xRemasterTransformNormalForTileInstance(instance, nx, ny, nz);
-				const float normalLength = std::sqrt(nx * nx + ny * ny + nz * nz);
-				surfaceField[i * 4 + 1] = normalLength > 0.0001f ? nx / normalLength : 0.0f;
-				surfaceField[i * 4 + 2] = normalLength > 0.0001f ? ny / normalLength : 0.0f;
-				surfaceField[i * 4 + 3] = normalLength > 0.0001f ? nz / normalLength : 1.0f;
-			}
-			// Missing authored normals are filled from the mesh below.
-			meshSamples[i].height = surfaceField[i * 4];
-			meshSamples[i].known = heightField[i * 2 + 1] != 0 && participationField[i * 2] != 0;
-			meshSamples[i].coverage = lightingField[i * 2] / 255.0f;
-		}
+		fieldCache.update(frame, useScene, std::getenv("S9X_REMASTER_FULL_FIELDS") != nullptr);
 		const auto meshStarted = std::chrono::steady_clock::now();
 		// renderMutex serializes cache access. Compare effective inputs even for
 		// moving backgrounds; no game-specific static-tile assumptions are needed.
@@ -1188,6 +1092,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				resources->height != static_cast<NSUInteger>(height);
 			if (rebuildTextures)
 			{
+				resources->fieldUploads = {};
 				resources->directSources = resources->directSamples = nil;
 				resources->emitterPatches = nil;
 				resources->directPartials = nil;
@@ -1239,31 +1144,35 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				}
 			}
 			id<MTLTexture> occlusionTexture = resources->occlusion;
-			[occlusionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:occlusion bytesPerRow:width * 2];
+			auto uploadField = [&](size_t index, id<MTLTexture> texture, const void *data, size_t stride) {
+				return resources->fieldUploads[index].update(data, stride, height, [&](size_t y, size_t rows) {
+					[texture replaceRegion:MTLRegionMake2D(0, y, width, rows) mipmapLevel:0
+						withBytes:static_cast<const uint8_t *>(data)+y*stride bytesPerRow:stride];
+				});
+			};
+			bool visibilityDirty = uploadField(0, occlusionTexture, occlusion, width*2);
 			id<MTLTexture> emissionTexture = resources->emission;
-			[emissionTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:emission bytesPerRow:width * 4];
+			uploadField(1, emissionTexture, emission, width*4);
 			id<MTLTexture> heightTexture = resources->heightField;
-			[heightTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:heightField bytesPerRow:width * 2 * sizeof(float)];
+			visibilityDirty |= uploadField(2, heightTexture, heightField, width*2*sizeof(float));
 			id<MTLTexture> participationTexture = resources->participation;
-			[participationTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:participation bytesPerRow:width * 2];
+			uploadField(3, participationTexture, participation, width*2);
 			id<MTLTexture> oppositeFacingTexture = resources->oppositeFacing;
-			[oppositeFacingTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:oppositeFacing bytesPerRow:width];
+			uploadField(4, oppositeFacingTexture, oppositeFacing, width);
 			id<MTLTexture> surfaceTexture = resources->surface;
-			[surfaceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:surfaceField bytesPerRow:width * sizeof(float) * 4];
+			visibilityDirty |= uploadField(5, surfaceTexture, surfaceField, width*sizeof(float)*4);
 			id<MTLTexture> reflectanceTexture = resources->reflectance;
-			[reflectanceTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
-				withBytes:reflectance bytesPerRow:width * sizeof(float) * 4];
+			uploadField(6, reflectanceTexture, reflectance, width*sizeof(float)*4);
 			id<MTLTexture> visibilityBlocksTexture = resources->visibilityBlocks;
 			if (!resources->mesh || !mesh || mesh->size() != static_cast<size_t>(width * height)) return false;
-			memcpy(resources->mesh.contents, mesh->data(), mesh->size() * sizeof(RemasterSurfaceMesh::Cell));
+			visibilityDirty |= resources->fieldUploads[7].update(mesh->data(), width*sizeof(RemasterSurfaceMesh::Cell), height,
+				[&](size_t y, size_t rows) { const size_t stride = width*sizeof(RemasterSurfaceMesh::Cell);
+					memcpy(static_cast<uint8_t *>(resources->mesh.contents)+y*stride,
+						reinterpret_cast<const uint8_t *>(mesh->data())+y*stride, rows*stride); });
 			if (!visibilityBlocksTexture || !resources->sourcePower)
 				return false;
+			if (visibilityDirty)
+			{
 			id<MTLComputeCommandEncoder> visibilityBlocksEncoder = stageCounters.encoder(commandBuffer, "visibility_blocks");
 			if (!visibilityBlocksEncoder)
 				return false;
@@ -1277,6 +1186,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				(visibilityBlocksTexture.height + 7) / 8, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[visibilityBlocksEncoder endEncoding];
+			}
 			presentationTexture = resources->output;
 			MTLTextureDescriptor *radianceDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
 				width:width height:height mipmapped:NO];

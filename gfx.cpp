@@ -696,6 +696,29 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.constructedMaps = Memory.RAM + 0x2000;
 				dungeonFloor.graphics = Memory.VRAM;
 				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
+				dungeonFloor.hasTerrainActors = true;
+				dungeonFloor.linkZ = static_cast<int16_t>(Memory.RAM[0x24] | Memory.RAM[0x25]<<8);
+				dungeonFloor.actorScrollX = Memory.RAM[0xe2] | Memory.RAM[0xe3]<<8;
+				dungeonFloor.actorScrollY = Memory.RAM[0xe8] | Memory.RAM[0xe9]<<8;
+				for(int k=0;k<16;k++) if(Memory.RAM[0xe20+k]==0xec) {
+					auto &a=dungeonFloor.terrainActors[k];
+					a.x=Memory.RAM[0xd10+k] | Memory.RAM[0xd30+k]<<8;
+					a.y=Memory.RAM[0xd00+k] | Memory.RAM[0xd20+k]<<8;
+					a.state=Memory.RAM[0xdd0+k];a.kind=Memory.RAM[0xdb0+k];
+					a.z=Memory.RAM[0xf70+k];a.plane=Memory.RAM[0xf20+k]&1;
+				}
+				for(int k=0;k<128;k++) {
+					const auto *o=Memory.RAM+0x800+k*4;
+					const uint8_t ext=Memory.RAM[0xa20+k];
+					dungeonFloor.terrainOam[k]={static_cast<uint16_t>(o[0]|(ext&1)<<8),o[1],o[2],o[3],static_cast<uint8_t>(ext&2)};
+					// WRAM producer buffer alone is not final PPU identity. Reject a
+					// stale DMA/overwritten slot instead of matching same artwork.
+					if((PPU.OBJ[k].HPos&511)!=dungeonFloor.terrainOam[k].x ||
+						uint8_t(PPU.OBJ[k].VPos)!=o[1] || PPU.OBJ[k].Name!=(o[2]|(o[3]&1)<<8) ||
+						PPU.OBJ[k].HFlip!=bool(o[3]&0x40) || PPU.OBJ[k].VFlip!=bool(o[3]&0x80) ||
+						PPU.OBJ[k].Palette!=((o[3]>>1)&7) || !PPU.OBJ[k].Size)
+						dungeonFloor.terrainOam[k].size=0;
+				}
 				dungeonFloor.graphicsBase = PPU.BG[1].NameBase << 1;
 				dungeonFloor.bg1GraphicsBase = PPU.BG[0].NameBase << 1;
 				for (int layer = 0; layer < 2; layer++)

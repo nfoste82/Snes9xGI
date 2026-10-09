@@ -40,6 +40,7 @@
 #import "remaster/remaster.h"
 #include "remaster/emitter_groups.h"
 #include "remaster/emission_appearance.h"
+#include "remaster/inspector_height.h"
 
 #ifdef DEBUGGER
 #import "debug.h"
@@ -590,6 +591,7 @@ static NSPopUpButton	*remasterLayerSelector;
 static NSView *remasterSemanticsView;
 static NSPopUpButton *remasterRoleSelector, *remasterFacingSelector, *remasterSecondFacingSelector, *remasterCornerSelector;
 static NSButton *remasterContextDependentButton;
+static NSButton *remasterDoorframeBrush, *remasterDoorframeAnimationButton;
 static NSTextField *remasterSemanticNoteInput;
 static NSPopUpButton	*remasterMaterialBrush;
 static NSSlider			*remasterValueBrush;
@@ -600,6 +602,10 @@ static NSTextField		*remasterValueLabel;
 static NSButton			*remasterOcclusionFillOpaqueButton;
 static NSPopUpButton	*remasterHeightSamplingSelector;
 static NSPopUpButton	*remasterHeightPreviewMode;
+static NSPopUpButton *remasterHeightDomainSelector, *remasterHeightOccurrenceSelector;
+static NSTextField *remasterHeightReport;
+static uint32_t remasterHeightInstanceId = 0;
+static std::vector<uint32_t> remasterHeightOccurrences;
 static NSButton			*remasterHeightArtworkVisibleButton;
 static NSButton			*remasterHeightDataVisibleButton;
 static NSButton			*remasterHeightApplyAnimationButton;
@@ -724,8 +730,22 @@ enum RemasterEditorLayer
 	RemasterEditorHeight,
 	RemasterEditorNormal,
 	RemasterEditorEmission,
-	RemasterEditorMetadata
+	RemasterEditorMetadata,
+	RemasterEditorDoorframe
 };
+
+static bool RemasterEffectiveHeightPreview ()
+{
+	return remasterLayerSelector.indexOfSelectedItem == RemasterEditorHeight &&
+		remasterHeightDomainSelector.indexOfSelectedItem == 1;
+}
+
+static const std::array<uint8_t, 64> *RemasterAuthoredHeight (const RemasterTileContentId &tile,
+	RemasterHeightSampling &sampling)
+{
+	return S9xRemasterInspectorAuthoredHeight(remasterEditingProfileLoaded ? &remasterEditingProfile : nullptr,
+		remasterReplayFrame, tile, sampling);
+}
 
 static std::array<uint8_t, 3> EncodeRemasterNormal (float x, float y, float z)
 {
@@ -794,16 +814,16 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	{
 		metadata.materialSelectors = captured->materialSelectors;
 		metadata.occlusion = captured->occlusion;
-		metadata.height = captured->height;
 		metadata.normalXyz = captured->normalXyz;
 		metadata.emissionRgba = captured->emissionRgba;
 		metadata.emissionDepth = captured->emissionDepth;
 		metadata.emissionOmnidirectional = captured->emissionOmnidirectional;
 		metadata.combineEmitters = captured->combineEmitters;
 		metadata.tileRole = captured->tileRole;
+		metadata.hasDoorframeMask = captured->hasDoorframeMask;
+		metadata.doorframeMask = captured->doorframeMask;
 		metadata.hasMaterialSelectors = captured->hasMaterialSelectors;
 		metadata.hasOcclusion = captured->hasOcclusion;
-		metadata.hasHeight = captured->hasHeight;
 		metadata.hasNormals = captured->hasNormals;
 		metadata.hasEmission = captured->hasEmission;
 		metadata.directLightingOppositeFacing = captured->directLightingOppositeFacing;
@@ -811,7 +831,16 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	}
 	auto editable = remasterEditingProfile.assets.find(tileId);
 	if (editable == remasterEditingProfile.assets.end())
+	{
+		RemasterHeightSampling sampling;
+		if (const auto *height = RemasterAuthoredHeight(tileId, sampling))
+		{
+			metadata.height = *height;
+			metadata.heightSampling = sampling;
+			metadata.hasHeight = true;
+		}
 		return metadata;
+	}
 	const RemasterAssetMetadata &source = editable->second;
 	if (source.hasMaterialSelectors)
 	{
@@ -823,10 +852,11 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.occlusion = source.occlusion;
 		metadata.hasOcclusion = true;
 	}
-	if (source.hasHeight)
+	RemasterHeightSampling authoredSampling;
+	if (const auto *authored = RemasterAuthoredHeight(tileId, authoredSampling))
 	{
-		metadata.height = source.height;
-		metadata.heightSampling = source.heightSampling;
+		metadata.height = *authored;
+		metadata.heightSampling = authoredSampling;
 		metadata.hasHeight = true;
 	}
 	if (source.hasNormals)
@@ -844,6 +874,8 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 	metadata.combineEmitters = source.combineEmitters;
 	metadata.tileRole = source.tileRole;
+	metadata.hasDoorframeMask = source.hasDoorframeMask;
+	metadata.doorframeMask = source.doorframeMask;
 	metadata.hasTileSemantics = source.hasTileSemantics;
 	metadata.tileSemanticNormals = source.tileSemanticNormals;
 	metadata.tileSemanticCorner = source.tileSemanticCorner;
@@ -887,11 +919,20 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	if (layer == RemasterEditorMetadata)
 	{
 		destination.tileRole = source.tileRole;
+		if (destination.tileRole != RemasterTileRole::Door)
+		{
+			destination.hasDoorframeMask = false;
+			destination.doorframeMask = 0;
+		}
 		destination.hasTileSemantics = source.hasTileSemantics;
 		destination.tileSemanticNormals = source.tileSemanticNormals;
 		destination.tileSemanticCorner = source.tileSemanticCorner;
 		destination.tileSemanticContextDependent = source.tileSemanticContextDependent;
 		destination.tileSemanticNote = source.tileSemanticNote;
+	}
+	else if (layer == RemasterEditorDoorframe)
+	{
+		S9xRemasterCopyDoorframe(source, destination);
 	}
 	else if (layer == RemasterEditorMaterial)
 	{
@@ -929,6 +970,7 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 	uint32_t version = RemasterMetadataHasData(metadata) ? 2 : 0;
 	if (metadata.hasTileSemantics) version = 20;
 	else if (metadata.tileRole != RemasterTileRole::Unknown) version = 18;
+	if (metadata.tileRole == RemasterTileRole::Door || metadata.hasDoorframeMask) version = 21;
 	if (metadata.emissionDepth > 0) version = std::max<uint32_t>(version, 14);
 	if (metadata.emissionOmnidirectional) version = std::max<uint32_t>(version, 19);
 	if (!metadata.combineEmitters.empty()) version = std::max<uint32_t>(version, 17);
@@ -4125,6 +4167,8 @@ void QuitWithFatalError ( NSString *message)
 - (void)fillRemasterTileHeight:(id)sender;
 - (void)stepRemasterTileHeight:(NSButton *)sender;
 - (void)applyRemasterHeightToAnimation:(id)sender;
+- (void)changeRemasterDoorframe:(id)sender;
+- (void)applyRemasterDoorframeToAnimation:(id)sender;
 - (void)changeRemasterNormalPreset:(id)sender;
 - (void)changeRemasterNormalValue:(id)sender;
 - (void)fillRemasterTileNormal:(id)sender;
@@ -4424,6 +4468,7 @@ void QuitWithFatalError ( NSString *message)
 	ClearRemasterDebugLightRedraw();
 	remasterFramePresenting = false;
 	remasterSelectionValid = false;
+	remasterHeightInstanceId = 0;
 	remasterSelectedTiles.clear();
 	remasterVariants.clear();
 	remasterReplayFrame = RemasterFrame();
@@ -4919,6 +4964,7 @@ void QuitWithFatalError ( NSString *message)
 	}
 
 	remasterReplayFrame = std::move(frame);
+	remasterHeightInstanceId = 0;
 	remasterMetadataNeedsSync = false;
 	remasterReplayDebugMode = RemasterDebugMode::Original;
 	remasterFramePresenting = true;
@@ -5157,6 +5203,7 @@ void QuitWithFatalError ( NSString *message)
 	bool instanceFromSubscreen = false;
 	const RemasterFrameTileInstance *instance = S9xRemasterFrameVisibleInstanceAt(remasterReplayFrame, x, y,
 		&instanceFromSubscreen);
+	remasterHeightInstanceId = instance ? static_cast<uint32_t>(instance - remasterReplayFrame.tileInstances.data() + 1) : 0;
 
 	if (instance)
 	{
@@ -5176,7 +5223,17 @@ void QuitWithFatalError ( NSString *message)
 	else if (!extendingSelection)
 		remasterSelectedTiles.clear();
 	remasterSelectionValid = !remasterSelectedTiles.empty();
+	if (!remasterSelectionValid) remasterHeightInstanceId = 0;
 	remasterTilePixelSelected = false;
+	if (instance && std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), instance->tileId) != remasterSelectedTiles.end())
+	{
+		const auto &pickedPixel = instanceFromSubscreen ? subPixel : mainPixel;
+		if (pickedPixel.tilePixel < 64)
+		{
+			remasterTilePixelSelected = true;
+			remasterSelectedTilePixel = pickedPixel.tilePixel; // rasterizer already canonicalizes H/V
+		}
+	}
 	if (instance && std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), instance->tileId) != remasterSelectedTiles.end())
 		remasterSelectedTile = instance->tileId;
 	else if (remasterSelectionValid)
@@ -5215,7 +5272,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterArtworkPreview.editor = self;
 		remasterArtworkPreview.imageFrameStyle = NSImageFrameGrayBezel;
 		remasterArtworkPreview.imageScaling = NSImageScaleAxesIndependently;
-		remasterArtworkPreview.toolTip = @"Full-color artwork reference for the tile being edited above.";
+		remasterArtworkPreview.toolTip = @"Full-brightness palette artwork reference for the tile being edited above.";
 		[contentView addSubview:remasterArtworkPreview];
 		remasterNormalAxesView = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(156, 432, 74, 100)];
 		remasterNormalAxesView.imageFrameStyle = NSImageFrameNone;
@@ -5256,6 +5313,19 @@ void QuitWithFatalError ( NSString *message)
 		remasterLayerSelector.target = self;
 		remasterLayerSelector.action = @selector(changeRemasterLayer:);
 		[contentView addSubview:remasterLayerSelector];
+		remasterDoorframeBrush = [[NSButton alloc] initWithFrame:NSMakeRect(168, 377, 190, 28)];
+		remasterDoorframeBrush.title = @"Doorframe pixel (true)";
+		[remasterDoorframeBrush setButtonType:NSSwitchButton];
+		remasterDoorframeBrush.state = NSControlStateValueOn;
+		remasterDoorframeBrush.target = self;
+		remasterDoorframeBrush.action = @selector(changeRemasterDoorframe:);
+		[contentView addSubview:remasterDoorframeBrush];
+		remasterDoorframeAnimationButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 342, 150, 28)];
+		remasterDoorframeAnimationButton.title = @"Apply to Animation";
+		remasterDoorframeAnimationButton.bezelStyle = NSBezelStyleRounded;
+		remasterDoorframeAnimationButton.target = self;
+		remasterDoorframeAnimationButton.action = @selector(applyRemasterDoorframeToAnimation:);
+		[contentView addSubview:remasterDoorframeAnimationButton];
 		remasterSemanticsView = [[NSView alloc] initWithFrame:NSMakeRect(168, 342, 570, 205)];
 		[contentView addSubview:remasterSemanticsView];
 		NSArray *titles = @[@"Tile role", @"Canonical wall facing", @"Second corner facing", @"Corner type"];
@@ -5345,6 +5415,23 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMode.target = self;
 		remasterHeightPreviewMode.action = @selector(changeRemasterPreviewLayers:);
 		[contentView addSubview:remasterHeightPreviewMode];
+		remasterHeightDomainSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(168, 500, 210, 28) pullsDown:NO];
+		[remasterHeightDomainSelector addItemsWithTitles:@[@"Authored / Profile", @"Effective Room (read only)"]];
+		remasterHeightDomainSelector.target = self;
+		remasterHeightDomainSelector.action = @selector(changeRemasterPreviewLayers:);
+		remasterHeightDomainSelector.toolTip = @"Authored edits canonical local samples only. Effective shows the selected packet instance, including its signed base and placement override; it never seeds authoring.";
+		[contentView addSubview:remasterHeightDomainSelector];
+		remasterHeightOccurrenceSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(385, 500, 355, 28) pullsDown:NO];
+		remasterHeightOccurrenceSelector.target = self;
+		remasterHeightOccurrenceSelector.action = @selector(changeRemasterPreviewLayers:);
+		[contentView addSubview:remasterHeightOccurrenceSelector];
+		remasterHeightReport = [[NSTextField alloc] initWithFrame:NSMakeRect(168, 425, 572, 70)];
+		remasterHeightReport.editable = NO;
+		remasterHeightReport.selectable = YES;
+		remasterHeightReport.bezeled = NO;
+		remasterHeightReport.drawsBackground = NO;
+		remasterHeightReport.font = [NSFont systemFontOfSize:12];
+		[contentView addSubview:remasterHeightReport];
 		remasterHeightArtworkVisibleButton = [[NSButton alloc] initWithFrame:NSMakeRect(330, 342, 100, 28)];
 		remasterHeightArtworkVisibleButton.title = @"Artwork";
 		remasterHeightArtworkVisibleButton.buttonType = NSButtonTypeSwitch;
@@ -5821,29 +5908,65 @@ void QuitWithFatalError ( NSString *message)
 		if (found != remasterEditingProfile.assets.end())
 			editableMetadata = &found->second;
 	}
+	const auto doorMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
+	if (doorMetadata.tileRole == RemasterTileRole::Door)
+	{
+		if (remasterLayerSelector.numberOfItems == RemasterEditorDoorframe)
+			[remasterLayerSelector addItemWithTitle:@"Doorframe"];
+	}
+	else if (remasterLayerSelector.numberOfItems > RemasterEditorDoorframe)
+	{
+		if (remasterLayerSelector.indexOfSelectedItem == RemasterEditorDoorframe)
+			[remasterLayerSelector selectItemAtIndex:RemasterEditorMetadata];
+		[remasterLayerSelector removeItemAtIndex:RemasterEditorDoorframe];
+	}
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	const bool hasMaterials = (editableMetadata && editableMetadata->hasMaterialSelectors) ||
 		(capturedMetadata && capturedMetadata->hasMaterialSelectors);
 	const bool hasOcclusion = (editableMetadata && editableMetadata->hasOcclusion) ||
 		(capturedMetadata && capturedMetadata->hasOcclusion);
-	const bool hasHeight = (editableMetadata && editableMetadata->hasHeight) ||
-		(capturedMetadata && capturedMetadata->hasHeight);
+	RemasterHeightSampling sampling;
+	const auto *height = RemasterAuthoredHeight(remasterSelectedTile, sampling);
+	const bool hasHeight = height != nullptr;
+	const uint32_t heightInstance = S9xRemasterInspectorHeightInstance(remasterReplayFrame,
+		remasterSelectedTile, remasterHeightInstanceId, remasterHeightOccurrences);
+	const auto *placement = heightInstance ? &remasterReplayFrame.tileInstances[heightInstance - 1] : nullptr;
+	const auto effectiveHeight = S9xRemasterInspectorEffectiveHeight(placement, height);
+	const bool effectivePreview = RemasterEffectiveHeightPreview();
+	[remasterHeightOccurrenceSelector removeAllItems];
+	[remasterHeightOccurrenceSelector addItemWithTitle:remasterHeightOccurrences.empty() ?
+		@"No occurrence in this frame" : @"Choose occurrence (ambiguous)"];
+	for (uint32_t id : remasterHeightOccurrences)
+	{
+		const auto &entry = remasterReplayFrame.tileInstances[id - 1];
+		[remasterHeightOccurrenceSelector addItemWithTitle:[NSString stringWithFormat:@"Instance %u · %@%u · base %+d · %@%@", id,
+			entry.source == RemasterSourceType::Background ? @"BG" : @"OBJ", entry.sourceIndex + 1,
+			entry.heightOffset, entry.hFlip ? @"H" : @"", entry.vFlip ? @"V" : @""]];
+		if (id == heightInstance) [remasterHeightOccurrenceSelector selectItemAtIndex:remasterHeightOccurrenceSelector.numberOfItems - 1];
+	}
 	const bool hasNormals = (editableMetadata && editableMetadata->hasNormals) ||
 		(capturedMetadata && capturedMetadata->hasNormals);
 	const bool hasEmission = (editableMetadata && editableMetadata->hasEmission) ||
 		(capturedMetadata && capturedMetadata->hasEmission);
-	const std::array<uint8_t, 64> *height = hasHeight ?
-		(editableMetadata && editableMetadata->hasHeight ? &editableMetadata->height : &capturedMetadata->height) : nullptr;
-	const RemasterHeightSampling sampling = editableMetadata && editableMetadata->hasHeight ? editableMetadata->heightSampling :
-		(capturedMetadata ? capturedMetadata->heightSampling : RemasterHeightSampling::Nearest);
 	const std::array<uint8_t, 192> *normals = hasNormals ?
 		(editableMetadata && editableMetadata->hasNormals ? &editableMetadata->normalXyz : &capturedMetadata->normalXyz) : nullptr;
-	const bool canRender = asset != nullptr || capturedMetadata != nullptr || remasterEditingProfileLoaded;
+	const bool canRender = asset != nullptr || capturedMetadata != nullptr || remasterEditingProfileLoaded || effectiveHeight.available;
 	std::array<uint8_t, 64 * 3> visibleColors = {};
 	std::array<uint32_t, 64> visibleColorCounts = {};
 	std::array<std::array<uint8_t, 3>, 64> artworkColors = {};
-	const std::array<bool, 64> artworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
+	std::array<bool, 64> artworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
 		remasterSelectedTile, artworkColors);
+	RemasterFrameArtworkColors paletteArtwork;
+	if (S9xRemasterFramePaletteArtwork(remasterReplayFrame, remasterSelectedTile,
+		remasterHeightInstanceId, paletteArtwork))
+		for (size_t source = 0; source < 64; source++)
+		{
+			artworkVisible[source] = (paletteArtwork.visiblePixels & (UINT64_C(1) << source)) != 0;
+			const uint16_t color = paletteArtwork.rgb555[source];
+			artworkColors[source] = {{ static_cast<uint8_t>((((color >> 10) & 31) * 527 + 23) >> 6),
+				static_cast<uint8_t>((((color >> 5) & 31) * 527 + 23) >> 6),
+				static_cast<uint8_t>(((color & 31) * 527 + 23) >> 6) }};
+		}
 	for (size_t source = 0; source < 64; source++)
 		if (artworkVisible[source])
 		{
@@ -5899,7 +6022,15 @@ void QuitWithFatalError ( NSString *message)
 				}
 				artworkPixel[3] = 255;
 				uint8_t *pixel = pixels + (y * size + x) * 4;
-				if (layer == RemasterEditorMaterial && hasMaterials)
+				if (layer == RemasterEditorDoorframe)
+				{
+					const bool frame = S9xRemasterDoorframePixel(doorMetadata.doorframeMask,
+						static_cast<unsigned>(source % 8), static_cast<unsigned>(source / 8));
+					for (size_t c = 0; c < 3; c++) pixel[c] = artworkPixel[c];
+					if (!doorMetadata.hasDoorframeMask) { pixel[0] = 80; pixel[1] = 20; pixel[2] = 90; }
+					else if (frame) { pixel[0] = 240; pixel[1] = 205; pixel[2] = 70; }
+				}
+				else if (layer == RemasterEditorMaterial && hasMaterials)
 				{
 					const std::string &name = editableMetadata && editableMetadata->hasMaterialSelectors ? editableMetadata->materialSelectors[source] :
 						capturedMetadata->materialSelectors[source];
@@ -5934,14 +6065,24 @@ void QuitWithFatalError ( NSString *message)
 				}
 				else if (layer == RemasterEditorHeight)
 				{
-					const bool showHeight = remasterHeightDataVisibleButton.state == NSControlStateValueOn && height;
+					const bool showHeight = remasterHeightDataVisibleButton.state == NSControlStateValueOn &&
+						(effectivePreview ? effectiveHeight.available : hasHeight);
 					uint8_t overlay[3] = {};
 					if (showHeight)
 					{
 						const float sampleX = (x + 0.5f) / 16.0f - 0.5f;
 						const float sampleY = (y + 0.5f) / 16.0f - 0.5f;
 						const NSInteger preview = remasterHeightPreviewMode.indexOfSelectedItem;
-						if (preview == RemasterHeightPreviewNormals)
+						if (effectivePreview)
+						{
+							// Canonical orientation matches the artwork/editor; packet placement
+							// arrays and tilePixel are already canonical (do not flip twice).
+							const float value = (effectiveHeight.at(source) - remasterHeightPreviewMin) /
+								static_cast<float>(std::max<NSInteger>(1, remasterHeightPreviewMax - remasterHeightPreviewMin));
+							const uint8_t debug = static_cast<uint8_t>(std::lround(std::max(0.0f, std::min(1.0f, value)) * 255));
+							overlay[0] = overlay[1] = overlay[2] = debug;
+						}
+						else if (preview == RemasterHeightPreviewNormals)
 						{
 							const float dx = SampleRemasterHeight(*height, sampling, sampleX + 0.5f, sampleY) -
 								SampleRemasterHeight(*height, sampling, sampleX - 0.5f, sampleY);
@@ -6022,7 +6163,8 @@ void QuitWithFatalError ( NSString *message)
 				}
 				else if (layer == RemasterEditorArtwork)
 				{
-					pixel[0] = pixel[1] = pixel[2] = decodedArtwork;
+					for (size_t component = 0; component < 3; component++)
+						pixel[component] = visibleColorCounts[source] ? visibleColors[source * 3 + component] : decodedArtwork;
 				}
 				else
 				{
@@ -6142,7 +6284,7 @@ void QuitWithFatalError ( NSString *message)
 		metadata.tileId = id;
 		CopyRemasterMetadataLayer(annotation, metadata, RemasterEditorMetadata);
 	}
-	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 20);
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, RemasterMetadataSchemaVersion(annotation));
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:) object:snapshot];
 	[remasterUndoManager setActionName:@"Edit Tile Metadata"];
 	remasterMetadataNeedsSync = remasterNonSceneDirty = remasterEditingProfileDirty = true;
@@ -6151,12 +6293,19 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterPreviewLayers:(id)sender
 {
+	if (sender == remasterHeightOccurrenceSelector)
+	{
+		const NSInteger index = remasterHeightOccurrenceSelector.indexOfSelectedItem;
+		remasterHeightInstanceId = index > 0 && static_cast<size_t>(index) <= remasterHeightOccurrences.size() ?
+			remasterHeightOccurrences[index - 1] : 0;
+	}
 	if (!remasterVariants.empty())
 		[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
 - (void)resetRemasterLayer:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty())
 		return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
@@ -6203,6 +6352,7 @@ void QuitWithFatalError ( NSString *message)
 	if (found == remasterEditingProfile.assets.end())
 		return;
 	bool present = layer == RemasterEditorMaterial ? found->second.hasMaterialSelectors :
+		layer == RemasterEditorDoorframe ? found->second.hasDoorframeMask :
 		layer == RemasterEditorOcclusion ? found->second.hasOcclusion :
 		layer == RemasterEditorHeight ? found->second.hasHeight :
 		layer == RemasterEditorNormal ? found->second.hasNormals :
@@ -6213,7 +6363,12 @@ void QuitWithFatalError ( NSString *message)
 	std::string before;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
-	if (layer == RemasterEditorMaterial)
+	if (layer == RemasterEditorDoorframe)
+	{
+		found->second.hasDoorframeMask = false;
+		found->second.doorframeMask = 0;
+	}
+	else if (layer == RemasterEditorMaterial)
 		found->second.hasMaterialSelectors = false;
 	else if (layer == RemasterEditorOcclusion)
 	{
@@ -6249,6 +6404,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resetRemasterTile:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() ||
 		!remasterEditingProfile.assets.count(remasterSelectedTile))
 		return;
@@ -6304,6 +6460,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)pasteRemasterLayer:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty() || !RemasterClipboardAvailable(layer))
 		return;
@@ -6332,6 +6489,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)pasteRemasterTile:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty() || !RemasterClipboardAvailable(-1))
 		return;
 	std::string before;
@@ -6364,6 +6522,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)applyRemasterTileToVariants:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.size() < 2)
 		return;
 	const RemasterAssetMetadata sourceMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
@@ -6543,7 +6702,9 @@ void QuitWithFatalError ( NSString *message)
 - (void)refreshRemasterEditingControls
 {
 	const NSInteger layer = remasterLayerSelector ? remasterLayerSelector.indexOfSelectedItem : 0;
-	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty();
+	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview();
+	remasterHeightDomainSelector.hidden = remasterHeightOccurrenceSelector.hidden = remasterHeightReport.hidden = layer != RemasterEditorHeight;
+	remasterHeightOccurrenceSelector.enabled = !remasterHeightOccurrences.empty();
 	remasterSemanticsView.hidden = layer != RemasterEditorMetadata;
 	if (layer == RemasterEditorMetadata)
 	{
@@ -6582,6 +6743,18 @@ void QuitWithFatalError ( NSString *message)
 	remasterNormalUpdateButton.hidden = layer != RemasterEditorNormal;
 	remasterNormalPixelScopeLabel.hidden = layer != RemasterEditorNormal;
 	remasterMaterialBrush.hidden = layer != RemasterEditorMaterial;
+	remasterDoorframeBrush.hidden = remasterDoorframeAnimationButton.hidden = layer != RemasterEditorDoorframe;
+	remasterDoorframeBrush.enabled = editable;
+	remasterDoorframeAnimationButton.enabled = editable && remasterVariants.size() > 1;
+	if (layer == RemasterEditorDoorframe)
+	{
+		const auto metadata = EffectiveRemasterMetadata(remasterSelectedTile);
+		remasterValueLabel.stringValue = !metadata.hasDoorframeMask ? @"Unknown mask (not authored)" :
+			remasterTilePixelSelected ? [NSString stringWithFormat:@"Pixel (%lu,%lu): %@", remasterSelectedTilePixel % 8,
+				remasterSelectedTilePixel / 8, S9xRemasterDoorframePixel(metadata.doorframeMask,
+					static_cast<unsigned>(remasterSelectedTilePixel % 8), static_cast<unsigned>(remasterSelectedTilePixel / 8)) ? @"frame (true)" : @"not frame (false)"] :
+			@"Gold = frame; others retain geometry";
+	}
 	remasterValueBrush.hidden = layer != RemasterEditorOcclusion && layer != RemasterEditorHeight && layer != RemasterEditorEmission;
 	remasterValueInput.hidden = remasterValueBrush.hidden;
 	remasterValueDownButton.hidden = remasterValueBrush.hidden;
@@ -6648,7 +6821,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterValueUpButton.enabled = remasterValueBrush.enabled;
 	remasterOcclusionFillOpaqueButton.enabled = editable && !remasterSelectedTiles.empty();
 	remasterHeightSamplingSelector.enabled = editable;
-	remasterHeightPreviewMode.enabled = layer == RemasterEditorHeight;
+	remasterHeightPreviewMode.enabled = layer == RemasterEditorHeight && !RemasterEffectiveHeightPreview();
 	remasterHeightArtworkVisibleButton.enabled = layer == RemasterEditorHeight;
 	remasterHeightDataVisibleButton.enabled = layer == RemasterEditorHeight;
 	remasterHeightApplyAnimationButton.enabled = editable && remasterVariants.size() > 1 &&
@@ -6687,33 +6860,55 @@ void QuitWithFatalError ( NSString *message)
 	remasterPasteTileButton.enabled = editable && RemasterClipboardAvailable(-1);
 	remasterApplyTileToVariantsButton.enabled = editable && remasterVariants.size() > 1 &&
 		RemasterMetadataHasData(EffectiveRemasterMetadata(remasterSelectedTile));
-	if (remasterValueLabel && (layer == RemasterEditorOcclusion || layer == RemasterEditorHeight))
+	if (layer == RemasterEditorHeight)
+	{
+		RemasterHeightSampling sampling;
+		const auto *authored = RemasterAuthoredHeight(remasterSelectedTile, sampling);
+		const uint32_t id = S9xRemasterInspectorHeightInstance(remasterReplayFrame,
+			remasterSelectedTile, remasterHeightInstanceId, remasterHeightOccurrences);
+		const auto *instance = id ? &remasterReplayFrame.tileInstances[id - 1] : nullptr;
+		const auto effective = S9xRemasterInspectorEffectiveHeight(instance, authored);
+		NSString *authoredValue = !authored ? @"missing (not zero)" : !remasterTilePixelSelected ? @"select a pixel" :
+			[NSString stringWithFormat:@"%u", (*authored)[remasterSelectedTilePixel]];
+		NSString *effectiveValue = !id ? (remasterHeightOccurrences.empty() ? @"no occurrence in this frame" : @"ambiguous — choose occurrence") :
+			!effective.available ? @"missing" : !remasterTilePixelSelected ? @"select a pixel" :
+			[NSString stringWithFormat:@"%+d", effective.at(remasterSelectedTilePixel)];
+		NSString *source = effective.placementOverride ? @"placement-local override" :
+			authored ? @"authored local + placement base" : @"base only; local missing (runtime zero fallback)";
+		remasterHeightReport.stringValue = [NSString stringWithFormat:@"Canonical pixel %@ · Authored / %@: %@ · Effective: %@\n%@\n%@",
+			remasterTilePixelSelected ? [NSString stringWithFormat:@"(%lu,%lu)", static_cast<unsigned long>(remasterSelectedTilePixel % 8), static_cast<unsigned long>(remasterSelectedTilePixel / 8)] : @"—",
+			remasterEditingProfileLoaded ? @"Profile" : @"Captured profile", authoredValue, effectiveValue,
+			id ? [NSString stringWithFormat:@"Instance %u · signed base %+d · source: %@", id, effective.base, source] : @"Placement base/source unavailable; no arbitrary plane selected",
+			RemasterEffectiveHeightPreview() ? [NSString stringWithFormat:@"Read only · nearest effective samples · display range %ld…%ld", remasterHeightPreviewMin, remasterHeightPreviewMax] : @"Edits affect local profile samples only; placement geometry is never copied"];
+		remasterValueLabel.stringValue = authored ? @"Authored local byte (0–255)" : @"No authored height";
+		// Only local authoring data can become a brush value. Missing metadata
+		// leaves the explicit brush unchanged; it must not sample effective height.
+		if (authored && remasterTilePixelSelected)
+		{
+			remasterValueBrush.integerValue = (*authored)[remasterSelectedTilePixel];
+			remasterValueInput.integerValue = remasterValueBrush.integerValue;
+		}
+	}
+	else if (remasterValueLabel && layer == RemasterEditorOcclusion)
 	{
 		if (!remasterTilePixelSelected)
 			remasterValueLabel.stringValue = @"Select a pixel";
 		else
 		{
-			uint8_t value = layer == RemasterEditorOcclusion ? 255 : 0;
+			uint8_t value = 255;
 			auto editableMetadata = remasterEditingProfile.assets.find(remasterSelectedTile);
-			if (editableMetadata != remasterEditingProfile.assets.end() &&
-				(layer == RemasterEditorOcclusion ? editableMetadata->second.hasOcclusion : editableMetadata->second.hasHeight))
-				value = layer == RemasterEditorOcclusion ? editableMetadata->second.occlusion[remasterSelectedTilePixel] :
-					editableMetadata->second.height[remasterSelectedTilePixel];
+			if (editableMetadata != remasterEditingProfile.assets.end() && editableMetadata->second.hasOcclusion)
+				value = editableMetadata->second.occlusion[remasterSelectedTilePixel];
 			else
 			{
 				const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(
 					remasterReplayFrame, remasterSelectedTile);
-				if (captured && (layer != RemasterEditorOcclusion || captured->hasOcclusion))
-					value = layer == RemasterEditorOcclusion ? captured->occlusion[remasterSelectedTilePixel] :
-						captured->height[remasterSelectedTilePixel];
+				if (captured && captured->hasOcclusion)
+					value = captured->occlusion[remasterSelectedTilePixel];
 			}
 			remasterValueBrush.integerValue = value;
 			remasterValueInput.integerValue = value;
-			remasterValueLabel.stringValue = layer == RemasterEditorHeight ?
-				[NSString stringWithFormat:@"Pixel (%lu, %lu): %u  normalized %.3f",
-				static_cast<unsigned long>(remasterSelectedTilePixel % 8),
-				static_cast<unsigned long>(remasterSelectedTilePixel / 8), value, value / 255.0] :
-				[NSString stringWithFormat:@"Pixel (%lu, %lu): %u",
+			remasterValueLabel.stringValue = [NSString stringWithFormat:@"Pixel (%lu, %lu): %u",
 				static_cast<unsigned long>(remasterSelectedTilePixel % 8),
 				static_cast<unsigned long>(remasterSelectedTilePixel / 8), value];
 		}
@@ -6875,6 +7070,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterStrokeDragging = false;
 	remasterStrokeStartPoint = point;
 	remasterStrokeValue = static_cast<uint8_t>(remasterValueBrush.integerValue);
+	if (layer == RemasterEditorDoorframe)
+		remasterStrokeValue = remasterDoorframeBrush.state == NSControlStateValueOn;
 	if (layer == RemasterEditorNormal)
 	{
 		const std::array<uint8_t, 3> focused = EffectiveRemasterNormal(remasterSelectedTile,
@@ -6903,6 +7100,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)continueRemasterTileStrokeAtPoint:(NSPoint)point
 {
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata)
 		return;
 	size_t pixel;
@@ -6928,10 +7126,16 @@ void QuitWithFatalError ( NSString *message)
 		touched.insert(remasterSelectedTile);
 		remasterStrokeSnapshot = CaptureRemasterAssetSnapshot(touched);
 	}
+	if (layer == RemasterEditorDoorframe && !remasterEditingProfile.assets.count(remasterSelectedTile))
+		remasterEditingProfile.assets[remasterSelectedTile] = EffectiveRemasterMetadata(remasterSelectedTile);
 	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
 	metadata.tileId = remasterSelectedTile;
 	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
-	if (layer == RemasterEditorMaterial)
+	if (layer == RemasterEditorDoorframe)
+	{
+		remasterStrokeChanged |= S9xRemasterPaintDoorframe(metadata, static_cast<unsigned>(pixel), remasterStrokeValue != 0);
+	}
+	else if (layer == RemasterEditorMaterial)
 	{
 		const bool hadLayer = metadata.hasMaterialSelectors;
 		if (!metadata.hasMaterialSelectors && captured && captured->hasMaterialSelectors)
@@ -6955,12 +7159,7 @@ void QuitWithFatalError ( NSString *message)
 	else if (layer == RemasterEditorHeight)
 	{
 		const bool hadLayer = metadata.hasHeight;
-		if (!metadata.hasHeight && captured && captured->hasHeight)
-		{
-			metadata.height = captured->height;
-			metadata.heightSampling = captured->heightSampling;
-		}
-		metadata.hasHeight = true;
+		S9xRemasterInspectorInitializeAuthoredHeight(metadata);
 		const uint8_t value = remasterStrokeValue;
 		remasterStrokeChanged |= !hadLayer || metadata.height[pixel] != value;
 		metadata.height[pixel] = value;
@@ -7008,7 +7207,7 @@ void QuitWithFatalError ( NSString *message)
 		}
 	}
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion,
-		layer == RemasterEditorNormal ? 5 : (layer == RemasterEditorEmission ? 3 : 2));
+		layer == RemasterEditorDoorframe ? 21 : (layer == RemasterEditorNormal ? 5 : (layer == RemasterEditorEmission ? 3 : 2)));
 	remasterMetadataNeedsSync |= remasterStrokeChanged;
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
@@ -7016,7 +7215,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)endRemasterTileStroke
 {
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
-	if (!remasterStrokeDragging && layer == RemasterEditorMaterial)
+	if (!remasterStrokeDragging && (layer == RemasterEditorMaterial || layer == RemasterEditorDoorframe))
 	{
 		remasterStrokeDragging = true;
 		[self continueRemasterTileStrokeAtPoint:remasterStrokeStartPoint];
@@ -7025,7 +7224,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:)
 			object:remasterStrokeSnapshot];
-		[remasterUndoManager setActionName:layer == RemasterEditorMaterial ? @"Paint Material" :
+		[remasterUndoManager setActionName:layer == RemasterEditorDoorframe ? @"Paint Doorframe" : layer == RemasterEditorMaterial ? @"Paint Material" :
 			(layer == RemasterEditorOcclusion ? @"Paint Occlusion" :
 			(layer == RemasterEditorHeight ? @"Paint Height" :
 			(layer == RemasterEditorNormal ? @"Paint Normal" : @"Paint Emission")))];
@@ -7059,8 +7258,48 @@ void QuitWithFatalError ( NSString *message)
 		[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)changeRemasterDoorframe:(id)sender
+{
+	if (remasterLayerSelector.indexOfSelectedItem != RemasterEditorDoorframe || !remasterTilePixelSelected) return;
+	// Use the same snapshot/undo and canonical-pixel paint path as a stroke.
+	remasterStrokeSnapshot = nil;
+	remasterStrokeVisited = 0;
+	remasterStrokeChanged = false;
+	remasterStrokeDragging = true;
+	remasterStrokeValue = remasterDoorframeBrush.state == NSControlStateValueOn;
+	const NSRect rect = [remasterTilePreview.cell drawingRectForBounds:remasterTilePreview.bounds];
+	const NSPoint point = NSMakePoint(NSMinX(rect) + (remasterSelectedTilePixel % 8 + 0.5) * NSWidth(rect) / 8,
+		NSMaxY(rect) - (remasterSelectedTilePixel / 8 + 0.5) * NSHeight(rect) / 8);
+	[self continueRemasterTileStrokeAtPoint:point];
+	[self endRemasterTileStroke];
+}
+
+- (void)applyRemasterDoorframeToAnimation:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterVariants.empty()) return;
+	const auto source = EffectiveRemasterMetadata(remasterSelectedTile);
+	if (source.tileRole != RemasterTileRole::Door) return;
+	std::set<RemasterTileContentId> touched(remasterVariants.begin(), remasterVariants.end());
+	auto snapshot = CaptureRemasterAssetSnapshot(touched);
+	for (const auto &id : touched)
+	{
+		auto metadata = EffectiveRemasterMetadata(id);
+		metadata.tileId = id;
+		// Explicit operation authors the Door role for these animation identities.
+		CopyRemasterMetadataLayer(source, metadata, RemasterEditorMetadata);
+		CopyRemasterMetadataLayer(source, metadata, RemasterEditorDoorframe);
+		remasterEditingProfile.assets[id] = metadata;
+	}
+	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, 21u);
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:) object:snapshot];
+	[remasterUndoManager setActionName:@"Apply Doorframe to Animation"];
+	remasterMetadataNeedsSync = remasterNonSceneDirty = remasterEditingProfileDirty = true;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)changeRemasterPixelValue:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (sender == remasterValueInput)
 		remasterValueBrush.integerValue = std::max<NSInteger>(0, std::min<NSInteger>(255, remasterValueInput.integerValue));
 	remasterValueInput.integerValue = remasterValueBrush.integerValue;
@@ -7088,12 +7327,7 @@ void QuitWithFatalError ( NSString *message)
 	else if (layer == RemasterEditorHeight)
 	{
 		const bool hadLayer = metadata.hasHeight;
-		if (!metadata.hasHeight && captured && captured->hasHeight)
-		{
-			metadata.height = captured->height;
-			metadata.heightSampling = captured->heightSampling;
-		}
-		metadata.hasHeight = true;
+		S9xRemasterInspectorInitializeAuthoredHeight(metadata);
 		if (hadLayer && metadata.height[remasterSelectedTilePixel] == value)
 			return;
 		metadata.height[remasterSelectedTilePixel] = value;
@@ -7188,6 +7422,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterHeightSampling:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty())
 		return;
 	std::string before;
@@ -7199,10 +7434,7 @@ void QuitWithFatalError ( NSString *message)
 		RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
 	if (metadata.hasHeight && metadata.heightSampling == sampling)
 		return;
-	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
-	if (!metadata.hasHeight && captured && captured->hasHeight)
-		metadata.height = captured->height;
-	metadata.hasHeight = true;
+	S9xRemasterInspectorInitializeAuthoredHeight(metadata);
 	metadata.heightSampling = sampling;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
@@ -7249,6 +7481,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)fillRemasterTileHeight:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty())
 		return;
 	std::string before;
@@ -7277,6 +7510,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)stepRemasterTileHeight:(NSButton *)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() ||
 		(sender.tag != -8 && sender.tag != -1 && sender.tag != 1 && sender.tag != 8))
 		return;
@@ -7287,12 +7521,6 @@ void QuitWithFatalError ( NSString *message)
 	const bool hadHeight = existing != remasterEditingProfile.assets.end() && existing->second.hasHeight;
 	std::array<uint8_t, 64> height = hadHeight ? existing->second.height : std::array<uint8_t, 64>{};
 	RemasterHeightSampling sampling = hadHeight ? existing->second.heightSampling : RemasterHeightSampling::Nearest;
-	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, remasterSelectedTile);
-	if (!hadHeight && captured && captured->hasHeight)
-	{
-		height = captured->height;
-		sampling = captured->heightSampling;
-	}
 	bool changed = false;
 	for (uint8_t &sample : height)
 	{
@@ -7321,6 +7549,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)applyRemasterHeightToAnimation:(id)sender
 {
+	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.size() < 2)
 		return;
 	auto source = remasterEditingProfile.assets.find(remasterSelectedTile);

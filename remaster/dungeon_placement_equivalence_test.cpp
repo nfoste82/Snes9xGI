@@ -46,12 +46,15 @@ int main(int argc,char **argv) {try {
   std::cout<<variant<<' '<<bg<<'\n';
   for(const auto &t:*tiles) {
    // Every semantic field, never object padding or only a tile hash.
-   std::cout<<int(t.surface)<<' '<<t.groundedFloorMask<<' '<<t.hasHeight<<' '<<t.hflip<<' '<<t.vflip<<' '
+    std::cout<<int(t.surface)<<' '<<t.groundedFloorMask<<' '<<t.doorframeMask<<' '<<t.hasDoorframeMask<<' '
+     <<t.doorTemplateOffset<<' '<<t.doorAssembly<<' '<<int(t.doorDirection)<<' '<<t.splitDoorPart<<' '<<t.hasHeight<<' '<<t.hflip<<' '<<t.vflip<<' '
     <<int(t.floorPlaneMask)<<' '<<t.distinctLowerUsage<<' '<<int(t.structuralFloorPlaneMask)<<' '
     <<t.wallTemplateOffset<<' '<<t.tileHash<<' '<<t.supportingTrim<<' '<<t.terminalCorner<<' '
     <<t.highPerimeterFace<<' '<<t.lowerDoorWallPart<<' '<<t.diagnosticWallTemplateOffset<<' '
     <<int(t.diagnosticUphillDirections)<<' '<<int(t.diagnosticNormalUphill)<<' '
-    <<t.diagnosticAuthoredFloor<<' '<<t.diagnosticRomFloorTrim;
+	    <<t.diagnosticAuthoredFloor<<' '<<t.diagnosticRomFloorTrim<<' '<<t.diagonalHeightPreview<<' '
+	    <<int(t.diagonalPreviewRow)<<' '<<int(t.diagonalPreviewFoot)<<' '<<t.diagonalIntercept<<' '
+	    <<int(t.diagonalMinimum)<<' '<<int(t.diagonalMaximum)<<' '<<t.semanticSoutheastWall<<' '<<t.semanticBoundaryKnown<<' '<<int(t.removableSupportPlanes);
    for(auto h:t.height)std::cout<<' '<<int(h);std::cout<<'\n';
   }
  }

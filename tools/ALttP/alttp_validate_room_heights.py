@@ -71,6 +71,22 @@ def _ramp(dx: int, dy: int, hflip: bool, vflip: bool) -> list[int]:
             for y in range(8) for x in range(8)]
 
 
+def grounded_floor_hashes(profile):
+    """Runtime classifies explicit workbench floors even without generated groups.
+
+    Role/group presence alone never supplies local zero geometry or solved base;
+    attached_datum still requires both and same-plane graph membership.
+    """
+    groups=profile.get('asset_groups',{})
+    result=set(groups.get('dungeon_floor',{}).get('tile_hashes',[]))
+    result.update(groups.get('wall_tops',{}).get('tile_hashes',[]))
+    result.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role')=='floor')
+    # Explicit role overrides a stale generated structural group at runtime.
+    result.difference_update(a['tile_hash'] for a in profile.get('assets',[])
+                             if a.get('tile_role') in ('wall','wall_corner','obstacle','door'))
+    return result
+
+
 def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tuple[bytes, bytes],
                 profile: dict) -> tuple[list[dict], list[dict], list[dict], dict]:
     """Build the mandatory placement-level result for the runtime floor/fallback slice."""
@@ -92,7 +108,10 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     template_trims = set()
     template_door_parts = set()
     template_torches = set()
+    from alttp_obstacle_assemblies import obstacle_assemblies
+    template_obstacles = obstacle_assemblies(snapshot, profile, graph.get('_verified_rom_template_data'))
     template_corners = set()
+    complementary_corner_contacts = {}
     template_data = graph.get('_verified_rom_template_data')
     if template_data is not None:
         for offset, w, h, sx, sy in ((0x2e8,2,3,0,0),(0x2f8,2,3,0,1),(0x2c8,3,2,0,0),(0x2d8,3,2,1,0)):
@@ -186,6 +205,37 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                         assets.get(corner.tile_hash)==[max(7-xx,7-yy) for yy in range(8) for xx in range(8)]):
                         template_walls.update((c.x,c.y) for c,w in cells)
                         template_corners.add((cx,cy))
+                    # Exact other-BG triangle, one surviving inward branch,
+                    # and a separately classified high face own both regions.
+                    # Ownership is proved from final words, never a base vote.
+                    if original[1] and corner.word==snapshot.cell(0,cx,cy).word and assets.get(corner.tile_hash)==[max(7-xx,7-yy) for yy in range(8) for xx in range(8)]:
+                        for axis in (0,1):
+                            dx=0 if axis else (-1 if kind>=2 else 1);dy=(-1 if kind%2 else 1) if axis else 0
+                            branch=[]
+                            for distance in (1,2):
+                                bx,by=cx+dx*distance,cy+dy*distance
+                                word=int.from_bytes(template_data[offset+((bx-x)*4+by-y)*2:offset+((bx-x)*4+by-y)*2+2],'little')
+                                c=snapshot.cell(1,bx,by);branch.append(c)
+                                if c.word!=word or c.tile_hash not in wall_hashes or len(assets.get(c.tile_hash,[]))!=64:break
+                            else:
+                                hx,hy=cx-dx,cy-dy
+                                if not (0<=hx<64 and 0<=hy<64):continue
+                                high=snapshot.cell(1,hx,hy);hh=assets.get(high.tile_hash,[])
+                                if high.tile_hash not in wall_hashes or len(hh)!=64:continue
+                                def displayed(c,h,xx,yy):return h[(7-yy if c.vflip else yy)*8+(7-xx if c.hflip else xx)]
+                                delta=None;compatible=True
+                                for k in range(8):
+                                    ex=0 if dx>0 else 7 if dx<0 else k;ey=0 if dy>0 else 7 if dy<0 else k
+                                    nx=7 if dx>0 else 0 if dx<0 else k;ny=7 if dy>0 else 0 if dy<0 else k
+                                    v=displayed(high,hh,nx,ny)-displayed(corner,assets[corner.tile_hash],ex,ey)
+                                    if delta is not None and delta!=v:compatible=False
+                                    delta=v
+                                    if displayed(high,hh,nx,ny)>=displayed(high,hh,7-nx if dx else k,7-ny if dy else k):compatible=False
+                                if compatible:
+                                    template_corners.add((cx,cy));template_walls.update((c.x,c.y) for c in branch)
+                                    # Missing perpendicular inward contact uses
+                                    # this opposite high-axis face below.
+                                    complementary_corner_contacts[cx,cy,1-axis]=(hx,hy,dx,dy)
         obstacle_seeds=set(groups.get('obstacles',{}).get('tile_hashes',[]))
         obstacle_seeds.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role')=='obstacle')
         for kind,offset in enumerate((0x688,0x694)):
@@ -227,7 +277,11 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                         if (all(c.word==word and c.tile_hash in wall_hashes and c.tile_hash in assets for c,word in zip(cells,expected)) and
                             all(c.word==rail[0] and c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes and c.tile_hash not in wall_hashes for c in trims)):
                             template_trims.update((c.x,c.y) for c in trims)
+    from alttp_diagonal_preview import diagonal_previews
+    preview_geometry = diagonal_previews(snapshot, profile, template_data)
+    template_walls.update(preview_geometry)
     obstacle_hashes = set(profile.get("asset_groups", {}).get("obstacles", {}).get("tile_hashes", []))
+    obstacle_hashes.update(a['tile_hash'] for a in profile.get('assets', []) if a.get('tile_role') == 'obstacle')
     walkable: set[tuple[int, int, int]] = set()
     denominators = []
     for plane, record in enumerate(planes):
@@ -307,7 +361,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             continue
         base = next(iter(levels))
         cell = snapshot.cell(1, x, y)
-        if cell.tile_hash in obstacle_hashes:
+        if cell.tile_hash in obstacle_hashes or (x,y) in template_obstacles:
             local = assets.get(cell.tile_hash)
             if local is None:
                 missing.append({"plane": planes_here[0], "x": x, "y": y,
@@ -338,6 +392,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     asset_records = {a["tile_hash"]: a for a in profile.get("assets", [])}
     floor_hashes = set(profile.get("asset_groups", {}).get("dungeon_floor", {}).get("tile_hashes", []))
     floor_hashes |= set(profile.get("asset_groups", {}).get("wall_tops", {}).get("tile_hashes", []))
+    floor_hashes = grounded_floor_hashes(profile)
     foot_cache, datum_cache = {}, {}
     def foot_pixel(px, py):
         key = px, py
@@ -377,7 +432,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
         if not all(isinstance(v, int) for v in (x, y, base)) or not (0 <= x < 64 and 0 <= y < 64 and -32767 <= base <= 32767 and base != UNKNOWN):
             raise ValueError("invalid structural placement")
         cell = snapshot.cell(1, x, y)
-        if record.get('kind')=='authored_obstacle' and (x,y) in template_torches:
+        if record.get('kind')=='authored_obstacle' and (x,y) in template_torches | template_obstacles:
             local=assets[cell.tile_hash];planes_here=record.get('planes',[])
             if not planes_here or any(p not in (0,1) for p in planes_here):
                 raise ValueError('torch requires an independently solved plane')
@@ -386,7 +441,8 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                 if contacts!={base}:raise ValueError('torch lacks unanimous same-plane support')
             placements.append(dict(kind='authored_obstacle',x=x,y=y,planes=planes_here,floor_base=base,
                 tile_hash=cell.tile_hash,local_source='authored_asset',local_min=min(local),local_max=max(local),
-                effective_min=base+min(local),effective_max=base+max(local),assembly_source='verified_complete_floor_torch'))
+                effective_min=base+min(local),effective_max=base+max(local),assembly_source=
+                'verified_complete_floor_torch' if (x,y) in template_torches else 'verified_complete_freestanding_obstacle'))
             continue
         if record.get('kind') == 'authored_obstacle' and record.get('wall_template_offset') in (0x688,0x694):
             if (x,y) not in template_trims:
@@ -448,7 +504,30 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                         support_base=solved.get((support//4096,support%64,(support%4096)//64))
                         if support_base is None or support_base+neighbor.get('rise',0)!=neighbor['floor_base']:
                             raise ValueError('corner signed support relation disagrees with reproduced support')
-                if neighbor is None or len(b)!=64:raise ValueError('corner missing independently solved branch')
+                if neighbor is None or len(b)!=64:
+                    axis=0 if dx else 1
+                    contact=complementary_corner_contacts.get((x,y,axis))
+                    if contact is None:raise ValueError('corner missing independently solved branch')
+                    hx,hy,hdx,hdy=contact;high=snapshot.cell(1,hx,hy);hh=assets.get(high.tile_hash,[])
+                    high_record=next((r for r in elevation.get('structural_placements',[]) if r.get('x')==hx and r.get('y')==hy and r.get('kind')=='authored_wall'),None)
+                    if high_record is None or len(hh)!=64:raise ValueError('corner high contact lacks independently solved base')
+                    if not high_record.get('wall_template_offset'):raise ValueError('corner high contact lacks template provenance')
+                    accepted_planes=record.get('planes',[])
+                    high_planes=high_record.get('planes',[])
+                    if not set(accepted_planes)&set(high_planes):raise ValueError('corner high contact crosses structural plane')
+                    for plane in set(accepted_planes)&set(high_planes):
+                        attr=attributes[plane][hy*64+hx]
+                        if attr not in (1,2,0x28,0x2a,4):raise ValueError('corner high contact is nonblocking/unsupported')
+                    # Evaluate the EXACT transformed max-ramp at the neighboring
+                    # pixel center outside0..7, not its zero clipped derivative.
+                    for k in range(8):
+                        cx=0 if hdx>0 else 7 if hdx<0 else k;cy=0 if hdy>0 else 7 if hdy<0 else k
+                        nx=7 if hdx>0 else 0 if hdx<0 else k;ny=7 if hdy>0 else 0 if hdy<0 else k
+                        xx=cx-hdx;yy=cy-hdy
+                        canonical_x=7-xx if cell.hflip else xx;canonical_y=7-yy if cell.vflip else yy
+                        extended=max(7-canonical_x,7-canonical_y)
+                        if base+extended!=high_record['floor_base']+sample(high,hh,nx,ny):raise ValueError('corner high extrapolated seam disagreement')
+                    continue
                 if any(base+sample(cell,a,(7 if dx>0 else 0) if dx else k,(7 if dy>0 else 0) if dy else k)!=
                        neighbor['floor_base']+sample(n,b,(0 if dx>0 else 7) if dx else k,(0 if dy>0 else 7) if dy else k) for k in range(8)):
                     raise ValueError('corner face seam disagreement')
@@ -458,7 +537,16 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             continue
         source = "authored_asset"
         attachment = {}
-        if "local_height" in record or "attached_floor_base" in record:
+        if record.get('local_source') == 'placement_rom_diagonal_preview':
+            proof = preview_geometry.get((x,y))
+            if proof is None or record.get('local_height') != proof['height']:
+                raise ValueError('diagonal preview lacks exact ROM ownership/cardinal cross section')
+            local = proof['height']
+            source = 'placement_rom_diagonal_preview'
+            attachment = {'local_height':local, 'hflip':cell.hflip, 'vflip':cell.vflip,
+                          'evidence':'ordered_stepped_ROM_column_both_cardinal_unit_sections',
+                          'preview_only':True}
+        elif "local_height" in record or "attached_floor_base" in record:
             floor = record.get("attached_floor_base")
             planes_here = record.get("planes", [])
             if (not isinstance(floor, int) or not 0 <= floor <= 32767 or floor == UNKNOWN or not planes_here or
@@ -471,7 +559,10 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                         if foot_pixel(xx,yy) and attributes[p][y*64+x] != 0:
                             contacts.append(attached_datum(p,xx,yy))
             if not contacts or any(v != floor for v in contacts):
-                raise ValueError("mixed floor datum lacks unambiguous same-plane grounded connectivity")
+                raise ValueError("mixed floor datum lacks unambiguous same-plane grounded connectivity "
+                                 f"at ({x},{y}) {cell.tile_hash}: asserted_floor={floor}, "
+                                 f"planes={planes_here}, reproduced_datums={sorted(set(contacts), key=str)}, "
+                                 f"grounded_samples={len(contacts)}")
             expected = [max(h, floor-base) for h in local]
             if record.get("local_height") != expected or record.get("local_source") != "placement_grounded_floor_clamp":
                 raise ValueError("mixed floor effective local array does not reproduce clamp")
@@ -544,7 +635,14 @@ def directional_seams(records, snapshot, attributes, profile):
         result = []
         for k in range(8):
             x,y = (7 if dx>0 else 0) if dx else k, (7 if dy>0 else 0) if dy else k
-            result.append(abs(model(x+dx,y+dy)-at(x,y)) if model else abs(at(x,y)-at(x-dx,y-dy)))
+            if r.get('captured_local_source') == 'placement_rom_diagonal_preview':
+                c=snapshot.cell(r['layer'],r['x'],r['y'])
+                xx=7-(x+dx) if c.hflip else x+dx
+                yy=7-(y+dy) if c.vflip else y+dy
+                extended=max(r['preview_minimum'],min(r['preview_maximum'],r['preview_intercept']-xx-yy))
+                result.append(abs(extended-at(x,y)))
+            else:
+                result.append(abs(model(x+dx,y+dy)-at(x,y)) if model else abs(at(x,y)-at(x-dx,y-dy)))
         return result
     edges = []
     for key,a in sorted(placed.items()):
@@ -693,6 +791,123 @@ def diagnostic_svg(report: dict, path: Path) -> None:
                     f'<text x="4" y="530" fill="white" font-size="12">{legend}</text></svg>\n')
 
 
+def audit_doorframes(solution, snapshot, profile, template_data):
+    """Inventory all marked placements, independently reject template/mask drift.
+
+    Region offsets are not compiled tile-wide map entries. False pixels must
+    remain precisely authored; no floor/threshold offset is admissible there.
+    """
+    assets = {a['tile_hash']: a for a in profile.get('assets', [])}
+    required = {}
+    for layer in range(2):
+        for y in range(64):
+            for x in range(64):
+                c = snapshot.cell(layer, x, y)
+                a = assets.get(c.tile_hash, {})
+                if a.get('tile_role') == 'door' and int(a.get('doorframe_mask', '0'), 16):
+                    required[layer, x, y] = (c, a)
+    accepted, issues = set(), []
+    # Independently attest placement-local FULL outer door bands. Interior
+    # regions still require authored masks; no hash-wide activation/default.
+    if template_data:
+        candidates=list(solution.get('doorframe_attachments', []))
+        # Enumerate missing parts too: accepted solver records are NOT the
+        # denominator. Seed exact footprints with explicit canonical Door art,
+        # avoiding sliding closed-wall templates and unmarked stair identities.
+        for layer in range(2):
+            for d,(start,end) in enumerate(((0x2716,0x2926),(0x29f0,0x2be8),(0x2c6a,0x2e32),(0x2e6a,0x3032))):
+                w,h=(4,3) if d<2 else (3,4)
+                for off in range(start,end+1,24):
+                    first=int.from_bytes(template_data[off:off+2],'little')&0xdfff
+                    for oy in range(65-h):
+                        for ox in range(65-w):
+                            if snapshot.cell(layer,ox,oy).word&0xdfff != first:
+                                continue
+                            cells=[snapshot.cell(layer,ox+x,oy+y) for x in range(w) for y in range(h)]
+                            if not any(assets.get(c.tile_hash,{}).get('tile_role')=='door' for c in cells):
+                                continue
+                            if not all(c.word&0xdfff==int.from_bytes(template_data[off+2*n:off+2*n+2],'little')&0xdfff for n,c in enumerate(cells)):
+                                continue
+                            for c in cells:
+                                candidates.append(dict(layer=layer,x=c.x,y=c.y,template_offset=off,split_dispatch=False))
+        for r in candidates:
+            key = r['layer'], r['x'], r['y']
+            if key in required:
+                continue
+            c = snapshot.cell(*key)
+            a = assets.get(c.tile_hash, {})
+            local = a.get('height', [])
+            off = r['template_offset']
+            direction = next((d for d,(s,e) in enumerate(((0x2716,0x2926),(0x29f0,0x2be8),(0x2c6a,0x2e32),(0x2e6a,0x3032)))
+                              if s <= off <= e and (off-s)%24 == 0), None)
+            if direction is None or len(local) != 64 or 'doorframe_mask' in a or a.get('tile_role','unknown') not in ('unknown','door'):
+                continue
+            occ = a.get('occlusion', [255]*64)
+            if len(occ)!=64 or any(o not in (0,255) or (o==0 and local[k]!=0) for k,o in enumerate(occ)):
+                continue
+            mask = sum(1<<k for k,o in enumerate(occ) if o==255)
+            if not mask:
+                continue
+            minimum = min(v for k,v in enumerate(local) if mask>>k&1)
+            if any(mask>>k&1 and v != minimum+7-(k//8 if direction<2 else k%8) for k,v in enumerate(local)):
+                continue
+            w,h = (4,3) if direction<2 else (3,4)
+            owned = False
+            for oy in range(max(0,c.y-h+1), min(c.y,64-h)+1):
+                for ox in range(max(0,c.x-w+1), min(c.x,64-w)+1):
+                    xx,yy = c.x-ox,c.y-oy
+                    outer = ((xx in (0,w-1) or (yy==0 if direction==0 else yy==h-1)) if direction<2 else
+                             (yy in (0,h-1) or (xx==0 if direction==2 else xx==w-1)))
+                    def layer(x,y):
+                        return (1 if (y==0 if direction==0 else y==h-1 if direction==1 else x==0 if direction==2 else x==w-1) else 0) if r.get('split_dispatch') else c.layer
+                    owned |= outer and layer(xx,yy)==c.layer and all(
+                        (snapshot.cell(layer(x,y),ox+x,oy+y).word&0xdfff)==int.from_bytes(template_data[off+2*(x*h+y):off+2*(x*h+y)+2],'little')&0xdfff
+                        for x in range(w) for y in range(h))
+            if owned:
+                required[key] = (c, dict(a, doorframe_mask=f'{mask:016x}'))
+    bases = {}
+    for r in solution.get('doorframe_attachments', []):
+        if not r.get('visible', True):
+            continue
+        bases.setdefault((r['layer'],r['x'],r['y']), set()).add(r['frame_base'])
+    for r in solution.get('doorframe_attachments', []):
+        key = r['layer'], r['x'], r['y']
+        if key not in required:
+            issues.append(dict(reason='unexpected_frame_region', record=r)); continue
+        c, a = required[key]
+        if r.get('visible', True) and len(bases[key]) != 1:
+            issues.append(dict(reason='ambiguous_visible_frame_plane', record=r)); continue
+        mask = int(a['doorframe_mask'], 16)
+        local = a.get('height', [])
+        expected = [v + (r['frame_base'] if mask >> k & 1 else 0) for k, v in enumerate(local)]
+        if len(local) != 64 or int(r['mask'], 16) != mask or r['effective_height'] != expected:
+            issues.append(dict(reason='frame_mask_or_opening_preservation', record=r)); continue
+        off = r['template_offset']
+        direction = next((d for d, (start, end) in enumerate(((0x2716,0x2926),(0x29f0,0x2be8),(0x2c6a,0x2e32),(0x2e6a,0x3032)))
+                          if start <= off <= end and (off-start) % 24 == 0), None)
+        exact = False
+        if template_data and direction is not None:
+            w, h = (4, 3) if direction < 2 else (3, 4)
+            for oy in range(max(0,c.y-h+1), min(c.y,64-h)+1):
+                for ox in range(max(0,c.x-w+1), min(c.x,64-w)+1):
+                    def owner_layer(xx, yy):
+                        if not r.get('split_dispatch', False):
+                            return c.layer
+                        return 1 if (yy==0 if direction==0 else yy==h-1 if direction==1 else xx==0 if direction==2 else xx==w-1) else 0
+                    if owner_layer(c.x-ox,c.y-oy) != c.layer:
+                        continue
+                    exact |= all((snapshot.cell(owner_layer(xx,yy),ox+xx,oy+yy).word & 0xdfff) ==
+                                 (int.from_bytes(template_data[off+2*(xx*h+yy):off+2*(xx*h+yy)+2], 'little') & 0xdfff)
+                                 for xx in range(w) for yy in range(h))
+        if not exact:
+            issues.append(dict(reason='missing_intact_rom_door_template', record=r)); continue
+        if r.get('visible', True):
+            accepted.add(key)
+    return dict(required_marked_placements=len(required), solved_marked_placements=len(accepted),
+                missing_marked_placements=[list(k) for k in sorted(required.keys()-accepted)], issues=issues,
+                region_source='placement_rom_doorframe_seam', opening_contract='unmarked_pixels_exactly_authored')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--graph", type=Path, required=True)
@@ -750,10 +965,29 @@ def main() -> int:
                              for y in range(64) for x in range(64))
             if solution.get("bg2_words_fnv1a64") != _fnv(words):
                 raise ValueError("runtime decoded BG2 words do not match complete snapshot map")
+            from alttp_diagonal_preview import diagonal_previews
+            proofs=[diagonal_previews(snapshot,profile,graph.get('_verified_rom_template_data'),layer) for layer in range(2)]
+            for record in inventory:
+                if record.get('captured_local_source')=='placement_rom_diagonal_preview':
+                    proof=proofs[record['layer']].get((record['x'],record['y']))
+                    if (proof is None or record.get('captured_local_height')!=proof['height'] or
+                        record.get('preview_intercept')!=proof['intercept'] or
+                        record.get('preview_minimum')!=proof['minimum'] or record.get('preview_maximum')!=proof['maximum']):
+                        raise ValueError('directional diagonal preview source lacks independent ROM proof')
             graph["elevation"] = {**graph["elevation"], **solution}
         height_map = load_height_map(args.height_map, room) if args.height_map else None
         report = validate(graph, args.rise, height_map, snapshot=snapshot,
                           attributes=attributes, profile=profile)
+        if args.runtime_solution:
+            report['doorframes'] = audit_doorframes(solution, snapshot, profile, graph.get('_verified_rom_template_data'))
+            report['persistent_support'] = dict(required=solution.get('persistent_support_required',[0,0]),
+                                                missing=solution.get('persistent_support_missing',[0,0]),
+                                                placements=solution.get('persistent_support',[]),
+                                                scope='potential removed-pot Link bodies; not current movement reachability')
+            if report['doorframes']['missing_marked_placements'] or report['doorframes']['issues']:
+                report['success'] = False
+            if any(report['persistent_support']['missing']):
+                report['success'] = False
         if args.rom:
             report['template_evidence']={'rom_sha256':hashlib.sha256(rom).hexdigest(),
                 'source_table_snes_address':'80:9b52','perimeter_template_offsets':[0x2c8,0x2d8,0x2e8,0x2f8],

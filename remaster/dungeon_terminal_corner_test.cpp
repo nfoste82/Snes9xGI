@@ -37,6 +37,18 @@ int main() {
   // No corner-only datum; both faces are mandatory and ownership must agree.
   (*tiles)[south].wallTemplateOffset=0xc06;
   assert(S9xRemasterBuildDungeonHeightMap(c,50,*map));assert(map->offsets[corner]==255);
+  // One overwritten inward branch can use its perpendicular exact proved
+  // high-perimeter face.04 is permitted only with solved template ownership;
+  // the exact max-ramp extrapolates one pixel beyond its clipped tangent.
+  (*attr)[south]=1;(*tiles)[east].surface=S::Unknown;
+  const int high=(cy-dy)*64+cx;auto &h=(*tiles)[high];h.surface=S::Wall;h.hasHeight=true;
+  h.wallTemplateOffset=0xb66;h.highPerimeterFace=true;h.hflip=flip&1;h.vflip=flip&2;
+  for(int yy=0;yy<8;yy++)for(int xx=0;xx<8;xx++)h.height[yy*8+xx]=8+7-yy;
+  (*attr)[high]=4;
+  assert(S9xRemasterBuildDungeonHeightMap(c,50,*map));
+  // This synthetic high face is disconnected; explicit relative-only base
+  // cannot identify a supported face and must NOT rescue the corner.
+  assert(map->offsets[corner]==255);
   (*tiles)[south].wallTemplateOffset=0xbe6;(*tiles)[south].surface=S::Unknown;
   assert(S9xRemasterBuildDungeonHeightMap(c,50,*map));assert(map->offsets[corner]==255);
   (*tiles)[south].surface=S::Wall;(*attr)[south]=0; // underpass is not structural support

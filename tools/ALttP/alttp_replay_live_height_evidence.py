@@ -18,6 +18,8 @@ def main():
     p.add_argument("--solver", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--rom", type=Path)
+    p.add_argument("--research-profile", type=Path,
+                   help="replay different metadata; NOT capture-pinned approval")
     a = p.parse_args()
     if not a.output.is_dir():
         p.error("output directory must exist")
@@ -67,7 +69,18 @@ def main():
     raw.write_bytes(b"ALTPPD1\0" + struct.pack("<3H", state["room"], 0, 0) + line * 224 + vram + bytes(512))
     attributes = Path(str(raw) + ".attr")
     attributes.write_bytes(b"ALTPAT1\0" + struct.pack("<H", state["room"]) + attr)
-    command = [str(a.solver), str(raw), str(attributes), prefix + ".profile.toml",
+    selected = a.research_profile.read_bytes() if a.research_profile else profile
+    pinned_profile = a.output / 'replay-input-profile.toml'
+    pinned_profile.write_bytes(selected)
+    (a.output / 'replay-manifest.json').write_text(json.dumps({
+        'capture': prefix, 'research_replay': bool(a.research_profile),
+        'capture_profile_sha256': hashlib.sha256(profile).hexdigest(),
+        'selected_profile_sha256': hashlib.sha256(selected).hexdigest(),
+        'complete_input_sha256': hashlib.sha256(blob).hexdigest(),
+        'capture_packet_sha256': hashlib.sha256(a.capture.read_bytes()).hexdigest(),
+        'room': state['room'], 'state': state,
+        'approval': False}, indent=2) + '\n')
+    command = [str(a.solver), str(raw), str(attributes), str(pinned_profile),
                *map(str, state["link_xy"]), str(state["plane"])]
     for stair in state["stairs"]:
         command += list(map(str, stair))
@@ -80,7 +93,8 @@ def main():
             p.error('capture template evidence differs from verified ROM')
     with (a.output / "live-runtime.json").open("w") as out:
         subprocess.run(command, stdout=out, check=True)
-    print("Replayed pinned live inputs; full-room movement graph and validation v2 still required.")
+    print("Research metadata replay; NOT capture-pinned approval." if a.research_profile else
+          "Replayed pinned live inputs; full-room movement graph and validation v2 still required.")
 
 
 if __name__ == "__main__":

@@ -119,7 +119,8 @@ namespace TileImpl {
 		alwaysinline void Observe() const
 		{
 			if (BG.HashableTileContent)
-				S9xRemasterObserveTile(pCache, BG.BitDepth, TileAddr, Tile);
+				S9xRemasterObserveTile(pCache, BG.BitDepth, TileAddr, Tile,
+					&PPU.CGDATA[((Tile >> BG.PaletteShift) & BG.PaletteMask) + BG.StartPalette], BG.DirectColourMode);
 		}
 
 		alwaysinline void SelectPalette() const

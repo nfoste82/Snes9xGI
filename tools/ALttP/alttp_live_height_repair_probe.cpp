@@ -6,8 +6,8 @@
 static void require(bool v,const char *s){if(!v)throw std::runtime_error(s);}
 static std::vector<uint8_t> read(const std::string &p){std::ifstream f(p,std::ios::binary);require(bool(f),"missing input");return {std::istreambuf_iterator<char>(f),{}};}
 int main(int argc,char **argv){try {
- require(argc==3,"usage: capture output-prefix");const std::string path=argv[1],out=argv[2];
- auto frame=std::make_unique<RemasterFrame>();require(S9xReadRemasterFrame(path,*frame),"packet parse");
+  require(argc==3 || argc==4 || (argc==5 && std::string(argv[3])=="--packet") || (argc==6 && std::string(argv[3])=="--research-packet"),"usage: capture output-prefix [explicit-research-profile | --packet explicitly-matched-packet | --research-packet packet explicit-profile]");const std::string path=argv[1],out=argv[2];
+  auto frame=std::make_unique<RemasterFrame>();require(S9xReadRemasterFrame(argc>=5?argv[4]:path,*frame),"packet parse");
  RemasterProfile profile;std::vector<RemasterProfileDiagnostic> errors;
  require(S9xRemasterLoadProfile(path+".profile.toml",profile,errors),"profile parse");
  auto input=read(path+".dungeon-input.bin"),templates=read(path+".dungeon-templates.bin"),meta=read(path+".dungeon.json");
@@ -19,14 +19,23 @@ int main(int argc,char **argv){try {
  std::string serialized;require(S9xRemasterSerializeProfile(profile,serialized,errors),"serialization");
  uint64_t digest=UINT64_C(14695981039346656037);for(unsigned char b:serialized)digest=(digest^b)*UINT64_C(1099511628211);
  std::ostringstream hex;hex<<std::hex<<digest;require(text.find("\"profile_serialized_fnv1a64\":\""+hex.str()+"\"")!=std::string::npos,"profile pin");
+  if(argc==4)require(S9xRemasterLoadProfile(argv[3],profile,errors),"explicit research profile parse");
+  if(argc==6)require(S9xRemasterLoadProfile(argv[5],profile,errors),"explicit research packet profile parse");
+ if(argc==5)for(const auto &m:frame->assetMetadata) {
+  const auto a=profile.assets.find(m.tileId);if(a==profile.assets.end())continue;
+  require(m.hasHeight==a->second.hasHeight && m.height==a->second.height &&
+    m.hasNormals==a->second.hasNormals && m.normalXyz==a->second.normalXyz && m.tileRole==a->second.tileRole,"alternate packet/profile geometry mismatch");
+ }
  RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=number("room");c.previousRoomIndex=number("previous_room");
  c.submodule=number("submodule");c.collisionMode=number("collision_mode");require(!c.submodule && !c.collisionMode,"unsupported/unsettled state");
- c.linkX=number("link_xy");c.linkY=number("link_xy",1);c.linkPlane=number("plane");
+  c.linkX=number("link_xy");c.linkY=number("link_xy",1);c.linkPlane=number("plane");
+  c.groundedEvidence=text.find("\"grounded_evidence\":true")!=std::string::npos;
  c.backgroundScrollX=number("scroll");c.backgroundScrollY=number("scroll",1);
  c.graphicsBase=number("graphics_base");c.bg1GraphicsBase=number("bg1_graphics_base");
- c.constructedMaps=input.data()+8;c.collisionAttributes=input.data()+16392;c.graphics=input.data()+24584;c.dungeonTemplateData=templates.data()+8;
+  c.constructedMaps=input.data()+8;c.collisionAttributes=input.data()+16392;c.graphics=input.data()+24584;c.dungeonTemplateData=templates.data()+8;
+  if(std::ifstream(path+".terrain-input.bin").good())require(S9xRemasterReadTerrainEvidence(path+".terrain-input.bin",c),"invalid optional terrain evidence");
  size_t matched=0;
- for(auto *pixels:{&frame->mainPixels,&frame->subPixels})for(size_t at=0;at<pixels->size();at++) {
+ for(auto *pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(size_t at=0;at<pixels->size();at++) {
   const auto &px=(*pixels)[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances.at(px.instanceId-1);
   if(i.source!=RemasterSourceType::Background || i.sourceIndex>1)continue;
   const int x=(c.backgroundScrollX+at%frame->width)&511,y=(c.backgroundScrollY+at/frame->width)&511;
@@ -65,7 +74,7 @@ int main(int argc,char **argv){try {
   if(!bg){std::copy_n(c.constructedMaps+8192,8192,words->begin());std::copy_n(c.constructedMaps,8192,words->begin()+8192);lc.constructedMaps=words->data();std::swap(lc.graphicsBase,lc.bg1GraphicsBase);}
   auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();S9xRemasterDungeonPlacements(lc,profile,*tiles);lc.placements=tiles->data();
     if(bg){lc.supportRelations=&maps[0]->authoredSupportRelations;lc.wallSupportRelations=&maps[0]->authoredWallSupportRelations;}
-   maps[bg]=std::make_unique<RemasterDungeonHeightMap>();auto &m=*maps[bg];require(S9xRemasterBuildDungeonHeightMap(lc,profile.upperFloorHeight,m),"solve");
+    maps[bg]=std::make_unique<RemasterDungeonHeightMap>();auto &m=*maps[bg];require(S9xRemasterBuildDungeonHeightMap(lc,profile.upperFloorHeight,m),"solve");
   if(std::getenv("ALTTP_RUNTIME024_REGRESSION")) {
    require(c.roomIndex==0x60 && c.linkPlane==1 && hex.str()=="650c170f8c4a746e","024 regression pin");
     if(bg)require(m.planeOffsets[0][18*64+47]==24 && m.planeOffsets[1][18*64+47]==0,"authored bridge rise / independent underpass");
@@ -82,9 +91,49 @@ int main(int argc,char **argv){try {
    if(i)report<<',';const auto &t=(*tiles)[i];
    report<<"{\"xy\":["<<i%64<<','<<i/64<<"],\"hash\":\""<<std::hex<<t.tileHash<<std::dec<<"\",\"role\":"<<int(t.surface)<<",\"has_local\":"<<t.hasHeight<<",\"local_span\":["<<int(*std::min_element(t.height.begin(),t.height.end()))<<','<<int(*std::max_element(t.height.begin(),t.height.end()))<<"],\"base\":"<<m.offsets[i]<<",\"structural\":["<<m.structuralPlaneOffsets[0][i]<<','<<m.structuralPlaneOffsets[1][i]<<"],\"support\":["<<m.planeOffsets[0][i]<<','<<m.planeOffsets[1][i]<<"],\"fallback\":"<<int(m.fallbackDirections[i])<<",\"flips\":["<<t.hflip<<','<<t.vflip<<"],\"distinct\":"<<t.distinctLowerUsage<<'}';
   }
-    report<<"],\"relations\":[";for(size_t k=0;k<m.authoredSupportRelations.size();k++){if(k)report<<',';const auto &r=m.authoredSupportRelations[k];report<<'['<<r.a<<','<<r.b<<','<<r.rise<<']';}report<<"],\"local_samples\":[";
+     report<<"],\"persistent_required\":["<<m.persistentSupportRequired[0]<<','<<m.persistentSupportRequired[1]<<"],\"persistent_missing\":["<<m.persistentSupportMissing[0]<<','<<m.persistentSupportMissing[1]<<']';
+     report<<",\"relations\":[";for(size_t k=0;k<m.authoredSupportRelations.size();k++){if(k)report<<',';const auto &r=m.authoredSupportRelations[k];report<<'['<<r.a<<','<<r.b<<','<<r.rise<<']';}report<<"],\"local_samples\":[";
     for(int i=0;i<4096;i++) { if(i)report<<',';const auto &t=(*tiles)[i];report<<"{\"template\":"<<t.wallTemplateOffset<<",\"attr\":["<<int(c.collisionAttributes[i])<<','<<int(c.collisionAttributes[4096+i])<<"],\"height\":[";for(int k=0;k<64;k++){if(k)report<<',';report<<int(t.height[k]);}report<<"]}"; }
-    report<<"]}";
+     // Exhaustive offscreen obstacle application: one heap frame per BG,
+     // indexed metadata and all64 canonical pixels on main AND sub buffers.
+     auto audit=std::make_unique<RemasterFrame>();audit->width=audit->height=512;
+     audit->mainPixels.resize(512*512);audit->subPixels.resize(512*512);
+     std::set<RemasterTileContentId> added;size_t obstacleCells=0,unknownObstacles=0,obstacleSamples=0;
+     for(int cell=0;cell<4096;cell++)if((*tiles)[cell].surface==RemasterDungeonFloorContext::Surface::Obstacle) {
+      const auto &t=(*tiles)[cell];RemasterTileContentId id{t.tileHash,1,4};
+      auto a=profile.assets.find(id);require(a!=profile.assets.end() && a->second.hasHeight,"obstacle local metadata missing");
+      require(t.height==a->second.height && !m.fallbackDirections[cell],"obstacle solve changed authored relief");
+      obstacleCells++;unknownObstacles+=m.offsets[cell]==255;
+      if(added.insert(id).second){RemasterFrameAssetMetadata md;md.hasHeight=a->second.hasHeight;md.height=a->second.height;md.hasNormals=a->second.hasNormals;md.normalXyz=a->second.normalXyz;md.tileRole=a->second.tileRole;md.tileId=id;audit->assetMetadata.push_back(md);}
+      RemasterFrameTileInstance instance;instance.tileId=id;instance.source=RemasterSourceType::Background;instance.sourceIndex=bg;instance.hFlip=t.hflip;instance.vFlip=t.vflip;
+      audit->tileInstances.push_back(instance);const uint32_t iid=audit->tileInstances.size();
+      for(int yy=0;yy<8;yy++)for(int xx=0;xx<8;xx++){
+       const int at=(cell/64*8+yy)*512+cell%64*8+xx;
+       audit->mainPixels[at].instanceId=audit->subPixels[at].instanceId=iid;
+       audit->mainPixels[at].tilePixel=audit->subPixels[at].tilePixel=(t.vflip?7-yy:yy)*8+(t.hflip?7-xx:xx);
+      }
+     }
+     auto ac=c;ac.backgroundScrollX=ac.backgroundScrollY=0;ac.previousRoomIndex=c.roomIndex;
+     S9xRemasterApplyDungeonHeightMap(*audit,ac,m,nullptr,nullptr,bg);
+     for(const auto *pixels:{&audit->mainPixels,&audit->subPixels})for(const auto &px:*pixels)if(px.instanceId){
+      const auto &i=audit->tileInstances[px.instanceId-1];require(!i.hasPlacementHeight,"obstacle apply replaced authored local");
+      const int at=&px-pixels->data(),cell=(at/512/8)*64+at%512/8;
+      require(i.heightOffset==(m.offsets[cell]==255?0:m.offsets[cell]),"obstacle signed floor base composition");obstacleSamples++;
+     }
+     report<<"],\"obstacle_invariance\":{\"placed\":"<<obstacleCells<<",\"unresolved_base\":"<<unknownObstacles<<",\"canonical_buffer_samples\":"<<obstacleSamples<<",\"changed_local_samples\":0},\"doorframes\":[";
+     for(size_t k=0;k<m.doorframeAttachments.size();k++) {
+      if(k)report<<',';const auto &a=m.doorframeAttachments[k];
+      report<<"{\"xy\":["<<a.cell%64<<','<<a.cell/64<<"],\"plane\":"<<a.plane<<",\"base\":"<<a.base<<",\"visible\":"<<a.visible<<'}';
+     }report<<"]}";
+  // Match live EndFrame's independent pre-cone scene application. Replays
+  // otherwise look repaired in Height while GI still consumes old scene IDs.
+  if(!frame->scenePixels.empty()) {
+   auto savedSub=frame->subPixels;
+   frame->mainPixels.swap(frame->scenePixels);
+   S9xRemasterApplyDungeonHeightMap(*frame,c,m,nullptr,nullptr,bg);
+   frame->mainPixels.swap(frame->scenePixels);
+   frame->subPixels=std::move(savedSub);
+  }
   S9xRemasterApplyDungeonHeightMap(*frame,c,m,nullptr,nullptr,bg);
  }
   report<<"],\"runtime_instances\":[";

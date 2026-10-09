@@ -69,6 +69,19 @@ static void exercise(Run &run)
 	context.backgroundScrollX = 80; context.backgroundScrollY = 104;
 	S9xRemasterApplyDungeonHeightMap(applied, context, *map);
 	require(applied.tileInstances[0].heightOffset == 32, "geometry application failed");
+	// Exercise heap-backed preview indices on the constrained worker stack,
+	// not merely the no-preview fast skip. Authored metadata remains separate.
+	RemasterDungeonHeightMap::LocalHeightPreview preview;
+	preview.cell = 13 * 64 + 10; preview.height.fill(5);
+	map->localHeightPreviews.push_back(preview);
+	applied.tileInstances[0].heightOffset = 0;
+	S9xRemasterApplyDungeonHeightMap(applied, context, *map);
+	const auto &previewInstance = applied.tileInstances[applied.mainPixels[0].instanceId - 1];
+	require(previewInstance.hasPlacementHeight && previewInstance.placementHeight == preview.height &&
+		previewInstance.heightOffset == 32, "indexed preview application failed");
+	map->localHeightPreviews.clear();
+	applied.tileInstances.resize(1);
+	for (auto &pixel : applied.mainPixels) pixel.instanceId = 1;
 	// Exercise the legacy wall-observation/border path as well, not only the
 	// hasRoomGeometry fast path. It must retain the same solved floor base.
 	map->hasRoomGeometry = false; applied.tileInstances[0].heightOffset = 0;

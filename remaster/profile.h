@@ -105,6 +105,8 @@ struct RemasterAssetMetadata
 {
 	RemasterTileContentId tileId;
 	RemasterTileRole tileRole = RemasterTileRole::Unknown;
+	uint64_t doorframeMask = 0;
+	bool hasDoorframeMask = false;
 	bool hasTileSemantics = false;
 	std::vector<std::string> tileSemanticNormals;
 	std::string tileSemanticCorner;
@@ -126,6 +128,28 @@ struct RemasterAssetMetadata
 	bool directLightingOppositeFacing = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
+
+// Doorframe edits are deliberately independent of authored height/normal arrays.
+// Absent is unknown; painting even a false pixel creates an explicit mask.
+inline bool S9xRemasterPaintDoorframe (RemasterAssetMetadata &metadata, unsigned pixel, bool value)
+{
+	if (metadata.tileRole != RemasterTileRole::Door || pixel >= 64) return false;
+	const bool wasPresent = metadata.hasDoorframeMask;
+	const uint64_t before = metadata.doorframeMask;
+	if (!wasPresent) metadata.doorframeMask = 0;
+	metadata.hasDoorframeMask = true;
+	const uint64_t bit = uint64_t(1) << pixel;
+	if (value) metadata.doorframeMask |= bit;
+	else metadata.doorframeMask &= ~bit;
+	return !wasPresent || before != metadata.doorframeMask;
+}
+
+inline void S9xRemasterCopyDoorframe (const RemasterAssetMetadata &source, RemasterAssetMetadata &destination)
+{
+	if (destination.tileRole != RemasterTileRole::Door) return;
+	destination.hasDoorframeMask = source.hasDoorframeMask;
+	destination.doorframeMask = source.hasDoorframeMask ? source.doorframeMask : 0;
+}
 
 struct RemasterProfileRule
 {
@@ -365,6 +389,20 @@ namespace RemasterProfileParsing
 			return true;
 		}
 		return false;
+	}
+
+	inline bool ParseDoorframeMask (const std::string &value, uint64_t &parsed)
+	{
+		std::string hex;
+		if (!ParseString(value, hex) || hex.size() != 16) return false;
+		uint64_t mask = 0;
+		for (char c : hex)
+		{
+			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+			mask = (mask << 4) | (c <= '9' ? c - '0' : c - 'a' + 10);
+		}
+		parsed = mask;
+		return true;
 	}
 
 	inline bool ParseStringArray (const std::string &value, std::vector<std::string> &parsed)
@@ -849,6 +887,11 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!valid) fail(lineNumber, "tile_role must be a supported authored tile role");
 				if (parsed.schemaVersion < 18) fail(lineNumber, "tile_role requires schema_version 18");
 			}
+			else if (key == "doorframe_mask")
+			{
+				asset->hasDoorframeMask = ParseDoorframeMask(value, asset->doorframeMask);
+				if (!asset->hasDoorframeMask) fail(lineNumber, "doorframe_mask must be exactly 16 lowercase hexadecimal digits in a quoted string");
+			}
 			else if (key == "tile_semantics_authored" || key == "tile_semantic_normals" ||
 				key == "tile_semantic_corner" || key == "tile_semantic_context_dependent" || key == "tile_semantic_note")
 			{
@@ -1003,8 +1046,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 20)
-		fail(0, "schema_version must be an integer in [1, 20]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 21)
+		fail(0, "schema_version must be an integer in [1, 21]");
 	for (const auto &entry : parsed.assets) {
 		if (!entry.second.combineEmitters.empty() && parsed.schemaVersion < 17) fail(0, "combine_emitters requires schema_version 17");
 		for (const auto &id : entry.second.combineEmitters)
@@ -1094,6 +1137,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	for (const auto &entry : parsed.assets)
 	{
 		const RemasterAssetMetadata &item = entry.second;
+		if ((item.tileRole == RemasterTileRole::Door || item.hasDoorframeMask) && parsed.schemaVersion < 21)
+			fail(0, "door role and doorframe_mask require schema_version 21");
+		if (item.hasDoorframeMask && item.tileRole != RemasterTileRole::Door)
+			fail(0, "doorframe_mask requires tile_role = door");
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
 		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && !item.emissionOmnidirectional && item.combineEmitters.empty() &&
@@ -1259,7 +1306,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
 	const bool hasTileSemantics = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.hasTileSemantics; });
-	output << "schema_version = " << std::max(hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u)))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
+	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.hasDoorframeMask; });
+	output << "schema_version = " << std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1357,6 +1405,12 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 		if (asset.tileRole != RemasterTileRole::Unknown)
 			output << "tile_role = " << Quote(S9xRemasterTileRoleName(asset.tileRole)) << "\n";
+		if (asset.hasDoorframeMask)
+		{
+			std::ostringstream mask;
+			mask << std::hex << std::setfill('0') << std::setw(16) << asset.doorframeMask;
+			output << "doorframe_mask = " << Quote(mask.str()) << "\n";
+		}
 		if (asset.hasTileSemantics)
 		{
 			output << "tile_semantics_authored = true\ntile_semantic_normals = [";

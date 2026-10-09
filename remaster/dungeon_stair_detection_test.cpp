@@ -17,8 +17,17 @@ int main()
 		S9xRemasterDungeonStairsFromAttributes(c);
 		assert(c.stairCount==1 && c.stairs[0].x==46 && c.stairs[0].y==42);
 		assert(c.stairs[0].changesPlane==((kind&15)!=13));
-		assert(c.stairs[0].highIsNorth==(kind==0x1d || kind==0x1f || kind==0x3f));
+		assert(c.stairs[0].highIsNorth==(kind==0x1d || kind==0x1e || kind==0x1f || kind==0x3f));
 		S9xRemasterDungeonStairsFromAttributes(c); assert(c.stairCount==1);
+		// Completed handler signature corrects stale table-derived orientation
+		// without losing the table index or creating a duplicate assembly.
+		c.stairs[0].highIsNorth=!c.stairs[0].highIsNorth;
+		c.stairs[0].changesPlane=!c.stairs[0].changesPlane;
+		c.stairs[0].tableEntry=7;
+		S9xRemasterDungeonStairsFromAttributes(c);
+		assert(c.stairCount==1 && c.stairs[0].tableEntry==7);
+		assert(c.stairs[0].highIsNorth==(kind==0x1d || kind==0x1e || kind==0x1f || kind==0x3f));
+		assert(c.stairs[0].changesPlane==((kind&15)!=13));
 		c.stairCount=0; attributes[4096+44*64+48]=0;
 		S9xRemasterDungeonStairsFromAttributes(c); assert(c.stairCount==0);
 	}

@@ -19,7 +19,7 @@ import re
 import sqlite3
 import tomllib
 
-from alttp_tile_semantic_atlas import AnnotationStore, TileCatalog
+from alttp_tile_semantic_atlas import AnnotationStore, TileCatalog, validate_annotation
 from alttp_reference_wall_templates import ReferenceTemplates
 
 
@@ -318,7 +318,8 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         content_id = hashes[0]
         seen.add(content_id)
         additions = generated.get(content_id, {})
-        if tile_roles is not None and not authored[content_id].get('tile_semantics_authored'):
+        if (tile_roles is not None and not authored[content_id].get('tile_semantics_authored')
+                and authored[content_id].get('tile_role') != 'door'):
             block = re.sub(r'(?m)^tile_role\s*=\s*[^\n]*\n?', '', block)
             if content_id in tile_roles:
                 block += '\ntile_role = ' + json.dumps(tile_roles[content_id])
@@ -488,13 +489,16 @@ def generate_profile(database: Path, source: Path, output: Path,
             catalog = TileCatalog(database)
             # Explicit native/profile annotations take precedence over stale HTML sidecars.
             for key, asset in authored.items():
-                if asset.get('tile_semantics_authored'):
+                if asset.get('tile_semantics_authored') or asset.get('tile_role') == 'door':
                     annotation = {'role': asset.get('tile_role', 'unknown'),
                                   'normals': asset.get('tile_semantic_normals', []),
                                   'context_dependent': asset.get('tile_semantic_context_dependent', False),
                                   'note': asset.get('tile_semantic_note', '')}
                     if asset.get('tile_semantic_corner'):
                         annotation['corner_type'] = asset['tile_semantic_corner']
+                    if 'doorframe_mask' in asset:
+                        annotation['doorframe_mask'] = asset['doorframe_mask']
+                    annotation = validate_annotation(annotation)
                     for alias in catalog.semantic_group(key):
                         authored_semantics[alias] = annotation
             if templates:
@@ -612,8 +616,9 @@ def generate_profile(database: Path, source: Path, output: Path,
             semantic_floor = (content_id in semantics and semantics[content_id]["role"] == "floor" and
                               not semantics[content_id]["context_dependent"])
             semantic_obstacle = (content_id in semantics and semantics[content_id]["role"] == "obstacle" and
-                                 not semantics[content_id]["context_dependent"])
-            if semantic_floor or (content_id in declared_floor_ids and not semantic_obstacle):
+                                  not semantics[content_id]["context_dependent"])
+            semantic_door = existing.get('tile_role') == 'door' or semantics.get(content_id, {}).get('role') == 'door'
+            if semantic_floor or (content_id in declared_floor_ids and not semantic_obstacle and not semantic_door):
                 proposal["height"] = (0,) * 64
                 proposal["normal_xyz"] = FRONT * 64
                 methods["semantic_floor_override"] += 1
@@ -631,7 +636,7 @@ def generate_profile(database: Path, source: Path, output: Path,
                     proposal.update(local)
                     geometry_overrides.add(content_id)
                     methods["reference_wall_override" if templates else "semantic_wall_override"] += 1
-            elif not semantic_floor and templates and any(content_id == e['reference'] or content_id in e.get("tile_hashes", [])
+            elif not semantic_floor and not semantic_door and templates and any(content_id == e['reference'] or content_id in e.get("tile_hashes", [])
                                    for e in templates.entries):
                 local, record = templates.resolve(content_id, annotation or {})
                 reference_records.append(record)
@@ -642,7 +647,8 @@ def generate_profile(database: Path, source: Path, output: Path,
             # generated arrays. No geometry path may regenerate it.
             if "normal_xyz" in existing:
                 proposal["normal_xyz"] = tuple(existing["normal_xyz"])
-            if preserve_authored_geometry and "height" in existing:
+            if (preserve_authored_geometry or existing.get('tile_role') == 'door' or
+                    (annotation and annotation['role'] == 'door')) and "height" in existing:
                 proposal["height"] = tuple(existing["height"])
                 geometry_overrides.discard(content_id)
             generated[content_id] = proposal
@@ -651,19 +657,37 @@ def generate_profile(database: Path, source: Path, output: Path,
     if not authored.keys() <= generated.keys():
         raise ProfileGenerationError("profile contains assets absent from ROM atlas")
     tile_roles = {content_id: annotation["role"] for content_id, annotation in semantics.items()
-                  if not annotation["context_dependent"] and annotation.get("corner_type") != "unknown"}
+                  if (not annotation["context_dependent"] or annotation['role'] == 'door') and annotation.get("corner_type") != "unknown"}
     if preserve_authored_geometry:
         tile_roles = {**tile_roles, **{key: a['tile_role'] for key, a in authored.items()
                                      if a.get('tile_role') not in (None, 'unknown')}}
     candidate = _render_profile(source_text, authored, generated, geometry_overrides,
                                 tile_roles if semantics_path else None)
+    # Door masks are metadata, never a request to flatten an opening. Carry
+    # sidecar-only masks as well as native/profile fields into the candidate.
+    door_annotations = {key: value for key, value in semantics.items() if value['role'] == 'door'}
+    def add_door_mask(match):
+        block = match.group()
+        keys = TILE_HASH.findall(block)
+        annotation = door_annotations.get(keys[0]) if len(keys) == 1 else None
+        if annotation and 'doorframe_mask' in annotation and 'doorframe_mask' not in block:
+            block = block.rstrip() + '\ndoorframe_mask = ' + json.dumps(annotation['doorframe_mask']) + '\n\n'
+        return block
+    candidate = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', add_door_mask, candidate)
+    if semantics_path:
+        # Carry canonical diagonal role/facing separately from lighting arrays.
+        # Deferred intrinsic relief does not mean its approved semantic facing
+        # may be dropped: runtime extent requires this explicit classification.
+        from alttp_activate_diagonal_semantics import activate
+        candidate, _ = activate(candidate, json.loads(semantics_path.read_text()))
+    semantic_schema = 21 if door_annotations else 18
     if semantics_path:
         candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$',
-                           f"schema_version = {max(18, profile.get('schema_version', 1))}", candidate, count=1)
+                            f"schema_version = {max(semantic_schema, profile.get('schema_version', 1))}", candidate, count=1)
     parsed = tomllib.loads(candidate)
     for key, value in profile.items():
         if key == "schema_version" and semantics_path:
-            value = max(18, value)
+            value = max(semantic_schema, value)
         if key == "schema_version" and upper_floor_height and value < 13:
             value = 13
         if key == "lighting_space" and upper_floor_height:
