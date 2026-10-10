@@ -2,13 +2,34 @@
 #define REMASTER_OFFSCREEN_EMITTERS_H
 
 #include "frame.h"
+#include "held_lamp.h"
 #include <map>
 #include <cmath>
 
 struct RemasterRoomEmitterDiagnostics
 {
-	uint32_t placements = 0, lights = 0, visiblePixels = 0, unknownBases = 0;
+	uint32_t placements = 0, lights = 0, visiblePixels = 0, unknownBases = 0, hiddenPixels = 0;
 };
+
+// USA Module07_08/10 only move Link/camera/plane and animate the straight
+// intra-room stair. Unlike room construction, they do not redraw the maps or
+// replace collision arrays. Keep physical fixtures alive while traversing;
+// each source still requires current room and exact producer identity below.
+inline bool S9xRemasterRoomEmitterLifecycle(const RemasterDungeonFloorContext &c)
+{
+	if(c.module != 7)return false;
+	// WRAM $B0 is subsubmodule_index, reused by each module handler. In
+	// Module07_08/10, 0 initializes and 1 climbs; neither constructs the room.
+	// Other stair phases are not present in the verified two-entry dispatch.
+	if(c.submodule == 8 || c.submodule == 16) {
+#ifdef ALTTP_TEST_PRIOR_STAIR_PHASE_GATE
+		return c.constructionPhase == 0;
+#else
+		return c.constructionPhase <= 1;
+#endif
+	}
+	return c.submodule == 0 && c.constructionPhase == 0;
+}
 
 // Pure completed-frame adapter. WRAM has two row-major 64x64 maps (BG2 then
 // BG1); PPU screen blocks are streamed and cannot establish complete coverage.
@@ -20,13 +41,13 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 	const RemasterDungeonHeightMap *bg2, const RemasterDungeonHeightMap *bg1, HashTile hashTile)
 {
 	RemasterRoomEmitterDiagnostics d;
-	if (!c.verifiedAlttpRom || !c.indoors || c.module != 7 || c.submodule ||
-		c.constructionPhase || c.collisionMode || c.roomIndex >= 320 || !c.constructedMaps || !c.graphics ||
+	if (!c.verifiedAlttpRom || !c.indoors || !S9xRemasterRoomEmitterLifecycle(c) ||
+		c.collisionMode || c.roomIndex >= 320 || !c.constructedMaps || !c.graphics ||
 		frame.width != 256 || !frame.height || frame.height > 256) return d;
-	// Only physical flame/volume sources can be represented by a sphere. A
-	// directional painted surface needs the planar source transport contract.
+	// Offscreen spheres require physical flame/volume emission. HUD-covered
+	// pixels retain their original planar/depth source contract instead.
 	if (std::none_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) {
-		return a.second.hasEmission && (a.second.emissionOmnidirectional || a.second.emissionDepth > 0);
+		return a.second.hasEmission;
 	})) return d;
 	std::map<uint16_t, RemasterTileContentId> identities;
 	struct Source {
@@ -60,8 +81,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			found=identities.emplace(address,RemasterTileContentId{hashTile(4,pixels),1,4}).first;
 		}
 		auto asset=profile.assets.find(found->second);
-		if (asset==profile.assets.end() || !asset->second.hasEmission ||
-			(!asset->second.emissionOmnidirectional && asset->second.emissionDepth <= 0)) continue;
+		if (asset==profile.assets.end() || !asset->second.hasEmission) continue;
 		const auto &a=asset->second;
 		d.placements++;
 		const auto *map=layer==1 ? bg2 : bg1;
@@ -83,10 +103,37 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			const auto *e=a.emissionRgba.data()+pixel*4;
 			if (!e[3] || !(e[0] || e[1] || e[2])) continue;
 			const int px=cell%64*8+x-scrollX, py=cell/64*8+y-scrollY;
-			// Visible/occluded in-viewport sources remain under the authoritative
-			// pixel path. Never relight a fixture hidden behind an on-screen wall.
+			// World-covered pixels remain with the authoritative pixel path. HUD
+			// ink suppresses that path's transport, so supply only those missing
+			// pixels from the current room placement, just like offscreen pixels.
 			if (px>=0 && py>=0 && px<int(frame.width) && py<int(frame.height))
-			{ d.visiblePixels++; continue; }
+			{
+				if (!S9xRemasterHeldLampHudPixel(frame, size_t(py)*frame.width+px))
+				{ d.visiblePixels++; continue; }
+				RemasterFrameHiddenEmitter hidden;
+				hidden.x=px+0.5f; hidden.y=py+0.5f;
+				int local=a.hasHeight ? a.height[pixel] : 0;
+				// Same existing placement-local source consumed by visible tilePixel.
+				for (const auto &preview : map->localHeightPreviews)
+					if (preview.cell==cell) { local=preview.height[pixel]; break; }
+				hidden.z=(datum+local)*frame.lightingCoordinateScale/255.0f;
+				hidden.depth=a.emissionDepth; hidden.omnidirectional=a.emissionOmnidirectional;
+				std::copy_n(e,4,hidden.emission.begin());
+				if (a.hasNormals) {
+					float length=0;
+					for (int k=0;k<3;k++) {
+						hidden.normal[k]=a.normalXyz[pixel*3+k]/127.5f-1;
+						if ((k==0 && (word&0x4000)) || (k==1 && (word&0x8000))) hidden.normal[k]=-hidden.normal[k];
+						length+=hidden.normal[k]*hidden.normal[k];
+					}
+					length=std::sqrt(length);
+					if (length>0.0001f) for(auto &n:hidden.normal)n/=length;
+					else hidden.normal={{0,0,1}};
+				}
+				frame.hiddenEmitters.push_back(hidden); d.hiddenPixels++;
+				continue;
+			}
+			if (!a.emissionOmnidirectional && a.emissionDepth<=0) continue;
 			const float w=e[3];
 			power+=w; sx+=(px+0.5f)*w; sy+=(py+0.5f)*w;
 			sz+=((datum+(a.hasHeight ? a.height[pixel] : 0))*frame.lightingCoordinateScale/255.0f + a.emissionDepth*0.5f)*w;

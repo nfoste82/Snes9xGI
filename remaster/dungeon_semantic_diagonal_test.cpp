@@ -12,6 +12,7 @@ int main(){try {
    auto &t=(*tiles)[(start+col*tangent+row*up)*64+10+col];
    t.semanticSoutheastWall=true;t.surface=RemasterDungeonFloorContext::Surface::Wall;
    t.hflip=flip&1;t.vflip=flip&2;t.height.fill(24); // repeated authored internal cap
+   t.tileHash=100+row; // canonical same-band identity, transformed by placement
    if(!row)t.groundedFloorMask=1;
   }
   const auto original=*tiles;
@@ -23,10 +24,27 @@ int main(){try {
   }
   *tiles=original;(*tiles)[(start+extent*up)*64+10].semanticBoundaryKnown=false;
   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[start*64+10].diagonalHeightPreview,"unknown top rejects");
-  *tiles=original;(*tiles)[start*64+10].groundedFloorMask=0;
+  *tiles=original;for(int col=0;col<width;col++)(*tiles)[(start+col*tangent)*64+10+col].groundedFloorMask=0;
   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[start*64+10].diagonalHeightPreview,"unsupported foot rejects");
   *tiles=original;(*tiles)[(start+2*up)*64+10].hflip=!(flip&1);
   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[start*64+10].diagonalHeightPreview,"ambiguous transformed assembly rejects");
+  if(extent>5 && width==5) {
+   *tiles=original;
+   // Final cardinal overwrite removes the first two foot bands from one
+   // column. Surviving upper bands retain exact tangent/top ownership.
+   for(int row=0;row<2;row++) {
+    auto &t=(*tiles)[(start+row*up)*64+10];t.semanticSoutheastWall=false;t.groundedFloorMask=0;
+   }
+   const auto partial=*tiles;S9xRemasterSemanticDiagonalExtents(*tiles);
+   for(int row=2;row<extent;row++)check((*tiles)[(start+row*up)*64+10].diagonalHeightPreview,"overwritten foot tangent attachment");
+   check(!(*tiles)[start*64+10].diagonalHeightPreview,"overwriter not reclassified");
+   *tiles=partial;(*tiles)[(start+extent*up)*64+10].semanticBoundaryKnown=false;
+   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[(start+2*up)*64+10].diagonalHeightPreview,"partial unknown top rejects");
+   *tiles=partial;for(int row=2;row<extent;row++)(*tiles)[(start+row*up)*64+10].tileHash+=1000;
+   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[(start+2*up)*64+10].diagonalHeightPreview,"unrelated tangent identities reject");
+   *tiles=partial;for(int row=2;row<extent;row++)(*tiles)[(start+row*up)*64+10].hflip=!(flip&1);
+   S9xRemasterSemanticDiagonalExtents(*tiles);check(!(*tiles)[(start+2*up)*64+10].diagonalHeightPreview,"partial transformed ownership rejects");
+  }
   cases++;
  }
  std::cout<<"PASS "<<cases<<" actual semantic placement extents5/7/9/12/20, repeated cap, widths2/5, all flips, unknown boundary/support/transform rejection\n";

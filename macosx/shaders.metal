@@ -880,7 +880,66 @@ static float remasterDirectFormFactor(float3 receiver, float3 normal,
 	float response = saturate(dot(normal, direction));
 	if (oppositeFacing) response = max(response, saturate(dot(float3(-normal.xy, normal.z), direction)));
 	float sourceResponse = sample.position.w > 0.5 ? 1.0 : saturate(dot(sample.normal.xyz, -direction));
-	return min(0.25, 1.0 / (M_PI_F * (distanceSquared + 1.0))) * response * sourceResponse;
+	return (sample.position.w == 3.0 ? sample.endpoint.w :
+		min(0.25, 1.0 / (M_PI_F * (distanceSquared + 1.0)))) * response * sourceResponse;
+}
+
+// Receiver-specific sphere quadrature joins the same importance CDF as authored
+// pixels. Only selected entries trace visibility; energy/solid-angle weights match
+// exhaustive adaptive sphere transport, including receivers inside the sphere.
+static uint remasterSampledSphereBudget(RemasterGpuLight light, float3 receiver, bool full)
+{
+	if (full) return 128;
+	float3 delta = light.position - receiver;
+	float angular = light.radius * light.radius / max(dot(delta, delta), 0.000001);
+	uint samples = angular < 0.0001 ? 8 : angular < 0.000625 ? 16 :
+		angular < 0.0025 ? 32 : angular < 0.01 ? 64 : 128;
+	return min(light.sampleCount, samples);
+}
+
+struct RemasterSampledSphereState
+{
+	uint first, end, nextLight;
+	float3 delta, axis, tangent, bitangent, radiance;
+	float distanceSquared, radiusSquared, extent;
+	bool inside;
+};
+
+static RemasterDirectSample remasterSampledSphere(uint index, float3 receiver,
+	constant RemasterLightingUniforms &uniforms, const device RemasterGpuLight *lights,
+	thread RemasterSampledSphereState &state)
+{
+	RemasterDirectSample sample = {};
+	bool full = uniforms.heightPreviewRange.w > 0.5;
+	// Each CDF scan visits indices in order. Cache the cone/basis once per light,
+	// rather than rebuilding it and searching the light list for every stratum.
+	if (index >= state.end) {
+		RemasterGpuLight light = lights[state.nextLight++];
+		state.first = state.end;
+		state.end += remasterSampledSphereBudget(light, receiver, full);
+		state.delta = light.position - receiver;
+		state.distanceSquared = dot(state.delta, state.delta);
+		state.radiusSquared = light.radius * light.radius;
+		state.inside = state.distanceSquared < state.radiusSquared;
+		state.axis = state.distanceSquared > 0.000001 ? state.delta * rsqrt(state.distanceSquared) : float3(0,0,1);
+		state.tangent = normalize(cross(abs(state.axis.z) < 0.9 ? float3(0,0,1) : float3(0,1,0), state.axis));
+		state.bitangent = cross(state.axis, state.tangent);
+		float sinSquared = min(1.0, state.radiusSquared / max(state.distanceSquared, 0.000001));
+		state.extent = state.inside ? 2.0 : sinSquared / (1.0 + sqrt(max(0.0, 1.0 - sinSquared)));
+		state.radiance = light.color * light.intensity * remasterEmissionRadiance;
+	}
+	uint local = index - state.first, samples = state.end - state.first;
+	float offset = state.extent * (float(local) + 0.5) / float(samples);
+	float cosine = 1.0 - offset, sineSquared = offset * (2.0 - offset);
+	float angle = (float(local) + 0.5) * 2.39996323;
+	float3 ray = state.axis * cosine + sqrt(max(0.0, sineSquared)) * (state.tangent * cos(angle) + state.bitangent * sin(angle));
+	float projected = dot(state.delta, ray);
+	float root = sqrt(max(0.0, state.radiusSquared - state.distanceSquared * sineSquared));
+	float distance = state.inside ? projected + root : (state.distanceSquared - state.radiusSquared) / max(projected + root, 0.000001);
+	sample.position = float4(receiver + ray * max(distance, 0.00001), 3.0);
+	sample.endpoint = float4(sample.position.xyz, 2.0 * state.extent / float(samples));
+	sample.radiance = float4(state.radiance, 0);
+	return sample;
 }
 
 static float4 remasterSampledDepthFactors(float3 receiver, float3 normal,
@@ -919,11 +978,12 @@ kernel void remasterSampledDirect(
 	const device RemasterMeshCell *mesh [[buffer(3)]],
 	const device RemasterDirectSample *samples [[buffer(4)]],
 	const device RemasterEmitterPatch *patches [[buffer(6)]],
+	const device RemasterGpuLight *sceneLights [[buffer(8)]],
 	uint2 pixel [[thread_position_in_grid]])
 {
 	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height) return;
 	float2 participation = participationField.read(pixel).rg;
-	if (participation.r < 0.5 || participation.g < 0.5 || count == 0)
+	if (participation.r < 0.5 || participation.g < 0.5 || (count == 0 && uniforms.lightCount == 0))
 	{
 		direct.write(float4(0.0), pixel);
 		indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
@@ -931,15 +991,19 @@ kernel void remasterSampledDirect(
 	}
 	float4 surface = surfaceField.read(pixel);
 	float3 receiver = float3(float2(pixel) + 0.5, surface.r);
+	uint totalCount = count;
+	for (uint i = 0; i < uniforms.lightCount; i++)
+		totalCount += remasterSampledSphereBudget(sceneLights[i], receiver, uniforms.heightPreviewRange.w > 0.5);
 	bool oppositeFacing = oppositeFacingField.read(pixel).r > 0.5;
 	uint receiverIndex = pixel.y * uniforms.width + pixel.x;
 	float totalFormFactor = 0.0, totalWeight = 0.0;
-	for (uint i = 0; i < count; i++)
+	RemasterSampledSphereState sphereState = {};
+	for (uint i = 0; i < totalCount; i++)
 	{
-		RemasterDirectSample sample = samples[i];
+		RemasterDirectSample sample = i < count ? samples[i] : remasterSampledSphere(i-count, receiver, uniforms, sceneLights, sphereState);
 		if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
 			surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
-		else if (sources[i].x == receiverIndex) continue;
+		else if (i < count && sources[i].x == receiverIndex) continue;
 		if (all(sample.radiance.rgb <= 0)) continue;
 		float factor = dot(remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample), float4(0.25));
 		totalFormFactor += factor * (sample.radiance.w > 0 ? sample.radiance.w : sample.normal.w > 0 ? 1.0 : sample.position.w == 1.0 ? 0.25 : 1.0);
@@ -955,12 +1019,13 @@ kernel void remasterSampledDirect(
 		float target = remasterRandom(remasterHash(randomBase)) * totalWeight / float(connections);
 		float cumulative = 0.0;
 		float3 endpoint = remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh);
-		for (uint i = 0; i < count && connection < connections; i++)
+		sphereState = {};
+		for (uint i = 0; i < totalCount && connection < connections; i++)
 		{
-			RemasterDirectSample sample = samples[i];
+			RemasterDirectSample sample = i < count ? samples[i] : remasterSampledSphere(i-count, receiver, uniforms, sceneLights, sphereState);
 			if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
 				surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
-			else if (sources[i].x == receiverIndex) continue;
+			else if (i < count && sources[i].x == receiverIndex) continue;
 			if (all(sample.radiance.rgb <= 0)) continue;
 			float4 factors = remasterSampledDepthFactors(receiver, surface.gba, oppositeFacing, sample);
 			float factor = dot(factors, float4(0.25));
@@ -1159,7 +1224,7 @@ kernel void remasterIndirectBounce(
 		else if (preparedDirect)
 		{
 			preparedSample = directSamples[sampleIndex];
-			if (clusteredDirect) {
+			if (clusteredDirect && emitterPixels[sampleIndex*2] != 0xffffffffu) {
 				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
 				preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
 					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
@@ -1312,7 +1377,8 @@ kernel void remasterIndirectBounce(
 				occlusion, heightField, surfaceField, visibilityBlocks, mesh);
 			incoming += radiance * formFactor * visibility;
 		}
-		totalFormFactor += clusteredDirect && !debugSample ? formFactor * preparedSample.radiance.w : volumeSample ? formFactor * 0.25 : formFactor;
+		totalFormFactor += clusteredDirect && !debugSample && preparedSample.radiance.w > 0 ?
+			formFactor * preparedSample.radiance.w : volumeSample ? formFactor * 0.25 : formFactor;
 	}
 	if (!batched && totalFormFactor > 0.95)
 		incoming *= 0.95 / totalFormFactor;

@@ -61,6 +61,41 @@ inline void S9xRemasterSemanticDiagonalExtents(Placements &tiles)
 			claim.set=true;claim.intercept=intercept;claim.minimum=minimum;claim.maximum=maximum;
 		}
 	}
+	// A cardinal dispatch can overwrite the foot of a diagonal column while
+	// leaving its upper face intact. Transport band phase across the oblique
+	// same-band seam from an independently foot/top-proved companion. Require
+	// the surviving column's own explicit top, identical transformed semantic
+	// ownership and final identity at EVERY shared band. Never propagate through
+	// the overwritten cells or treat their cardinal art as diagonal members.
+	for(int pass=0;pass<64;pass++) {
+		bool changed=false;auto next=claims;
+		for(int i=0;i<4096;i++) {
+			const auto &seed=claims[i];const auto &t=tiles[i];
+			if(!seed.set || seed.conflict || !t.semanticSoutheastWall)continue;
+			const int tangent=t.hflip==t.vflip?-1:1,up=t.vflip?1:-1;
+			for(int sign:{-1,1}) {
+				const int x=i%64+sign,y=i/64+sign*tangent;
+				if(x<0 || x>=64 || y<0 || y>=64)continue;
+				const int target=y*64+x;const auto &n=tiles[target];
+				if(!n.semanticSoutheastWall || !n.hasHeight || n.hflip!=t.hflip || n.vflip!=t.vflip || n.tileHash!=t.tileHash)continue;
+				int top=y;
+				while(top>=0 && top<64 && tiles[top*64+x].semanticSoutheastWall) {
+					const auto &member=tiles[top*64+x];
+					if(!member.hasHeight || member.hflip!=t.hflip || member.vflip!=t.vflip)break;
+					top+=up;
+				}
+				if(top<0 || top>=64 || !tiles[top*64+x].semanticBoundaryKnown || tiles[top*64+x].semanticSoutheastWall)continue;
+				// The last partial band must be the same actual clipped top as the
+				// source assembly; no guessed height from a different terminator.
+				if(seed.intercept+((top-up-y)*up)*8!=seed.maximum+7)continue;
+				auto &claim=next[target];
+				if(claim.set) {
+					if(claim.intercept!=seed.intercept || claim.minimum!=seed.minimum || claim.maximum!=seed.maximum)claim.conflict=true;
+				} else {claim=seed;changed=true;}
+			}
+		}
+		claims.swap(next);if(!changed)break;
+	}
 	for(int i=0;i<4096;i++) {
 		const auto &claim=claims[i];if(!claim.set || claim.conflict)continue;
 		auto &t=tiles[i];t.surface=decltype(t.surface)::Wall;t.diagonalHeightPreview=true;t.diagonalIntercept=claim.intercept;

@@ -527,6 +527,8 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 		<< "\",\"profile_serialized_fnv1a64\":\"" << std::hex << digest << std::dec
 		<< "\",\"room\":" << c.roomIndex << ",\"previous_room\":" << c.previousRoomIndex
 		<< ",\"submodule\":" << int(c.submodule) << ",\"collision_mode\":" << int(c.collisionMode)
+		<< ",\"module\":" << int(c.module) << ",\"construction_phase\":" << int(c.constructionPhase)
+		<< ",\"room_transition_flags\":" << int(c.roomTransitionFlags)
 		<< ",\"link_xy\":[" << c.linkX << ',' << c.linkY << "],\"plane\":" << int(c.linkPlane)
 		<< ",\"scroll\":[" << c.backgroundScrollX << ',' << c.backgroundScrollY << ']'
 		<< ",\"graphics_base\":" << c.graphicsBase << ",\"bg1_graphics_base\":" << c.bg1GraphicsBase << ",\"rise\":" << int(profile.upperFloorHeight)
@@ -580,7 +582,16 @@ inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloo
 		context.verifiedAlttpRom && context.indoors &&
 		context.module == 7 &&
 		(context.stairCount != 0 || context.constructedMaps) &&
-		(context.constructedMaps ? !context.submodule : (!context.submodule || context.roomIndex == publishedRoom));
+		(context.constructedMaps ? (!context.submodule ||
+#ifndef ALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE
+			// Verified in-room handlers retain complete room topology while VRAM
+			// flames continue animating. Refresh/solve exact current identities,
+			// rather than applying settled-state producers to different artwork.
+			((context.submodule==8 || context.submodule==16) && context.constructionPhase<=1)
+#else
+			false
+#endif
+			) : (!context.submodule || context.roomIndex == publishedRoom));
 }
 
 inline bool S9xRemasterObserving (void)
@@ -2822,6 +2833,43 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			}
 			RemasterFrameLight light;
 			if (S9xRemasterHeldLampLight(lamp, RemasterHeldLampSettings{}, light)) frame.lights.push_back(light);
+		}
+		// Opt-in bounded chronology for lighting discontinuities. Ordinary runtime
+		// has no file/field scan. Pair with presentation by sample order/room/camera.
+		if (const char *path=std::getenv("S9X_REMASTER_STAIR_LIGHT_TRACE")) if(*path && dungeonFloor) {
+			static std::string tracePath;static unsigned traceFrames=0;static bool traceArmed=false;
+			if(tracePath!=path){tracePath=path;traceFrames=0;traceArmed=false;}
+			// Do not spend the bounded window navigating to the staircase. Creating
+			// the core file is also the frontend companion's opt-in start signal.
+			if(!traceArmed && dungeonFloor->module==7 &&
+				(dungeonFloor->submodule==8 || dungeonFloor->submodule==16))traceArmed=true;
+			if(traceArmed && traceFrames<600) {
+				std::ofstream trace(path,std::ios::app);
+				if(trace) {
+					std::map<RemasterTileContentId,const RemasterFrameAssetMetadata *> metadata;
+					for(const auto &m:frame.assetMetadata)metadata[m.tileId]=&m;
+					size_t visibleEmitters=0;const auto &pixels=frame.scenePixels.empty()?frame.mainPixels:frame.scenePixels;
+					for(const auto &px:pixels)if(px.instanceId && px.instanceId<=frame.tileInstances.size() && px.tilePixel<64) {
+						const auto found=metadata.find(frame.tileInstances[px.instanceId-1].tileId);
+						if(found!=metadata.end()){const auto &m=*found->second;const auto *e=m.emissionRgba.data()+px.tilePixel*4;visibleEmitters+=m.hasEmission && e[3] && (e[0] || e[1] || e[2]);}
+					}
+					const unsigned sample = traceFrames++;
+					trace<<"{\"event\":\""<<(sample==0?"stair_trace_start":"frame")<<"\",\"sample\":"<<sample
+					 <<",\"room\":"<<dungeonFloor->roomIndex<<",\"module\":"<<int(dungeonFloor->module)
+					 <<",\"submodule\":"<<int(dungeonFloor->submodule)<<",\"construction\":"<<int(dungeonFloor->constructionPhase)
+					 <<",\"transition_flags\":"<<int(dungeonFloor->roomTransitionFlags)<<",\"collision\":"<<int(dungeonFloor->collisionMode)
+					 <<",\"link\":["<<dungeonFloor->linkX<<','<<dungeonFloor->linkY<<','<<dungeonFloor->linkZ<<','<<int(dungeonFloor->linkPlane)
+					 <<"],\"scroll\":["<<dungeonFloor->backgroundScrollX<<','<<dungeonFloor->backgroundScrollY
+					 <<"],\"epoch\":"<<state.runtimeDungeonHeightEpoch<<",\"input_key\":"<<state.runtimeDungeonObservedInputKey
+					 <<",\"map_key\":"<<state.runtimeDungeonHeightKey<<",\"scene_pixels\":"<<frame.scenePixels.size()
+					 <<",\"profile_geometry_key\":"<<state.dungeonGeometryProfileKey<<",\"visible_emitting_pixels\":"<<visibleEmitters
+					 <<",\"width\":"<<frame.width<<",\"height\":"<<frame.height<<",\"scale\":"<<frame.lightingCoordinateScale
+					 <<",\"original\":"<<frame.originalSceneContribution<<",\"bounces\":"<<int(frame.indirectBounceCount)
+					 <<",\"emitter_lifecycle\":"<<S9xRemasterRoomEmitterLifecycle(*dungeonFloor)<<",\"lights\":[";
+					for(size_t n=0;n<frame.lights.size();n++){if(n)trace<<',';const auto &l=frame.lights[n];trace<<'['<<l.x<<','<<l.y<<','<<l.z<<','<<l.radius<<','<<l.intensity<<']';}
+					trace<<"]}\n";
+				}
+			}
 		}
 		if (state.frameCaptureActive)
 		{

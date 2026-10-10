@@ -2,7 +2,7 @@
 
 No asset hashes, room IDs, guessed bases or authored writes are used here.
 """
-def diagonal_previews(snapshot, profile, template_data, layer=1):
+def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None):
     if template_data is None:
         return {}
     # Legacy cell-only synthetic adapters cannot decode unplaced ROM words.
@@ -172,4 +172,163 @@ def diagonal_previews(snapshot, profile, template_data, layer=1):
                 intercept=minimum+7+row*8
                 result[x,y+row*up]=dict(height=[max(minimum,min(maximum,intercept-xx-yy)) for yy in range(8) for xx in range(8)],
                                      row=0,foot=0,intercept=intercept,minimum=minimum,maximum=maximum)
+    return partial_semantic_previews(snapshot, profile, result, layer, owned)
+
+
+def partial_semantic_previews(snapshot, profile, seeds, layer, owned):
+    """Independent whole-column attachment, never consume runtime preview arrays.
+
+    `owned` is the independently reconstructed final diagonal-dispatch inventory
+    keyed by (layer,x,y). Absent provenance cannot attest an overwritten foot.
+    Every surviving band must match an already proved companion band, not just
+    one convenient contact. Conflicting proposals are removed before transport.
+    """
+    if owned is None:
+        return seeds
+    assets = {a['tile_hash']: a for a in profile.get('assets', [])}
+    groups = profile.get('asset_groups', {})
+    known = set().union(*(set(v.get('tile_hashes', [])) for v in groups.values())) if groups else set()
+    def semantic(c):
+        a = assets.get(c.tile_hash, {})
+        return (a.get('tile_semantics_authored') and a.get('tile_role') == 'wall' and
+                a.get('tile_semantic_normals') == ['south_east'] and
+                not a.get('tile_semantic_context_dependent') and len(a.get('height', [])) == 64)
+    def boundary(c):
+        a = assets.get(c.tile_hash, {})
+        return a.get('tile_semantics_authored') or a.get('tile_role', 'unknown') != 'unknown' or c.tile_hash in known
+    def owned_cell(c):
+        claims = owned.get((layer, c.x, c.y), set())
+        return len(claims) == 1 and next(iter(claims))[0] == c.tile_hash
+    result = dict(seeds)
+    rejected = set()
+    columns = []
+    for x in range(64):
+        visited = set()
+        for y in range(64):
+            c = snapshot.cell(layer, x, y)
+            if y in visited or not semantic(c):
+                continue
+            ys = [y]
+            for sign in (-1, 1):
+                yy = y + sign
+                while 0 <= yy < 64 and semantic(snapshot.cell(layer, x, yy)):
+                    ys.append(yy); yy += sign
+            visited.update(ys)
+            cells = [snapshot.cell(layer, x, yy) for yy in sorted(ys)]
+            if any((t.hflip, t.vflip) != (c.hflip, c.vflip) or not owned_cell(t) for t in cells):
+                continue
+            up = 1 if c.vflip else -1
+            top = max(ys)+1 if up == 1 else min(ys)-1
+            if not 0 <= top < 64 or not boundary(snapshot.cell(layer, x, top)):
+                continue
+            columns.append((cells, top, up))
+    for _ in range(64):
+        proposals = {}
+        for cells, top, up in columns:
+            c = cells[0]
+            tangent = -1 if c.hflip == c.vflip else 1
+            for sign in (-1, 1):
+                witnesses = []
+                for t in cells:
+                    nx, ny = t.x+sign, t.y+sign*tangent
+                    if not (0 <= nx < 64 and 0 <= ny < 64):
+                        break
+                    n = snapshot.cell(layer, nx, ny); proof = result.get((nx, ny))
+                    if (nx,ny) in rejected:break
+                    if (not proof or not owned_cell(n) or not semantic(n) or
+                        (n.hflip, n.vflip, n.tile_hash, n.word & 0xdfff) !=
+                        (t.hflip, t.vflip, t.tile_hash, t.word & 0xdfff)):
+                        break
+                    target_owner=next(iter(owned[layer,t.x,t.y])); neighbor_owner=next(iter(owned[layer,n.x,n.y]))
+                    if target_owner[1:] != neighbor_owner[1:]:
+                        break  # same artwork from another writer/phase is not a seam
+                    # Transformed same-band tangent seam preserves canonical
+                    # x+y at every sample (the displayed displacement is 8,-8).
+                    # Verify all samples, not an inferred average/normal label.
+                    expected = [max(proof['minimum'], min(proof['maximum'], proof['intercept']-xx-yy))
+                                for yy in range(8) for xx in range(8)]
+                    if proof['height'] != expected:
+                        break
+                    witnesses.append((t, n, proof))
+                if len(witnesses) != len(cells):
+                    continue
+                params = {(p['minimum'], p['maximum'], p['intercept']-(t.y*up)*8) for t,n,p in witnesses}
+                if len(params) != 1:
+                    continue
+                minimum, maximum, phase = next(iter(params))
+                if phase+(top-up)*up*8 != maximum+7:
+                    continue
+                for t,n,proof in witnesses:
+                    key = (t.x,t.y)
+                    evidence = dict(source='partial_semantic_diagonal_owned_tangent',
+                                    companion=[n.x,n.y], final_dispatch=list(next(iter(owned[layer,t.x,t.y]))),
+                                    top=[t.x,top], samples_verified=64,
+                                    witness_source=proof.get('evidence', {}).get('source', 'independent_complete_diagonal'))
+                    proposals.setdefault(key, []).append(({**proof, 'evidence': evidence},
+                                                           (proof['intercept'],minimum,maximum)))
+        changed = False
+        for key, options in proposals.items():
+            if key in rejected:continue
+            values = {v for _,v in options}
+            if key in result:
+                p = result[key]; values.add((p['intercept'],p['minimum'],p['maximum']))
+            if len(values) != 1:
+                result.pop(key, None)
+                rejected.add(key)
+                continue
+            if key not in result:
+                result[key] = options[0][0]; changed = True
+        if not changed:
+            break
     return result
+
+
+def diagonal_previews(snapshot, profile, template_data, layer=1, owned=None):
+    result = _rom_diagonal_previews(snapshot, profile, template_data, layer)
+    # Semantic grounded feet are independent of the cardinal-template datum.
+    # A rejected/changed cardinal section must not suppress this separate proof.
+    if owned is not None:
+        assets = {a['tile_hash']:a for a in profile.get('assets', [])}
+        known = set().union(*(set(g.get('tile_hashes',[])) for g in profile.get('asset_groups',{}).values()))
+        def semantic(c):
+            a=assets.get(c.tile_hash,{})
+            return (a.get('tile_semantics_authored') and a.get('tile_role')=='wall' and
+                    a.get('tile_semantic_normals')==['south_east'] and
+                    not a.get('tile_semantic_context_dependent') and len(a.get('height',[]))==64)
+        def grounded(c):
+            a=assets.get(c.tile_hash,{});h=a.get('height',[]);n=a.get('normal_xyz',[])
+            return len(h)==64 and len(n)==192 and any(h[k]==0 and n[k*3:k*3+3]==[128,128,255] for k in range(64))
+        def boundary(c):
+            a=assets.get(c.tile_hash,{})
+            return a.get('tile_semantics_authored') or a.get('tile_role','unknown')!='unknown' or c.tile_hash in known
+        claims={}
+        for y in range(64):
+            for x in range(64):
+                c=snapshot.cell(layer,x,y)
+                if not semantic(c) or not grounded(c):continue
+                up=1 if c.vflip else -1;tangent=-1 if c.hflip==c.vflip else 1
+                low=y-up
+                if not 0<=low<64 or semantic(snapshot.cell(layer,x,low)) or not boundary(snapshot.cell(layer,x,low)):continue
+                neighbors=[snapshot.cell(layer,x+sign,y+sign*tangent) for sign in (-1,1)
+                           if 0<=x+sign<64 and 0<=y+sign*tangent<64]
+                if not any(semantic(n) and grounded(n) and (n.hflip,n.vflip)==(c.hflip,c.vflip) and
+                           len(owned.get((layer,n.x,n.y),set()))==1 for n in neighbors):continue
+                members=[];yy=y
+                while 0<=yy<64 and semantic(snapshot.cell(layer,x,yy)):
+                    t=snapshot.cell(layer,x,yy)
+                    if (t.hflip,t.vflip)!=(c.hflip,c.vflip) or len(owned.get((layer,x,yy),set()))!=1:break
+                    members.append(t);yy+=up
+                if len(members)<=4 or not 0<=yy<64 or semantic(snapshot.cell(layer,x,yy)) or not boundary(snapshot.cell(layer,x,yy)):continue
+                maximum=(len(members)-1)*8
+                if maximum>254:continue
+                for row,t in enumerate(members):
+                    intercept=7+row*8
+                    claims.setdefault((t.x,t.y),set()).add((intercept,0,maximum))
+        for key,values in claims.items():
+            if len(values)!=1:result.pop(key,None);continue
+            intercept,minimum,maximum=next(iter(values))
+            result[key]=dict(intercept=intercept,minimum=minimum,maximum=maximum,row=0,foot=0,
+                             height=[max(minimum,min(maximum,intercept-x-y)) for y in range(8) for x in range(8)],
+                             evidence=dict(source='semantic_diagonal_owned_grounded_extent',
+                                           final_dispatch=list(next(iter(owned[layer,*key])))))
+    return partial_semantic_previews(snapshot, profile, result, layer, owned)

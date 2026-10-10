@@ -30,6 +30,7 @@
 #include "remaster/held_lamp.h"
 #include "remaster/direct_batches.h"
 #include "remaster/sphere_samples.h"
+#include "remaster/hidden_emitter_samples.h"
 #include "remaster/room_debug_view.h"
 
 #include <algorithm>
@@ -486,6 +487,29 @@ void DrawFreezeDefrostScreen (uint8 *draw)
 	S9xPutImageMetal(w, h, (uint16 *)draw, w, nullptr, 0, nullptr, 0, RemasterDebugMode::Original);
 }
 
+// Opt-in bounded companion to the core stair trace. No GPU readback or changes
+// to scheduling: distinguish stock fallback, dropped frames and transport work.
+static void TraceRemasterStairPresentation(const char *event, int width, int height,
+	int slot, size_t lights = 0, uint32_t emitters = 0, uint32_t samples = 0)
+{
+	const char *path = std::getenv("S9X_REMASTER_STAIR_LIGHT_TRACE");
+	if (!path || !*path) return;
+	// The core creates this file at the first stair handler, preserving the
+	// bounded window while the user navigates to the stairs.
+	if (!std::ifstream(path).good()) return;
+	static std::mutex mutex;
+	std::lock_guard<std::mutex> lock(mutex);
+	static std::string previousPath;
+	static unsigned count = 0;
+	if (previousPath != path) { previousPath = path; count = 0; }
+	if (count >= 2400) return;
+	std::ofstream out(std::string(path) + ".presentation.jsonl", std::ios::app);
+	if (out) out << "{\"event\":\"" << event << "\",\"sequence\":" << count++
+		<< ",\"width\":" << width << ",\"height\":" << height << ",\"slot\":" << slot
+		<< ",\"lights\":" << lights << ",\"emitters\":" << emitters
+		<< ",\"samples\":" << samples << "}\n";
+}
+
 bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView,
 	bool asynchronous)
@@ -509,6 +533,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const int resourceSlot = lighting ? AcquireRemasterResourceSlot(!asynchronous) : -1;
 	if (lighting && resourceSlot < 0)
 	{
+		TraceRemasterStairPresentation("slot_drop", frame.width, frame.height, resourceSlot, frame.lights.size());
 		droppedRemasterPresentations.fetch_add(1, std::memory_order_relaxed);
 		return true;
 	}
@@ -884,6 +909,7 @@ void S9xPutImage (int width, int height)
 			liveRemasterLightingView.load(std::memory_order_relaxed), !RemasterBenchmarkDeterministicPresentation()))
 		return;
 
+	TraceRemasterStairPresentation("stock_fallback", width, height, -1, liveFrame ? liveFrame->lights.size() : 0);
 	S9xPutImageMetal(width, height, GFX.Screen, GFX.RealPPL, S9xRemasterMainOwners(), GFX.RealPPL,
 		nullptr, 0, S9xRemasterGetDebugMode());
 }
@@ -1248,7 +1274,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			id<MTLBuffer> sceneLightBuffer = [metalDevice newBufferWithBytes:sceneLights.empty() ? &emptySceneLight : sceneLights.data()
 				length:std::max<size_t>(1, sceneLights.size()) * sizeof(RemasterGpuLight) options:MTLResourceStorageModeShared];
 			if (!sceneLightBuffer) return false;
-			uint32_t sampledDirectConnections = 0;
+			uint32_t sampledDirectConnections = std::max<uint32_t>(1, samplesPerFrame);
 			if (const char *value = std::getenv("S9X_REMASTER_DIRECT_SAMPLES")) {
 				char *end = nullptr;
 				long parsed = std::strtol(value, &end, 10);
@@ -1256,9 +1282,15 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					sampledDirectConnections = static_cast<uint32_t>(parsed);
 			}
 			const bool sampledDirect = sampledDirectConnections && remasterSampledDirectPipelineState &&
-				lightingView != RemasterLightingView::Visibility && !measureGi && !light.enabled && sceneLights.empty();
+				lightingView != RemasterLightingView::Visibility && !measureGi && !light.enabled &&
+				!std::getenv("S9X_REMASTER_EXHAUSTIVE_DIRECT");
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
+			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth) : std::vector<RemasterHiddenDirectSample>{};
+			if (panelMetrics) for (const auto &s:hiddenSamples) {
+				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
+				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
+			}
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
 			const bool clustered = frame && (frame->emitterPatchSize > 1 || frame->representativeEmitters > 0) &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
@@ -1276,12 +1308,17 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			} else for (uint32_t pixel : emitterPixels)
 				for (uint32_t sample = 0, count = !collapsedDepth && (*mesh)[pixel].emissionDepth > 0.0f ? 4 : 1; sample < count; sample++)
 					directSources.push_back(vector_uint2{pixel, sample | sourceFlag});
+			const uint32_t visibleSampleCount = static_cast<uint32_t>(directSources.size());
+			for (size_t n=0;n<hiddenSamples.size();n++)
+				directSources.push_back(vector_uint2{UINT32_MAX,0}); // source-only, never a patch member
 			const uint32_t directSampleCount = static_cast<uint32_t>(directSources.size());
 			frameSphereCount = static_cast<uint32_t>(sceneLights.size()) + uint32_t(light.enabled);
 			if (light.enabled) frameSphereSampleCount += 128;
 			sourceBuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sourceBuildStarted).count();
 			frameEmitterCount = emitterCount;
 			frameDirectSampleCount = directSampleCount;
+			TraceRemasterStairPresentation("transport", width, height, resourceSlot,
+				sceneLights.size(), emitterCount, directSampleCount + frameSphereSampleCount);
 			const size_t sourceBytes = std::max<size_t>(1, directSampleCount) * sizeof(vector_uint2);
 			const size_t sampleBytes = std::max<size_t>(1, directSampleCount) * sizeof(vector_float4) * 4;
 			if (!resources->directSources || resources->directSources.length < sourceBytes)
@@ -1297,9 +1334,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				if (!resources->emitterPatches) return false;
 				if (!patches.empty()) memcpy(resources->emitterPatches.contents, patches.data(), bytes);
 			}
-			const uint32_t emptyEmitter = 0;
-			id<MTLBuffer> emitterBuffer = [metalDevice newBufferWithBytes:emitterCount ? emitterPixels.data() : &emptyEmitter
-				length:std::max<size_t>(1, emitterCount) * sizeof(uint32_t) options:MTLResourceStorageModeShared];
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
 				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
 				heightPreviewMultiplier, 0.0f, 0,
@@ -1308,7 +1342,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			const uint64_t previewRange = remasterHeightPreviewRange.load(std::memory_order_relaxed);
 			uniforms.lightCount = static_cast<uint32_t>(sceneLights.size());
 			uniforms.heightPreviewRange = { static_cast<float>(int32_t(uint32_t(previewRange))),
-				static_cast<float>(int32_t(uint32_t(previewRange >> 32))), float(frameSphereSampleCount), 0.0f };
+				static_cast<float>(int32_t(uint32_t(previewRange >> 32))), float(frameSphereSampleCount),
+				std::getenv("S9X_REMASTER_FULL_SPHERE_SAMPLES") ? 1.0f : 0.0f };
 			if (light.enabled)
 			{
 				uniforms.debugPositionRadius = { light.x * width, light.y * height, light.height, light.radius };
@@ -1333,7 +1368,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[computeEncoder endEncoding];
 			directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
-			if (directSampleCount)
+			if (visibleSampleCount)
 			{
 				id<MTLComputeCommandEncoder> prepare = stageCounters.encoder(commandBuffer, "prepare_direct");
 				if (!prepare) return false;
@@ -1347,10 +1382,20 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				[prepare setBuffer:resources->directSamples offset:0 atIndex:1];
 				if (clustered) [prepare setBuffer:resources->emitterPatches offset:0 atIndex:4];
 				[prepare setBuffer:resources->mesh offset:0 atIndex:2];
-				[prepare setBytes:&directSampleCount length:sizeof(directSampleCount) atIndex:3];
-				[prepare dispatchThreadgroups:MTLSizeMake((directSampleCount + 63) / 64, 1, 1)
+				[prepare setBytes:&visibleSampleCount length:sizeof(visibleSampleCount) atIndex:3];
+				[prepare dispatchThreadgroups:MTLSizeMake((visibleSampleCount + 63) / 64, 1, 1)
 					threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 				[prepare endEncoding];
+			}
+			if (!hiddenSamples.empty()) {
+				id<MTLBuffer> hiddenBuffer=[metalDevice newBufferWithBytes:hiddenSamples.data()
+					length:hiddenSamples.size()*sizeof(RemasterHiddenDirectSample) options:MTLResourceStorageModeShared];
+				if (!hiddenBuffer) return false;
+				id<MTLBlitCommandEncoder> copy=[commandBuffer blitCommandEncoder];
+				[copy copyFromBuffer:hiddenBuffer sourceOffset:0 toBuffer:resources->directSamples
+					destinationOffset:visibleSampleCount*sizeof(RemasterHiddenDirectSample)
+					size:hiddenSamples.size()*sizeof(RemasterHiddenDirectSample)];
+				[copy endEncoding];
 			}
 			if (measureGi)
 			{
@@ -1361,6 +1406,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					diagnosticStageTextures[stage - 1] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 					uniforms.passIndex = 0;
 					uniforms.diagnosticStage = stage;
+					uniforms.padding = 2.0f;
 					id<MTLComputeCommandEncoder> diagnosticEncoder = [commandBuffer computeCommandEncoder];
 					[diagnosticEncoder setComputePipelineState:remasterIndirectPipelineState];
 					[diagnosticEncoder setTexture:sourceTexture atIndex:0];
@@ -1379,8 +1425,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					[diagnosticEncoder setBuffer:resources->directSamples offset:0 atIndex:4];
 					[diagnosticEncoder setBuffer:sceneLightBuffer offset:0 atIndex:8];
 					[diagnosticEncoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-					[diagnosticEncoder setBuffer:emitterBuffer offset:0 atIndex:1];
-					[diagnosticEncoder setBytes:&emitterCount length:sizeof(emitterCount) atIndex:2];
+					[diagnosticEncoder setBuffer:resources->directSources offset:0 atIndex:1];
+					[diagnosticEncoder setBytes:&directSampleCount length:sizeof(directSampleCount) atIndex:2];
 					[diagnosticEncoder dispatchThreads:MTLSizeMake(width, height, 1)
 						threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 					[diagnosticEncoder endEncoding];
@@ -1817,6 +1863,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					}];
 					queuedGuard.disarm();
 				}
+				if (std::getenv("S9X_REMASTER_STAIR_LIGHT_TRACE"))
+					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+						TraceRemasterStairPresentation(completed.status == MTLCommandBufferStatusCompleted ?
+							"gpu_complete" : "gpu_error", width, height, resourceSlot);
+					}];
 				[commandBuffer commit];
 				return true;
 			}

@@ -226,8 +226,11 @@ shadow boundaries, inverse-square falloff or spatial color variation. Larger
 footprints are maxima, not guaranteed source counts; compatible fragments often
 remain smaller. Visual acceptance of clustering is pending.
 
-Opt in with `S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps
-exhaustive Direct). This first implementation stratifies samples over each
+Normal Direct uses the Scene Controls connection budget; override with
+`S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps the selected
+budget). `S9X_REMASTER_EXHAUSTIVE_DIRECT=1` restores exhaustive Direct.
+Visibility/GI diagnostics and the debug sphere remain exhaustive.
+The implementation stratifies samples over each
 receiver's source CDF, weighted by unoccluded Lambertian form factor times the
 maximum linear radiance channel. It scans all prepared planar/depth sources to
 compute the **exact unoccluded normalization**, then scans their weights again
@@ -248,6 +251,12 @@ can show sampling noise/flicker. Exact source scans remain O(receivers*sources).
 Indirect connections remain independently controlled by the profile. Visibility
 and diagnostic views and an enabled debug sphere use exhaustive Direct. Source
 and geometry preparation remain frame-local and unchanged.
+
+HUD source-only pixels participate with the same collapsed depth base/extent
+records as visible depth sources. Physical scene spheres also join the CDF,
+using receiver-adaptive solid-angle quadrature; their unoccluded form factors
+and normalization match exhaustive sphere transport. Sphere setup is cached per
+light per scan. See `offscreen_emitters.md` for capture timings and regressions.
 
 ## Connected surface meshes
 

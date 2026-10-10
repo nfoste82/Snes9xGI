@@ -23,7 +23,11 @@ int main(int argc,char **argv){try {
  std::ostringstream hex;hex<<std::hex<<digest;check(text.find("\"profile_serialized_fnv1a64\":\""+hex.str()+"\"")!=std::string::npos,"profile pin");
  auto captured=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(path,*captured),"packet");
  RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=number("room");c.previousRoomIndex=number("previous_room");
- c.submodule=number("submodule");c.collisionMode=number("collision_mode");check(!c.submodule && !c.collisionMode,"unsupported/unsettled state");
+  c.submodule=number("submodule");c.collisionMode=number("collision_mode");check(!c.submodule && !c.collisionMode,"unsupported/unsettled state");
+  // Additive lifecycle attestations; historical sidecars did not retain these.
+  if(text.find("\"module\":")!=std::string::npos)c.module=number("module");
+  if(text.find("\"construction_phase\":")!=std::string::npos)c.constructionPhase=number("construction_phase");
+  if(text.find("\"room_transition_flags\":")!=std::string::npos)c.roomTransitionFlags=number("room_transition_flags");
  c.linkX=number("link_xy");c.linkY=number("link_xy",1);c.linkPlane=number("plane");
  // Legacy evidence pins ROM SHA256 but predates continuity identity/grounded
  // attestations. Preserve its original conservative no-continuity capability.
@@ -72,8 +76,100 @@ int main(int argc,char **argv){try {
   endframeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   if(std::getenv("ALTTP_CACHE_TIMING"))std::cerr<<"endframe_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
   check(!frame->mainPixels.empty(),"EndFrame");
+  // Captured production regression, not synthetic actor geometry. Own019 pins
+  // the four missing intrinsic sources independently from the repaired base.
+  if(path.find("frame_room062_019.s9xrmf")!=std::string::npos) {
+   const auto &a=c.terrainActors[15];const auto &o=c.terrainOam[12];
+   check(a.state==10 && a.kind==2 && a.z==16 && o.flags==0x6c && o.size==2,"captured carried producer pin");
+   size_t usages=0;std::set<uint64_t> children;
+   for(const auto &px:frame->mainPixels)if(px.instanceId) {
+    const auto &i=frame->tileInstances[px.instanceId-1];if(i.source!=RemasterSourceType::Object || i.sourceIndex!=12)continue;
+    check(i.palette==6 && i.hFlip && !i.vFlip && i.heightOffset==43 && !i.hasPlacementHeight,"captured owned carried base 24+16+3");
+    children.insert(i.tileId.hash);usages++;
+    for(const auto &m:frame->assetMetadata)if(m.tileId==i.tileId)check(!m.hasHeight,"missing child source must not be fabricated");
+   }
+   check(usages>=100 && children.size()==4,"captured complete four-child visible denominator");
+   std::cout<<"carried_visible_pixels="<<usages<<" children="<<children.size()<<'\n';
+  }
+  if(path.find("frame_room061_048.s9xrmf")!=std::string::npos) {
+   size_t checked=0;
+   for(size_t at=0;at<frame->mainPixels.size();at++) {
+    const auto &px=frame->mainPixels[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances[px.instanceId-1];
+    const int x=((c.backgroundScrollX+at%frame->width)&511)/8,y=((c.backgroundScrollY+at/frame->width)&511)/8,row=y-x-30;
+    if(i.source!=RemasterSourceType::Background || i.sourceIndex!=1 || x<2 || x>11 || y<38 || row<0 || row>6)continue;
+    check(i.hasPlacementHeight && i.heightOffset==0,"captured southwest continued source");
+    check(i.placementHeight[px.tilePixel]==std::max(0,std::min(48,7+8*row-int(px.tilePixel%8)-int(px.tilePixel/8))),"captured southwest exact gradient");checked++;
+   }
+   check(checked>1000,"captured southwest pixel denominator");
+  }
  };
- run();const auto epoch=s.runtimeDungeonHeightEpoch;run();
+  run();const auto epoch=s.runtimeDungeonHeightEpoch;run();
+  if(const char *samples=std::getenv("ALTTP_STAIR_RECURRING_SAMPLES")) {
+   std::vector<std::vector<uint8_t>> sequence;std::stringstream names(samples);std::string name;
+   while(std::getline(names,name,';')){auto sample=read(name+".dungeon-input.bin");check(sample.size()==input.size() && std::equal(input.begin()+8,input.begin()+24584,sample.begin()+8),"recurring topology differs");sequence.push_back(std::move(sample));}
+   check(sequence.size()==5,"recurring five real states required");
+   const auto originals=captured->tileInstances;
+   for(int stair=0;stair<2;stair++) {
+    c.submodule=stair?8:0;c.constructionPhase=stair?1:0;
+    // Reset only at workload boundary; no full solve interleaved in measured frames.
+    s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;s.dungeonArtworkStates.clear();
+    std::vector<double> times;uint64_t publications=0,reuses=0,hits=0;std::map<int,std::string> inventories;
+    for(int n=0;n<105;n++) {
+     c.graphics=sequence[n%5].data()+24584;captured->tileInstances=originals;
+     // Refresh exact visible BG identity observations for this recorded VRAM.
+     captured->assets.clear();std::set<uint64_t> ids;
+     for(auto &i:captured->tileInstances)if(i.source==RemasterSourceType::Background && i.sourceIndex<2) {
+      const int base=i.sourceIndex?c.graphicsBase:c.bg1GraphicsBase;const uint16_t address=uint16_t(base+(i.tileNumber&1023)*32);RemasterFrameAsset a;
+      for(int y=0;y<8;y++)for(int x=0;x<8;x++){int v=0;for(int b=0;b<4;b++)v|=((c.graphics[uint16_t(address+b/2*16+y*2+b%2)]>>(7-x))&1)<<b;a.indices[y*8+x]=v;}
+      a.tileId={S9xRemasterHashTile(4,a.indices),1,4};i.tileId=a.tileId;if(ids.insert(a.tileId.hash).second)captured->assets.push_back(a);
+     }
+     const auto e=s.runtimeDungeonHeightEpoch,r=s.dungeonGeometryReuseCount,h=s.dungeonArtworkStateHits;
+     run();const auto inv=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+     if(n<5)inventories[n%5]=inv;else check(inventories[n%5]==inv,"recurring exact state inventory differs");
+     if(n>=5){times.push_back(endframeMs);publications+=s.runtimeDungeonHeightEpoch-e;reuses+=s.dungeonGeometryReuseCount-r;hits+=s.dungeonArtworkStateHits-h;}
+    }
+    std::sort(times.begin(),times.end());
+    std::cout<<"recurring stair="<<stair<<" warmup=5 measured=100 median_ms="<<times[50]<<" p95_ms="<<times[95]<<" publications="<<publications<<" reuses="<<reuses<<" exact_hits="<<hits<<" retained_states="<<s.dungeonArtworkStates.size()<<'\n';
+   }
+   return 0;
+  }
+  if(const char *samples=std::getenv("ALTTP_STAIR_ANIMATION_SAMPLES")) {
+   std::stringstream names(samples);std::string name;int index=0,mismatches=0;double totalMs=0;
+   while(std::getline(names,name,';')) {
+    auto sample=read(name+".dungeon-input.bin");check(sample.size()==input.size() && std::equal(input.begin()+8,input.begin()+24584,sample.begin()+8),"animation topology differs");
+    c.graphics=sample.data()+24584;c.submodule=8;c.constructionPhase=1;
+    run();totalMs+=endframeMs;const auto sources=frame->lights;
+    double area=0;for(const auto &l:frame->lights)area+=4*3.141592653589793*l.radius*l.radius;
+    std::cout<<"animation sample="<<index++<<" sources="<<frame->lights.size()<<" area="<<area<<" epoch="<<s.runtimeDungeonHeightEpoch<<'\n';
+    // Independent exact current-state production oracle; no stale producer or
+    // animation-equivalent default. Same own profile, complete current inputs.
+    c.submodule=0;c.constructionPhase=0;s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;run();
+    bool equal=sources.size()==frame->lights.size();for(size_t n=0;equal && n<sources.size();n++) {
+     const auto &a=sources[n],&b=frame->lights[n];equal=a.x==b.x && a.y==b.y && a.z==b.z && a.radius==b.radius && a.intensity==b.intensity && a.red==b.red && a.green==b.green && a.blue==b.blue;
+    }
+    mismatches+=!equal;
+#ifndef ALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE
+    check(equal,"stair animation source differs exact settled full solve");
+#endif
+   }
+   std::cout<<"animation_complete_samples="<<index<<" per_source_oracle_mismatches="<<mismatches<<" stair_endframe_total_ms="<<totalMs<<'\n';
+   return 0;
+  }
+  if(std::getenv("ALTTP_STAIR_SOURCE_EVIDENCE")) {
+   for(int bg=0;bg<2;bg++)for(int cell=0;cell<4096;cell++) {
+    const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
+    const uint16_t word=c.constructedMaps[(bg?0:8192)+cell*2]|c.constructedMaps[(bg?0:8192)+cell*2+1]<<8;
+    RemasterTileContentId id={m.producerHashes[cell],1,4};auto found=profile.assets.find(id);
+    if(found==profile.assets.end() || !found->second.hasEmission)continue;
+    const auto &a=found->second;int count=0;double local=0;int previewCount=0;double previewHeight=0;
+    for(int pixel=0;pixel<64;pixel++)if(a.emissionRgba[pixel*4+3] && (a.emissionRgba[pixel*4] || a.emissionRgba[pixel*4+1] || a.emissionRgba[pixel*4+2])) {
+     count++;local+=a.hasHeight?a.height[pixel]:0;
+     for(auto &v:m.localHeightPreviews)if(v.cell==cell){previewCount++;previewHeight+=v.height[pixel];}
+    }
+    if(!count)continue;
+    std::cout<<"emitter bg="<<bg<<" cell="<<cell%64<<','<<cell/64<<" hash="<<std::hex<<id.hash<<std::dec<<" word="<<word<<" base="<<m.offsets[cell]<<" planes="<<m.planeOffsets[0][cell]<<','<<m.planeOffsets[1][cell]<<" authored_mean="<<local/count<<" preview_mean="<<(previewCount?previewHeight/previewCount:-1)<<" depth="<<a.emissionDepth<<" pixels="<<count<<'\n';
+   }
+  }
  if(const char *benchmark=std::getenv("ALTTP_CACHE_BENCHMARK")) {
   const int count=std::max(20,std::atoi(benchmark));
   std::vector<std::vector<uint8_t>> sequence;
@@ -138,5 +234,6 @@ int main(int argc,char **argv){try {
   for(size_t k=0;k<m.geometryConflicts.size();k++){if(k)report<<',';const auto &r=m.geometryConflicts[k];report<<'['<<r.node<<','<<r.other<<','<<r.expected<<','<<r.actual<<']';}report<<"]}";
  }report<<"]}\n";
  std::string after;check(S9xRemasterSerializeProfile(s.activeProfile,after,errors) && after==serialized,"own profile changed");
- std::cout<<"PASS room="<<c.roomIndex<<" profile="<<hex.str()<<" matched="<<matched<<'\n';
+  std::cout<<"PASS room="<<c.roomIndex<<" profile="<<hex.str()<<" matched="<<matched<<'\n';
+  return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

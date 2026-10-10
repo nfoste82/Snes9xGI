@@ -278,7 +278,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                             all(c.word==rail[0] and c.tile_hash in assets and c.tile_hash not in forbidden_template_hashes and c.tile_hash not in wall_hashes for c in trims)):
                             template_trims.update((c.x,c.y) for c in trims)
     from alttp_diagonal_preview import diagonal_previews
-    preview_geometry = diagonal_previews(snapshot, profile, template_data)
+    preview_geometry = diagonal_previews(snapshot, profile, template_data, owned=graph.get('_verified_diagonal_ownership'))
     template_walls.update(preview_geometry)
     obstacle_hashes = set(profile.get("asset_groups", {}).get("obstacles", {}).get("tile_hashes", []))
     obstacle_hashes.update(a['tile_hash'] for a in profile.get('assets', []) if a.get('tile_role') == 'obstacle')
@@ -544,7 +544,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             local = proof['height']
             source = 'placement_rom_diagonal_preview'
             attachment = {'local_height':local, 'hflip':cell.hflip, 'vflip':cell.vflip,
-                          'evidence':'ordered_stepped_ROM_column_both_cardinal_unit_sections',
+                          'evidence':proof.get('evidence', 'ordered_stepped_ROM_column_both_cardinal_unit_sections'),
                           'preview_only':True}
         elif "local_height" in record or "attached_floor_base" in record:
             floor = record.get("attached_floor_base")
@@ -921,6 +921,9 @@ def main() -> int:
     parser.add_argument("--rom", type=Path, help="verified USA ROM for exact placed wall templates")
     parser.add_argument("--runtime-solution", type=Path,
                         help="complete-room output of alttp_runtime_room_heights; bases are height units, not levels")
+    parser.add_argument('--provenance-snapshot', type=Path,
+                        help='complete matched ALTPPD1 reference with sibling ALTPRV1 .prov')
+    parser.add_argument('--atlas', type=Path, help='ROM-pinned object dispatch atlas for provenance proof')
     parser.add_argument("--rise", type=int, default=50)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--diagnostic-svg", type=Path)
@@ -946,6 +949,36 @@ def main() -> int:
         expected_digest = graph.get("attribute_sha256")
         if expected_digest and hashlib.sha256(attribute_bytes).hexdigest() != expected_digest:
             raise ValueError("collision arrays do not match graph attribute SHA-256")
+        if args.provenance_snapshot or args.atlas:
+            if not (args.provenance_snapshot and args.atlas and args.rom):
+                raise ValueError('partial diagonal proof requires provenance snapshot, atlas and verified ROM')
+            from alttp_room_geometry import RoomProvenance
+            from alttp_diagonal_sets import inspect
+            import sqlite3
+            reference = RoomSnapshot.read(args.provenance_snapshot)
+            if reference.room != room or any(reference.cell(l,x,y).word != snapshot.cell(l,x,y).word
+                    for l in range(2) for y in range(64) for x in range(64)):
+                raise ValueError('provenance complete final maps do not match pinned snapshot')
+            provenance = RoomProvenance.read(Path(str(args.provenance_snapshot)+'.prov'), reference)
+            with sqlite3.connect(f'file:{args.atlas}?mode=ro', uri=True) as db:
+                pin = db.execute("SELECT value FROM run_info WHERE key='rom_sha256'").fetchone()
+                if not pin or pin[0] != hashlib.sha256(rom).hexdigest():
+                    raise ValueError('provenance atlas ROM mismatch')
+                objects = [json.loads(r[0]) for r in db.execute("SELECT data_json FROM world_record WHERE kind='dungeon_objects'")]
+            objects = {(o['layer'],o['ordinal']):o for o in objects if o['room_id']==room}
+            # Writer provenance attests words, not animation graphics. Decode
+            # identities from the EXACT pinned live VRAM, never reference art.
+            assemblies, ownership = inspect(snapshot, provenance, objects, graph['_verified_rom_template_data'])
+            dispatch_ownership = {}
+            for assembly in assemblies:
+                for placement in assembly['placements']:
+                    key=(placement['layer'],placement['x'],placement['y'])
+                    original=ownership.get(key,set())
+                    if len(original)!=1:continue
+                    claim=next(iter(original))
+                    dispatch_ownership.setdefault(key,set()).add((*claim,assembly['writer'],assembly['handler'],
+                                                                  assembly['template_offset']))
+            graph['_verified_diagonal_ownership'] = dispatch_ownership
         with args.profile.open("rb") as source:
             profile = tomllib.load(source)
         if args.runtime_solution:
@@ -966,19 +999,34 @@ def main() -> int:
             if solution.get("bg2_words_fnv1a64") != _fnv(words):
                 raise ValueError("runtime decoded BG2 words do not match complete snapshot map")
             from alttp_diagonal_preview import diagonal_previews
-            proofs=[diagonal_previews(snapshot,profile,graph.get('_verified_rom_template_data'),layer) for layer in range(2)]
+            proofs=[diagonal_previews(snapshot,profile,graph.get('_verified_rom_template_data'),layer,
+                                     owned=graph.get('_verified_diagonal_ownership')) for layer in range(2)]
             for record in inventory:
                 if record.get('captured_local_source')=='placement_rom_diagonal_preview':
                     proof=proofs[record['layer']].get((record['x'],record['y']))
                     if (proof is None or record.get('captured_local_height')!=proof['height'] or
                         record.get('preview_intercept')!=proof['intercept'] or
                         record.get('preview_minimum')!=proof['minimum'] or record.get('preview_maximum')!=proof['maximum']):
-                        raise ValueError('directional diagonal preview source lacks independent ROM proof')
+                        raise ValueError(f"directional diagonal preview source lacks independent ROM proof: layer={record['layer']} cell=({record['x']},{record['y']})")
             graph["elevation"] = {**graph["elevation"], **solution}
         height_map = load_height_map(args.height_map, room) if args.height_map else None
         report = validate(graph, args.rise, height_map, snapshot=snapshot,
                           attributes=attributes, profile=profile)
         if args.runtime_solution:
+            report['diagonal_sources'] = [dict(layer=l,x=x,y=y,**proof)
+                                          for l, layer_proofs in enumerate(proofs)
+                                          for (x,y),proof in sorted(layer_proofs.items())]
+            report['diagonal_source_counts'] = dict(
+                proved_placements=len(report['diagonal_sources']),
+                partial_owned_tangent=sum(p.get('evidence',{}).get('source')=='partial_semantic_diagonal_owned_tangent'
+                                         for layer_proofs in proofs for p in layer_proofs.values()))
+            if args.provenance_snapshot:
+                report['diagonal_provenance_inputs'] = dict(
+                    snapshot=str(args.provenance_snapshot),snapshot_sha256=hashlib.sha256(args.provenance_snapshot.read_bytes()).hexdigest(),
+                    provenance_sha256=hashlib.sha256(Path(str(args.provenance_snapshot)+'.prov').read_bytes()).hexdigest(),
+                    atlas=str(args.atlas),atlas_sha256=hashlib.sha256(args.atlas.read_bytes()).hexdigest(),
+                    graphics_source='exact pinned live snapshot; reference art never substituted',
+                    complete_final_words_match=True)
             report['doorframes'] = audit_doorframes(solution, snapshot, profile, graph.get('_verified_rom_template_data'))
             report['persistent_support'] = dict(required=solution.get('persistent_support_required',[0,0]),
                                                 missing=solution.get('persistent_support_missing',[0,0]),

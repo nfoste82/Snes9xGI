@@ -21,18 +21,27 @@ int main(){
  // bottoms. Link plane differs deliberately from thrown object's own plane.
  c->hasTerrainActors=true;c->groundedEvidence=true;c->linkPlane=0;c->linkX=80;c->linkY=80;c->terrainActors[4]={80,85,10,2,16,0};c->terrainOam[20]={80,69,0x46,0x2c,2};
  map->planeOffsets[0].fill(24);map->planeOffsets[1].fill(-8);map->hasPlaneOffsets=true;
- auto run=[&](int expected){
+  auto run=[&](int expected,bool overwritten=false){
   auto f=std::make_unique<RemasterFrame>();f->width=16;f->height=16;f->mainPixels.resize(256);
-  for(int n=0;n<4;n++){RemasterFrameTileInstance i;i.source=RemasterSourceType::Object;i.sourceIndex=20;i.tileNumber=0x46+(n&1)+(n/2)*16;i.palette=6;i.heightOffset=3;f->tileInstances.push_back(i);}
+   for(int n=0;n<4;n++){RemasterFrameTileInstance i;i.source=RemasterSourceType::Object;i.sourceIndex=20;i.tileNumber=0x46+(n&1)+(n/2)*16;i.palette=6;i.heightOffset=3;i.hFlip=bool(c->terrainOam[20].flags&0x40);i.vFlip=bool(c->terrainOam[20].flags&0x80);f->tileInstances.push_back(i);}
   // Same artwork in an unrelated slot must not get terrain z/lift.
   auto unrelated=f->tileInstances[0];unrelated.sourceIndex=21;f->tileInstances.push_back(unrelated);
   for(int y=0;y<16;y++)for(int x=0;x<16;x++)f->mainPixels[y*16+x].instanceId=1+(x/8)+(y/8)*2;
-  f->mainPixels[255].instanceId=5;
+   f->mainPixels[255].instanceId=5;
+   if(overwritten)for(int n=0;n<4;n++)f->tileInstances[n].hFlip=!f->tileInstances[n].hFlip;
   S9xRemasterApplyDungeonHeightMap(*f,*c,*map);
   for(int n=0;n<4;n++)assert(f->tileInstances[n].heightOffset==3+expected && !f->tileInstances[n].hasPlacementHeight);
   assert(f->tileInstances[4].heightOffset==27); // legacy unrelated actor path, no pot lift
  };
- run(24+16+3);
+  run(24+16+3);
+  // Actual captured C2 producer retains facing bits (062/019 flags=0x6c).
+  // All four children, not just the first hash, inherit the one owned base.
+  for(int flips=0;flips<4;flips++){c->terrainOam[20].flags=0x2c|(flips<<6);run(24+16+3);}
+  c->terrainOam[20].flags=0x2c;
+  run(0,true); // final instance transform disagrees with producer output
+  c->terrainActors[4].y--;c->terrainOam[20].y--;run(24+16+4); // animation displacement once
+  c->terrainActors[4].y++;c->terrainOam[20].y++;
+  const int ownerCell=12*64+11;map->planeOffsets[0][ownerCell]=255;run(0);map->planeOffsets[0][ownerCell]=24;
  c->groundedEvidence=false;run(0);c->groundedEvidence=true; // airborne owner unsupported, no floor guess
  c->terrainActors[4]={80,85,9,2,12,1};c->terrainOam[20].y=73;run(-8+12);
  c->terrainActors[4].z=0;c->terrainOam[20].y=85;run(-8);

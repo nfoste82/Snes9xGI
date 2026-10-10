@@ -175,6 +175,16 @@ struct RemasterFrameLight
 	float intensity = 0.0f;
 };
 
+// Source-only samples behind HUD ink: no receiver, artwork or occluder plane.
+// XY/Z/depth are physical source-pixel units; emission retains authored RGBA.
+struct RemasterFrameHiddenEmitter
+{
+	float x = 0, y = 0, z = 0, depth = 0;
+	std::array<float,3> normal = {{0,0,1}};
+	std::array<uint8_t,4> emission = {};
+	bool omnidirectional = false;
+};
+
 struct RemasterFrame
 {
 	uint32_t schemaVersion = REMASTER_FRAME_SCHEMA_VERSION;
@@ -213,6 +223,7 @@ struct RemasterFrame
 	std::vector<RemasterRoomPixelDiagnostic> subRoomDiagnostics;
 	std::vector<RemasterRoomPixelDiagnostic> sceneRoomDiagnostics;
 	std::vector<RemasterFrameLight> lights;
+	std::vector<RemasterFrameHiddenEmitter> hiddenEmitters;
 };
 
 struct RemasterDungeonFloorContext
@@ -2472,7 +2483,9 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				const int tile=instance.tileNumber&0x1ff;
 				// The producer writes one large OBJ, whose four canonical children
 				// are46/47/56/57. Reject replaced OAM observations, not nearby sprites.
-				if((tile!=0x46 && tile!=0x47 && tile!=0x56 && tile!=0x57) || instance.hFlip || instance.vFlip || instance.palette!=6)continue;
+				const auto &o=context.terrainOam[slot];
+				if((tile!=0x46 && tile!=0x47 && tile!=0x56 && tile!=0x57) ||
+					instance.hFlip!=bool(o.flags&0x40) || instance.vFlip!=bool(o.flags&0x80) || instance.palette!=6)continue;
 				const int x=a.state==10?context.linkX+8:a.x+8;
 				// Sprite_CheckTileProperty(k,0x68): table index52, x+8,y+12.
 				// Carried objects instead belong to Link's grounded feet.
@@ -3464,12 +3477,33 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 				if (!input.ReadU16(color) || color > 0x7fff) return false;
 		}
 	}
-	if (result.schemaVersion >= 28 && input.offset < bytes.size())
+	while (result.schemaVersion >= 28 && input.offset < bytes.size())
 	{
 		uint32_t tag;
-		if (!input.ReadU32(tag) || tag != 0x314e4353u) return false; // SCN1
+		if (!input.ReadU32(tag)) return false;
+		if (tag == 0x31534548u) // HES1
+		{
+			uint32_t count;
+			if (!result.hiddenEmitters.empty() || !input.ReadU32(count) || !count ||
+				count > size_t(result.width)*result.height*2 || count > (bytes.size()-input.offset)/33) return false;
+			result.hiddenEmitters.resize(count);
+			for (auto &e : result.hiddenEmitters)
+			{
+				uint8_t omni;
+				if (!input.ReadFloat(e.x) || !input.ReadFloat(e.y) || !input.ReadFloat(e.z) ||
+					!input.ReadFloat(e.depth) || e.depth < 0 || e.x < 0 || e.y < 0 ||
+					e.x >= result.width || e.y >= result.height) return false;
+				for (auto &n : e.normal) if (!input.ReadFloat(n)) return false;
+				for (auto &v : e.emission) if (!input.ReadU8(v)) return false;
+				if (!input.ReadU8(omni) || omni > 1 || !e.emission[3] ||
+					!(e.emission[0] || e.emission[1] || e.emission[2])) return false;
+				e.omnidirectional = omni;
+			}
+			continue;
+		}
+		if (tag != 0x314e4353u || !result.scenePixels.empty()) return false; // SCN1
 		const size_t count = result.originalRgb555.size();
-		if (bytes.size() - input.offset != count * 11) return false;
+		if (bytes.size() - input.offset < count * 11) return false;
 		result.sceneRgb555.resize(count);
 		result.scenePixels.resize(count);
 		for (size_t i = 0; i < count; i++)
@@ -4077,6 +4111,22 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			RemasterFrameSerialization::U32(bytes, p.owner);
 			RemasterFrameSerialization::U32(bytes, p.instanceId);
 			RemasterFrameSerialization::U8(bytes, p.tilePixel);
+		}
+	}
+	if (!frame.hiddenEmitters.empty())
+	{
+		if (frame.hiddenEmitters.size() > pixelCount*2) return false;
+		RemasterFrameSerialization::U32(bytes, 0x31534548u);
+		if (!RemasterFrameSerialization::Size(bytes, frame.hiddenEmitters.size())) return false;
+		for (const auto &e : frame.hiddenEmitters)
+		{
+			if (!std::isfinite(e.x) || !std::isfinite(e.y) || !std::isfinite(e.z) ||
+				!std::isfinite(e.depth) || e.depth < 0 || e.x < 0 || e.y < 0 || e.x >= frame.width ||
+				e.y >= frame.height || !e.emission[3] || !(e.emission[0] || e.emission[1] || e.emission[2])) return false;
+			for (float v : {e.x,e.y,e.z,e.depth}) RemasterFrameSerialization::Float(bytes,v);
+			for (float v : e.normal) { if (!std::isfinite(v)) return false; RemasterFrameSerialization::Float(bytes,v); }
+			for (auto v : e.emission) RemasterFrameSerialization::U8(bytes,v);
+			RemasterFrameSerialization::U8(bytes,e.omnidirectional ? 1 : 0);
 		}
 	}
 	return true;

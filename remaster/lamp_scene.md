@@ -69,3 +69,21 @@ room, Original, and HUD RGB are preserved. Mosaic-enable bits with size 1 are
 no-ops and no longer reject the independent pass. The existing room041 packet
 has no raw palette and needs recapture; changing contribution alone cannot repair
 its already-blackened artwork.
+
+## Reverted ordinary-room world pass
+
+The HUD experiment that extended this pass to ordinary indoor rooms was reverted
+after live room061 showed missing torch pedestals/west door and a blue checker
+floor. Combining main/sub layer enables and removing color math does not preserve
+ordinary ALTTP room composition. Stair submodules disabled the experiment, which
+explained the reported artwork changes on stair traversal. The lamp-only gate,
+BG2/BG3/OBJ mask, HUD field exemption and original shader presentation are restored.
+Room060 captures 052/053 showed the earlier HUD sphere fallback does publish
+sources, but its approximation changes illumination. Exact hidden-source capture
+must preserve stock layer/window/color-math composition and be validated against
+actual ordinary-room frames before another world pass is enabled.
+
+The replacement repair now uses source-only `hiddenEmitters` and prepared Direct
+samples; it does not enable another world pass. See `offscreen_emitters.md` for
+the exact HUD capture pair, source-only appendix, GPU checks and remaining
+hidden-geometry/representative-clustering limits.

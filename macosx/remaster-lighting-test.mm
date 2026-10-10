@@ -16,6 +16,7 @@
 #include "../remaster/surface_mesh_material.h"
 #include "../remaster/emitter_patches.h"
 #include "../remaster/sphere_samples.h"
+#include "../remaster/hidden_emitter_samples.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light
@@ -189,7 +190,8 @@ int main()
                                 const std::vector<RemasterSurfaceMesh::Cell> *customMesh = nullptr, bool sampleDirect = false,
                                  const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false,
                                    float originalContribution = 0.65f, const std::vector<Light> *sceneLights = nullptr,
-                                    unsigned directBatchSize = 8, bool adaptiveSpheres = false) {
+                                     unsigned directBatchSize = 8, bool adaptiveSpheres = false,
+                                     const std::vector<RemasterHiddenDirectSample> *hidden = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -322,6 +324,7 @@ int main()
                 }
                 if (uniforms.debugColorIntensity.w > 0 && uniforms.debugPositionRadius.w > 0) sphereSamples += 128;
                 uniforms.heightPreviewRange.z = sphereSamples;
+                uniforms.heightPreviewRange.w = adaptiveSpheres ? 0 : 1;
                 [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
                 id<MTLBuffer> sceneLightBuffer = [device newBufferWithBytes:!adaptiveLights.empty() ? adaptiveLights.data() : &emptySceneLight
                     length:std::max<size_t>(1, uniforms.lightCount) * sizeof(Light) options:MTLResourceStorageModeShared];
@@ -366,13 +369,15 @@ int main()
                         [encoder setBuffer:patchBuffer offset:0 atIndex:6];
                         [encoder setBuffer:patchBuffer offset:0 atIndex:7];
                     }
+                    const uint32_t visibleCount = static_cast<uint32_t>(sources.size());
+                    if (prepared && hidden) for(size_t n=0;n<hidden->size();n++)sources.push_back(simd_uint2{UINT32_MAX,0});
                     const uint32_t emitterCount = static_cast<uint32_t>(prepared ? sources.size() : emitters.size());
                     if (emitters.empty())
                         emitters.push_back(0);
                     id<MTLBuffer> emitterBuffer = [device newBufferWithBytes:emitters.data()
                         length:emitters.size() * sizeof(uint32_t) options:MTLResourceStorageModeShared];
                     id<MTLBuffer> sampleBuffer = [device newBufferWithLength:std::max<size_t>(1, sources.size()) * 64
-                        options:MTLResourceStorageModePrivate];
+                        options:MTLResourceStorageModeShared];
                     if (prepared)
                     {
                         // A separate command completes source preparation before this test's
@@ -380,7 +385,7 @@ int main()
                         if (sources.empty()) sources.push_back(simd_uint2{0, 0});
                         emitterBuffer = [device newBufferWithBytes:sources.data() length:sources.size() * sizeof(simd_uint2)
                             options:MTLResourceStorageModeShared];
-                        if (emitterCount)
+                        if (visibleCount)
                         {
                             id<MTLCommandBuffer> preparation = [queue commandBuffer];
                             id<MTLComputeCommandEncoder> prepare = [preparation computeCommandEncoder];
@@ -393,13 +398,15 @@ int main()
                             [prepare setBuffer:emitterBuffer offset:0 atIndex:0];
                             [prepare setBuffer:sampleBuffer offset:0 atIndex:1];
                             [prepare setBuffer:meshBuffer offset:0 atIndex:2];
-                            [prepare setBytes:&emitterCount length:sizeof(emitterCount) atIndex:3];
-                            [prepare dispatchThreads:MTLSizeMake(emitterCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                            [prepare setBytes:&visibleCount length:sizeof(visibleCount) atIndex:3];
+                            [prepare dispatchThreads:MTLSizeMake(visibleCount, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
                             [prepare endEncoding];
                             [preparation commit];
                             [preparation waitUntilCompleted];
                             require(preparation.status == MTLCommandBufferStatusCompleted, preparation.error.localizedDescription);
                         }
+                        if(hidden && !hidden->empty())std::memcpy(static_cast<uint8_t *>(sampleBuffer.contents)+visibleCount*64,
+                            hidden->data(),hidden->size()*64);
                         // padding retains the existing Lambertian/non-Lambertian switch.
                         uniforms.padding = lambertianDirect ? 2.0f : -2.0f;
                         [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -1168,6 +1175,62 @@ int main()
                 near("Direct plus Indirect view includes colored flame self emission",
                     run(flame, true, 0, 8, -1, nullptr, false, 0, 1, 0, 1, 1,
                         simd_float3{0, 0, -1}, 8).accumulated, powerful.accumulated);
+            }
+            {
+                Scene world=scene();
+                world[Surface][receiver]={0,0,0,1};
+                world[Surface][emitter]={8,0,0,1};
+                world[PreviousBounce][emitter]={100,0,0,1};
+                RemasterFrame f;
+                RemasterFrameHiddenEmitter e;
+                e.x=26.5f;e.y=8.5f;e.z=8;e.depth=2;e.emission={{255,0,0,25}};e.omnidirectional=true;
+                f.hiddenEmitters.push_back(e);
+                auto hidden=S9xRemasterHiddenDirectSamples(f);
+                std::vector<RemasterSurfaceMesh::Cell> geometry(width*height);
+                geometry[emitter].emissionDepth=2;geometry[emitter].emissionOmnidirectional=1;
+                auto illuminate=[&](const std::vector<RemasterHiddenDirectSample> *h,
+                    const std::vector<RemasterEmitterPatch> *patches=nullptr,unsigned batch=8,
+                    bool sampled=false,unsigned seed=1,const std::vector<Light> *lights=nullptr,bool adaptive=false) {
+                    return run(world,true,0,8,-1,nullptr,true,0,1,0,14,seed,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
+                        &geometry,sampled,patches,false,0.65f,lights,batch,adaptive,h).bounce;
+                };
+                const auto visible=illuminate(nullptr);
+                world[Participation][emitter]={0,0,0,0}; // opaque HUD owns displayed pixel
+                world[PreviousBounce][emitter]={};
+                const auto covered=illuminate(&hidden);
+                check("source-only HUD flame lights world receivers",covered.x>0,covered,{});
+                near("HUD source retains exact visible depth-stratum transport",covered,visible);
+                near("source-only HUD samples survive batched direct transport",illuminate(&hidden,nullptr,32),covered);
+                std::vector<RemasterEmitterPatch> dummy(1); // no visible patch sources
+                dummy[0].count=1;dummy[0].members[0]=0;
+                near("source-only sentinel bypasses clustered receiver exclusion",illuminate(&hidden,&dummy),covered);
+                const auto collapsed=S9xRemasterHiddenDirectSamples(f,true);
+                near("budgeted hidden collapsed depth exact energy",illuminate(&collapsed,nullptr,8,true),covered);
+                near("budgeted hidden expanded depth exact energy",illuminate(&hidden,nullptr,8,true),covered);
+                near("budgeted hidden sentinel bypasses patch exclusion",illuminate(&collapsed,&dummy,8,true),covered);
+                std::vector<Light> lights(2);
+                lights[0].position={35,8,12};lights[0].radius=3;lights[0].intensity=1;lights[0].color={1,0.5f,0.25f};
+                lights[1].position={8,8,0};lights[1].radius=4;lights[1].intensity=0.25f;lights[1].color={0.1f,0.5f,1};
+                blocker(world,8,0.5f,true,8);
+                for(auto &corner:geometry[receiver+8].corners)corner=8;
+                for(bool adaptive:{false,true}) {
+                    const auto exact=illuminate(&hidden,nullptr,8,false,1,&lights,adaptive);
+                    simd_float4 mean={};
+                    for(unsigned seed=1;seed<=128;seed++)mean+=illuminate(&collapsed,nullptr,8,true,seed,&lights,adaptive)/128.0f;
+                    bool close=true;
+                    for(unsigned k=0;k<3;k++)close &= std::fabs(mean[k]-exact[k]) < std::fabs(exact[k])*0.04f+0.0001f;
+                    check(adaptive?"budgeted hidden plus adaptive spheres mean":"budgeted hidden plus full spheres mean",close,mean,exact);
+                    world[PreviousBounce][emitter]={};
+                    const auto sphereExact=illuminate(nullptr,nullptr,8,false,1,&lights,adaptive);
+                    mean={};
+                    for(unsigned seed=1;seed<=128;seed++)mean+=illuminate(nullptr,nullptr,8,true,seed,&lights,adaptive)/128.0f;
+                    close=true;
+                    for(unsigned k=0;k<3;k++)close &= std::fabs(mean[k]-sphereExact[k]) < std::fabs(sphereExact[k])*0.04f+0.0001f;
+                    check("budgeted sphere-only scene with no pixel records",close,mean,sphereExact);
+                }
+                world[Participation][receiver]={0,0,0,0};
+                near("hidden emission never makes HUD a world receiver",illuminate(&hidden),{});
+                near("budgeted hidden emission keeps HUD excluded",illuminate(&collapsed,nullptr,8,true),{});
             }
             near("passIndex 0 classifies first collision as direct", clear.accumulated, {});
             s[PreviousBounce][emitter] = {};

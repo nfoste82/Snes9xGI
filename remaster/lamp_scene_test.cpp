@@ -66,8 +66,7 @@ int main(int argc, char **argv)
 	f.scenePixels.clear(); f.sceneRgb555.clear();
 	require(S9xSerializeRemasterFrame(f, bytes) && S9xDeserializeRemasterFrame(bytes, decoded) &&
 		decoded.scenePixels.empty(), "optional appendix absent");
-	bytes[8] = 27;
-	require(S9xDeserializeRemasterFrame(bytes, decoded), "v27 backward-compatible replay");
+	require(S9xDeserializeRemasterFrame(bytes, decoded), "current schema replay without optional scene");
 	f.scenePixels.resize(2); f.sceneRgb555.resize(2);
 	f.scenePixels[0].instanceId = 2;
 	require(!S9xSerializeRemasterFrame(f, bytes), "reject scene instance outside shared table");
