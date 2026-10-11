@@ -69,7 +69,27 @@ int main(int argc,char **argv){try {
  check(bg2==dungeonMapInventory(s.runtimeDungeonHeightMap) && bg1==dungeonMapInventory(s.runtimeDungeonBg1HeightMap),"complete map/diagnostic inventory mismatch");
  std::vector<uint8_t> full;check(S9xSerializeRemasterFrame(*frame,full) && packet==full,"full packet mismatch");
  check(s.runtimeDungeonHeightEpoch>epoch,"full solve not exercised");
- std::cout<<"{\"room\":"<<c.roomIndex<<",\"reused\":"<<(reused?"true":"false")<<",\"changed_classified_cells\":"<<changed
+  size_t unobservedSolidWalls=0,unobservedRomWalls=0;
+  size_t obstacleCells=0,obstacleSolved=0,obstacleAssemblies=0,obstacleConflictingBases=0;
+  for(int bg=0;bg<2;bg++) {
+   const auto &ts=bg?s.dungeonRetainedBg2:s.dungeonRetainedBg1;const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
+   if(!ts)continue;std::map<int,int> bases;
+   for(int i=0;i<4096;i++)if((*ts)[i].obstacleAssembly) {
+    obstacleCells++;obstacleSolved+=m.offsets[i]!=255;const int a=(*ts)[i].obstacleAssembly;
+    if(!bases.count(a))bases[a]=m.offsets[i];else if(bases[a]!=m.offsets[i])obstacleConflictingBases++;
+   }obstacleAssemblies+=bases.size();
+  }
+  for(int i=0;i<4096;i++)if(s.dungeonRetainedBg2 && s.runtimeDungeonHeightMap.offsets[i]==255 &&
+   (*s.dungeonRetainedBg2)[i].surface==RemasterDungeonFloorContext::Surface::Wall) {
+   const int unobserved=(c.linkPlane&1)^1;
+   if(!c.stairCount && c.collisionAttributes[(c.linkPlane&1)*4096+i]==0 && c.collisionAttributes[unobserved*4096+i]!=0) {
+    unobservedSolidWalls++;
+    unobservedRomWalls+=(*s.dungeonRetainedBg2)[i].wallTemplateOffset!=0;
+   }
+  }
+  std::cout<<"{\"room\":"<<c.roomIndex<<",\"obstacle_assembly_cells\":"<<obstacleCells<<",\"obstacle_assembly_solved\":"<<obstacleSolved
+   <<",\"obstacle_assemblies\":"<<obstacleAssemblies<<",\"obstacle_part_base_conflicts\":"<<obstacleConflictingBases<<",\"unobserved_solid_wall_omissions\":"<<unobservedSolidWalls
+   <<",\"unobserved_rom_wall_omissions\":"<<unobservedRomWalls<<",\"reused\":"<<(reused?"true":"false")<<",\"changed_classified_cells\":"<<changed
   <<",\"reuse_ms\":"<<reuseMs<<",\"full_ms\":"<<fullMs<<",\"complete_maps_diagnostics_packet_equal\":true,\"missing\":["
   <<s.runtimeDungeonHeightMap.unknownPlaneCells[0]<<','<<s.runtimeDungeonHeightMap.unknownPlaneCells[1]<<"],\"unknown_walls\":"
   <<s.runtimeDungeonHeightMap.unknownWallCells<<",\"conflicts\":"<<s.runtimeDungeonHeightMap.structuralConflicts<<"}\n";

@@ -687,6 +687,11 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.submodule = Memory.RAM[0x11];
 				dungeonFloor.module = Memory.RAM[0x10];
 				dungeonFloor.constructionPhase = Memory.RAM[0xb0];
+				dungeonFloor.attributeConstructionState = Memory.RAM[0x200];
+				dungeonFloor.scrollDirection = Memory.RAM[0x418];
+				dungeonFloor.destinationOriginX = Memory.RAM[0x62c] | Memory.RAM[0x62d]<<8;
+				dungeonFloor.destinationOriginY = Memory.RAM[0x62e] | Memory.RAM[0x62f]<<8;
+				dungeonFloor.hasDestinationOrigin = dungeonFloor.module==7 && dungeonFloor.submodule==2 && dungeonFloor.constructionPhase>=2;
 				dungeonFloor.roomTransitionFlags = Memory.RAM[0xef];
 				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
 				// DrawBackground samples LineData.VOffset, which includes the SNES

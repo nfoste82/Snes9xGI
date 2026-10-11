@@ -54,7 +54,8 @@ int main(int argc,char **argv) {try {
     <<int(t.diagnosticUphillDirections)<<' '<<int(t.diagnosticNormalUphill)<<' '
 	    <<t.diagnosticAuthoredFloor<<' '<<t.diagnosticRomFloorTrim<<' '<<t.diagonalHeightPreview<<' '
 	    <<int(t.diagonalPreviewRow)<<' '<<int(t.diagonalPreviewFoot)<<' '<<t.diagonalIntercept<<' '
-	    <<int(t.diagonalMinimum)<<' '<<int(t.diagonalMaximum)<<' '<<t.semanticSoutheastWall<<' '<<t.semanticBoundaryKnown<<' '<<int(t.removableSupportPlanes);
+	    <<int(t.diagonalMinimum)<<' '<<int(t.diagonalMaximum)<<' '<<t.semanticSoutheastWall<<' '<<t.semanticBoundaryKnown<<' '<<int(t.removableSupportPlanes)
+     <<' '<<t.obstacleAssembly<<' '<<t.obstacleTemplate<<' '<<int(t.obstacleAssemblyHeight)<<' '<<int(t.obstacleAssemblyFlip);
    for(auto h:t.height)std::cout<<' '<<int(h);std::cout<<'\n';
   }
  }

@@ -46,6 +46,14 @@ int main(int argc,char **argv){try{
   check(f.tileInstances[0].heightOffset==50 && f.tileInstances[0].hasPlacementHeight && f.tileInstances[0].placementHeight[7]==7,"source fallback dropped");
   check(f.tileInstances[1].heightOffset==24,"departing actor support dropped");}
  check(s.runtimeDungeonHeightEpoch==epoch,"partial transition published");check(s.previousRuntimeDungeonHeightMap.roomIndex==0x61,"source lost");
+ // Complete collision/room construction precedes viewport completion.
+ c.submodule=2;c.constructionPhase=8;c.attributeConstructionState=4;frame();
+ check(s.runtimeDungeonHeightEpoch==epoch,"partial collision builder published");
+ c.attributeConstructionState=5;frame();
+ check(s.runtimeDungeonHeightMap.roomIndex==0x60 && s.runtimeDungeonHeightEpoch==epoch+1,"complete scrolling destination not published");
+ check(s.previousRuntimeDungeonHeightMap.roomIndex==0x61,"incoming solve destroyed outgoing map");
+ // Settling exact complete inputs is a hit, not another geometry solve.
+ c.attributeConstructionState=255;c.constructionPhase=0;
  c.submodule=0;frame();check(s.runtimeDungeonHeightMap.roomIndex==0x60,"destination never invalidated");check(s.runtimeDungeonHeightEpoch==epoch+1,"destination solve count");
  frame();check(s.runtimeDungeonHeightEpoch==epoch+1,"per-frame rebuild");
  c.linkPlane=1;frame();check(s.runtimeDungeonHeightEpoch==epoch+2,"plane not invalidated");

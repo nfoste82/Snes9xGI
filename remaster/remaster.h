@@ -529,6 +529,10 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 		<< ",\"submodule\":" << int(c.submodule) << ",\"collision_mode\":" << int(c.collisionMode)
 		<< ",\"module\":" << int(c.module) << ",\"construction_phase\":" << int(c.constructionPhase)
 		<< ",\"room_transition_flags\":" << int(c.roomTransitionFlags)
+		<< ",\"attribute_construction_state\":" << int(c.attributeConstructionState)
+		<< ",\"scroll_direction\":" << int(c.scrollDirection)
+		<< ",\"destination_origin\":[" << c.destinationOriginX << ',' << c.destinationOriginY << ']'
+		<< ",\"destination_origin_attested\":" << (c.hasDestinationOrigin?"true":"false")
 		<< ",\"link_xy\":[" << c.linkX << ',' << c.linkY << "],\"plane\":" << int(c.linkPlane)
 		<< ",\"scroll\":[" << c.backgroundScrollX << ',' << c.backgroundScrollY << ']'
 		<< ",\"graphics_base\":" << c.graphicsBase << ",\"bg1_graphics_base\":" << c.bg1GraphicsBase << ",\"rise\":" << int(profile.upperFloorHeight)
@@ -588,6 +592,10 @@ inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloo
 			// flames continue animating. Refresh/solve exact current identities,
 			// rather than applying settled-state producers to different artwork.
 			((context.submodule==8 || context.submodule==16) && context.constructionPhase<=1)
+			// Verified supertile phases: room construction has returned, scroll
+			// and incremental PPU upload are active. Never solve partial collision.
+			|| (context.submodule==2 && context.constructionPhase>=8 && context.constructionPhase<=15 &&
+				context.attributeConstructionState==5 && context.graphics)
 #else
 			false
 #endif
@@ -999,6 +1007,8 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 	// the distinct wall-column dispatches. Final words prove usage, not shape.
 	if(context.verifiedAlttpRom && context.dungeonTemplateData) {
 		auto owners=std::make_unique<std::array<int,4096>>();owners->fill(-1);
+		auto templates=std::make_unique<std::array<uint16_t,4096>>();
+		auto flips=std::make_unique<std::array<uint8_t,4096>>();
 		for(int off:{0xe26,0xed2,0xf5e,0x84a,0x85a})for(int flip=0;flip<4;flip++) {
 		const int h=off==0x84a || off==0x85a?4:3;
 		for(int y=0;y<=64-h;y++)for(int x=0;x<=62;x++) {
@@ -1011,24 +1021,42 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				const auto &t=output[i];
 				if(first<0)first=expected;else varied|=first!=expected;
 				if((word&0xdfff)!=(expected&0xdfff) || !t.hasHeight ||
-					(t.surface!=Surface::Unknown && t.surface!=Surface::Obstacle) || t.diagnosticAuthoredFloor)exact=false;
+					(t.surface!=Surface::Unknown && t.surface!=Surface::Obstacle && t.surface!=Surface::Wall) || t.diagnosticAuthoredFloor)exact=false;
 				if(exact) {
 					const auto a=profile.assets.find({t.tileHash,1,4});
 					if(a!=profile.assets.end() && a->second.tileRole!=RemasterTileRole::Unknown &&
-						a->second.tileRole!=RemasterTileRole::Obstacle)exact=false;
+						a->second.tileRole!=RemasterTileRole::Obstacle && a->second.tileRole!=RemasterTileRole::Wall &&
+						a->second.tileRole!=RemasterTileRole::WallCorner)exact=false;
 				}
 			}
 			if(!exact || !varied)continue;
 			const int owner=(y*64+x)*8+h;
 			for(int xx=0;xx<2;xx++)for(int yy=0;yy<h;yy++) {
-				auto &o=(*owners)[y*64+x+yy*64+xx];if(o==-1)o=owner;else if(o!=owner)o=-2;
+				const int cell=y*64+x+yy*64+xx;auto &o=(*owners)[cell];
+				if(o==-1){o=owner;(*templates)[cell]=off;(*flips)[cell]=flip;}
+				// Bilaterally mirrored column templates admit two EXACT H probes
+				// of the same final footprint. H changes neither ownership nor the
+				// canonical foot row; collapse only that proven symmetry. V or a
+				// different origin/template still means ambiguous support ownership.
+				else if(o!=owner || (*templates)[cell]!=off ||
+#ifdef ALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY
+					(*flips)[cell]!=flip
+#else
+					(((*flips)[cell]^flip)&2)
+#endif
+					)o=-2;
 			}
 		}
 		}
 		for(int i=0;i<4096;i++)if((*owners)[i]>=0) {
 			const int owner=(*owners)[i],origin=owner/8,h=owner%8;bool unique=true;
 			for(int xx=0;xx<2;xx++)for(int yy=0;yy<h;yy++)unique&=(*owners)[origin+yy*64+xx]==owner;
-			if(unique)output[i].surface=Surface::Obstacle;
+			if(unique){auto &t=output[i];t.surface=Surface::Obstacle;t.obstacleAssembly=origin+1;
+				t.obstacleAssemblyHeight=h;t.obstacleTemplate=(*templates)[i];t.obstacleAssemblyFlip=(*flips)[i];
+#ifdef ALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT
+				t.obstacleAssembly=0;t.obstacleTemplate=0;t.obstacleAssemblyHeight=0;t.obstacleAssemblyFlip=0;
+#endif
+			}
 		}
 	}
 	// Pot handlers use the same two reusable ROM templates (light/dark). The
@@ -2692,7 +2720,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 					}
 				}
 			}
-			if (!reviewMap && state.runtimeDungeonHeightValid &&
+			if (!reviewMap && runtimeInputsPublishable && state.runtimeDungeonHeightValid &&
 				state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->roomIndex)
 				reviewMap = &state.runtimeDungeonHeightMap;
 			const RemasterDungeonHeightMap *sourceRoomMap = nullptr;
@@ -2724,7 +2752,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			if(!dungeonFloor->submodule && state.transitionSupport.pending &&
 				state.transitionSupport.destination==dungeonFloor->roomIndex)state.transitionSupport={};
 			S9xRemasterRecordGroundedDungeonSupport(*dungeonFloor,reviewMap,runtimeInputsPublishable);
-			if ((!reviewMap || reviewMap == &state.runtimeDungeonHeightMap) &&
+			if (runtimeInputsPublishable && (!reviewMap || reviewMap == &state.runtimeDungeonHeightMap) &&
 				state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex)
 				S9xRemasterApplyDungeonHeightMap(frame,*dungeonFloor,state.runtimeDungeonBg1HeightMap,
 					&state.previousRuntimeDungeonBg1HeightMap,nullptr,0);
@@ -2900,6 +2928,27 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				}
 				state.frameCaptureActive = false;
 				state.animationDungeonEvidence.reset();
+			}
+		}
+		// Bounded opt-in chronology at the SAME finalized packet boundary as
+		// regular capture: stock/scene restored, actor geometry and sources done.
+		if(dungeonFloor)if(const char *path=std::getenv("S9X_REMASTER_DUNGEON_SCROLL_CAPTURE"))if(*path) {
+			static std::string prefix;static unsigned count=0,crossings=0;static bool armed=false,wasScroll=false;
+			if(prefix!=path){prefix=path;count=0;crossings=0;armed=false;wasScroll=false;}
+			const bool scroll=dungeonFloor->module==7 && dungeonFloor->submodule==2;
+			// Two separately bounded crossings with one opt-in launch; return
+			// through the opposite door need not fit the first two-second window.
+			if(scroll && !wasScroll && !armed && crossings<2){armed=true;count=0;crossings++;}
+			wasScroll=scroll;
+			if(armed && count<120) {
+				std::ostringstream name;name<<prefix<<"-crossing"<<crossings<<'-'<<std::setw(3)<<std::setfill('0')<<count++<<".s9xrmf";
+				// Never overwrite another process's evidence at the same prefix.
+				bool exists=false;for(const char *suffix:{"",".profile.toml",".dungeon.json",".dungeon-input.bin",".dungeon-templates.bin",".terrain-input.bin"})
+					exists|=std::ifstream(name.str()+suffix).good();
+				if(!exists && S9xWriteRemasterFrame(frame,name.str()))
+					S9xRemasterWriteDungeonCaptureEvidence(name.str(),*dungeonFloor,state.activeProfile,
+						appliedDungeonHeightMap,state.runtimeDungeonHeightKey,state.runtimeDungeonHeightEpoch,runtimeInputsPublishable);
+				if(count==120)armed=false;
 			}
 		}
 		if (completedFrame)

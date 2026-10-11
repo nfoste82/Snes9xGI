@@ -28,6 +28,10 @@ int main(int argc,char **argv){try {
   if(text.find("\"module\":")!=std::string::npos)c.module=number("module");
   if(text.find("\"construction_phase\":")!=std::string::npos)c.constructionPhase=number("construction_phase");
   if(text.find("\"room_transition_flags\":")!=std::string::npos)c.roomTransitionFlags=number("room_transition_flags");
+  if(text.find("\"attribute_construction_state\":")!=std::string::npos)c.attributeConstructionState=number("attribute_construction_state");
+  if(text.find("\"scroll_direction\":")!=std::string::npos)c.scrollDirection=number("scroll_direction");
+  if(text.find("\"destination_origin\":")!=std::string::npos){c.destinationOriginX=number("destination_origin");c.destinationOriginY=number("destination_origin",1);}
+  c.hasDestinationOrigin=text.find("\"destination_origin_attested\":true")!=std::string::npos;
  c.linkX=number("link_xy");c.linkY=number("link_xy",1);c.linkPlane=number("plane");
  // Legacy evidence pins ROM SHA256 but predates continuity identity/grounded
  // attestations. Preserve its original conservative no-continuity capability.

@@ -243,6 +243,8 @@ struct RemasterDungeonFloorContext
 		bool splitDoorPart = false; // exact twelve-word cross-BG dispatch footprint
 		bool hasHeight = false;
 		uint8_t removableSupportPlanes = 0; // exact pot dispatch + completed indexed blocker + replacement floor
+		uint16_t obstacleAssembly = 0, obstacleTemplate = 0; // exact unique final ROM footprint origin+1
+		uint8_t obstacleAssemblyHeight = 0, obstacleAssemblyFlip = 0; // width2; transformed canonical foot
 		bool hflip = false, vflip = false;
 		// Independently classified, authored-zero flat BG usages. This is
 		// candidate support evidence, never a BG-layer elevation label.
@@ -283,7 +285,7 @@ struct RemasterDungeonFloorContext
 			auto fields = [](const Placement &t) { return std::tie(
 				t.surface,t.height,t.groundedFloorMask,t.doorframeMask,t.hasDoorframeMask,
 				t.doorTemplateOffset,t.doorAssembly,t.doorDirection,t.splitDoorPart,
-				t.hasHeight,t.removableSupportPlanes,t.hflip,t.vflip,t.floorPlaneMask,
+				t.hasHeight,t.removableSupportPlanes,t.obstacleAssembly,t.obstacleTemplate,t.obstacleAssemblyHeight,t.obstacleAssemblyFlip,t.hflip,t.vflip,t.floorPlaneMask,
 				t.distinctLowerUsage,t.structuralFloorPlaneMask,t.wallTemplateOffset,
 				t.supportingTrim,t.terminalCorner,t.highPerimeterFace,t.highCornerFace,
 				t.lowerDoorWallPart,t.diagonalHeightPreview,t.diagonalPreviewRow,
@@ -317,6 +319,12 @@ struct RemasterDungeonFloorContext
 	uint8_t submodule = 0;
 	uint8_t module = 7; // adapters default to settled dungeon module
 	uint8_t constructionPhase = 0;
+	// USA $0200: selectable collision builder reaches 5 only after basic,
+	// object, door and crystal overrides. 255 means no adapter attestation.
+	uint8_t attributeConstructionState = 255;
+	uint8_t scrollDirection = 255; // USA $0418: south,north,east,west; unknown legacy
+	uint16_t destinationOriginX = 0, destinationOriginY = 0; // loader $062c/$062e
+	bool hasDestinationOrigin = false;
 	uint8_t roomTransitionFlags = 0;
 	bool groundedEvidence = false; // verified adapter: ordinary grounded Link
 	uint64_t romIdentity = 0; // verified ROM identity, not a room/map hash
@@ -392,6 +400,7 @@ inline uint64_t S9xRemasterDungeonEntryStateKey(const RemasterDungeonFloorContex
 		const auto &t=c.placements[i];mix(t.tileHash);mix(int(t.surface));mix(t.hasHeight);mix(t.hflip);mix(t.vflip);
 		mix(t.wallTemplateOffset);mix(t.distinctLowerUsage);mix(t.structuralFloorPlaneMask);mix(t.floorPlaneMask);
 		mix(t.supportingTrim);mix(t.highPerimeterFace);mix(t.lowerDoorWallPart);mix(t.groundedFloorMask);
+		mix(t.obstacleAssembly);mix(t.obstacleTemplate);mix(t.obstacleAssemblyHeight);mix(t.obstacleAssemblyFlip);
 		mix(t.terminalCorner);
 		mix(t.highCornerFace);
 		mix(t.removableSupportPlanes);
@@ -445,20 +454,37 @@ inline void S9xRemasterDungeonStairsFromAttributes(RemasterDungeonFloorContext &
 inline uint16_t S9xRemasterDungeonRoomForScreenPosition (const RemasterDungeonFloorContext &context,
 	uint32_t x, uint32_t y)
 {
-	if ((!context.submodule && context.module == 7) || context.previousRoomIndex == 0xffff ||
+	if (context.module != 7 || context.submodule != 2 || context.previousRoomIndex == 0xffff ||
 		context.previousRoomIndex == context.roomIndex)
 		return context.roomIndex;
+	if(context.hasDestinationOrigin && context.scrollDirection<4) {
+		// MoveLinkOutDoor resets $0418 at completion of phase13. By14 the
+		// camera scroll has ended and the entire viewport belongs to destination.
+		if(context.constructionPhase>=14)return context.roomIndex;
+		// Header loader records the actual BG origin, including teleport-door
+		// remaps. Compare in 16-bit camera space, not a room-ID-grid guess.
+		const int16_t dx=static_cast<int16_t>(uint16_t(context.backgroundScrollX+x-context.destinationOriginX));
+		const int16_t dy=static_cast<int16_t>(uint16_t(context.backgroundScrollY+y-context.destinationOriginY));
+		const bool source=context.scrollDirection==0?dy<0:context.scrollDirection==1?dy>=512:
+			context.scrollDirection==2?dx<0:dx>=512;
+		return source?context.previousRoomIndex:context.roomIndex;
+	}
 	// During an intra-dungeon scroll Zelda updates $A0 to the destination while
 	// the source room is still present on the opposite side of the viewport.
 	// $A2 and the room-grid delta record the source and direction. $EF cannot be
 	// used here: it is a door layer-toggle bitfield and is cleared as scrolling
-	// starts. Submodule zero is the settled-room lifecycle boundary.
+	// starts. Only supertile handler2 mixes two room IDs; subtile1 and
+	// in-room stairs8/16 must ignore a stale predecessor ID.
 	// The source/destination split is the room boundary in unwrapped BG2 space;
 	// do not modulo first or destination geometry leaks onto source-room pixels.
 	const int worldX = static_cast<int>(context.backgroundScrollX) + static_cast<int>(x);
 	const int worldY = static_cast<int>(context.backgroundScrollY) + static_cast<int>(y);
 	const int currentColumn = context.roomIndex & 15, previousColumn = context.previousRoomIndex & 15;
 	const int currentRow = (context.roomIndex >> 4) & 15, previousRow = (context.previousRoomIndex >> 4) & 15;
+	// Legacy inputs attest only ordinary cardinal grid neighbors. Unknown
+	// teleport/noncardinal pairs cannot safely claim predecessor ownership.
+	if(!((currentRow==previousRow && std::abs(currentColumn-previousColumn)==1) ||
+		(currentColumn==previousColumn && std::abs(currentRow-previousRow)==1)))return context.roomIndex;
 	const int boundaryX = std::max(currentColumn,previousColumn)*512;
 	const int boundaryY = std::max(currentRow,previousRow)*512;
 	if (currentColumn < previousColumn && worldX >= boundaryX) return context.previousRoomIndex;
@@ -930,9 +956,16 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		int count = static_cast<int>(cells.size());
 		for (int p = 0; p < 2; p++) for (int i = 0; i < 4096; i++)
 		{
-			if (!activePlanes[p]) continue;
 			const auto &tile = context.placements[i];
+			// Unobserved SUPPORT remains absent. A verified ROM-owned solid face
+			// may nevertheless participate in structural seams on that plane;
+			// it acquires a datum only from an independently solved graph contact.
+			if (!activePlanes[p] && !(context.placementBackgroundIndex==1 && tile.surface==RemasterDungeonFloorContext::Surface::Wall &&
+				tile.wallTemplateOffset && (context.collisionAttributes[p*4096+i]==1 || context.collisionAttributes[p*4096+i]==4 ||
+				context.collisionAttributes[p*4096+i]==2 || context.collisionAttributes[p*4096+i]==0x28 ||
+				context.collisionAttributes[p*4096+i]==0x2a))) continue;
 			if(tile.removableSupportPlanes&(1<<p))continue; // terminal persistent consumer, never structural graph node
+			if(tile.obstacleAssembly)continue; // whole obstacle is a terminal support consumer, never a seam bridge
 			// A proven fold is terminal region geometry, solved from BOTH face
 			// contacts below. It cannot supply a floor graph edge/datum through
 			// an outward obstacle support node. Ordinary authored corners retain
@@ -1218,17 +1251,17 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			adjacency[a].push_back({b, rise}); adjacency[b].push_back({a, -rise});
 		};
 		for (const auto &e : edges) add(e.a, e.b, e.rise);
-		// One final ROM-owned face is one physical surface even when it borders
-		// supports on different gameplay planes. Require identical paired final
-		// artwork and solid usage on BOTH planes; hidden/differing artwork and a
-		// nonblocking underpass never license this equality. Share only structural
-		// nodes: support components remain independent at overlapping coordinates.
+		// One final ROM-owned visible BG2 face is one physical surface when BOTH
+		// planes use it as solid structure. BG1 may contain different lower art:
+		// that does not duplicate the visible BG2 shell. BG1's evidence transport
+		// still requires paired identical artwork. A nonblocking underpass never
+		// licenses equality. Share structural nodes ONLY, never support components.
 		auto solidFace=[](uint8_t a){return a==1 || a==2 || a==0x28 || a==0x2a;};
-		for(int i=0;context.placementBackgroundIndex==0 && i<4096;i++) {
+		for(int i=0;(context.placementBackgroundIndex==0 || activePlanes[0]!=activePlanes[1]) && i<4096;i++) {
 			const auto &t=context.placements[i];
 			if(t.surface!=RemasterDungeonFloorContext::Surface::Wall || !t.wallTemplateOffset ||
 				(context.bg1GraphicsBase!=0xffff && context.bg1GraphicsBase!=context.graphicsBase) ||
-				t.distinctLowerUsage || !solidFace(context.collisionAttributes[i]) ||
+				(context.placementBackgroundIndex==0 && t.distinctLowerUsage) || !solidFace(context.collisionAttributes[i]) ||
 				!solidFace(context.collisionAttributes[4096+i]) || nodes[i]<0 || nodes[4096+i]<0)continue;
 			add(nodes[i],nodes[4096+i],0);result.sharedStructuralFaces++;
 		}
@@ -1388,6 +1421,19 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			if (conflict || negative || overflow) result.geometryGroupIssues.push_back({start, static_cast<int>(queue.size()), mismatches, negative, overflow, isolatedFlat});
 		}
 		result.hasRoomGeometry = result.hasPlaneOffsets = true;
+#ifdef ALTTP_TEST_WALL_COMPONENT_AUDIT
+		// Standalone evidence explorer only; never enabled in app/runtime builds.
+		if(const char *path=std::getenv("ALTTP_WALL_COMPONENT_AUDIT")) {
+			std::ofstream audit(path,std::ios::app);audit<<"{\"bg\":"<<int(context.placementBackgroundIndex)
+				<<",\"active\":["<<activePlanes[0]<<','<<activePlanes[1]<<"],\"nodes\":[";
+			bool first=true;for(int encoded=0;encoded<8192;encoded++)if(nodes[encoded]>=0) {
+				if(!first)audit<<',';first=false;const int n=nodes[encoded];
+				audit<<'['<<encoded<<','<<n<<','<<bases[n]<<','<<bad[n]<<','<<supportNode[n]<<','<<flatNode[n]<<']';
+			}audit<<"],\"edges\":[";first=true;for(int n=0;n<count;n++)for(auto e:adjacency[n])if(n<e.first) {
+				if(!first)audit<<',';first=false;audit<<'['<<n<<','<<e.first<<','<<e.second<<']';
+			}audit<<"]}\n";
+		}
+#endif
 		for(int i=0;i<4096;i++)if(context.placements[i].diagonalHeightPreview && !result.producerObstacle[i])
 			result.localHeightPreviews.push_back({i,context.placements[i].height});
 		for(int encoded=0;encoded<8192;encoded++) {
@@ -1799,6 +1845,42 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			for(const auto &bad:frameConflicts)conflict|=bad.first==i;
 			if(conflict)result.conflictingDoorframeCells++;else if(!solved)result.unknownDoorframeCells++;
 		}
+		// Exact freestanding obstacle footprints share ONE supporting component.
+		// Contact only the transformed canonical bottom row: heads/side artwork
+		// cannot borrow a nearby floor. No support nodes/constraints are added.
+		std::set<uint16_t> obstacleAssemblies;
+		for(int i=0;i<4096;i++)if(context.placements[i].obstacleAssembly)obstacleAssemblies.insert(context.placements[i].obstacleAssembly);
+		for(auto assembly:obstacleAssemblies) {
+			const int origin=assembly-1;const auto &t=context.placements[origin];const int h=t.obstacleAssemblyHeight;
+			if(h<3 || h>4 || origin%64>62 || origin/64+h>64)continue;
+			bool complete=true;for(int yy=0;yy<h;yy++)for(int xx=0;xx<2;xx++) {
+				const auto &part=context.placements[origin+yy*64+xx];
+				complete &= part.obstacleAssembly==assembly && part.obstacleTemplate==t.obstacleTemplate &&
+					part.obstacleAssemblyHeight==h && part.obstacleAssemblyFlip==t.obstacleAssemblyFlip &&
+					part.surface==RemasterDungeonFloorContext::Surface::Obstacle && part.hasHeight;
+			}if(!complete)continue;
+			const int footY=origin/64+((t.obstacleAssemblyFlip&2)?0:h-1),outsideY=footY+((t.obstacleAssemblyFlip&2)?-1:1);
+			int support=-1,base=255,plane=-1;bool conflict=false;uint8_t supportedFeet=0;
+			for(int p=0;p<2;p++)if(activePlanes[p])for(int xx=0;xx<2;xx++) {
+				const int foot=footY*64+origin%64+xx;
+				// Occupied support under nonblocking foot, or directly contacted
+				// support at its outward ground edge. Both use reproduced bodies.
+				for(int cell:{foot,outsideY>=0 && outsideY<64?outsideY*64+origin%64+xx:-1}) {
+					if(cell<0)continue;const int n=(*occupiedComponents)[p*4096+cell];
+					if(n<0 || result.planeOffsets[p][cell]==255)continue;
+					supportedFeet|=1<<xx;
+					if(support>=0 && (support!=n || plane!=p || base!=result.planeOffsets[p][cell]))conflict=true;
+					support=n;plane=p;base=result.planeOffsets[p][cell];
+				}
+			}
+			if(conflict){result.structuralConflicts++;base=255;}
+			if(supportedFeet!=3)base=255; // complete width2foot evidence required
+			for(int yy=0;yy<h;yy++)for(int xx=0;xx<2;xx++) {
+				const int cell=origin+yy*64+xx;result.offsets[cell]=base;result.fallbackDirections[cell]=0;
+				// Structural shell base does not replace independently solved actor
+				// support under any nonblocking head/foot artwork on either plane.
+			}
+		}
 		for (int i = 0; i < 4096; i++)
 		{
 			const auto &tile = context.placements[i];
@@ -1817,6 +1899,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			// support. Do not erase it with the identity-less one-cell fallback.
 			if(tile.supportingTrim) continue;
 			if(tile.removableSupportPlanes)continue; // unresolved persistent body cannot be rescued by adjacency fallback
+			if(tile.obstacleAssembly)continue; // whole-foot ambiguity cannot be rescued by per-part proximity
 			// An authored obstacle already attached by plane-specific support
 			// constraints is not an identity-less border fallback. Rechecking
 			// adjacent contacts across planes erased proved bridge rail bases.
@@ -1949,6 +2032,13 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	if (map.roomIndex != context.roomIndex)
 		return;
 	const size_t originalCount = frame.tileInstances.size();
+	auto currentPlacementMatches=[&](const RemasterFrameTileInstance &instance,size_t cell) {
+		if(context.submodule!=2 || !context.constructedMaps)return true;
+		const int start=backgroundIndex?0:8192;
+		const uint16_t word=context.constructedMaps[start+cell*2]|context.constructedMaps[start+cell*2+1]<<8;
+		return instance.tileNumber==(word&1023) && instance.palette==((word>>10)&7) &&
+			instance.hFlip==bool(word&0x4000) && instance.vFlip==bool(word&0x8000);
+	};
 	std::vector<int32_t> firstOffset(originalCount, 255);
 	std::vector<uint8_t> firstBorderDirections(originalCount, 255);
 	std::vector<int32_t> firstFloor(originalCount, 255);
@@ -2204,6 +2294,10 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		const uint32_t roomY = (context.backgroundScrollY + y) & 511;
 		const size_t cell = (roomY / 8) * 64 + roomX / 8;
 		const auto *producer = pixelRoom == context.roomIndex ? &map : sourceRoomMap;
+		// During incremental upload, complete WRAM destination geometry and
+		// displayed PPU placements are different inventories. A repeated hash
+		// alone cannot attest that this particular destination word was uploaded.
+		if(pixelRoom==context.roomIndex && !currentPlacementMatches(instance,cell))return 0;
 		if (producer && producer->producerHashes[cell] && (producer->producerHashes[cell] != instance.tileId.hash ||
 			producer->producerFlips[cell] != (instance.hFlip | (instance.vFlip<<1)))) return 0;
 		const auto &regions=pixelRoom==context.roomIndex?*currentFrames:*sourceFrames;
@@ -2247,7 +2341,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		{
 			if (!sourceRoomMap) return nullptr;
 			const size_t cell=(((context.backgroundScrollY+y)&511)/8)*64+((context.backgroundScrollX+x)&511)/8;
-			if (sourceRoomMap->producerHashes[cell] && sourceRoomMap->producerHashes[cell]!=instance.tileId.hash) return nullptr;
+			if (sourceRoomMap->producerHashes[cell] && (sourceRoomMap->producerHashes[cell]!=instance.tileId.hash ||
+				sourceRoomMap->producerFlips[cell]!=(instance.hFlip|(instance.vFlip<<1)))) return nullptr;
 			// The source's placement-local fallback is part of its retained
 			// geometry, not just its base. Return stable per-cell storage.
 			sourceBorder = BorderCell{};
@@ -2258,6 +2353,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		}
 		const uint32_t roomX = (context.backgroundScrollX + x) & 511;
 		const uint32_t roomY = (context.backgroundScrollY + y) & 511;
+		if(!currentPlacementMatches(instance,(roomY/8)*64+roomX/8))return nullptr;
 		if(map.producerObstacle[(roomY/8)*64+roomX/8])return nullptr;
 		const BorderCell &border = borders[(roomY / 8) * 64 + roomX / 8];
 		return border.candidate && !border.conflict ? &border : nullptr;
@@ -2290,7 +2386,9 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		const auto *selected=room==context.roomIndex ? &map : sourceRoomMap;
 		if (!selected || selected->roomIndex != room || !selected->hasRoomGeometry) return 255;
 		const size_t cell=(((context.backgroundScrollY+y)&511)/8)*64+((context.backgroundScrollX+x)&511)/8;
-		if (selected->producerHashes[cell] && selected->producerHashes[cell]!=instance.tileId.hash) return 255;
+		if(room==context.roomIndex && !currentPlacementMatches(instance,cell))return 255;
+		if (selected->producerHashes[cell] && (selected->producerHashes[cell]!=instance.tileId.hash ||
+			selected->producerFlips[cell]!=(instance.hFlip|(instance.vFlip<<1)))) return 255;
 		if(selected->producerObstacle[cell])return 255;
 		const auto &regions=room==context.roomIndex?*currentFrames:*sourceFrames;
 #ifdef ALTTP_TEST_LINEAR_FRAME_REGIONS
@@ -2406,6 +2504,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		const auto *selected=room==context.roomIndex?&map:sourceRoomMap;
 		if(!selected || selected->roomIndex!=room)continue;
 		const int cell=(((context.backgroundScrollY+y)&511)/8)*64+((context.backgroundScrollX+x)&511)/8;
+		if(room==context.roomIndex && !currentPlacementMatches(instance,cell))continue;
 		if(selected->producerObstacle[cell] || selected->offsets[cell]==255 || selected->fallbackDirections[cell] ||
 			selected->producerHashes[cell]!=instance.tileId.hash ||
 			selected->producerFlips[cell]!=(instance.hFlip|(instance.vFlip<<1)))continue;
