@@ -28,6 +28,7 @@
 #include <AudioUnit/AudioUnitCarbonView.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <atomic>
 
 #include "mac-prefix.h"
 #include "mac-dialog.h"
@@ -50,6 +51,10 @@ static int16_t				*audioBuffer;
 static uint32_t				audioBufferSampleCapacity;
 static uint32_t				audioBufferSampleCount;
 static sem_t				*soundSyncSemaphore;
+static std::atomic<bool> userAudioMuted {false};
+
+void MacSetAudioMuted (bool muted) { userAudioMuted.store(muted); }
+bool MacAudioMuted (void) { return userAudioMuted.load(); }
 
 static void ConnectAudioUnits (void);
 static void DisconnectAudioUnits (void);
@@ -325,6 +330,13 @@ static OSStatus MacAURenderCallBack (void *inRefCon, AudioUnitRenderActionFlags 
 		pthread_mutex_unlock(&mutex);
 	}
 
+	// Drain samples normally while muted to preserve sound-sync pacing and avoid
+	// stale buffered audio on unmute. The core's temporary mute is independent.
+	if (userAudioMuted.load())
+	{
+		memset(ioData->mBuffers[0].mData, 0, ioData->mBuffers[0].mDataByteSize);
+		*ioActionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+	}
 	return (noErr);
 }
 

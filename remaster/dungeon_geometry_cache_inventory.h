@@ -4,13 +4,17 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  std::ostringstream o;
  auto v=[&](auto x){o<<+x<<' ';};
  auto array=[&](const auto &a){for(auto x:a)v(x);};
- array(m.producerHashes);array(m.producerFlips);array(m.producerZeroFloor);array(m.producerObstacle);
+	array(m.producerHashes);array(m.producerFlips);array(m.producerZeroFloor);array(m.producerObstacle);
+	array(m.producerAuthoredObstacle);
+	array(m.producerGeneratedObstacle);
  v(m.roomIndex);array(m.offsets);for(auto &a:m.planeOffsets)array(a);
  v(m.componentCount);v(m.constraintCount);v(m.conflictingComponentCount);array(m.solvedPlaneCells);
  v(m.hasPlaneOffsets);v(m.hasRoomGeometry);array(m.fallbackDirections);
  for(auto &a:m.structuralPlaneOffsets)array(a);for(auto &a:m.mixedFloorBases)array(a);
  v(m.mixedFloorUnknown);v(m.mixedFloorConflicts);array(m.requiredPlaneCells);array(m.unknownPlaneCells);
- v(m.structuralConflicts);array(m.persistentSupportRequired);array(m.persistentSupportMissing);
+	v(m.structuralConflicts);array(m.persistentSupportRequired);array(m.persistentSupportMissing);
+	v(m.authoredObstacleCells);v(m.solvedAuthoredObstacleCells);v(m.unmatchedAuthoredObstacleCells);
+	v(m.authoredObstacleEvidence.size());for(auto &r:m.authoredObstacleEvidence){v(r.assembly);v(r.group);v(r.plane);v(r.component);v(r.floorBase);v(r.members);v(r.contacts);v(r.witnessedContacts);v(r.conflict);}
  v(m.persistentSupport.size());for(auto &r:m.persistentSupport){v(r.cell);v(r.plane);v(r.component);v(r.base);}
  v(m.solvedWallCells);v(m.unknownWallCells);array(m.candidateFloorCells);array(m.unobservedFloorCells);
  v(m.disconnectedPlaneCandidates);v(m.planeRelationshipUnresolved);

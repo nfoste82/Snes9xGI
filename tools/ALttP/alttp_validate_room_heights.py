@@ -84,7 +84,22 @@ def grounded_floor_hashes(profile):
     # Explicit role overrides a stale generated structural group at runtime.
     result.difference_update(a['tile_hash'] for a in profile.get('assets',[])
                              if a.get('tile_role') in ('wall','wall_corner','obstacle','door'))
+    result.difference_update(m['tile_hash'] for g in profile.get('obstacle_groups', []) for m in g['members'])
     return result
+
+
+def audit_authored_obstacle_capability(report, profile, solution=None, snapshot=None, attributes=None, state=None):
+    """Rebuild ownership and contacts independently; preserve other gate failures."""
+    if not profile.get('obstacle_groups'):
+        return
+    if snapshot is None or attributes is None or solution is None:
+        report['authored_obstacle_groups'] = {'status': 'missing_complete_inputs'}
+        report['success'] = False
+        return
+    from alttp_authored_obstacles import audit
+    result = audit(snapshot, attributes, profile, solution, state)
+    report['authored_obstacle_groups'] = result
+    report['success'] &= result['success']
 
 
 def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tuple[bytes, bytes],
@@ -96,6 +111,8 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     if not isinstance(planes, list) or len(planes) != 2 or not isinstance(elevation, dict):
         raise ValueError("graph must contain two planes and an elevation solution")
     assets, wall_hashes = _profile(profile)
+    authored_group_hashes = {m['tile_hash'] for g in profile.get('obstacle_groups', []) for m in g['members']}
+    wall_hashes -= authored_group_hashes
     groups = profile.get('asset_groups', {})
     forbidden_template_hashes = set()
     for name in ('dungeon_floor','wall_tops','obstacles','stair_treads','stair_rails'):
@@ -104,6 +121,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     for name in ('obstacles','stair_treads','stair_rails'):
         forbidden_template_hashes.update(groups.get(name,{}).get('tile_hashes',[]))
     forbidden_template_hashes.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role') == 'floor')
+    forbidden_template_hashes.update(authored_group_hashes)
     template_walls = set()
     template_trims = set()
     template_door_parts = set()
@@ -113,7 +131,49 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     template_corners = set()
     complementary_corner_contacts = {}
     template_data = graph.get('_verified_rom_template_data')
+    mounted_geometry = {}
     if template_data is not None:
+        from alttp_wall_torch_evidence import match_footprint
+        words=[c.word for c in snapshot.cells[1]]
+        structural={(v['x'],v['y']):v for v in elevation.get('structural_placements',[])}
+        for offset,w,h in ((0xa14,4,2),(0xa24,4,2),(0xa34,2,4),(0xa44,2,4)):
+            expected=[int.from_bytes(template_data[offset+2*k:offset+2*k+2],'little') for k in range(8)]
+            north=h==2
+            for y in range(65-h):
+                for x in range(65-w):
+                    cells=[snapshot.cell(1,x+xx,y+yy) for yy in range(h) for xx in range(w)]
+                    if not any(c.tile_hash in wall_hashes for c in cells) or any(c.tile_hash not in assets or c.tile_hash in forbidden_template_hashes for c in cells):continue
+                    if not any(match_footprint(words,expected,x,y,w,h,flip,row_major=north) for flip in range(4)):continue
+                    if north and (x==0 or x+w>=64) or not north and (y==0 or y+h>=64):continue
+                    proposals={}
+                    for band in range(h if north else w):
+                        ends=[(x-1,y+band),(x+w,y+band)] if north else [(x+band,y-1),(x+band,y+h)]
+                        contacts=[structural.get(v) for v in ends]
+                        if any(v is None or v.get('kind')!='authored_wall' for v in contacts):break
+                        ca,cb=[snapshot.cell(1,*v) for v in ends];ha,hb=[assets.get(c.tile_hash,[]) for c in (ca,cb)]
+                        if len(ha)!=64 or len(hb)!=64:break
+                        def sample(c,h,xx,yy):return h[(7-yy if c.vflip else yy)*8+(7-xx if c.hflip else xx)]
+                        aa=[contacts[0]['floor_base']+sample(ca,ha,px,py) for py in range(8) for px in range(8)]
+                        bb=[contacts[1]['floor_base']+sample(cb,hb,px,py) for py in range(8) for px in range(8)]
+                        if aa!=bb or any(sample(ca,ha,px,py)!=sample(ca,ha,0 if north else px,py if north else 0) for py in range(8) for px in range(8)):break
+                        common=set(contacts[0].get('planes',[])) & set(contacts[1].get('planes',[]))
+                        if not common:break
+                        base=contacts[0]['floor_base']
+                        for k in range(w if north else h):
+                            c=snapshot.cell(1,x+k if north else x+band,y+band if north else y+k)
+                            local=[0]*64
+                            for py in range(8):
+                                for px in range(8):local[(7-py if c.vflip else py)*8+(7-px if c.hflip else px)]=aa[py*8+px]-base
+                            proposals[c.x,c.y]=(base,local,common)
+                    if len(proposals)==8:
+                        template_walls.update(proposals);mounted_geometry.update(proposals)
+        # Surviving authored full outer east-door band, bounded by wall ends.
+        for offset in range(0x2e6a,0x3033,24):
+            for y in range(1,60):
+                for x in range(64):
+                    cells=[snapshot.cell(1,x,y+k) for k in range(4)]
+                    ends=[snapshot.cell(1,x,y-1),snapshot.cell(1,x,y+4)]
+                    if all((c.word&0xdfff)==(int.from_bytes(template_data[offset+16+k*2:offset+18+k*2],'little')&0xdfff) and assets.get(c.tile_hash)==[7-px for py in range(8) for px in range(8)] for k,c in enumerate(cells)) and all(c.tile_hash in wall_hashes for c in ends):template_walls.update((c.x,c.y) for c in cells)
         for offset, w, h, sx, sy in ((0x2e8,2,3,0,0),(0x2f8,2,3,0,1),(0x2c8,3,2,0,0),(0x2d8,3,2,1,0)):
             for y in range(65-h):
                 for x in range(65-w):
@@ -347,7 +407,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             # replace an upper bridge's authored relief (exact008).
             if (0, bx, by) in walkable or (1, bx, by) in walkable:
                 continue
-            if attributes[plane][index] in (1, 2) and placed.tile_hash not in wall_hashes and (bx,by) not in template_walls and (bx,by) not in template_trims:
+            if attributes[plane][index] in (1, 2) and placed.tile_hash not in authored_group_hashes and placed.tile_hash not in wall_hashes and (bx,by) not in template_walls and (bx,by) not in template_trims:
                 candidates.setdefault((bx, by), []).append((plane, level, dx, dy, y * SIZE + x))
     for (x, y), contacts in sorted(candidates.items(), key=lambda item: (item[0][1], item[0][0])):
         levels = {base for _, base, _, _, _ in contacts}
@@ -432,6 +492,8 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
         if not all(isinstance(v, int) for v in (x, y, base)) or not (0 <= x < 64 and 0 <= y < 64 and -32767 <= base <= 32767 and base != UNKNOWN):
             raise ValueError("invalid structural placement")
         cell = snapshot.cell(1, x, y)
+        if cell.tile_hash in authored_group_hashes:
+            continue # independently reconstructed complete footprints, never per-part fallback
         if record.get('kind')=='authored_obstacle' and (x,y) in template_torches | template_obstacles:
             local=assets[cell.tile_hash];planes_here=record.get('planes',[])
             if not planes_here or any(p not in (0,1) for p in planes_here):
@@ -537,6 +599,11 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             continue
         source = "authored_asset"
         attachment = {}
+        if record.get('local_source') == 'placement_wall_mount_backing':
+            proof=mounted_geometry.get((x,y))
+            if proof is None or base!=proof[0] or record.get('local_height')!=proof[1] or not set(record.get('planes',[])) & proof[2]:
+                raise ValueError('mounted fixture lacks exact complete footprint and both backing cross sections')
+            local=proof[1];source='placement_wall_mount_backing'
         if record.get('local_source') == 'placement_rom_diagonal_preview':
             proof = preview_geometry.get((x,y))
             if proof is None or record.get('local_height') != proof['height']:
@@ -546,7 +613,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
             attachment = {'local_height':local, 'hflip':cell.hflip, 'vflip':cell.vflip,
                           'evidence':proof.get('evidence', 'ordered_stepped_ROM_column_both_cardinal_unit_sections'),
                           'preview_only':True}
-        elif "local_height" in record or "attached_floor_base" in record:
+        elif record.get('local_source') != 'placement_wall_mount_backing' and ("local_height" in record or "attached_floor_base" in record):
             floor = record.get("attached_floor_base")
             planes_here = record.get("planes", [])
             if (not isinstance(floor, int) or not 0 <= floor <= 32767 or floor == UNKNOWN or not planes_here or
@@ -714,6 +781,11 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
     placements, missing, fallback_conflicts, meta = build_usage(
         graph, rise, snapshot, attributes, profile)
     elevation = graph["elevation"]
+    authored = None
+    if profile.get('obstacle_groups'):
+        from alttp_authored_obstacles import audit
+        authored = audit(snapshot, attributes, profile, elevation)
+        placements.extend(r for r in authored['placements'] if r['layer'] == 1)
     map_missing, map_mismatches = [], []
     if height_map is not None:
         visible_map = height_map["visible"] if isinstance(height_map, dict) else height_map
@@ -724,8 +796,15 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
             if isinstance(height_map, dict):
                 for plane in [item["plane"]] if "plane" in item else item.get("planes", []):
                     actual = height_map["planes"][plane][index]
+                    if item['kind'] == 'authored_obstacle_group' or item.get('local_source') == 'placement_wall_mount_backing':
+                        continue # actor floor map remains support base, not member Z
                     if actual != item["floor_base"]:
                         map_mismatches.append([plane, item["x"], item["y"], item["floor_base"], actual])
+        # Structural render member offsets may sit BELOW independent underlay
+        # support. They replace the visible placement base, never max-merge it.
+        for item in placements:
+            if item['kind'] == 'authored_obstacle_group' or item.get('local_source') == 'placement_wall_mount_backing':
+                expected[item['y']*SIZE+item['x']] = item['floor_base']
         for index, expected_value in sorted(expected.items()):
             actual = visible_map[index]
             if actual == UNKNOWN:
@@ -750,7 +829,10 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
     success = (not missing and not conflicts and not unresolved and not map_missing and
                not map_mismatches and not unknown_walls and not elevation.get("mixed_floor_unknown", 0) and
                not seams['conflicts'] and not seams['missing'])
+    if authored is not None:
+        success &= authored['success']
     return {"format": "alttp-room-height-validation-v2", "room_id": graph.get("room_id"),
+            'authored_obstacle_groups': authored,
             "success": success, "rise": rise, **meta, 'directional_wall_continuity':seams,
             "required_walkable_placements": sum(meta["per_plane_walkable_denominator"]),
             "valid_walkable_placements": len(supports), "missing_placements": missing,
@@ -1011,7 +1093,9 @@ def main() -> int:
             graph["elevation"] = {**graph["elevation"], **solution}
         height_map = load_height_map(args.height_map, room) if args.height_map else None
         report = validate(graph, args.rise, height_map, snapshot=snapshot,
-                          attributes=attributes, profile=profile)
+                           attributes=attributes, profile=profile)
+        # validate() independently reconstructs terminal footprint ownership /
+        # collision-body contacts instead of trusting runtime assembly claims.
         if args.runtime_solution:
             report['diagonal_sources'] = [dict(layer=l,x=x,y=y,**proof)
                                           for l, layer_proofs in enumerate(proofs)

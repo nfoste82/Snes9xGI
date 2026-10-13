@@ -71,6 +71,7 @@ class DoorframeTests(unittest.TestCase):
                     f'[[assets]]\ntile_hash = "{KEY}"\nheight = {json.dumps(stairs)}\n'
                     'normal_xyz = ' + json.dumps([128, 128, 255] * 64) + '\n')
             annotation = {'role': 'door', 'normals': [], 'context_dependent': False, 'doorframe_mask': '8000000000020001'}
+            (root / 'semantics.json').write_text(json.dumps({'rom_sha256': ROM, 'tiles': {KEY: annotation}}))
             with patch('alttp_atlas_profile.AnnotationStore', return_value=SimpleNamespace(tiles={KEY: annotation})), patch(
                     'alttp_atlas_profile.TileCatalog', return_value=SimpleNamespace(semantic_group=lambda key: [key])):
                 for native in (False, True):

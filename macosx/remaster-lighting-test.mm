@@ -12,6 +12,9 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <fstream>
+#include <sstream>
+#include <chrono>
 #include "../remaster/indirect_lighting_reference.h"
 #include "../remaster/surface_mesh_material.h"
 #include "../remaster/emitter_patches.h"
@@ -370,7 +373,8 @@ int main()
                         [encoder setBuffer:patchBuffer offset:0 atIndex:7];
                     }
                     const uint32_t visibleCount = static_cast<uint32_t>(sources.size());
-                    if (prepared && hidden) for(size_t n=0;n<hidden->size();n++)sources.push_back(simd_uint2{UINT32_MAX,0});
+                    uint32_t hiddenStratum=0;
+                    if (prepared && hidden) for(const auto &s:*hidden)sources.push_back(simd_uint2{UINT32_MAX,s.normal[3]<0?hiddenStratum++%4:0});
                     const uint32_t emitterCount = static_cast<uint32_t>(prepared ? sources.size() : emitters.size());
                     if (emitters.empty())
                         emitters.push_back(0);
@@ -1178,6 +1182,34 @@ int main()
             }
             {
                 Scene world=scene();
+                if(const char *path=std::getenv("S9X_REMASTER_EDGE_SWEEP")) {
+                    std::ifstream file(path);std::string line;std::vector<Light> lights;RemasterFrame packet;
+                    int camera=-1;std::vector<float> energies;double totalMs=0;
+                    auto measure=[&]{if(camera<0)return;
+                        Scene fixed=scene();fixed[PreviousBounce].assign(width*height,{});
+                        fixed[Surface][receiver]={0,0,0,1};
+                        // Room050 sources transformed to a fixed receiver-local
+                        // coordinate system. Visibility geometry never changes.
+                        auto samples=S9xRemasterHiddenDirectSamples(packet,false,true);
+                        std::vector<RemasterSurfaceMesh::Cell> mesh(width*height);
+                        const auto start=std::chrono::steady_clock::now();
+                        auto value=run(fixed,true,0,8,-1,nullptr,true,0,1,0,14,1,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
+                            &mesh,false,nullptr,false,0.65f,&lights,8,true,&samples).bounce;
+                        totalMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+                        energies.push_back(value.x+value.y+value.z);
+                        std::printf("EDGE camera=%d power=%.9g spheres=%zu pixels=%zu records=%zu\n",camera,energies.back(),lights.size(),packet.hiddenEmitters.size(),samples.size());
+                    };
+                    while(std::getline(file,line)){std::istringstream row(line);std::string kind;row>>kind;
+                        if(kind=="camera"){measure();row>>camera;lights.clear();packet.hiddenEmitters.clear();packet.representativeEmitters=std::getenv("S9X_REMASTER_EDGE_CLUSTERED")?3:0;packet.emitterPatchSize=1;}
+                        else if(kind=="sphere"){Light l={};float x,y,z,r,g,b;row>>x>>y>>z>>l.radius>>l.intensity>>r>>g>>b;l.position={x,y,z};l.color={r,g,b};
+                            l.position.x-=160;l.position.y-=64;l.sampleCount=128;lights.push_back(l);}
+                        else if(kind=="pixel"){RemasterFrameHiddenEmitter e;int r,g,b,a,omni;row>>e.x>>e.y>>e.z>>e.depth>>e.normal[0]>>e.normal[1]>>e.normal[2]>>r>>g>>b>>a>>omni;
+                            e.x-=160;e.y-=64;e.emission={{uint8_t(r),uint8_t(g),uint8_t(b),uint8_t(a)}};e.omnidirectional=omni;packet.hiddenEmitters.push_back(e);}
+                    }measure();
+                    float lo=*std::min_element(energies.begin(),energies.end()),hi=*std::max_element(energies.begin(),energies.end());
+                    std::printf("EDGE ratio=%.9g min=%.9g max=%.9g mean_harness_ms=%.3f\n",hi/lo,lo,hi,totalMs/energies.size());
+                    if(std::getenv("S9X_REMASTER_EDGE_ASSERT_CONTINUITY"))check("fixed-world camera-edge source transport continuity",hi-lo<0.001f,simd_float4{hi,lo,0,0},simd_float4{});
+                }
                 world[Surface][receiver]={0,0,0,1};
                 world[Surface][emitter]={8,0,0,1};
                 world[PreviousBounce][emitter]={100,0,0,1};
@@ -1190,8 +1222,8 @@ int main()
                 geometry[emitter].emissionDepth=2;geometry[emitter].emissionOmnidirectional=1;
                 auto illuminate=[&](const std::vector<RemasterHiddenDirectSample> *h,
                     const std::vector<RemasterEmitterPatch> *patches=nullptr,unsigned batch=8,
-                    bool sampled=false,unsigned seed=1,const std::vector<Light> *lights=nullptr,bool adaptive=false) {
-                    return run(world,true,0,8,-1,nullptr,true,0,1,0,14,seed,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
+                    bool sampled=false,unsigned seed=1,const std::vector<Light> *lights=nullptr,bool adaptive=false,unsigned connections=14) {
+                    return run(world,true,0,8,-1,nullptr,true,0,1,0,connections,seed,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
                         &geometry,sampled,patches,false,0.65f,lights,batch,adaptive,h).bounce;
                 };
                 const auto visible=illuminate(nullptr);
@@ -1204,6 +1236,21 @@ int main()
                 std::vector<RemasterEmitterPatch> dummy(1); // no visible patch sources
                 dummy[0].count=1;dummy[0].members[0]=0;
                 near("source-only sentinel bypasses clustered receiver exclusion",illuminate(&hidden,&dummy),covered);
+                f.representativeEmitters=1;
+                auto clusteredHidden=S9xRemasterHiddenDirectSamples(f,false,true);
+                near("deterministic hidden cluster singleton matches source",illuminate(&clusteredHidden,&dummy),covered);
+                near("deterministic hidden Direct ignores random seed",illuminate(&clusteredHidden,&dummy,8,false,91),covered);
+                near("deterministic hidden Direct ignores indirect connections",illuminate(&clusteredHidden,&dummy,8,false,91,nullptr,false,60),covered);
+                f.hiddenEmitters.push_back(e);f.hiddenEmitters.back().x+=1;
+                clusteredHidden=S9xRemasterHiddenDirectSamples(f,false,true);
+                check("hidden representative sums area and RGB",clusteredHidden.size()==4 && clusteredHidden[0].radiance[0]==50 &&
+                    clusteredHidden[0].radiance[3]==0.5f,{},{});
+                const auto clusteredLit=illuminate(&clusteredHidden,&dummy);
+                check("hidden representative lights receivers",clusteredLit.x>covered.x,clusteredLit,covered);
+                near("hidden representative deterministic across seeds",illuminate(&clusteredHidden,&dummy,8,false,121),clusteredLit);
+                const auto sampledCluster=S9xRemasterHiddenDirectSamples(f,true,true);
+                near("opt-in hidden cluster sentinel stays safe",illuminate(&sampledCluster,&dummy,8,true),clusteredLit);
+                f.hiddenEmitters.resize(1);
                 const auto collapsed=S9xRemasterHiddenDirectSamples(f,true);
                 near("budgeted hidden collapsed depth exact energy",illuminate(&collapsed,nullptr,8,true),covered);
                 near("budgeted hidden expanded depth exact energy",illuminate(&hidden,nullptr,8,true),covered);

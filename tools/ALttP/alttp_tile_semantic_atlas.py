@@ -130,6 +130,11 @@ class AnnotationStore:
                 path = Path(json.loads(self.profile_marker.read_text())["profile"])
                 snapshot = path.read_bytes()
                 profile = tomllib.loads(snapshot.decode())
+                from alttp_authored_obstacles import validate_groups
+                try:
+                    validate_groups(profile)
+                except ValueError as e:
+                    raise AtlasError(str(e)) from e
                 if profile.get("game", {}).get("rom_sha256") == self.rom_sha256:
                     self.profile_path, self.profile_bytes = path, snapshot
                     changed = False
@@ -192,7 +197,14 @@ class AnnotationStore:
         rule = re.search(r'(?m)^\[\[rules\]\]', text)
         offset = rule.start() if rule else len(text)
         text = text[:offset] + additions + '\n' + text[offset:]
-        tomllib.loads(text)
+        parsed = tomllib.loads(text)
+        from alttp_authored_obstacles import validate_groups
+        try:
+            validate_groups(parsed)
+        except ValueError as e:
+            raise AtlasError(str(e)) from e
+        if parsed.get('obstacle_groups') != tomllib.loads(self.profile_bytes.decode()).get('obstacle_groups'):
+            raise AtlasError('semantic edit changed obstacle groups')
         temporary = self.profile_path.with_name(self.profile_path.name + '.semantics.tmp')
         temporary.write_text(text)
         if self.profile_path.read_bytes() != self.profile_bytes:

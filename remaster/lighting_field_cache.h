@@ -20,7 +20,8 @@ struct RemasterLightingFieldCache
 		return a.hasMaterialSelectors == b.hasMaterialSelectors && a.materialSelectors == b.materialSelectors &&
 			a.hasOcclusion == b.hasOcclusion && a.occlusion == b.occlusion &&
 			a.hasHeight == b.hasHeight && a.height == b.height && a.hasNormals == b.hasNormals &&
-			a.normalXyz == b.normalXyz && a.directLightingOppositeFacing == b.directLightingOppositeFacing;
+			a.normalXyz == b.normalXyz && a.directLightingOppositeFacing == b.directLightingOppositeFacing &&
+			a.normalIgnoreTileTransform == b.normalIgnoreTileTransform;
 	}
 	static bool instanceEqual(const RemasterFrameTileInstance &a, const RemasterFrameTileInstance &b)
 	{
@@ -125,7 +126,7 @@ struct RemasterLightingFieldCache
 				authoredNormals[i] = 1;
 				float nx = m->normalXyz[pixel.tilePixel*3]/127.5f-1, ny = m->normalXyz[pixel.tilePixel*3+1]/127.5f-1, nz = m->normalXyz[pixel.tilePixel*3+2]/127.5f-1;
 				if (normalMasks[pixel.instanceId-1] & (UINT64_C(1) << pixel.tilePixel)) nx = ny = nz = 1;
-				S9xRemasterTransformNormalForTileInstance(instance, nx, ny, nz);
+				S9xRemasterTransformNormalForTileInstance(instance, nx, ny, nz, m->normalIgnoreTileTransform);
 				const float length = std::sqrt(nx*nx+ny*ny+nz*nz);
 				surface[i*4+1] = length > 0.0001f ? nx/length : 0;
 				surface[i*4+2] = length > 0.0001f ? ny/length : 0;

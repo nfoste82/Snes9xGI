@@ -95,7 +95,7 @@ int main(int argc,char **argv){try {
    check(usages>=100 && children.size()==4,"captured complete four-child visible denominator");
    std::cout<<"carried_visible_pixels="<<usages<<" children="<<children.size()<<'\n';
   }
-  if(path.find("frame_room061_048.s9xrmf")!=std::string::npos) {
+   if(path.find("frame_room061_048.s9xrmf")!=std::string::npos) {
    size_t checked=0;
    for(size_t at=0;at<frame->mainPixels.size();at++) {
     const auto &px=frame->mainPixels[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances[px.instanceId-1];
@@ -104,8 +104,19 @@ int main(int argc,char **argv){try {
     check(i.hasPlacementHeight && i.heightOffset==0,"captured southwest continued source");
     check(i.placementHeight[px.tilePixel]==std::max(0,std::min(48,7+8*row-int(px.tilePixel%8)-int(px.tilePixel/8))),"captured southwest exact gradient");checked++;
    }
-   check(checked>1000,"captured southwest pixel denominator");
-  }
+    check(checked>1000,"captured southwest pixel denominator");
+   }
+   if(path.find("frame_room061_066.s9xrmf")!=std::string::npos) {
+    size_t checked=0;
+    for(size_t at=0;at<frame->mainPixels.size();at++) {
+     const auto &px=frame->mainPixels[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances[px.instanceId-1];
+     const int x=((c.backgroundScrollX+at%frame->width)&511)/8,y=((c.backgroundScrollY+at/frame->width)&511)/8,row=y+x-15;
+     if(i.source!=RemasterSourceType::Background || i.sourceIndex!=1 || x<6 || x>11 || row<0 || row>3)continue;
+     check(i.hasPlacementHeight && i.heightOffset==0,"captured northwest independently solved base");
+     check(i.placementHeight[px.tilePixel]==24+std::max(0,std::min(24,31-row*8-int(px.tilePixel%8)-int(px.tilePixel/8))),"captured northwest actual effective gradient");checked++;
+    }
+    check(checked>500,"captured northwest pixel denominator");
+   }
  };
   run();const auto epoch=s.runtimeDungeonHeightEpoch;run();
   if(const char *samples=std::getenv("ALTTP_STAIR_RECURRING_SAMPLES")) {
@@ -234,7 +245,10 @@ int main(int argc,char **argv){try {
  std::ofstream inventory(out+".inventory");inventory<<dungeonMapInventory(s.runtimeDungeonBg1HeightMap)<<'\n'<<dungeonMapInventory(s.runtimeDungeonHeightMap)<<'\n';
  std::ofstream report(out+".json");report<<"{\"room\":"<<c.roomIndex<<",\"profile_pin\":\""<<hex.str()<<"\",\"matched_pixels\":"<<matched<<",\"layers\":[";
  for(int bg=0;bg<2;bg++) {if(bg)report<<',';const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
-  report<<"{\"bg\":"<<bg<<",\"conflicts\":"<<m.structuralConflicts<<",\"unknown_walls\":"<<m.unknownWallCells<<",\"missing\":["<<m.unknownPlaneCells[0]<<','<<m.unknownPlaneCells[1]<<"],\"geometry_conflicts\":[";
+   report<<"{\"bg\":"<<bg<<",\"conflicts\":"<<m.structuralConflicts<<",\"unknown_walls\":"<<m.unknownWallCells
+    <<",\"authored_obstacle_cells\":"<<m.authoredObstacleCells<<",\"solved_authored_obstacle_cells\":"<<m.solvedAuthoredObstacleCells
+    <<",\"unmatched_authored_obstacle_cells\":"<<m.unmatchedAuthoredObstacleCells
+    <<",\"missing\":["<<m.unknownPlaneCells[0]<<','<<m.unknownPlaneCells[1]<<"],\"geometry_conflicts\":[";
   for(size_t k=0;k<m.geometryConflicts.size();k++){if(k)report<<',';const auto &r=m.geometryConflicts[k];report<<'['<<r.node<<','<<r.other<<','<<r.expected<<','<<r.actual<<']';}report<<"]}";
  }report<<"]}\n";
  std::string after;check(S9xRemasterSerializeProfile(s.activeProfile,after,errors) && after==serialized,"own profile changed");

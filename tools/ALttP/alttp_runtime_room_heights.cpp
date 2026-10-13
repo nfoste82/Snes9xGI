@@ -89,6 +89,9 @@ int main(int argc, char **argv)
 			<< ",\"template_input_present\":" << (context.dungeonTemplateData?"true":"false")
 			<< ",\"structural_conflicts\":" << map.structuralConflicts << ",\"solved_wall_cells\":" << map.solvedWallCells
 			<< ",\"unknown_wall_cells\":" << map.unknownWallCells
+			<< ",\"authored_obstacle_cells\":" << map.authoredObstacleCells
+			<< ",\"solved_authored_obstacle_cells\":" << map.solvedAuthoredObstacleCells
+			<< ",\"unmatched_authored_obstacle_cells\":" << map.unmatchedAuthoredObstacleCells
 			<< ",\"persistent_support_required\":["<<map.persistentSupportRequired[0]<<','<<map.persistentSupportRequired[1]<<']'
 			<< ",\"persistent_support_missing\":["<<map.persistentSupportMissing[0]<<','<<map.persistentSupportMissing[1]<<']'
 			<< ",\"configured_stair_fallbacks\":" << map.configuredStairFallbacks
@@ -97,6 +100,13 @@ int main(int argc, char **argv)
 		for(size_t n=0;n<lowerMap->authoredWallSupportRelations.size();n++) {
 			if(n)std::cout<<',';const auto &r=lowerMap->authoredWallSupportRelations[n];
 			std::cout<<"{\"wall\":"<<r.wall<<",\"support\":"<<r.support<<",\"rise\":"<<r.rise<<",\"word\":"<<r.word<<'}';
+		}
+		std::cout<<"],\"authored_obstacle_evidence\":[";
+		for(size_t n=0;n<map.authoredObstacleEvidence.size();n++) {
+			if(n)std::cout<<',';const auto &r=map.authoredObstacleEvidence[n];
+			std::cout<<"{\"assembly\":"<<r.assembly<<",\"group\":"<<r.group<<",\"plane\":"<<r.plane
+				<<",\"component\":"<<r.component<<",\"supporting_floor_base\":"<<r.floorBase<<",\"members\":"<<r.members
+				<<",\"contacts\":"<<r.contacts<<",\"witnessed_contacts\":"<<r.witnessedContacts<<",\"conflict\":"<<(r.conflict?"true":"false")<<'}';
 		}
 		std::cout<<']'
 			<< ",\"required_planes\":[" << map.requiredPlaneCells[0] << ',' << map.requiredPlaneCells[1]
@@ -117,6 +127,11 @@ int main(int argc, char **argv)
 			if (!first) std::cout << ','; first = false;
 			std::cout << '[' << p << ',' << i % 64 << ',' << i / 64 << ',' << int(map.planeOffsets[p][i]) << ']';
 		}
+		std::cout << "],\"bg1_cells_plane_x_y_base\":[";first=true;
+		for(int p=0;p<2;p++)for(int i=0;i<4096;i++)if(lowerMap->planeOffsets[p][i]!=255) {
+			if(!first)std::cout<<',';first=false;
+			std::cout<<'['<<p<<','<<i%64<<','<<i/64<<','<<lowerMap->planeOffsets[p][i]<<']';
+		}
 		std::cout << "],\"structural_placements\":["; first = true;
 		for (int i = 0; i < 4096; i++) if (map.offsets[i] != 255 &&
 			(tiles[i].surface == RemasterDungeonFloorContext::Surface::Wall || tiles[i].surface == RemasterDungeonFloorContext::Surface::Obstacle))
@@ -130,7 +145,21 @@ int main(int argc, char **argv)
 			{ if (!firstPlane) std::cout << ','; firstPlane = false; std::cout << p; }
 			const auto floor=S9xRemasterMixedFloorBase(map,i);
 			std::cout << "]";
+			if(tiles[i].authoredObstacle) {
+				std::cout<<",\"authored_obstacle_group\":"<<tiles[i].authoredObstacleGroup
+					<<",\"authored_obstacle_assembly\":"<<tiles[i].authoredObstacleAssembly
+					<<",\"member_z_tiles\":"<<tiles[i].authoredObstacleZ
+					<<",\"footprint_flip\":"<<int(tiles[i].authoredObstacleFlip)
+					<<",\"support_contact\":"<<(tiles[i].authoredObstacleContact?"true":"false");
+				for(const auto &r:map.authoredObstacleEvidence)if(r.assembly==tiles[i].authoredObstacleAssembly)
+					std::cout<<",\"supporting_floor_base\":"<<r.floorBase<<",\"support_plane\":"<<r.plane<<",\"support_component\":"<<r.component;
+			}
 			if(tiles[i].wallTemplateOffset)std::cout << ",\"wall_template_offset\":" << tiles[i].wallTemplateOffset;
+			if(tiles[i].wallTemplateOffset>=0xa14 && tiles[i].wallTemplateOffset<=0xa44 &&
+				(tiles[i].wallTemplateOffset-0xa14)%0x10==0)for(const auto &v:map.localHeightPreviews)if(v.cell==i) {
+				std::cout<<",\"local_source\":\"placement_wall_mount_backing\",\"local_height\":[";
+				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(v.height[k]);}std::cout<<']';break;
+			}
 			if(tiles[i].diagonalHeightPreview) {
 				std::cout<<",\"local_source\":\"placement_rom_diagonal_preview\",\"local_height\":[";
 				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(tiles[i].height[k]);}std::cout<<']';
@@ -228,10 +257,32 @@ int main(int argc, char **argv)
 				if(base==255 && map.fallbackDirections[i] &&
 					(context.collisionAttributes[p*4096+i]==1 || context.collisionAttributes[p*4096+i]==2))
 					base=map.offsets[i];
+				if(t.authoredObstacle) {
+					base=255;for(const auto &r:map.authoredObstacleEvidence)if(r.assembly==t.authoredObstacleAssembly && r.plane==p)base=map.offsets[i];
+				}
 				const int floor=map.mixedFloorBases[p][i];
 				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<p<<",\"x\":"<<i%64<<",\"y\":"<<i/64
 					<<",\"role\":"<<int(t.surface)<<",\"base\":"<<base<<",\"fallback_directions\":"<<int(map.fallbackDirections[i])
 					<<",\"has_local\":"<<(t.hasHeight?"true":"false")<<",\"floor_datum\":"<<floor;
+				if(t.authoredObstacle) {
+					std::cout<<",\"authored_obstacle\":true,\"authored_obstacle_group\":"<<t.authoredObstacleGroup
+						<<",\"authored_obstacle_assembly\":"<<t.authoredObstacleAssembly<<",\"member_z_tiles\":"<<t.authoredObstacleZ
+						<<",\"support_contact\":"<<(t.authoredObstacleContact?"true":"false")<<",\"footprint_flip\":"<<int(t.authoredObstacleFlip);
+					// Exercise the actual terminal frame consumer on each complete-room
+					// placement, even offscreen. Record canonical effective pixel arrays.
+					RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
+					RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=layer;
+					instance.tileId={t.tileHash,1,4};instance.hFlip=t.hflip;instance.vFlip=t.vflip;f.tileInstances={instance};
+					RemasterFrameAssetMetadata metadata;metadata.tileId=instance.tileId;metadata.hasHeight=t.hasHeight;metadata.height=t.height;
+					f.assetMetadata={metadata};for(int k=0;k<64;k++) {f.mainPixels[k].instanceId=1;f.mainPixels[k].tilePixel=k;}
+					auto apply=context;apply.backgroundScrollX=i%64*8;apply.backgroundScrollY=i/64*8;
+					S9xRemasterApplyDungeonHeightMap(f,apply,map,nullptr,nullptr,layer);
+					std::cout<<",\"runtime_effective_height\":[";
+					for(int k=0;k<64;k++){if(k)std::cout<<',';const auto &a=f.tileInstances[f.mainPixels[k].instanceId-1];
+						std::cout<<a.heightOffset+(a.hasPlacementHeight?a.placementHeight[k]:t.height[k]);}
+					std::cout<<"],\"runtime_authored_pixels_preserved\":"<<((f.assetMetadata[0].height==t.height && (!t.hasHeight || !f.tileInstances[0].hasPlacementHeight))?"true":"false")
+						<<",\"obstacle_local_source\":\""<<(t.hasHeight?"authored_asset":map.offsets[i]!=255?"placement_obstacle_vertical_fallback":"unresolved_support")<<'"';
+				}
 				if(t.diagonalHeightPreview) {
 					std::cout<<",\"captured_local_source\":\"placement_rom_diagonal_preview\",\"preview_row\":"<<int(t.diagonalPreviewRow)
 						<<",\"preview_foot\":"<<int(t.diagonalPreviewFoot)
@@ -239,6 +290,11 @@ int main(int argc, char **argv)
 						<<",\"preview_maximum\":"<<int(t.diagonalMaximum)<<",\"captured_local_height\":[";
 					for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(t.height[k]);}std::cout<<']';
 				}
+				if(t.wallTemplateOffset>=0xa14 && t.wallTemplateOffset<=0xa44 && (t.wallTemplateOffset-0xa14)%0x10==0)
+					for(const auto &v:map.localHeightPreviews)if(v.cell==i && map.structuralPlaneOffsets[p][i]!=255) {
+						std::cout<<",\"captured_local_source\":\"placement_wall_mount_backing\",\"captured_local_height\":[";
+						for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(v.height[k]);}std::cout<<']';break;
+					}
 				std::cout<<'}';
 			}
 		}

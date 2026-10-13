@@ -3,6 +3,7 @@
 No asset hashes, room IDs, guessed bases or authored writes are used here.
 """
 def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None):
+    dispatch_owned = owned
     if template_data is None:
         return {}
     # Legacy cell-only synthetic adapters cannot decode unplaced ROM words.
@@ -27,7 +28,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
         return assets.get(snapshot._tile_hash(address), {}).get('height', [])
     foot = None
     for axis,off in enumerate((0x2e8,0x2c8)):
-        for band in range(3):
+        for band in range(1,3):
             h = local_for_word(word(off+band*2))
             if len(h) != 64:
                 return {}
@@ -40,6 +41,13 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
                 return {}
     if not 0 <= foot < 231:
         return {}
+    for axis,off in enumerate((0x2e8,0x2c8)):
+        h=local_for_word(word(off))
+        address=(snapshot.layers[layer][1]+(word(off)&1023)*16)&32767
+        a=assets.get(snapshot._tile_hash(address),{})
+        absolute=[foot+16+7-(x if axis else y) for y in range(8) for x in range(8)]
+        local=[7-(x if axis else y) for y in range(8) for x in range(8)]
+        if h!=absolute and not (a.get('tile_role')=='wall' and h==local):return {}
     claims = {}
     for kind in range(12):
         off=0x420+kind*10
@@ -172,7 +180,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
                 intercept=minimum+7+row*8
                 result[x,y+row*up]=dict(height=[max(minimum,min(maximum,intercept-xx-yy)) for yy in range(8) for xx in range(8)],
                                      row=0,foot=0,intercept=intercept,minimum=minimum,maximum=maximum)
-    return partial_semantic_previews(snapshot, profile, result, layer, owned)
+    return partial_semantic_previews(snapshot, profile, result, layer, dispatch_owned)
 
 
 def partial_semantic_previews(snapshot, profile, seeds, layer, owned):

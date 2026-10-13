@@ -59,4 +59,12 @@ class DiagonalPreviewTest(unittest.TestCase):
         next(a for a in p['assets'] if a['tile_hash']=='201')['tile_role']='door'
         self.assertNotIn((20,21),diagonal_previews(s,p,t))
 
+    def test_explicit_local_top_still_requires_both_axis_lower_bands(self):
+        s,p,t,w=self.fixture();top=p['assets'][3]
+        top['height']=[7-x for y in range(8) for x in range(8)];top['tile_role']='wall'
+        self.assertEqual(len(diagonal_previews(s,p,t)),24)
+        top['height'][0]+=1;self.assertFalse(diagonal_previews(s,p,t));top['height'][0]-=1
+        top['tile_role']='unknown';self.assertFalse(diagonal_previews(s,p,t));top['tile_role']='wall'
+        p['assets'][4]['height'][0]+=1;self.assertFalse(diagonal_previews(s,p,t))
+
 if __name__=='__main__':unittest.main()

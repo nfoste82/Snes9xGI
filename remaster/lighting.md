@@ -226,9 +226,11 @@ shadow boundaries, inverse-square falloff or spatial color variation. Larger
 footprints are maxima, not guaranteed source counts; compatible fragments often
 remain smaller. Visual acceptance of clustering is pending.
 
-Normal Direct uses the Scene Controls connection budget; override with
-`S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps the selected
-budget). `S9X_REMASTER_EXHAUSTIVE_DIRECT=1` restores exhaustive Direct.
+Normal Direct is deterministic and exhaustive over prepared emitter clusters
+and adaptive sphere quadrature. Scene Controls connections per receiver controls
+indirect lighting only. Explicitly opt into stochastic Direct with
+`S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps deterministic
+Direct). `S9X_REMASTER_EXHAUSTIVE_DIRECT=1` overrides that experiment.
 Visibility/GI diagnostics and the debug sphere remain exhaustive.
 The implementation stratifies samples over each
 receiver's source CDF, weighted by unoccluded Lambertian form factor times the
@@ -252,8 +254,11 @@ Indirect connections remain independently controlled by the profile. Visibility
 and diagnostic views and an enabled debug sphere use exhaustive Direct. Source
 and geometry preparation remain frame-local and unchanged.
 
-HUD source-only pixels participate with the same collapsed depth base/extent
-records as visible depth sources. Physical scene spheres also join the CDF,
+HUD source-only pixels use the existing rectangle/representative clustering
+settings on CPU-only 8x8 support grids. Their deterministic depth records retain
+four quarter-power strata and the same receiver-adaptive depth refinement as
+visible clusters. No support grids enter scene geometry. In the explicit sampled
+experiment these become collapsed depth base/extent records. Physical scene spheres also join the CDF,
 using receiver-adaptive solid-angle quadrature; their unoccluded form factors
 and normalization match exhaustive sphere transport. Sphere setup is cached per
 light per scan. See `offscreen_emitters.md` for capture timings and regressions.

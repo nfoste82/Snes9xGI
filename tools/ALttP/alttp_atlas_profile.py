@@ -21,6 +21,7 @@ import tomllib
 
 from alttp_tile_semantic_atlas import AnnotationStore, TileCatalog, validate_annotation
 from alttp_reference_wall_templates import ReferenceTemplates
+from alttp_authored_obstacles import validate_groups
 
 
 LAYERS = ("height", "normal_xyz", "occlusion", "emission_rgba")
@@ -300,6 +301,18 @@ def _render_profile(source_text: str, authored: dict[str, dict],
                     geometry_overrides: set[str] | None = None,
                     tile_roles: dict[str, str] | None = None) -> str:
     """Keep original text and insert only absent fields / new asset tables."""
+    parsed_source = tomllib.loads(source_text)
+    validate_groups(parsed_source)
+    # Work on asset/rule sections without swallowing interleaved/appended group
+    # member tables. Keep their original text, never reauthor coordinates/Z.
+    headers = list(re.finditer(r'(?m)^\[.*\]\s*$', source_text))
+    group_blocks = []
+    for i, h in enumerate(headers):
+        if h.group().strip() in ('[[obstacle_groups]]', '[[obstacle_groups.members]]'):
+            end = headers[i+1].start() if i+1 < len(headers) else len(source_text)
+            group_blocks.append((h.start(), end, source_text[h.start():end]))
+    for start, end, _ in reversed(group_blocks):
+        source_text = source_text[:start]+source_text[end:]
     matches = list(SECTION.finditer(source_text))
     asset_starts = [match.start() for match in matches if match.group(1) == "assets"]
     first_rule = next((match.start() for match in matches if match.group(1) == "rules"),
@@ -341,11 +354,18 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         if tile_roles is not None and content_id in tile_roles:
             output.append('tile_role = ' + json.dumps(tile_roles[content_id]) + '\n')
         for name in LAYERS:
-            output.append(_format_layer(name, generated[content_id][name]))
+            if name in generated[content_id]:
+                output.append(_format_layer(name, generated[content_id][name]))
         output.append("\n")
     if first_rule < len(source_text):
         output.append(source_text[first_rule:].lstrip("\n"))
-    return "".join(output).rstrip() + "\n"
+    rendered = "".join(output).rstrip() + "\n"
+    rendered += ''.join(block for _, _, block in group_blocks)
+    result = tomllib.loads(rendered)
+    validate_groups(result)
+    if result.get('obstacle_groups') != parsed_source.get('obstacle_groups'):
+        raise ProfileGenerationError('obstacle group payload changed')
+    return rendered
 
 
 def _complete_hud_group(source_text: str, profile: dict,
@@ -470,6 +490,10 @@ def generate_profile(database: Path, source: Path, output: Path,
     source_snapshot = source.read_bytes()
     source_text = source_snapshot.decode()
     profile = tomllib.loads(source_text)
+    try:
+        _, obstacle_ids = validate_groups(profile)
+    except ValueError as e:
+        raise ProfileGenerationError(str(e)) from e
     authored = {asset["tile_hash"]: asset for asset in profile.get("assets", [])}
     declared_floor_ids = set(profile.get("asset_groups", {}).get(
         "dungeon_floor", {}).get("tile_hashes", []))
@@ -651,6 +675,13 @@ def generate_profile(database: Path, source: Path, output: Path,
                     (annotation and annotation['role'] == 'door')) and "height" in existing:
                 proposal["height"] = tuple(existing["height"])
                 geometry_overrides.discard(content_id)
+            if content_id in obstacle_ids:
+                # Group authoring is not permission for generated local metadata
+                # or intrinsic role changes. Preserve absent sources as absent.
+                proposal = {name: tuple(existing[name]) for name in LAYERS if name in existing}
+                geometry_overrides.discard(content_id)
+                if content_id not in authored:
+                    continue # no fabricated hash-only asset table for missing source
             generated[content_id] = proposal
     finally:
         connection.close()
@@ -660,7 +691,11 @@ def generate_profile(database: Path, source: Path, output: Path,
                   if (not annotation["context_dependent"] or annotation['role'] == 'door') and annotation.get("corner_type") != "unknown"}
     if preserve_authored_geometry:
         tile_roles = {**tile_roles, **{key: a['tile_role'] for key, a in authored.items()
-                                     if a.get('tile_role') not in (None, 'unknown')}}
+                                      if a.get('tile_role') not in (None, 'unknown')}}
+    for key in obstacle_ids:
+        tile_roles.pop(key, None)
+        if key in authored and 'tile_role' in authored[key]:
+            tile_roles[key] = authored[key]['tile_role']
     candidate = _render_profile(source_text, authored, generated, geometry_overrides,
                                 tile_roles if semantics_path else None)
     # Door masks are metadata, never a request to flatten an opening. Carry
@@ -685,6 +720,7 @@ def generate_profile(database: Path, source: Path, output: Path,
         candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$',
                             f"schema_version = {max(semantic_schema, profile.get('schema_version', 1))}", candidate, count=1)
     parsed = tomllib.loads(candidate)
+    validate_groups(parsed)
     for key, value in profile.items():
         if key == "schema_version" and semantics_path:
             value = max(semantic_schema, value)
@@ -717,7 +753,7 @@ def generate_profile(database: Path, source: Path, output: Path,
     if len({asset["tile_hash"] for asset in candidate_assets}) != len(candidate_assets):
         raise ProfileGenerationError("candidate has duplicate asset hashes")
     for asset in candidate_assets:
-        if any(name not in asset for name in LAYERS):
+        if asset['tile_hash'] not in obstacle_ids and any(name not in asset for name in LAYERS):
             raise ProfileGenerationError(f"candidate {asset['tile_hash']} lacks a layer")
         original = authored.get(asset["tile_hash"])
         allowed_floor_override = asset["tile_hash"] in geometry_overrides
@@ -748,7 +784,9 @@ def generate_profile(database: Path, source: Path, output: Path,
             "authored_assets_preserved": len(authored),
             "authored_layer_counts": dict(authored_layer_counts),
             "generated_methods": dict(methods), "ambiguous_shared_family_ids": ambiguous,
-            "generated_layer_coverage": {name: len(generated) for name in LAYERS},
+             "generated_layer_coverage": {name: sum(name in a for a in candidate_assets) for name in LAYERS},
+             "obstacle_groups_preserved": len(profile.get('obstacle_groups', [])),
+             "obstacle_missing_local_sources": sorted(h for h in obstacle_ids if 'height' not in authored.get(h, {})),
             "new_hud_hashes": new_hud_ids,
              "upper_floor_height": upper_floor_height,
              "semantic_annotations": len(semantics),

@@ -126,6 +126,7 @@ struct RemasterAssetMetadata
 	bool hasNormals = false;
 	bool hasEmission = false;
 	bool directLightingOppositeFacing = false;
+	bool normalIgnoreTileTransform = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
 
@@ -169,6 +170,20 @@ struct RemasterProfileRule
 	size_t line = 0;
 };
 
+// One authored example footprint; identities may repeat within it, never in a
+// second obstacle group. Placement Z remains contextual, not asset metadata.
+struct RemasterObstacleMember
+{
+	RemasterTileContentId tileId;
+	int x = 0, y = 0, z = 0;
+	bool hflip = false, vflip = false, supportContact = false;
+};
+struct RemasterObstacleGroup
+{
+	std::string name;
+	std::vector<RemasterObstacleMember> members;
+};
+
 struct RemasterProfile
 {
 	uint32_t schemaVersion = 0;
@@ -190,6 +205,7 @@ struct RemasterProfile
 	std::map<std::string, RemasterAssetGroup> assetGroups;
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
 	std::vector<RemasterProfileRule> rules;
+	std::vector<RemasterObstacleGroup> obstacleGroups;
 };
 
 // Scene Controls change these small values without replacing the tile atlas.
@@ -560,11 +576,40 @@ namespace RemasterProfileParsing
 	}
 }
 
+inline bool S9xRemasterValidateObstacleGroups(const std::vector<RemasterObstacleGroup> &groups,
+	std::vector<RemasterProfileDiagnostic> &diagnostics)
+{
+	const size_t before=diagnostics.size();
+	if(groups.size()>4096)diagnostics.push_back({0,"at most 4096 obstacle groups are supported"});
+	std::set<std::string> names;
+	std::map<RemasterTileContentId,size_t> ownership;
+	for(size_t g=0;g<groups.size();g++) {
+		const auto &group=groups[g];bool contact=false;
+		auto fail=[&](const std::string &s){diagnostics.push_back({0,"obstacle group '"+group.name+"': "+s});};
+		if(!RemasterProfileParsing::IsName(group.name) || !names.insert(group.name).second)fail("invalid or duplicate name");
+		if(group.members.empty() || group.members.size()>4096)fail("requires 1..4096 members");
+		std::set<std::pair<int,int>> positions;
+		int minX=63,minY=63,maxX=-63,maxY=-63;
+		for(const auto &m:group.members) {
+			if(m.tileId.hashVersion!=1 || (m.tileId.bitDepth!=2 && m.tileId.bitDepth!=4 && m.tileId.bitDepth!=8))fail("invalid tile identity");
+			if(m.x < -63 || m.x>63 || m.y < -63 || m.y>63 || m.z < -4095 || m.z>4095)fail("coordinate or signed Z out of range");
+			if(!positions.insert({m.x,m.y}).second)fail("duplicate member position");
+			const auto inserted=ownership.emplace(m.tileId,g);
+			if(!inserted.second && inserted.first->second!=g)fail("tile identity belongs to another obstacle group");
+			minX=std::min(minX,m.x);maxX=std::max(maxX,m.x);minY=std::min(minY,m.y);maxY=std::max(maxY,m.y);
+			contact|=m.supportContact;
+		}
+		if(maxX-minX>=64 || maxY-minY>=64)fail("footprint exceeds room dimensions");
+		if(!contact)fail("requires an explicit support_contact");
+	}
+	return diagnostics.size()==before;
+}
+
 inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &profile,
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
@@ -578,6 +623,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	RemasterAssetGroup *group = nullptr;
 	RemasterAssetMetadata *asset = nullptr;
 	RemasterProfileRule *rule = nullptr;
+	RemasterObstacleMember *obstacleMember = nullptr;
+	size_t obstacleIndex = 0;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
 
@@ -612,12 +659,25 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			group = nullptr;
 			asset = nullptr;
 			rule = nullptr;
+			obstacleMember = nullptr;
 			if (line == "[game]")
 				section = Section::Game;
 			else if (line == "[lighting_space]")
 			{
 				section = Section::LightingSpace;
 				hasLightingSpace = true;
+			}
+			else if (line == "[[obstacle_groups]]")
+			{
+				section=Section::ObstacleGroup;parsed.obstacleGroups.emplace_back();
+				obstacleIndex=parsed.obstacleGroups.size();
+			}
+			else if (line == "[[obstacle_groups.members]]")
+			{
+				if(!obstacleIndex) { fail(lineNumber,"obstacle member requires preceding obstacle group");continue; }
+				section=Section::ObstacleMember;
+				parsed.obstacleGroups[obstacleIndex-1].members.emplace_back();
+				obstacleMember=&parsed.obstacleGroups[obstacleIndex-1].members.back();
 			}
 			else if (line == "[[rules]]")
 			{
@@ -682,6 +742,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			keyScope += ":" + std::to_string(parsed.rules.size());
 		if (asset)
 			keyScope += ":" + std::to_string(parsed.assets.size());
+		if(section==Section::ObstacleGroup || section==Section::ObstacleMember) {
+			keyScope+=":"+std::to_string(obstacleIndex);
+			if(obstacleMember)keyScope+=":"+std::to_string(parsed.obstacleGroups[obstacleIndex-1].members.size());
+		}
 		if (!seenKeys[keyScope].insert(key).second)
 		{
 			fail(lineNumber, "duplicate key '" + key + "'");
@@ -693,6 +757,23 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		bool valid = true;
 		switch (section)
 		{
+		case Section::ObstacleGroup:
+			if(key!="name" || !ParseString(value,parsed.obstacleGroups[obstacleIndex-1].name))fail(lineNumber,"invalid obstacle group key/value");
+			break;
+		case Section::ObstacleMember:
+			if(!obstacleMember) { fail(lineNumber,"missing obstacle member");break; }
+			if(key=="tile_hash")valid=ParseString(value,stringValue) && ParseTileId(stringValue,obstacleMember->tileId);
+			else if(key=="hflip")valid=ParseBool(value,obstacleMember->hflip);
+			else if(key=="vflip")valid=ParseBool(value,obstacleMember->vflip);
+			else if(key=="support_contact")valid=ParseBool(value,obstacleMember->supportContact);
+			else if(key=="x" || key=="y" || key=="z") {
+				const bool negative=!value.empty() && value[0]=='-';
+				valid=ParseUnsigned(negative?value.substr(1):value,unsignedValue) && unsignedValue<=4095;
+				if(valid) { const int n=negative?-int(unsignedValue):int(unsignedValue);
+					if(key=="x")obstacleMember->x=n;else if(key=="y")obstacleMember->y=n;else obstacleMember->z=n; }
+			} else valid=false;
+			if(!valid)fail(lineNumber,"invalid obstacle member key/value '"+key+"'");
+			break;
 		case Section::Root:
 			if (key != "schema_version")
 				fail(lineNumber, "unknown root key '" + key + "'");
@@ -968,6 +1049,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!ParseBool(value, asset->directLightingOppositeFacing))
 					fail(lineNumber, "direct_lighting_opposite_facing must be true or false");
 			}
+			else if (key == "normal_ignore_tile_transform")
+			{
+				if (parsed.schemaVersion < 23) fail(lineNumber, "normal_ignore_tile_transform requires schema_version 23");
+				if (!ParseBool(value, asset->normalIgnoreTileTransform))
+					fail(lineNumber, "normal_ignore_tile_transform must be true or false");
+			}
 			else if (key == "combine_emitters")
 			{
 				std::vector<std::string> hashes;
@@ -1046,8 +1133,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 21)
-		fail(0, "schema_version must be an integer in [1, 21]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 23)
+		fail(0, "schema_version must be an integer in [1, 23]");
+	if(!parsed.obstacleGroups.empty() && parsed.schemaVersion<22)fail(0,"obstacle_groups requires schema_version 22");
+	S9xRemasterValidateObstacleGroups(parsed.obstacleGroups,diagnostics);
+	for(size_t g=0;g<parsed.obstacleGroups.size();g++)for(size_t m=0;m<parsed.obstacleGroups[g].members.size();m++) {
+		const auto &keys=seenKeys[std::to_string(int(Section::ObstacleMember))+":"+std::to_string(g+1)+":"+std::to_string(m+1)];
+		for(const char *key:{"tile_hash","x","y","z","hflip","vflip","support_contact"})if(!keys.count(key))fail(0,std::string("obstacle member requires ")+key);
+	}
 	for (const auto &entry : parsed.assets) {
 		if (!entry.second.combineEmitters.empty() && parsed.schemaVersion < 17) fail(0, "combine_emitters requires schema_version 17");
 		for (const auto &id : entry.second.combineEmitters)
@@ -1144,7 +1237,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
 		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && !item.emissionOmnidirectional && item.combineEmitters.empty() &&
-			!item.directLightingOppositeFacing && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
+			!item.directLightingOppositeFacing && !item.normalIgnoreTileTransform && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
 			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, direct_lighting_opposite_facing, or a known tile_role");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
@@ -1284,6 +1377,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	bool hasEmission = false;
 	bool hasNormals = false;
 	bool hasOppositeFacingDirectLighting = false;
+	bool hasFixedNormalDirection = false;
 	bool hasDiffuseReflectance = false;
 	bool hasEmissionDepth = false;
 	bool hasCombinedEmitters = false;
@@ -1297,17 +1391,18 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasCombinedEmitters |= !entry.second.combineEmitters.empty();
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
+		hasFixedNormalDirection |= entry.second.normalIgnoreTileTransform;
 	}
 	for (const auto &entry : profile.materials)
 		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
-	const uint32_t requiredSchema = std::max<uint32_t>(profile.upperFloorHeight > 0 ? 13 :
+	const uint32_t requiredSchema = std::max<uint32_t>(hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
 	const bool hasTileSemantics = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.hasTileSemantics; });
 	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.hasDoorframeMask; });
-	output << "schema_version = " << std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema)) << "\n\n";
+	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema))) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1354,13 +1449,20 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		if (!group.material.empty())
 			output << "material = " << Quote(group.material) << "\n";
 	}
+	for(const auto &group:profile.obstacleGroups) {
+		output << "\n[[obstacle_groups]]\nname = " << Quote(group.name) << "\n";
+		for(const auto &m:group.members)output << "\n[[obstacle_groups.members]]\ntile_hash = " << Quote(TileId(m.tileId))
+			<< "\nx = " << m.x << "\ny = " << m.y << "\nz = " << m.z
+			<< "\nhflip = " << (m.hflip?"true":"false") << "\nvflip = " << (m.vflip?"true":"false")
+			<< "\nsupport_contact = " << (m.supportContact?"true":"false") << "\n";
+	}
 	for (const auto &entry : profile.assets)
 	{
 		const RemasterAssetMetadata &asset = entry.second;
 		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(asset.hasOcclusion, asset.occlusion);
 		// A tile with only default coverage needs no asset table at all.
 		if (asset.hasOcclusion && !storeOcclusion && !asset.hasMaterialSelectors && !asset.hasHeight &&
-			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing && !asset.hasTileSemantics && asset.tileRole == RemasterTileRole::Unknown)
+			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing && !asset.normalIgnoreTileTransform && !asset.hasTileSemantics && asset.tileRole == RemasterTileRole::Unknown)
 			continue;
 		output << "\n[[assets]]\n";
 		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
@@ -1396,6 +1498,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 		if (asset.directLightingOppositeFacing)
 			output << "direct_lighting_opposite_facing = true\n";
+		if (asset.normalIgnoreTileTransform)
+			output << "normal_ignore_tile_transform = true\n";
 		if (asset.hasEmission)
 		{
 			output << "emission_rgba = [";

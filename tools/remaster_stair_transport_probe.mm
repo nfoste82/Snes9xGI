@@ -47,8 +47,8 @@ int main(int argc,char **argv){@autoreleasepool {try {
   std::vector<simd_uint2> records;if(clustered){for(size_t p=0;p<patches.size();p++){auto pixel=patches[p].members[0];bool depth=(patches[p].mode&1)?(patches[p].mode&2):mesh[pixel].emissionDepth>0;for(unsigned s=0;s<(!collapsed && depth?4u:1u);s++)records.push_back(simd_uint2{pixel,uint32_t(p*4+s)|sourceFlag});}}
   else for(size_t n=0;n<count;n++)if(fields.participation[n*2]>127 && fields.emission[n*4+3] && (fields.emission[n*4] || fields.emission[n*4+1] || fields.emission[n*4+2]))for(unsigned s=0;s<(!collapsed && mesh[n].emissionDepth>0?4u:1u);s++)records.push_back(simd_uint2{uint32_t(n),s|sourceFlag});
  const uint32_t visibleRecordCount=records.size();
-  const auto hidden=S9xRemasterHiddenDirectSamples(*f,collapsed);
- for(size_t n=0;n<hidden.size();n++)records.push_back(simd_uint2{UINT32_MAX,0});
+   const auto hidden=S9xRemasterHiddenDirectSamples(*f,collapsed,clustered && !std::getenv("S9X_REMASTER_UNCLUSTERED_HIDDEN"));
+  uint32_t hiddenStratum=0;for(const auto &s:hidden)records.push_back(simd_uint2{UINT32_MAX,s.normal[3]<0?hiddenStratum++%4:0});
  simd_uint2 dummyRecord={};auto recordsBuffer=buffer(records.empty()?&dummyRecord:records.data(),std::max<size_t>(1,records.size())*8);auto sampleBuffer=buffer(nullptr,std::max<size_t>(1,records.size())*64);uint32_t recordCount=records.size();
  auto batches=S9xRemasterDirectBatches(count,recordCount+sphereCount);auto partials=buffer(nullptr,batched?batches.bytes:64);
  auto seed=texture(MTLPixelFormatRGBA16Float,nullptr,0),direct=texture(MTLPixelFormatRGBA16Float,nullptr,0),zero=texture(MTLPixelFormatRGBA16Float,nullptr,0),indirect=texture(MTLPixelFormatRGBA16Float,nullptr,0),output=texture(MTLPixelFormatRGBA8Unorm,nullptr,0);

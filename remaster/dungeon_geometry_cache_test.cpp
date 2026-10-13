@@ -88,7 +88,9 @@ int main(){try {
  DIFFERENT(diagonalIntercept,-1);DIFFERENT(diagonalMinimum,1);DIFFERENT(diagonalMaximum,1);
  DIFFERENT(semanticSoutheastWall,true);DIFFERENT(semanticBoundaryKnown,true);
  DIFFERENT(diagnosticWallTemplateOffset,1);DIFFERENT(diagnosticUphillDirections,1);DIFFERENT(diagnosticNormalUphill,1);
- DIFFERENT(diagnosticAuthoredFloor,true);DIFFERENT(diagnosticRomFloorTrim,true);
+  DIFFERENT(diagnosticAuthoredFloor,true);DIFFERENT(diagnosticRomFloorTrim,true);
+  DIFFERENT(authoredObstacle,true);DIFFERENT(authoredObstacleAssembly,1);DIFFERENT(authoredObstacleGroup,1);
+  DIFFERENT(authoredObstacleZ,-1);DIFFERENT(authoredObstacleFlip,2);DIFFERENT(authoredObstacleContact,true);
  u=t;u.tileHash=42;check(t.sameGeometry(u),"producer identity separate");
  std::cout<<"PASS production animation equivalent/rebuild, exact two-BG maps/diagnostics/packets, pickup/flips/priority/planes/stairs/templates/profile/transitions/actors; complete Placement contract\n";
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

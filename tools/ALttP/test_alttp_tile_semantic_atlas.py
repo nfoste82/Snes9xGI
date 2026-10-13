@@ -50,6 +50,28 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    def test_registered_schema22_semantic_save_preserves_group_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); profile=root/'profile.toml'; marker=root/'marker.json'
+            h='v1:4bpp:0123456789abcdef'
+            group=(f'\n[[obstacle_groups]]\nname = "example"\n[[obstacle_groups.members]]\ntile_hash = "{h}"\n'
+                   'x = -2\ny = 3\nz = -1\nhflip = true\nvflip = false\nsupport_contact = true\n')
+            text=f'schema_version = 22\n[game]\nrom_sha256 = "{ROM_SHA256}"\n[[assets]]\ntile_hash = "{h}"\nheight = [7]\n'+group
+            profile.write_text(text);marker.write_text(json.dumps(dict(profile=str(profile))))
+            store=AnnotationStore(root/'annotations.json',ROM_SHA256,marker);revision=store.refresh()
+            store.save_group([h],dict(role='obstacle',note='external semantic editing'),revision)
+            parsed=tomllib.loads(profile.read_text())
+            self.assertEqual(parsed['schema_version'],22)
+            self.assertEqual(parsed['obstacle_groups'],tomllib.loads(text)['obstacle_groups'])
+            self.assertIn(group.strip(),profile.read_text())
+            self.assertEqual(parsed['assets'][0]['height'],[7])
+            # Invalid membership/contact evidence must be refused before any
+            # sidecar/profile mutation, including profile registration refresh.
+            invalid=profile.read_text().replace('support_contact = true','support_contact = false')
+            profile.write_text(invalid)
+            with self.assertRaisesRegex(AtlasError,'explicit support_contact'):store.refresh()
+            self.assertEqual(profile.read_text(),invalid)
+
     def test_stale_browser_put_is_rejected_after_native_save(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,3 +1,6 @@
+// Historical sphere approximation oracle. The new exact source boundary is
+// exercised separately by offscreen_continuity_test and the production GPU sweep.
+#define ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
 #include "remaster.h"
 #include "hidden_emitter_samples.h"
 #include <cstdio>
@@ -107,9 +110,42 @@ int main()
 		float power=0;for(const auto &s:expanded)power+=s.radiance[k];
 		require(std::fabs(power-collapsed[0].radiance[k])<0.0001f,"collapsed hidden depth conserves linear power");
 	}
-	frame.hiddenEmitters[0].x=-1;
+	frame.hiddenEmitters[0].x=-512;
 	require(!S9xSerializeRemasterFrame(frame,bytes),"invalid hidden source coordinate rejected");
 	frame.hiddenEmitters[0]=validHidden;
+	{
+		RemasterFrame clusteredFrame;
+		clusteredFrame.representativeEmitters=3;
+		for(unsigned y=0;y<8;y++)for(unsigned x=0;x<8;x++) {
+			auto e=validHidden;e.x=x+0.5f;e.y=y+0.5f;e.z=float(y);
+			e.normal={{0,0,1}};e.emission={{255,uint8_t(x*20),0,25}};
+			clusteredFrame.hiddenEmitters.push_back(e);
+		}
+		const auto reference=S9xRemasterHiddenDirectSamples(clusteredFrame);
+		const auto clustered=S9xRemasterHiddenDirectSamples(clusteredFrame,false,true);
+		require(clustered.size()==12,"hidden representative budget matches visible per-tile clusters");
+		for(unsigned k=0;k<3;k++) {
+			float a=0,b=0;for(const auto &s:reference)a+=s.radiance[k];for(const auto &s:clustered)b+=s.radiance[k];
+			require(std::fabs(a-b)<0.01f,"hidden clustering conserves RGB power");
+		}
+		float area=0;for(const auto &s:clustered)area+=s.radiance[3];
+		require(area==64,"hidden clustering retains form-factor area");
+		for(size_t n=0;n<clustered.size();n+=4) {
+			const auto &s=clustered[n];
+			require(s.normal[3]==-validHidden.depth && s.position[0]==std::floor(s.position[0])+0.5f &&
+				s.position[1]==std::floor(s.position[1])+0.5f,"hidden representative remains on actual emitting support");
+		}
+		const auto again=S9xRemasterHiddenDirectSamples(clusteredFrame,false,true);
+		require(std::memcmp(clustered.data(),again.data(),clustered.size()*sizeof(clustered[0]))==0,
+			"hidden clusters are deterministic");
+		clusteredFrame.hiddenEmitters.push_back(clusteredFrame.hiddenEmitters[0]);
+		require(S9xRemasterHiddenDirectSamples(clusteredFrame,false,true).size()==260,
+			"overlapping room planes preserve duplicate source power");
+		clusteredFrame.hiddenEmitters.resize(64);clusteredFrame.representativeEmitters=0;clusteredFrame.emitterPatchSize=2;
+		for(auto &e:clusteredFrame.hiddenEmitters)e.z=0;
+		require(S9xRemasterHiddenDirectSamples(clusteredFrame,false,true).size()==64,
+			"hidden flat rectangles use existing footprint clustering");
+	}
 	RemasterFrameMaterial hudMaterial;
 	hudMaterial.name="hud"; hudMaterial.surfaceClass=RemasterSurfaceClass::UserInterface;
 	frame.materials.push_back(hudMaterial);

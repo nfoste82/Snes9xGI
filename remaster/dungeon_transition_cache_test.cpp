@@ -45,7 +45,7 @@ int main(int argc,char **argv){try{
   S9xRemasterApplyDungeonHeightMap(f,c,*pending,source.get());
   check(f.tileInstances[0].heightOffset==50 && f.tileInstances[0].hasPlacementHeight && f.tileInstances[0].placementHeight[7]==7,"source fallback dropped");
   check(f.tileInstances[1].heightOffset==24,"departing actor support dropped");}
- check(s.runtimeDungeonHeightEpoch==epoch,"partial transition published");check(s.previousRuntimeDungeonHeightMap.roomIndex==0x61,"source lost");
+ frame();check(s.runtimeDungeonHeightEpoch==epoch,"partial transition published");check(s.previousRuntimeDungeonHeightMap.roomIndex==0x61,"source lost");
  // Complete collision/room construction precedes viewport completion.
  c.submodule=2;c.constructionPhase=8;c.attributeConstructionState=4;frame();
  check(s.runtimeDungeonHeightEpoch==epoch,"partial collision builder published");

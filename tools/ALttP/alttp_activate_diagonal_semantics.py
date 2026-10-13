@@ -11,11 +11,14 @@ import tomllib
 
 def activate(text, data):
     source=tomllib.loads(text)
+    from alttp_authored_obstacles import validate_groups
+    _, grouped = validate_groups(source)
     if data['rom_sha256']!=source['game']['rom_sha256']:raise ValueError('ROM mismatch')
     annotations=data['tiles'];count=0
     def block(match):
         nonlocal count
         old=match.group();key=re.search(r'tile_hash\s*=\s*"([^"]+)"',old)[1]
+        if key in grouped:return old # explicit footprint never reauthors intrinsic metadata
         annotation=annotations.get(key,{})
         if annotation.get('role')!='wall' or annotation.get('normals')!=['south_east'] or annotation.get('context_dependent'):return old
         parsed=tomllib.loads(old)['assets'][0]

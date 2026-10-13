@@ -44,8 +44,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 	if (!c.verifiedAlttpRom || !c.indoors || !S9xRemasterRoomEmitterLifecycle(c) ||
 		c.collisionMode || c.roomIndex >= 320 || !c.constructedMaps || !c.graphics ||
 		frame.width != 256 || !frame.height || frame.height > 256) return d;
-	// Offscreen spheres require physical flame/volume emission. HUD-covered
-	// pixels retain their original planar/depth source contract instead.
+	// All missing pixels retain the planar/depth source contract. The historical
+	// sphere approximation is compiled only for regression comparison below.
 	if (std::none_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) {
 		return a.second.hasEmission;
 	})) return d;
@@ -83,12 +83,24 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		auto asset=profile.assets.find(found->second);
 		if (asset==profile.assets.end() || !asset->second.hasEmission) continue;
 		const auto &a=asset->second;
+		// Explicit all-zero emission arrays are common on non-emitting art.
+		// They are not source placements or unknown source bases. In particular,
+		// counting them hid the small set of genuinely unsupported room fixtures.
+		bool emitting=false;
+		for(int pixel=0;pixel<64;pixel++) {
+			const auto *e=a.emissionRgba.data()+pixel*4;
+			if(e[3] && (e[0] || e[1] || e[2])) { emitting=true; break; }
+		}
+		if(!emitting)continue;
 		d.placements++;
 		const auto *map=layer==1 ? bg2 : bg1;
 		if (!map) { d.unknownBases++; continue; }
 		int32_t datum=0;
 		if (map)
 		{
+			// offsets is the solved visible artwork base, not Link's support.
+			// planeOffsets may describe a floor UNDER an unresolved wall/overlay;
+			// neither the active plane nor a nearby solved cell proves ownership.
 			if (map->roomIndex!=c.roomIndex || map->offsets[cell]==255 ||
 				(map->producerHashes[cell] && (map->producerHashes[cell]!=found->second.hash ||
 				map->producerFlips[cell]!=(uint8_t(bool(word&0x4000)) | (uint8_t(bool(word&0x8000))<<1)))))
@@ -97,6 +109,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		}
 		float power=0, sx=0, sy=0, sz=0; unsigned count=0;
 		std::array<float,3> color={};
+		const std::array<uint8_t,64> *placementLocal=nullptr;
+		for(const auto &preview:map->localHeightPreviews)if(preview.cell==cell){placementLocal=&preview.height;break;}
 		for (int y=0; y<8; y++) for (int x=0; x<8; x++)
 		{
 			const int pixel=(word&0x8000 ? 7-y : y)*8+(word&0x4000 ? 7-x : x);
@@ -110,12 +124,19 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			{
 				if (!S9xRemasterHeldLampHudPixel(frame, size_t(py)*frame.width+px))
 				{ d.visiblePixels++; continue; }
+			}
+#ifndef ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
+			// Preserve the visible pixel source contract at the viewport boundary:
+			// exact signed XY, placement-local Z, authored normal/depth and power.
+			// The existing source-only deterministic depth transport consumes it.
+			{
+#else
+			if (px>=0 && py>=0 && px<int(frame.width) && py<int(frame.height)) {
+#endif
 				RemasterFrameHiddenEmitter hidden;
 				hidden.x=px+0.5f; hidden.y=py+0.5f;
-				int local=a.hasHeight ? a.height[pixel] : 0;
+				int local=placementLocal ? (*placementLocal)[pixel] : a.hasHeight ? a.height[pixel] : 0;
 				// Same existing placement-local source consumed by visible tilePixel.
-				for (const auto &preview : map->localHeightPreviews)
-					if (preview.cell==cell) { local=preview.height[pixel]; break; }
 				hidden.z=(datum+local)*frame.lightingCoordinateScale/255.0f;
 				hidden.depth=a.emissionDepth; hidden.omnidirectional=a.emissionOmnidirectional;
 				std::copy_n(e,4,hidden.emission.begin());
@@ -133,12 +154,14 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 				frame.hiddenEmitters.push_back(hidden); d.hiddenPixels++;
 				continue;
 			}
+#ifdef ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
 			if (!a.emissionOmnidirectional && a.emissionDepth<=0) continue;
 			const float w=e[3];
 			power+=w; sx+=(px+0.5f)*w; sy+=(py+0.5f)*w;
-			sz+=((datum+(a.hasHeight ? a.height[pixel] : 0))*frame.lightingCoordinateScale/255.0f + a.emissionDepth*0.5f)*w;
+			sz+=((datum+(placementLocal ? (*placementLocal)[pixel] : a.hasHeight ? a.height[pixel] : 0))*frame.lightingCoordinateScale/255.0f + a.emissionDepth*0.5f)*w;
 			for (int k=0;k<3;k++) color[k]+=std::pow(e[k]/255.0f,2.2f)*w;
 			count++;
+#endif
 		}
 		if (!count) continue;
 		sources.push_back({layer, cell, &a, power, sx, sy, sz, count, color});

@@ -52,7 +52,15 @@ int main(int argc,char **argv){try {
  auto run=[&]{S9xRemasterBeginFrame(64,8,8,8);auto start=std::chrono::steady_clock::now();
   S9xRemasterEndFrame(screen,8,8,8,frame.get(),&c);
   ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();};
- run();auto epoch=s.runtimeDungeonHeightEpoch,reuses=s.dungeonGeometryReuseCount;
+  run();auto epoch=s.runtimeDungeonHeightEpoch,reuses=s.dungeonGeometryReuseCount;
+  size_t authoredRequired=0,authoredSolved=0,authoredUnmatched=0,authoredContacts=0,authoredWitnessed=0,authoredConflicts=0;
+  for(const auto *m:{&s.runtimeDungeonHeightMap,&s.runtimeDungeonBg1HeightMap}) {
+   authoredRequired+=m->authoredObstacleCells;authoredSolved+=m->solvedAuthoredObstacleCells;authoredUnmatched+=m->unmatchedAuthoredObstacleCells;
+   for(const auto &r:m->authoredObstacleEvidence){authoredContacts+=r.contacts;authoredWitnessed+=r.witnessedContacts;authoredConflicts+=r.conflict;}
+  }
+  auto originalBg2=dungeonMapInventory(s.runtimeDungeonHeightMap),originalBg1=dungeonMapInventory(s.runtimeDungeonBg1HeightMap);
+  s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;run();
+  check(originalBg2==dungeonMapInventory(s.runtimeDungeonHeightMap) && originalBg1==dungeonMapInventory(s.runtimeDungeonBg1HeightMap),"original authored group cache/full evidence mismatch");
  for(auto address:addresses) {
   for(int k=0;k<32;k++)(*gfx)[uint16_t(address+k)]=0;
   for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
@@ -89,6 +97,10 @@ int main(int argc,char **argv){try {
   }
   std::cout<<"{\"room\":"<<c.roomIndex<<",\"obstacle_assembly_cells\":"<<obstacleCells<<",\"obstacle_assembly_solved\":"<<obstacleSolved
    <<",\"obstacle_assemblies\":"<<obstacleAssemblies<<",\"obstacle_part_base_conflicts\":"<<obstacleConflictingBases<<",\"unobserved_solid_wall_omissions\":"<<unobservedSolidWalls
+   <<",\"original_authored_required\":"<<authoredRequired<<",\"original_authored_solved\":"<<authoredSolved
+   <<",\"original_authored_unmatched\":"<<authoredUnmatched<<",\"original_authored_contacts\":"<<authoredContacts
+   <<",\"original_authored_witnessed\":"<<authoredWitnessed<<",\"original_authored_conflicts\":"<<authoredConflicts
+   <<",\"original_authored_cache_full_equal\":true"
    <<",\"unobserved_rom_wall_omissions\":"<<unobservedRomWalls<<",\"reused\":"<<(reused?"true":"false")<<",\"changed_classified_cells\":"<<changed
   <<",\"reuse_ms\":"<<reuseMs<<",\"full_ms\":"<<fullMs<<",\"complete_maps_diagnostics_packet_equal\":true,\"missing\":["
   <<s.runtimeDungeonHeightMap.unknownPlaneCells[0]<<','<<s.runtimeDungeonHeightMap.unknownPlaneCells[1]<<"],\"unknown_walls\":"

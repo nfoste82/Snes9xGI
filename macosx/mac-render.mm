@@ -1274,7 +1274,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			id<MTLBuffer> sceneLightBuffer = [metalDevice newBufferWithBytes:sceneLights.empty() ? &emptySceneLight : sceneLights.data()
 				length:std::max<size_t>(1, sceneLights.size()) * sizeof(RemasterGpuLight) options:MTLResourceStorageModeShared];
 			if (!sceneLightBuffer) return false;
-			uint32_t sampledDirectConnections = std::max<uint32_t>(1, samplesPerFrame);
+			// Connections per receiver controls indirect transport. Stochastic Direct
+			// remains an explicit experiment, never the default live shadow path.
+			uint32_t sampledDirectConnections = 0;
 			if (const char *value = std::getenv("S9X_REMASTER_DIRECT_SAMPLES")) {
 				char *end = nullptr;
 				long parsed = std::strtol(value, &end, 10);
@@ -1286,15 +1288,15 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				!std::getenv("S9X_REMASTER_EXHAUSTIVE_DIRECT");
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
-			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth) : std::vector<RemasterHiddenDirectSample>{};
-			if (panelMetrics) for (const auto &s:hiddenSamples) {
-				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
-				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
-			}
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
 			const bool clustered = frame && (frame->emitterPatchSize > 1 || frame->representativeEmitters > 0) &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
+			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clustered) : std::vector<RemasterHiddenDirectSample>{};
+			if (panelMetrics) for (const auto &s:hiddenSamples) {
+				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
+				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
+			}
 			std::vector<RemasterEmitterPatch> patches;
 			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, surfaceField, *mesh);
 			std::vector<vector_uint2> directSources;
@@ -1309,8 +1311,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				for (uint32_t sample = 0, count = !collapsedDepth && (*mesh)[pixel].emissionDepth > 0.0f ? 4 : 1; sample < count; sample++)
 					directSources.push_back(vector_uint2{pixel, sample | sourceFlag});
 			const uint32_t visibleSampleCount = static_cast<uint32_t>(directSources.size());
-			for (size_t n=0;n<hiddenSamples.size();n++)
-				directSources.push_back(vector_uint2{UINT32_MAX,0}); // source-only, never a patch member
+			uint32_t hiddenStratum = 0;
+			for (const auto &s : hiddenSamples)
+				directSources.push_back(vector_uint2{UINT32_MAX,s.normal[3] < 0 ? hiddenStratum++%4 : 0});
 			const uint32_t directSampleCount = static_cast<uint32_t>(directSources.size());
 			frameSphereCount = static_cast<uint32_t>(sceneLights.size()) + uint32_t(light.enabled);
 			if (light.enabled) frameSphereSampleCount += 128;

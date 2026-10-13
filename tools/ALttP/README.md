@@ -14,6 +14,9 @@ Profiles are in `Profiles/ALttP/`. Authored tile semantics are in
 `tools/ALttP/alttp-tile-semantics-v1.json`; generated atlas and inspection
 artifacts remain under `build/remaster-geometry/`.
 
+For assembled NPC poses, facing/animation browsing, canonical tile editing and
+image-derived default normals/heights, see [NPC-WORKBENCH.md](NPC-WORKBENCH.md).
+
 Historical notes and generated reports may refer to the former `tools/alttp…`
 paths. Use `tools/ALttP/alttp…` for those files now. Python module names remain
 unchanged; their sibling imports resolve when scripts are run directly.

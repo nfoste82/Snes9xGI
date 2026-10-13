@@ -1,5 +1,61 @@
 # Completed-room emitter capture
 
+## October12 camera-edge source continuity (current)
+
+Room fixtures no longer use the sphere approximation described in the historical
+sections below. Missing offscreen and HUD-covered pixels use the same exact
+signed pixel sources: canonical emission/normal/depth plus existing placement-local
+height/base. Visible pixels remain on the authoritative path; no world-artwork
+occlusion recovery or ordinary scene pass is enabled. Deterministic Direct and
+existing hidden representative clustering remain in use. Held/debug spheres are
+unchanged. Historical sphere reduction is available ONLY as the standalone
+`ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES` regression oracle, never a runtime setting.
+
+`HES2` has the same33-byte record layout asHES1 but allows room-local signed
+screenXY[-511,511.5] and the full8192-placement x64-pixel source denominator.
+In-viewport-only packets retainHES1; existing HES1 validation stays strict.
+Older readers rejectHES2 instead of misreading it. Signed clustering uses floor
+division/positive remainders, preserving negative-coordinate tile buckets.
+
+Pinned room050015 profilec331a975d3bd9963, complete WRAM/VRAM/templates/planes,
+87,827 matched BG pixels:8/8 emitting placements solved, unknown0, base12 on
+all8 with existing local backing ramps;97 captured emission records unchanged.
+Before/after complete height-map inventories are byte-identical: no solver or
+height metadata change. At capture scroll[256,2744],190 missing pixels/total
+alpha6370 previously became6 spheres; now retain190 exact signed sources.
+
+Production Metal fixed-world/phase/receiver/occluder source sweep97 cameraY
+positions144..48, using actual015 authored source data: old sphere/visible
+switch energy1.8137207..21.2890625 (ratio11.7378), while alpha power stayed6370
+at every step. First north row transition67->66:19.84375->17.375 (-12.44%).
+Exact pixel-depth repair:1.8137207 everywhere; unchanged representative3
+clustering:1.80786133 everywhere (96 records vs760 individual strata, -0.323%
+approximation). Clustered sweep harness mean0.538ms on M3Max for128x17 test
+scene, NOT live256x224 performance.1378/1378 Metal tests pass. The test receiver
+sees an OVERbright old offscreen sphere, opposite the user's darker live region:
+isotropic sphere replacement is receiver/normal dependent. This proves source
+discontinuity, not exact reproduction of the user's full-frame dark patch.
+
+Portable optimized+ASan/UBSan tests cover partial visibility area/power, planar
+and depth coordinates/flips, signed source clustering, HES2 roundtrip/bounds,
+unknown-base rejection. Historical sphere/HUD/base oracle tests pass unchanged
+apart from selecting the legacy test macro and updated out-of-range negative
+capture check. Shared smoke test still fails its preexisting line739 legacy
+conversion fixture (v30 palette payload not removed); it is not repaired here.
+Final integration: arm64 Release `xcodebuild` and `git diff --check` passed.
+Updated product: `build/release/Snes9x.app`. Live edge appearance and full-frame
+performance remain to be checked after quitting and reopening the app.
+
+Limits: this isolates unoccluded source transport by reprojecting visible source
+members through exact depth records in fixed-world coordinates; it is not a
+new full gameplay capture. Live visible mesh-derived normals/endpoints and
+occlusion geometry may still differ from absent offscreen shells. Visible and
+missing sources are clustered separately, so partial-visible representative
+selection can retain a smaller approximation difference; complete-fixture
+clustering across both paths is not claimed. Offscreen wall occluders remain
+unmodeled. Fresh gameplay edge sweeps and live frame-time validation are required.
+No room-height approval is claimed; existing485 unknown room050 walls remain.
+
 `gfx.cpp` supplies verified USA ALTTP state at the completed display frame.
 `S9xRemasterEndFrame` appends physical room sources and the held lamp before
 animation capture, serialization, and live-frame publication. `frame.lights`
@@ -122,7 +178,7 @@ emission positions/depth/radiance, not hidden world geometry or identical cluste
 approximations. Current existing placement sources/bases are consumed, not solved.
 
 Checks: optimized source tests (flips/normals, planar/depth calibration, partial
-coverage, current extinction/animation, serialization/malformed input), and 1,370
+coverage, current extinction/animation, serialization/malformed input), and 1,377
 Metal checks pass. A controlled GPU regression equates visible and hidden depth
 transport and verifies batching, clustering sentinel and HUD receiver exclusion.
 Immutable room060 052/053 replay recovers 96/0 HUD pixels (384/0 depth samples),
@@ -141,9 +197,9 @@ metadata erasure (`+266`) and stale legacy fixture assumptions; it now passes.
 The integrated arm64 Debug Xcode build and Metal harness (1,308 checks) pass.
 Live source-only appearance is user-confirmed; performance repair validation follows.
 
-## Budgeted Direct performance repair (October 10, 2026)
+## Superseded budgeted Direct experiment (October 10, 2026)
 
-Normal Direct now uses the Scene Controls connection count (14 in the user's
+This experiment made normal Direct use the Scene Controls connection count (14 in the user's
 report), instead of silently tracing every hidden and sphere sample. Hidden
 depth sources retain one full-power base/extent record each. Offscreen/held-lamp
 spheres join the same receiver-specific importance CDF with the existing adaptive
@@ -164,3 +220,40 @@ sentinels, HUD exclusion, partially occluded mixed sphere/pixel means, full/adap
 sphere budgets, inside-sphere receivers and sphere-only frames. Live performance
 after this repair needs checking.
 The updated arm64 Release app build and `git diff --check` pass.
+
+## Deterministic Direct restoration (October 11, 2026)
+
+The user reported newly noisy direct torch shadows at 14 connections, requiring
+50–60 to suppress noise. That regression came from the sampled default above.
+Normal Direct is again deterministic: the connection count controls indirect
+lighting only. `S9X_REMASTER_DIRECT_SAMPLES=N` remains an explicit stochastic
+experiment; it is never enabled from the normal Scene Controls count.
+
+HUD-hidden sources now use the existing emitter footprint/representative settings
+on small CPU-only 8x8 support grids. Rectangle centroids require compatible flat
+height/normal/depth; actual-member representatives retain authored support and
+can span varying height/normal. Planar/depth and omnidirectional modes remain
+separate. RGB power and source area are conserved; duplicate XY emitters fall
+back to individual records so two room planes cannot overwrite each other.
+Hidden sentinels skip visible-patch receiver exclusion but participate in the
+same deterministic depth refinement and area normalization as visible patches.
+No hidden receiver or occluder geometry is added.
+
+Pinned room060 052: 384 individual hidden depth records become 72 clustered
+records, total Direct records 444 -> 132. Upper-floor energy 41.6489 -> 41.9123
+(+0.63%), whole-frame energy 315.226 -> 315.797 (+0.18%); this is the same
+representative approximation class as visible emitters, not exact per-pixel
+shadow identity. Uncovered 053 retains its prior deterministic source list.
+Latest room061 069 has 48 planar records and 10 spheres / 1024 maximum sphere
+samples, matching the reported performance screenshot; it exercises the restored
+deterministic sphere path. Offline timings in this session compete with a running
+live emulator and are not clean standalone/live-performance evidence.
+
+Portable checks cover source power/area, deterministic clustering, actual-member
+support, rectangle footprints and duplicate-plane fallback. 1,377 Metal checks
+pass, including seed/connection independence for deterministic hidden Direct,
+cluster sentinels, source transport and all existing visibility/sphere regressions.
+Live shadow appearance and post-restoration frame time require user confirmation.
+ASan/UBSan source tests and both real HUD capture regressions pass; the arm64
+Release app has been rebuilt successfully. Stock scene/owner/lighting fields
+remain unchanged by source recovery.

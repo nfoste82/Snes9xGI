@@ -23,6 +23,7 @@
 #import "S9xPreferencesConstants.h"
 #import "S9xCheatFinderViewController.h"
 #import "S9xOpenMultipleViewController.h"
+#import "../window-placement.h"
 
 NSWindowFrameAutosaveName const kMainWindowIdentifier = @"s9xMainWindow";
 NSWindowFrameAutosaveName const kCheatsWindowIdentifier = @"s9xCheatsWindow";
@@ -38,7 +39,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     self.s9xEngine = [S9xEngine new];
     self.s9xEngine.inputDelegate = self;
     [self setupDefaults];
+	[self.s9xEngine setAudioMuted:[NSUserDefaults.standardUserDefaults boolForKey:@"S9xAudioMuted"]];
+	NSMenu *fileMenu = [NSApp.mainMenu itemWithTitle:NSLocalizedString(@"File", nil)].submenu;
+	NSMenuItem *restoreItem = [[NSMenuItem alloc] initWithTitle:@"Open Previous Game and Windows"
+		action:@selector(openPreviousGameAndWindows:) keyEquivalent:@"o"];
+	restoreItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	restoreItem.target = self;
+	[fileMenu insertItem:restoreItem atIndex:MIN(1, fileMenu.numberOfItems)];
 	NSMenuItem *viewMenuItem = [NSApp.mainMenu itemWithTitle:NSLocalizedString(@"View", nil)];
+	NSMenuItem *muteItem = [[NSMenuItem alloc] initWithTitle:@"Mute Audio"
+		action:@selector(toggleAudioMute:) keyEquivalent:@""];
+	muteItem.target = self;
+	[viewMenuItem.submenu addItem:muteItem];
 	NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Debug: Original", nil)
 	                                                   action:@selector(cycleRemasterDebugMode:)
 	                                            keyEquivalent:@"k"];
@@ -89,6 +101,10 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                                 keyEquivalent:@""];
 	tileEditorItem.target = self;
 	[windowMenu addItem:tileEditorItem];
+	NSMenuItem *npcBrowserItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster NPC Poses", nil)
+		action:@selector(showRemasterNpcBrowser:) keyEquivalent:@""];
+	npcBrowserItem.target = self;
+	[windowMenu addItem:npcBrowserItem];
 	NSMenuItem *profileSettingsItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Profile Settings", nil)
 	                                                             action:@selector(showRemasterProfileSettings:)
 	                                                      keyEquivalent:@""];
@@ -106,15 +122,13 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     gameWindow.releasedWhenClosed = NO;
     gameWindow.backgroundColor = NSColor.clearColor;
 
-    if ( ![gameWindow setFrameUsingName:kMainWindowIdentifier] )
-    {
-        [gameWindow center];
-    }
+    S9xInitializeWindowPlacement(gameWindow, kMainWindowIdentifier);
 
     self.gameWindow = gameWindow;
 
     [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification object:gameWindow queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification)
     {
+        [self.s9xEngine savePreviousWorkspace];
         [self.s9xEngine quit];
     }];
 
@@ -123,6 +137,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
+    [self.s9xEngine savePreviousWorkspace];
     [self.s9xEngine quit];
 }
 
@@ -622,6 +637,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem
 {
 	SEL action = menuItem.action;
+	if (action == @selector(openPreviousGameAndWindows:))
+		return [NSUserDefaults.standardUserDefaults dictionaryForKey:@"S9xPreviousWorkspace"] != nil;
+	if (action == @selector(toggleAudioMute:)) {
+		menuItem.title = [self.s9xEngine isAudioMuted] ? @"Unmute Audio" : @"Mute Audio";
+		return YES;
+	}
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
@@ -636,13 +657,17 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return [self.s9xEngine isRunning];
 	}
 	else if (action == @selector(loadRemasterProfile:)) {
-		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
+		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame] ||
+			[self.s9xEngine canShowRemasterTileEditor];
 	}
 	else if (action == @selector(openRemasterFrame:)) {
 		return ![self.s9xEngine isRunning] || [self.s9xEngine isPaused];
 	}
 	else if (action == @selector(showRemasterTileEditor:)) {
 		return [self.s9xEngine canShowRemasterTileEditor];
+	}
+	else if (action == @selector(showRemasterNpcBrowser:)) {
+		return YES;
 	}
 	else if (action == @selector(showRemasterProfileSettings:)) {
 		return [self.s9xEngine isRemasterProfileLoaded];
@@ -673,6 +698,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 - (IBAction)terminate:(id)sender
 {
+    [self.s9xEngine savePreviousWorkspace];
     [self.s9xEngine stop];
     [NSApp terminate:sender];
 }
@@ -682,11 +708,29 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
     if ( self.preferencesWindowController == nil )
     {
 		self.preferencesWindowController = [[S9xPreferencesWindowController alloc] initWithWindowNibName:@"S9xPreferencesWindowController"];
+		S9xInitializeWindowPlacement(self.preferencesWindowController.window, @"S9xPreferences");
 	}
 	
 	[self.preferencesWindowController showWindow:nil];
 	[self.preferencesWindowController.window makeKeyAndOrderFront:nil];
 	[self.preferencesWindowController.window makeKeyWindow];
+}
+
+- (IBAction)toggleAudioMute:(id)sender
+{
+	[self.s9xEngine setAudioMuted:![self.s9xEngine isAudioMuted]];
+}
+
+- (IBAction)openPreviousGameAndWindows:(id)sender
+{
+	NSString *error = [self.s9xEngine restorePreviousWorkspace];
+	if (error.length)
+	{
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Unable to Restore the Entire Workspace";
+		alert.informativeText = error;
+		[alert runModal];
+	}
 }
 
 - (void)setVideoMode:(int)videoMode
@@ -782,6 +826,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	[self.s9xEngine showRemasterTileEditor];
 }
 
+- (IBAction)showRemasterNpcBrowser:(id)sender
+{
+	[self.s9xEngine showRemasterNpcBrowser];
+}
+
 - (IBAction)showRemasterProfileSettings:(id)sender
 {
 	[self.s9xEngine showRemasterProfileSettings];
@@ -861,10 +910,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
         window.frameAutosaveName = kCheatsWindowIdentifier;
         window.releasedWhenClosed = NO;
 
-        if ( ![window setFrameUsingName:kCheatsWindowIdentifier] )
-        {
-            [window center];
-        }
+        S9xInitializeWindowPlacement(window, kCheatsWindowIdentifier);
     }
 
     [self.cheatsWindowController showWindow:nil];
@@ -895,10 +941,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
         window.frameAutosaveName = kCheatFinderWindowIdentifier;
         window.releasedWhenClosed = NO;
 
-        if ( ![window setFrameUsingName:kCheatFinderWindowIdentifier] )
-        {
-            [window center];
-        }
+        S9xInitializeWindowPlacement(window, kCheatFinderWindowIdentifier);
     }
 
     [self.cheatFinderWindowController showWindow:nil];

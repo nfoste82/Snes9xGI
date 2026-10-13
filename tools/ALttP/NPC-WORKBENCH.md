@@ -1,0 +1,302 @@
+# NPC pose workbench
+
+The NPC workbench displays **assembled sprites**, grouped by logical actor,
+ROM graphics context, facing and animation step. It uses a draw-only harness
+against the local ROM-backed Zelda3 reference engine, so modeled poses can be
+browsed without finding and recording that NPC in live gameplay.
+
+## Start
+
+### Native Snes9x window
+
+In the rebuilt app, choose **Window > Remaster NPC Poses**. The window loads the
+generated `build/remaster-geometry/npc-workbench/poses.json` automatically, or use
+**Load Pose Library…** to choose another generated manifest. The last library
+path is remembered. No browser server is needed.
+
+Select an NPC from the top dropdown (names include pose counts across distinct
+artwork/palette variants), then its context, facing filter and pose, or use
+**Play Animation**. Context and pose menus contain only the selected NPC.
+The native **Graphics/Palette Context** menu combines equivalent source contexts
+into one variant. Equality checks every facing/action/animation step, canonical
+tile identity and palette (including hidden pixels), tile placement, flips and
+OAM slot provenance; source IDs and VRAM addresses do not create extra variants.
+Hover a variant to see the combined source IDs and location witnesses. Animation
+steps are retained even when two steps repeat artwork. For example, Blue Guard's
+26 source contexts × 16 poses become **two variants and 32 browsable poses**,
+with 19 source contexts in one variant and seven in the other.
+
+Playback cycles frames of the current facing. Click an opaque tile to stop
+playback and inspect it. Both preview panes use one fixed canvas covering every
+tile placement in all variants, facings and animation steps of the selected NPC,
+with a shared origin and padding. Pixel scale and draw-coordinate positions stay
+fixed across frames; only actual pose movement changes a tile's position. Inspector
+Previous/Next uses the same canvas.
+
+Click an opaque tile to stop
+playback and open the existing **Remaster Pixel Inspector**. Selection matches
+the game window: click an unselected tile to select only it; click a selected
+tile (or empty artwork) to clear the selection. Command-click adds or removes
+individual tile identities without changing the others. **Select all tiles**
+selects every visible tile identity in the current pose. All occurrences of a
+selected identity receive the same yellow highlight in every debug view.
+The inspector's layer operations (including **Fill Tile** for normals) apply
+to all selected identities. The inspector displays
+canonical unflipped artwork, including full palette colors for hidden pixels;
+the clicked pixel is mapped through the pose's H/V flips.
+
+**Debug View** displays Artwork, Normals, Height, Occlusion, Emission or Material
+on the left, alongside an always-visible **Original Artwork** reference on the
+right at the same scale. Both panes follow the current pose/animation and support
+tile selection. Selection tint appears only on the left so the reference stays
+untinted. The debug pane shows the entire assembled pose, including unsaved edits from the loaded matching
+profile. Height is raw authored local 0–255 grayscale; missing height/material
+is magenta. Normals honor pose H/V flips and fall back to height-derived or flat
+normals. Occlusion uses the Pixel Inspector's green-to-red scale (0 green,
+255 red) and defaults to opaque; emission is RGB scaled by intensity.
+Selected pixels use the same yellow tint as in-game selection; deselect to see
+unmodified debug colors.
+
+Height view's **Min height / Max height** fields map the display gradient from
+black at min to white at max, clamping values outside that range. The default
+is **0–32**, and both fields are remembered across sessions. Enter values from
+0–255 with max greater than min; press Return or leave the field to apply.
+This only changes visualization, not authored heights.
+
+In **Normals** debug view, choose a direction matching the Pixel Inspector's
+per-pixel normal presets (+Z Front, -Z Back, +X Right, -X Left, +Y Down, -Y Up)
+and click **Apply Normals to All Tiles**. It fills all 64 canonical pixels of each
+tile, including transparent pixels. The **All animations/poses for this NPC**
+checkbox includes every variant, facing and animation; unchecked, only the current
+pose is used. Directions are canonical/unflipped, just like the inspector;
+instance flips still transform the displayed normals. Requires the matching
+profile and supports a single Undo.
+
+Both normal fills and height ramps preserve existing authored per-pixel layers
+by default. **Overwrite authored heights** / **Overwrite authored normals** starts unchecked; enable it to
+replace the relevant layer. A tile with any existing per-pixel layer for that
+operation is skipped in its entirety, even if only one pixel was edited. Heights
+do not prevent adding normals, or vice versa. Other layers/options are preserved.
+The status reports changed and preserved tile counts. These controls are visible
+only in the corresponding Height/Normals debug views.
+The action button and both checkboxes share one row; the normal direction or
+height display-range controls appear immediately below it.
+
+In **Height** debug view, **Generate Height Ramp** fills all 64 canonical pixels
+of every pose tile, including transparent pixels. The lowest tile's bottom pixel
+row is 0; each row upward increases by 1 across tile boundaries (clamped to 255).
+Vertical flips are accounted for. **All animations/poses for this NPC** includes
+all facings, animation steps and graphics/palette contexts of the selected NPC;
+each pose uses its own lowest tile as the base. Requires the matching loaded
+profile, supports a single Undo, and is saved with **Save Profile**. Other layers
+and existing height sampling are preserved. If a reused identity requires
+different canonical ramps across its placements, the operation reports the
+conflict without writing inconsistent hash-keyed heights.
+The conflict dialog lists tile hashes, contexts, frames, tile XY, OAM slots,
+flips and required canonical top/bottom heights in selectable text.
+**Show Conflicting Tiles** opens an affected pose, highlights conflicting
+identities in yellow and copies the full placement report into the inspector.
+Only visible pixels are highlighted, so a one-pixel edge tile has a one-pixel
+highlight. **Apply Compatible Tiles** generates the nonconflicting ramps in one
+Undo action while preserving all conflicting identities' existing height data.
+Left/right mirrors at the same vertical position are compatible. Agahnim's
+`v1:4bpp:959bc138ca495b1a` moves up 8 pixels in frames 8/12 versus 7/11;
+individual poses are consistent, but all-pose ramps conflict for that identity.
+
+Load the matching profile using **View > Load Remaster Profile…** to edit normal,
+height, occlusion, material, emission and other metadata with the existing
+painting, copy/paste, Undo/Redo and **Save Profile** controls. These native edits
+support **Tile: Ignore flips/rotation for normals** in the Normals inspector.
+Unchecked by default, it keeps authored vectors fixed across H/V artwork flips
+and placement normal yaw when enabled. Pixel locations still follow the artwork;
+only vector direction is held fixed. The option applies to every occurrence of
+the tile hash, supports multi-selection/Undo and persists in profile schema 23
+and frame schema 31. For bow tile `v1:4bpp:d4863e268dedd8d6`, enabling it lets
+both mirrored halves retain +Y normals. Save the profile to retain the option.
+
+These native edits
+write the loaded profile directly, unlike the HTML draft/export workflow.
+The inspector has separate layer and tile action rows. **Flip Layer Horiz.**
+and **Flip Layer Vert.** mirror the current 8×8 pixel layer for each selected
+tile identity, support Undo/Redo, and leave other layers and tile options intact.
+They move normal/RGBA pixel positions without changing component values. Artwork,
+nonpixel Metadata and missing layers cannot be flipped.
+Artwork can be inspected with no ROM running; select a pose tile first to enable
+offline profile loading. Selecting a tile during gameplay pauses emulation.
+Resume clears the inspector selection, and a subsequent scene click returns the
+inspector to captured scene data.
+
+The game window retains its scene; browsing/inspecting poses uses a separate
+packet. Synthetic poses have no gameplay placement datum, so **Effective Room**
+height inspection is disabled. The inspector's **Previous/Next** controls browse
+corresponding tile parts across animation steps of the same actor context,
+facing and action, and update the assembled NPC pose. Frame counts include
+repeated artwork identities (a static head can have the same hash in multiple
+phases). Matching uses OAM slot and canonical subtile ordinal, so movement and
+flips do not lose the tile part; phases with a different slot subdivision are
+excluded. Animation-copy/apply controls target these counterparts, with artwork
+and palettes retained for every phase, rather than unrelated parts or directions.
+The native browser uses the same partial pose library and coverage boundaries
+described below. Automatic suggestions remain in the HTML workbench.
+
+### Generate / HTML workbench
+
+From the repository root, generate the local pose data once:
+
+```sh
+python3 -B tools/ALttP/alttp_npc_workbench.py --generate \
+  --engine build/remaster-geometry/room-preview-engine-v21
+```
+
+The engine must already have been built by `build_alttp_room_renderer.py` from
+the supported US ROM. The harness verifies the local ROM hash. Neither engine
+assets nor generated art is tracked. Generation also builds the runtime profile
+validator used on export. SDL2 and its `sdl2-config` are required for the harness.
+
+Open the workbench:
+
+```sh
+python3 -B tools/ALttP/alttp_npc_workbench.py --open \
+  --profile Profiles/ALttP/alttp-profile.toml
+```
+
+It serves `http://127.0.0.1:8766/` until Control-C. No app rebuild is needed.
+
+## Author
+
+1. Select an NPC and its graphics context in the sidebar.
+2. Filter the facing direction or use **Play animations**. Fixed-facing actors
+   are labeled `fixed`, rather than inventing unused directions.
+3. Click a tile within an assembled pose to select its canonical, unflipped 8×8
+   artwork. Transparent pixels do not hide an underlying part when picking.
+4. Use Artwork, Height, Normals or Occlusion to inspect the complete pose.
+   Purple opaque pixels mean the chosen metadata layer is missing.
+5. **Suggest this pose / Suggest all poses** seeds missing draft height, normal
+   and occlusion layers. Paint the canonical tile or fill its opaque pixels;
+   normal brushes normalize the entered XYZ vector. Draft editing has Undo.
+6. **Save draft** writes `build/remaster-geometry/npc-workbench/edits.json`.
+7. **Export runtime profile** fills missing layers in a fresh copy of the current
+   source profile, validates it using Snes9x's actual C++ parser and serializer,
+   and writes `build/remaster-geometry/npc-workbench/npc-profile.toml`.
+8. Load that TOML through **View > Load Remaster Profile…** in Snes9x. Further
+   native edits can be made with the existing pixel inspector.
+
+The source profile is reread on export. Existing authored layers/options,
+materials, rules and groups are preserved. Existing profile layers are read-only
+in the browser; this first browser version edits missing layers/drafts. Newly
+classified NPC hashes receive an OBJ-only prop-material fallback rule. A profile
+without an `npc` material receives a conservative default prop material. Draft
+changes update every pose using that canonical hash. Stale browser revision
+writes are rejected. Export is explicit; browser draft saving does not hot-reload
+the emulator.
+
+## Automatic suggestions
+
+This is deterministic **silhouette analysis**, not a learned vision model and
+not anatomical recognition. Contiguous opaque spans produce rounded,
+viewer-facing normals; silhouette top/bottom edges receive small Y tilts.
+Separate spans avoid treating a detached weapon and torso as one broad cylinder.
+Palette brightness does not become geometry. Instance flips are inverted when
+writing canonical normal components.
+
+Height uses opaque local `13-row` ramps and zero-transparent/255-opaque
+occlusion, compatible with the existing runtime sprite-part alignment in
+`S9xRemasterAlignGeneratedSpriteParts`. The browser Height view displays local
+tile values, not assembled world heights. Editing that ramp changes the exact
+generated-height signature and can disable automatic part alignment; custom
+whole-body geometry needs explicit actor placement support. The existing
+alignment still groups nearby OAM parts heuristically, not by logical NPC ID.
+
+Conflicting inferred normals for a reused hash are omitted from all-pose
+suggestions. Heights/occlusion remain eligible because they use a common local
+contract. Hashes also present in background graphics are excluded from automatic
+suggestions: current profile geometry is hash-keyed, so an OBJ-only material rule
+does not make its height/normal maps context-specific. A context with inherited
+graphics slots remains browsable but suggestions are disabled until its entry
+state is reconstructed.
+
+## Coverage boundary
+
+The expanded catalog contains **71 named character/guard families, 136
+graphics/palette contexts and 1,323 draw poses** (2026-10-13). The original
+11-family slice omitted most NPC draw routines. `alttp_npc_catalog.py` now
+describes bounded draw states for villagers, shop/game operators, swordsmiths,
+Syrup/assistant, storytellers, fairies, Zelda, the sage/uncle, old man, Kiki,
+Catfish/King Zora, Agahnim, crystal-maiden shared artwork and additional guards.
+The native NPC dropdown is alphabetized and counts these generated poses.
+
+One sprite type can dispatch several visually distinct characters: the adult,
+storyteller and shopkeeper models filter source room contexts. World variants
+use explicit light/dark draw state. Special overworld areas 0x80/0x81 use the
+reference's special-exit graphics/palette tables instead of being dropped for
+null atlas selectors. Follower-backed actors load the appropriate graphics and
+apply their draw-selected DMA before hashing; Uncle's equipment DMA is also
+applied. Every pose restores both RAM and VRAM checkpoints.
+
+Guards enumerate table-driven walking phases with body, head and weapon parts;
+the NPC tables provide their bounded animation phases where applicable.
+Ground shadows are excluded from body artwork/geometry.
+
+The manifest lists every remaining placed sprite type as unmodeled and records
+missing catalog models separately. Its character count is a visual-family count,
+not a claim that every entry on the Zelda Dungeon character page is covered.
+Shared artwork is grouped (Sahasrahla/Aginah, older villager/Human Cucco and the
+crystal maidens); guards and light/dark variants are distinguishable entries.
+The crystal-maiden model uses explicitly loaded shared follower graphics in a
+marked borrowed context; individual rescue palettes remain unverified.
+
+Link now has a player-OAM adapter with 24 walking poses (four facings × six
+steps), green tunic and no equipment. It applies the draw-selected body DMA from
+the ROM's Link graphics. Ganon has 34 body poses (two facings × 17 draw frames),
+using room 000's sprite sheets and room-header dungeon palette; independent
+trident/attack effects are excluded. King Zora's special screen 0x81 resolves
+through special exit 0x182 to graphics set 0x0e, rather than incorrectly using
+exit 0x181's fairy graphics set 0x0c. Reviewed assembled previews show distinct
+Link, Ganon, King Zora and Cursed Fairy artwork.
+
+Remaining character-page gaps: Link equipment/nonwalking actions, Ganon attack
+effects, the travel Duck, Venus,
+Pikku, Ghostly Proprietor and the Talking Tree's background-composited body.
+These need player, boss, travel/cutscene or mixed-background adapters. Maple is
+GBA-only and does not exist in the supported SNES ROM. Special attack/recoil/
+death states, independent guard head turns and additional effects remain open.
+These poses are `modeled_unverified`: invoking a draw routine proves its output
+for the recorded vector, not gameplay reachability or parity with Snes9x.
+Dungeon palettes use a provisional context and inherited zero graphics slots
+use the harness checkpoint's previous loads. Those are visible evidence gaps.
+The manifest pins the reference draw-source digest, ROM hash, graphics/palette
+selectors and source placement witnesses. Additional routines should be added
+with bounded valid draw-state vectors, never arbitrary RAM brute force.
+
+## Verification
+
+```sh
+python3 -B -m unittest discover -s tools/ALttP -p 'test_npc_workbench.py'
+python3 -B tools/ALttP/alttp_npc_workbench_check.py \
+  --output build/remaster-geometry/npc-workbench \
+  --profile Profiles/ALttP/alttp-profile.toml
+git diff --check
+```
+
+The corpus check verifies canonical hashes, nonempty tile art, byte layers,
+shared-hash ambiguity, runtime profile round trips, preservation of every field
+of every existing authored asset, and export idempotence. It emits a contact
+sheet and `check-report.json`; `npc-profile-check.toml` is an explicitly generated
+candidate, not the user's edited source. Browser interaction and in-game visual
+lighting still require interactive review.
+
+Native integration checks:
+
+```sh
+c++ -std=c++17 -O2 -DNDEBUG remaster/npc_pose_test.cpp \
+  -o build/remaster-tests/npc_pose_test && build/remaster-tests/npc_pose_test
+clang++ -std=c++17 -O2 -fobjc-arc -framework Cocoa \
+  macosx/remaster-npc-browser-test.mm -o build/remaster-tests/npc_browser_test
+build/remaster-tests/npc_browser_test build/remaster-geometry/npc-workbench/poses.json
+```
+
+The native decoder corpus check covers all generated poses and canonical opaque
+picks. Portable checks cover foreground transparency, flips, RGB/BGR conversion,
+VRAM address units, hash rejection and profile refresh/reset. Interactive
+window/pose/pixel painting/Undo/save/reload and scene-resume verification remains
+pending.

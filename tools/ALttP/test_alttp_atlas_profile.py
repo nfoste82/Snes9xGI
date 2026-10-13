@@ -14,6 +14,58 @@ from alttp_atlas_profile import _complete_semantic_groups, _semantic_wall_layers
 
 
 class SemanticProfileTests(unittest.TestCase):
+    def test_schema22_groups_interleaved_and_appended_roundtrip(self):
+        a, b = ['v1:4bpp:'+f'{i:016x}' for i in (1, 2)]
+        group = ('\n[[obstacle_groups]]\nname = "example"\n'
+                 f'[[obstacle_groups.members]]\ntile_hash = "{a}"\nx = -1\ny = 0\nz = -3\n'
+                 'hflip = true\nvflip = false\nsupport_contact = false\n'
+                 f'[[obstacle_groups.members]]\ntile_hash = "{a}"\nx = 1\ny = 0\nz = 2\n'
+                 'hflip = false\nvflip = true\nsupport_contact = true\n')
+        assets = [f'\n[[assets]]\ntile_hash = "{h}"\nheight = '+json.dumps([7]*64)+'\n' for h in (a, b)]
+        for at in range(3):
+            parts = assets.copy(); parts.insert(at, group)
+            source = 'schema_version = 22\n'+''.join(parts)
+            rendered = _render_profile(source, {h: dict(tile_hash=h, height=[7]*64) for h in (a,b)}, {})
+            self.assertEqual(tomllib.loads(rendered), tomllib.loads(source))
+            self.assertIn(group.strip(), rendered)
+        with self.assertRaisesRegex(ValueError, 'schema_version22'):
+            _render_profile(source.replace('schema_version = 22', 'schema_version = 21'), {}, {})
+
+    def test_compiler_preserves_group_layers_and_missing_source(self):
+        ids = ['v1:4bpp:'+f'{i:016x}' for i in (1,2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); db=root/'atlas.sqlite'; source=root/'source.toml'; out=root/'out.toml'
+            con=sqlite3.connect(db)
+            con.executescript('CREATE TABLE run_info(key TEXT,value TEXT); CREATE TABLE decoded_tile(content_id TEXT,indices BLOB); CREATE TABLE graphics_source(content_id TEXT,source_kind TEXT,pack_index INTEGER);')
+            con.execute('INSERT INTO run_info VALUES(?,?)', ('rom_sha256','rom'))
+            for h in ids:
+                con.execute('INSERT INTO decoded_tile VALUES(?,?)',(h,bytes(64)))
+                con.execute('INSERT INTO graphics_source VALUES(?,?,?)',(h,'background',1))
+            con.commit(); con.close()
+            text='schema_version = 22\n[game]\nrom_sha256 = "rom"\n[lighting_space]\nupper_floor_height = 50\n'
+            for i,h in enumerate(ids):
+                text+=f'\n[[assets]]\ntile_hash = "{h}"\ntile_role = "obstacle"\n'
+                if i==0:text+='height = '+json.dumps([37]*64)+'\n'
+            text+='\n[[obstacle_groups]]\nname = "example"\n'
+            for i,h in enumerate(ids):
+                text+=f'[[obstacle_groups.members]]\ntile_hash = "{h}"\nx = {i}\ny = 0\nz = {-i}\nhflip = false\nvflip = false\nsupport_contact = true\n'
+            source.write_text(text)
+            generate_profile(db,source,out)
+            parsed=tomllib.loads(out.read_text()); original=tomllib.loads(text)
+            self.assertEqual(parsed['obstacle_groups'],original['obstacle_groups'])
+            self.assertEqual(parsed['schema_version'],22)
+            self.assertEqual(parsed['assets'], original['assets'])
+            self.assertEqual(source.read_text(),text)
+            # A member with NO asset table must remain absent, not get generated
+            # zero height, default normals, occlusion/emission or an invalid shell.
+            text_without_second = text.replace(f'\n[[assets]]\ntile_hash = "{ids[1]}"\ntile_role = "obstacle"\n', '')
+            source.write_text(text_without_second)
+            report=generate_profile(db,source,out)
+            parsed=tomllib.loads(out.read_text())
+            self.assertEqual([a['tile_hash'] for a in parsed['assets']],[ids[0]])
+            self.assertEqual(report['obstacle_missing_local_sources'],[ids[1]])
+            self.assertEqual(parsed['obstacle_groups'],original['obstacle_groups'])
+
     def test_activation_preserves_arrays_roles_schema_and_reports_deferred_usage(self):
         ids = ['v1:4bpp:' + f'{i:016x}' for i in range(1, 5)]
         annotations = {
@@ -45,6 +97,7 @@ class SemanticProfileTests(unittest.TestCase):
                 text += 'occlusion = ' + json.dumps([0] * 64) + '\n'
                 text += 'emission_rgba = ' + json.dumps([0] * 256) + '\n'
             source.write_text(text)
+            (root / 'semantics.json').write_text(json.dumps({'tiles': annotations, 'rom_sha256': 'rom'}))
             with patch('alttp_atlas_profile.AnnotationStore', return_value=SimpleNamespace(tiles=annotations)), patch(
                     'alttp_atlas_profile.TileCatalog', return_value=SimpleNamespace(semantic_group=lambda key: [key])):
                 report = generate_profile(db, source, out, root / 'semantics.json', preserve_authored_geometry=True)

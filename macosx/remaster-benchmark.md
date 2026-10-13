@@ -1,5 +1,10 @@
 # Live application lighting benchmark
 
+For the repeatable correctness suite and freeze-based performance regression gate,
+start with [tools/remaster-regressions.md](../tools/remaster-regressions.md).
+`tools/remaster_performance.py` records/checks three-run baselines, verifies fixture
+and hardware/settings identity, and returns nonzero on measured regressions.
+
 The next direct-only 60 FPS milestone and end-to-end timing/acceptance plan are
 in [Room 061 performance plan](room061-performance-plan.md).
 

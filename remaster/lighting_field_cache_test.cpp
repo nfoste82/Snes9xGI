@@ -37,7 +37,7 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 		r.surface[i*4]=r.height[i*2]*f.lightingCoordinateScale;
 		if(m && m->hasNormals){r.authoredNormals[i]=1;float x=m->normalXyz[p.tilePixel*3]/127.5f-1,y=m->normalXyz[p.tilePixel*3+1]/127.5f-1,z=m->normalXyz[p.tilePixel*3+2]/127.5f-1;
 			if(S9xRemasterContinuedDiagonalNormalMask(in,m)&(UINT64_C(1)<<p.tilePixel))x=y=z=1;
-			S9xRemasterTransformNormalForTileInstance(in,x,y,z);float length=std::sqrt(x*x+y*y+z*z);
+			S9xRemasterTransformNormalForTileInstance(in,x,y,z,m->normalIgnoreTileTransform);float length=std::sqrt(x*x+y*y+z*z);
 			r.surface[i*4+1]=length>0.0001f?x/length:0;r.surface[i*4+2]=length>0.0001f?y/length:0;r.surface[i*4+3]=length>0.0001f?z/length:1;}
 		r.samples[i].height=r.surface[i*4];r.samples[i].known=r.height[i*2+1]!=0 && r.participation[i*2]!=0;r.samples[i].coverage=r.occlusion[i*2]/255.0f;
 	}

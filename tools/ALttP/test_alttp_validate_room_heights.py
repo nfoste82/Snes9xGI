@@ -1,6 +1,6 @@
 import unittest
 
-from alttp_validate_room_heights import validate, directional_seams
+from alttp_validate_room_heights import validate, directional_seams, audit_authored_obstacle_capability
 
 
 class Cell:
@@ -37,6 +37,45 @@ SOLVED = [[0, 1, 2, 1], [0, 2, 2, 1], [1, 1, 2, 0]]
 
 
 class RoomHeightValidationTests(unittest.TestCase):
+    def test_wall_mount_requires_complete_footprint_and_both_backing_sections(self):
+        snapshot=Snapshot()
+        for c in snapshot.cells[1]:c.word=0xffff
+        data=bytearray([255]*12876)
+        ramp=[7-x for y in range(8) for x in range(8)]
+        profile={'assets':PROFILE['assets']+[{'tile_hash':'mount','height':[7-y for y in range(8) for x in range(8)],'tile_role':'wall'},
+                 {'tile_hash':'back','height':ramp,'tile_role':'wall'}],'asset_groups':{}}
+        records=[]
+        for x in range(2):
+            for y in range(4):
+                word=0x800+x*4+y;data[0xa44+(x*4+y)*2:0xa46+(x*4+y)*2]=word.to_bytes(2,'little')
+                c=snapshot.cell(1,20+x,20+y);c.word=word;c.tile_hash='mount'
+                records.append(dict(x=c.x,y=c.y,floor_base=40+8*x,kind='authored_wall',planes=[0],
+                                    local_source='placement_wall_mount_backing',local_height=ramp))
+            for y in (19,24):
+                c=snapshot.cell(1,20+x,y);c.word=1;c.tile_hash='back'
+                records.append(dict(x=c.x,y=c.y,floor_base=40+8*x,kind='authored_wall',planes=[0]))
+        fixture=graph(SOLVED);fixture['_verified_rom_template_data']=data
+        fixture['elevation']['structural_placements']=records
+        report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        self.assertEqual(sum(p.get('local_source')=='placement_wall_mount_backing' for p in report['placements']),8)
+        snapshot.cell(1,20,20).word^=1
+        with self.assertRaisesRegex(ValueError,'mounted fixture'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        snapshot.cell(1,20,20).word^=1
+        records[5]['floor_base']+=1
+        with self.assertRaisesRegex(ValueError,'mounted fixture'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+
+    def test_authored_group_runtime_counts_are_not_independent_approval(self):
+        for solution in (None, {'authored_obstacle_cells': 8, 'solved_authored_obstacle_cells': 8,
+                                'unmatched_authored_obstacle_cells': 0}):
+            report = {'success': True}
+            audit_authored_obstacle_capability(report, {'obstacle_groups': [{'name': 'example'}]}, solution)
+            self.assertFalse(report['success'])
+            self.assertEqual(report['authored_obstacle_groups']['status'],
+                             'missing_complete_inputs')
+        report = {'success': True}
+        audit_authored_obstacle_capability(report, {})
+        self.assertEqual(report, {'success': True})
+
     def test_terminal_corner_two_transformed_face_seams(self):
         for flip in range(4):
             snapshot=Snapshot();snapshot.cells[0]=[Cell(x,y) for y in range(64) for x in range(64)]

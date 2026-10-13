@@ -1001,7 +1001,7 @@ kernel void remasterSampledDirect(
 	for (uint i = 0; i < totalCount; i++)
 	{
 		RemasterDirectSample sample = i < count ? samples[i] : remasterSampledSphere(i-count, receiver, uniforms, sceneLights, sphereState);
-		if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
+		if (i < count && sample.radiance.w > 0 && sources[i].x != 0xffffffffu) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
 			surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
 		else if (i < count && sources[i].x == receiverIndex) continue;
 		if (all(sample.radiance.rgb <= 0)) continue;
@@ -1023,7 +1023,7 @@ kernel void remasterSampledDirect(
 		for (uint i = 0; i < totalCount && connection < connections; i++)
 		{
 			RemasterDirectSample sample = i < count ? samples[i] : remasterSampledSphere(i-count, receiver, uniforms, sceneLights, sphereState);
-			if (sample.radiance.w > 0) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
+			if (i < count && sample.radiance.w > 0 && sources[i].x != 0xffffffffu) sample = remasterExcludeEmitterReceiver(sample, sources[i], receiverIndex,
 				surface, emissionSeed, surfaceField, occlusion, heightField, mesh, patches);
 			else if (i < count && sources[i].x == receiverIndex) continue;
 			if (all(sample.radiance.rgb <= 0)) continue;
@@ -1224,10 +1224,11 @@ kernel void remasterIndirectBounce(
 		else if (preparedDirect)
 		{
 			preparedSample = directSamples[sampleIndex];
-			if (clusteredDirect && emitterPixels[sampleIndex*2] != 0xffffffffu) {
+			if (clusteredDirect) {
 				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
-				preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
-					pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
+				if (sourceRecord.x != 0xffffffffu)
+					preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
+						pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
 				if (all(preparedSample.radiance.rgb <= 0)) continue;
 				if (adaptiveDepth && preparedSample.normal.w < 0.0) {
 					float depth = -preparedSample.normal.w;

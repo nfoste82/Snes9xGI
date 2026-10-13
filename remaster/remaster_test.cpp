@@ -727,7 +727,8 @@ int main ()
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());
-	previousVersionBytes.erase(emissionStart + 256, emissionStart + 266); // v21 depth, v24 peer count, v25 role, v27 omni
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 267); // v21 depth, v24 peer count, v25 role, v27 omni, v31 normal transform
+	previousVersionBytes.erase(previousVersionBytes.end() - 5, previousVersionBytes.end()); // v30 palette flag and empty palette-artwork count
 	previousVersionBytes.erase(previousVersionBytes.end() - 7, previousVersionBytes.end()); // v18 priority/offset (now 4 bytes), yaw, placement flag
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
@@ -846,6 +847,7 @@ int main ()
 		pixel.instanceId = 0;
 	std::vector<uint8_t> legacyBytes;
 	assert(S9xSerializeRemasterFrame(legacyFrame, legacyBytes));
+	legacyBytes.erase(legacyBytes.end() - 4, legacyBytes.end()); // v30 empty palette-artwork count
 	const size_t legacyScaleOffset = 8 + 4 + 4 + 4 + 4 + legacyFrame.profileRomSha256.size();
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 32);
 	legacyBytes.erase(legacyBytes.begin() + legacyScaleOffset + 32);
