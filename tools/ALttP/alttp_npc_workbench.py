@@ -64,7 +64,9 @@ def contexts(atlas: Path, model=None, special=None):
         for kind in ("overworld_sprites", "dungeon_sprites"):
             for (text,) in db.execute("SELECT data_json FROM world_record WHERE kind=?", (kind,)):
                 r = json.loads(text)
-                if r["type_id"] not in MODELED_TYPES or r.get("record_kind", "sprite") != "sprite":
+                expected_type = model.get("context_type", model["type_id"]) if model else None
+                expected_kind = model.get("context_kind", "sprite") if model else "sprite"
+                if (r["type_id"] != expected_type if model else r["type_id"] not in MODELED_TYPES) or r.get("record_kind", "sprite") != expected_kind:
                     continue
                 if model:
                     if r["type_id"] != model.get("context_type", model["type_id"]):
@@ -90,8 +92,11 @@ def contexts(atlas: Path, model=None, special=None):
                     # Dungeon palette selector is distinct from the OW selector;
                     # retain it as an explicitly unverified palette context.
                     world = model.get("world", int(r["room_id"] in [0x10f,0x110,0x11f,0x11c])) if model else 0
-                    result[model["type_id"] if model else r["type_id"]].add((room["enemy_blockset"] + 0x40, 0, world,
-                                              f"room {r['room_id']:03x} (palette provisional)"))
+                    dungeon_palette = bool(model and model.get("dungeon_palette"))
+                    palette = 20 + room["palette"] if dungeon_palette else 0
+                    note = "room-header dungeon palette" if dungeon_palette else "palette provisional"
+                    result[model["type_id"] if model else r["type_id"]].add((room["enemy_blockset"] + 0x40, palette, world,
+                                              f"room {r['room_id']:03x} ({note})"))
     return result
 
 
@@ -133,7 +138,7 @@ def generate(engine: Path, atlas: Path, output: Path):
         for (gfx, palette, world), witnesses in grouped.items():
             if model.get("context_note"):
                 witnesses = [model["context_note"], *witnesses]
-            if not 0 <= palette < 20:
+            if not 0 <= palette < 256:
                 continue
             run = subprocess.run([str(executable), str(type_id), str(gfx), str(palette), model["draw"],
                                   str(model["directions"]), str(model["steps"]), str(world),
@@ -156,6 +161,10 @@ def generate(engine: Path, atlas: Path, output: Path):
                     pose["action"] = ["idle", "sword held", "sword extended", "fallen"][pose["direction"]]
                 elif model["draw"] == "ganon":
                     pose["facing"] = ["west", "east"][pose["direction"]]
+                elif model.get("dungeon_palette"):
+                    pose["facing"] = ["east", "west", "south", "north"][pose["direction"]]
+                if model["draw"] == "armos-knight":
+                    pose["action"] = "blue knight" if pose["step"] < 2 else "red crusher"
                 pose["status"] = "modeled_unverified"
             actors.append({"id": f"{model['key']}-{gfx:02x}-{palette:02x}-{world}", "name": name,
                             "type_id": type_id, "gfx_index": gfx, "palette_index": palette,
@@ -179,7 +188,8 @@ def generate(engine: Path, atlas: Path, output: Path):
                              "unmodeled_placed_types": sorted(set(all_placed_types(atlas)) - {a["type_id"] for a in actors}),
                              "gaps": ["Other actor draw routines and action branches are unmodeled.",
                                       "Draw-only poses are not gameplay reachability or Snes9x parity proof.",
-                                      "Dungeon palettes and zero/inherited graphics slots need context verification.",
+                                       "Legacy character dungeon palettes remain provisional; new enemy models use room-header palettes. Zero/inherited graphics slots still need entry-state verification.",
+                                       "Trinexx, remaining enemies, boss minions/projectiles and additional phases need bounded draw adapters; segmented boss histories are modeled straight travel, not captured gameplay trajectories.",
                                        "Link equipment/actions beyond walking, Ganon attack effects, travel duck, Venus, Pikku, Ghostly Proprietor and background-composited Talking Tree need further draw/context adapters.",
                                       "Crystal maidens share a visual family; individual rescue palettes and reachability remain unverified.",
                                       "Maple is GBA-only and absent from the supported SNES ROM."]}}

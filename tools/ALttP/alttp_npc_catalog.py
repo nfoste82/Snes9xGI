@@ -86,6 +86,45 @@ CATALOG = [
     model("assistant", "Syrup's Assistant", 0xe9, "shop"),
 ]
 
+# Bounded draw-table states, not gameplay dispatchers. Dungeon contexts retain
+# their actual room-header palette selectors, independently of graphics sets.
+for key, name, type_id, draw, directions, steps in [
+    ("keese", "Keese (Bat)", 0x6f, "large", 1, 3),
+    ("rat", "Rat", 0x6d, "rat", 4, 4),
+    ("rope", "Rope (Snake)", 0x6e, "rope", 4, 2),
+    ("armos-knight", "Armos Knights", 0x53, "armos-knight", 1, 4),
+    ("armos-statue", "Armos Statue", 0x51, "armos-statue", 1, 1),
+    ("hardhat", "Hardhat Beetle", 0x26, "hardhat", 1, 2),
+    ("mini-helmasaur", "Mini Helmasaur", 0x13, "mini-helmasaur", 4, 2),
+    ("stalfos", "Stalfos", 0xa7, "stalfos", 4, 2),
+    ("gibdo", "Gibdo", 0x8b, "gibdo", 4, 2),
+    ("wizzrobe", "Wizzrobe", 0x9b, "wizzrobe", 4, 2),
+    ("freezor", "Freezor", 0xa1, "freezor", 1, 8),
+    ("pengator", "Pengator", 0x99, "pengator", 4, 5),
+    ("wallmaster", "Wallmaster", 0x90, "wallmaster", 1, 2),
+    ("zol", "Zol (Blob)", 0x8f, "zol", 1, 8),
+    ("red-bari", "Red Bari", 0x23, "red-bari", 1, 2),
+    ("blue-bari", "Blue Bari", 0x22, "large", 1, 2),
+    ("popo", "Popo", 0x4e, "popo", 1, 2),
+    ("eyegore-green", "Green Eyegore", 0x83, "eyegore", 1, 12),
+    ("eyegore-red", "Red Eyegore", 0x84, "eyegore", 1, 12),
+    ("beamos", "Beamos", 0x61, "beamos", 1, 32),
+    ("mothula", "Mothula", 0x88, "mothula", 1, 3),
+    ("blind-boss", "Blind (Boss)", 0xce, "blind", 1, 15),
+    ("arrghus", "Arrghus", 0x8c, "arrghus", 1, 3),
+    ("kholdstare", "Kholdstare", 0xa2, "kholdstare", 1, 16),
+    ("vitreous", "Vitreous", 0xbd, "vitreous", 1, 6),
+    ("lanmola", "Lanmolas", 0x54, "lanmola", 4, 2),
+    ("moldorm-boss", "Moldorm (Boss)", 0x09, "moldorm-boss", 4, 4),
+    ("helmasaur-king", "Helmasaur King", 0x92, "helmasaur-king", 1, 12),
+]:
+    CATALOG.append(model(key, name, type_id, draw, directions, steps,
+                         dungeon_palette=True, action="modeled body draw frames"))
+
+next(entry for entry in CATALOG if entry["key"] == "wallmaster").update(
+    context_type=0x109, context_kind="overlord",
+    context_note="Dynamically spawned by room's Wallmaster overlord 09")
+
 for variant, name in enumerate(["Storytelling Bird", "Storytelling Tree", "Storytelling Hand",
                               "Storytelling Octopus", "Storytelling Insect"]):
     entry = model(f"story-{variant}", name, 0x28, "story", rooms=[[0x10e], [0x10e], [0x112], [0x11a], [0x114]][variant])

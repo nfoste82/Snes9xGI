@@ -62,7 +62,7 @@ int main ()
 	const size_t offset = difference.first - bytes.begin();
 	bytes[offset] = 2;
 	require(!S9xDeserializeRemasterFrame(bytes, decoded), "invalid frame direction rejected");
-	planar.erase(planar.begin() + offset, planar.begin() + offset + 2); // v27 direction and v31 normal transform
+	planar.erase(planar.begin() + offset, planar.begin() + offset + 28); // direction and normal/facing/flip metadata through v33
 	planar.erase(planar.end() - 4, planar.end()); // v30 empty palette-artwork count
 	planar[8] = 26;
 	require(S9xDeserializeRemasterFrame(planar, decoded), "legacy v26 frame accepted");

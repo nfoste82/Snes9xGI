@@ -17,6 +17,14 @@ struct RemasterLightingFieldCache
 
 	static bool geometryEqual(const RemasterFrameAssetMetadata &a, const RemasterFrameAssetMetadata &b)
 	{
+		if (a.geometryByFacing != b.geometryByFacing || a.geometryByFlip != b.geometryByFlip) return false;
+		for (unsigned f = 0; f < 8; f++)
+		{
+			const auto &x = f < 4 ? a.facingGeometry[f] : a.flipGeometry[f - 4];
+			const auto &y = f < 4 ? b.facingGeometry[f] : b.flipGeometry[f - 4];
+			if (x.hasHeight != y.hasHeight || x.height != y.height || x.hasNormals != y.hasNormals ||
+				x.normalXyz != y.normalXyz || x.heightSampling != y.heightSampling) return false;
+		}
 		return a.hasMaterialSelectors == b.hasMaterialSelectors && a.materialSelectors == b.materialSelectors &&
 			a.hasOcclusion == b.hasOcclusion && a.occlusion == b.occlusion &&
 			a.hasHeight == b.hasHeight && a.height == b.height && a.hasNormals == b.hasNormals &&
@@ -28,7 +36,7 @@ struct RemasterLightingFieldCache
 		return a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
 			a.heightOffset == b.heightOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
 			a.placementHeight == b.placementHeight && a.hFlip == b.hFlip && a.vFlip == b.vFlip &&
-			a.normalYaw == b.normalYaw && a.assetGroup == b.assetGroup && a.material == b.material;
+			a.normalYaw == b.normalYaw && a.geometryFacing == b.geometryFacing && a.assetGroup == b.assetGroup && a.material == b.material;
 	}
 	static bool materialEqual(const RemasterFrameMaterial &a, const RemasterFrameMaterial &b)
 	{
@@ -54,6 +62,7 @@ struct RemasterLightingFieldCache
 		std::map<std::string, const RemasterFrameMaterial *> materials;
 		for (const auto &m : frame.materials) materials[m.name] = &m;
 		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size());
+		std::map<std::pair<RemasterTileContentId, unsigned>, RemasterFrameAssetMetadata> resolvedMetadata;
 		std::vector<bool> dirty(frame.tileInstances.size(), full);
 		std::vector<uint64_t> normalMasks(frame.tileInstances.size());
 		std::map<RemasterTileContentId, bool> metadataDirty;
@@ -66,7 +75,17 @@ struct RemasterLightingFieldCache
 		{
 			const auto &instance = frame.tileInstances[i];
 			const auto found = metadata.find(instance.tileId);
-			const auto *m = found == metadata.end() ? nullptr : found->second;
+			const auto *original = found == metadata.end() ? nullptr : found->second;
+			const auto *m = original;
+			if (original && (original->geometryByFacing || original->geometryByFlip))
+			{
+				const auto key = std::make_pair(instance.tileId, original->geometryByFlip ?
+					S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip) : unsigned(instance.geometryFacing));
+				auto foundResolved = resolvedMetadata.find(key);
+				if (foundResolved == resolvedMetadata.end()) foundResolved = resolvedMetadata.emplace(key,
+					S9xRemasterResolveInstanceGeometry(*original, instance)).first;
+				m = &foundResolved->second;
+			}
 			instanceMetadata[i] = m;
 			normalMasks[i] = S9xRemasterContinuedDiagonalNormalMask(instance, m);
 			dirty[i] = full || i >= instances_.size() || !instanceEqual(instance, instances_[i]) ||

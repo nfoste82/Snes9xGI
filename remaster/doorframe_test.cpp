@@ -111,7 +111,7 @@ int main ()
 	S9xRemasterApplyProfileToFrame(profile, frame);
 	assert(S9xSerializeRemasterFrame(frame, bytes));
 	assert(bytes.size() + 1 == doorUnknown); // non-door pays no extension byte
-	bytes.erase(bytes.begin() + presenceOffset); // v31 normal-transform option follows metadata payload
+	bytes.erase(bytes.begin() + presenceOffset, bytes.begin() + presenceOffset + 27); // v31-v33 normal options and empty facing/flip maps
 	bytes.erase(bytes.end() - 4, bytes.end()); // v30 empty palette-artwork count
 	bytes[8] = 28; // legacy v28 non-door layout remains decodable
 	assert(S9xDeserializeRemasterFrame(bytes, packet));

@@ -114,6 +114,35 @@ the tile hash, supports multi-selection/Undo and persists in profile schema 23
 and frame schema 31. For bow tile `v1:4bpp:d4863e268dedd8d6`, enabling it lets
 both mirrored halves retain +Y normals. Save the profile to retain the option.
 
+For weapons needing independent geometry by tile flips, enable **Tile:
+Geometry varies by tile flips** in Height or Normals. The adjacent menu selects
+**Default / fallback**, **Normal**, **Flipped horz**, **Flipped vert**, or
+**Flipped both**. Both inspector images match the selected flips, and clicking or
+painting maps the displayed pixel back to canonical artwork coordinates. Paint, pixel
+updates, fills, height increments, sampling, layer flips, copy/paste and resets
+target that set independently. A new flip layer starts at zero height or flat
++Z normals; the inspector shows absence rather than silently editing fallback
+data. The assembled NPC preview and live gameplay select overrides by each tile's
+actual H/V flip flags, with per-layer default fallback when an override is absent.
+Clicking a tile initially selects its flip state for authoring; the menu then
+permits any set. Explicit flip-set normals are gameplay-space vectors: authored
++Y stays +Y even for vertically flipped or double-flipped bow tiles, without
+requiring the separate Ignore flips/rotation option. Height and normal pixel
+positions follow the artwork flips; the normal vectors are not reflected again.
+Disabling the designation preserves overrides for later reuse. Save Profile
+persists the designation and arrays in schema 25; frame schema 33 records the
+arrays. Existing schema-24 cardinal-direction overrides remain preserved
+separately for compatibility; they are not relabeled or guessed into flip sets.
+
+**Apply to Animation** is disabled for designated source tiles and skips designated
+destinations. Whole-tile Apply to Animation also preserves their geometry and
+designation. NPC-wide normal fills/height ramps skip designated tiles even when
+overwrite is enabled. Author those tiles explicitly through the inspector.
+
+Flip-specific geometry works directly in live gameplay without owning-actor
+annotation. For Blue Archer's east-facing bow, author **Flipped vert** and
+**Flipped both** independently; each occurrence selects its matching set.
+
 These native edits
 write the loaded profile directly, unlike the HTML draft/export workflow.
 The inspector has separate layer and tile action rows. **Flip Layer Horiz.**
@@ -217,13 +246,26 @@ state is reconstructed.
 
 ## Coverage boundary
 
-The expanded catalog contains **71 named character/guard families, 136
-graphics/palette contexts and 1,323 draw poses** (2026-10-13). The original
+The expanded catalog contains **99 named character/enemy families, 236
+graphics/palette contexts and 2,140 draw poses** (2026-10-13). The original
 11-family slice omitted most NPC draw routines. `alttp_npc_catalog.py` now
 describes bounded draw states for villagers, shop/game operators, swordsmiths,
 Syrup/assistant, storytellers, fairies, Zelda, the sage/uncle, old man, Kiki,
 Catfish/King Zora, Agahnim, crystal-maiden shared artwork and additional guards.
 The native NPC dropdown is alphabetized and counts these generated poses.
+
+Dungeon additions include Keese (Bat), Rat, Rope (Snake), blue/red Armos Knights,
+Armos Statue, Hardhat Beetle, Mini Helmasaur, Stalfos, Gibdo, Wizzrobe, Freezor,
+Pengator, Wallmaster, Zol, red/blue Bari, Popo, green/red Eyegore and Beamos.
+Boss adapters include Lanmolas, Moldorm, Helmasaur King (mask stages), Arrghus,
+Mothula, Blind, Kholdstare and Vitreous. New dungeon contexts load the room-header
+palette using `GetDungPalInfo`, keeping distinct palettes even for a shared
+graphics set. Wallmaster derives contexts from the actual overlord-09 spawner
+placements instead of requiring a statically placed hand. Segmented bosses use
+bounded straight-travel history buffers and the reference's assembled draw
+routines; these sample configurations are not recorded gameplay trajectories.
+Ground shadows are excluded. Trinexx, remaining enemy families, boss projectiles,
+minions, and additional attack/death/phase states still need bounded adapters.
 
 One sprite type can dispatch several visually distinct characters: the adult,
 storyteller and shopkeeper models filter source room contexts. World variants
@@ -262,8 +304,10 @@ GBA-only and does not exist in the supported SNES ROM. Special attack/recoil/
 death states, independent guard head turns and additional effects remain open.
 These poses are `modeled_unverified`: invoking a draw routine proves its output
 for the recorded vector, not gameplay reachability or parity with Snes9x.
-Dungeon palettes use a provisional context and inherited zero graphics slots
-use the harness checkpoint's previous loads. Those are visible evidence gaps.
+Older character models still use provisional dungeon palettes; the new dungeon
+enemy models use explicit room-header palettes. Inherited zero graphics slots
+use the harness checkpoint's previous loads and remain marked as inherited.
+Draw-only previews still need interactive/in-game parity review.
 The manifest pins the reference draw-source digest, ROM hash, graphics/palette
 selectors and source placement witnesses. Additional routines should be added
 with bounded valid draw-state vectors, never arbitrary RAM brute force.

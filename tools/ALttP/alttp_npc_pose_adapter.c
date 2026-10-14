@@ -69,6 +69,32 @@ static void Draw(int type) {
   DRAW("archer", ArcherSoldier_Draw(0))
   DRAW("bombguard", BombTrooper_Draw(0))
   DRAW("recruit", Recruit_Draw(0))
+  DRAW("large", SpriteDraw_SingleLarge(0))
+  DRAW("rat", SpriteDraw_SingleLarge(0))
+  DRAW("rope", SpriteDraw_SingleLarge(0))
+  DRAW("mini-helmasaur", SpriteDraw_SingleLarge(0))
+  DRAW("armos-knight", ArmosKnight_Draw(0))
+  DRAW("armos-statue", Armos_Draw(0))
+  DRAW("hardhat", HardHatBeetle_Draw(0))
+  DRAW("stalfos", Stalfos_Draw(0))
+  DRAW("gibdo", Gibdo_Draw(0))
+  DRAW("wizzrobe", Wizzrobe_Draw(0))
+  DRAW("freezor", Freezor_Draw(0))
+  DRAW("pengator", Pengator_Draw(0))
+  DRAW("wallmaster", WallMaster_Draw(0))
+  DRAW("zol", Zol_Draw(0))
+  DRAW("red-bari", RedBari_Draw(0))
+  DRAW("popo", Bot_Draw(0))
+  DRAW("eyegore", Eyegore_Draw(0))
+  DRAW("beamos", Beamos_Draw(0))
+  DRAW("mothula", Mothula_Draw(0))
+  DRAW("blind", Blind_Draw(0))
+  DRAW("arrghus", Arrghus_Draw(0))
+  DRAW("kholdstare", Kholdstare_Draw(0))
+  DRAW("vitreous", Vitreous_Draw(0))
+  DRAW("lanmola", Lanmola_Draw(0))
+  DRAW("moldorm-boss", GiantMoldorm_Draw(0))
+  DRAW("helmasaur-king", HelmasaurKing_Draw(0))
   #undef DRAW
   switch (type) {
   case 0x32: QuarrelBros_Draw(0); break;
@@ -113,8 +139,8 @@ int main(int argc, char **argv) {
   int directions = atoi(argv[5]), steps = atoi(argv[6]);
   int world = atoi(argv[7]), follower = atoi(argv[8]);
   variant = atoi(argv[9]);
-  if (directions < 1 || directions > 4 || steps < 1 || steps > 18 || follower < 0 || follower > 13) return 2;
-  if (type < 0 || type >= 243 || gfx < 0 || gfx >= 144 || pal < 0 || pal >= 20) return 2;
+  if (directions < 1 || directions > 4 || steps < 1 || steps > 32 || follower < 0 || follower > 13) return 2;
+  if (type < 0 || type >= 243 || gfx < 0 || gfx >= 144 || pal < 0 || pal >= 256) return 2;
   ParseConfigFile(NULL);
   LoadAssets();
   ZeldaInitialize();
@@ -128,14 +154,14 @@ int main(int argc, char **argv) {
   for (int f = 0; f < 90; f++) ZeldaRunFrameInternal(0, 1);
   sprite_graphics_index = gfx;
   InitializeTilesets();
-  Overworld_LoadPalettes(0, pal);
+  if (pal < 20) Overworld_LoadPalettes(0, pal);
   savegame_is_darkworld = world ? 0x40 : 0;
   is_in_dark_world = world;
-  if (!strcmp(draw, "ganon")) {
+  if (pal >= 20 || !strcmp(draw, "ganon")) {
     /* Room 000's actual dungeon palette, rather than OW palette zero. */
     player_is_indoors = 1;
     dungeon_room_index = 0;
-    const DungPalInfo *palette = GetDungPalInfo(GetRoomHeaderPtr(0)[1]);
+    const DungPalInfo *palette = GetDungPalInfo(pal >= 20 ? pal - 20 : GetRoomHeaderPtr(0)[1]);
     palette_main_indoors = palette->pal0;
     palette_sp0l = palette->pal1;
     palette_sp5l = palette->pal2;
@@ -171,6 +197,48 @@ int main(int argc, char **argv) {
     sprite_D[0] = sprite_head_dir[0] = dir;
     sprite_graphics[0] = guard ? guard_frames[dir * 4 + step] : step;
     sprite_subtype2[0] = variant;
+    if (!strcmp(draw, "armos-knight")) {
+      sprite_graphics[0] = step & 1;
+      if (step >= 2) sprite_oam_flags[0] = 7; /* Last knight's red crusher palette. */
+    }
+    if (!strcmp(draw, "rat")) {
+      static const uint8 frames[16] = {0,0,3,3,1,2,4,5,1,2,4,5,0,0,3,3};
+      static const uint8 flags[16] = {0,0x40,0,0x40,0,0,0,0,0x40,0x40,0x40,0x40,0x80,0xc0,0x80,0xc0};
+      static const uint8 moving[8] = {8,9,4,5,0,1,12,13};
+      static const uint8 idle[8] = {10,11,6,7,2,3,14,15};
+      int j = (step < 2 ? moving : idle)[dir * 2 + (step & 1)];
+      sprite_graphics[0] = frames[j]; sprite_oam_flags[0] = (sprite_oam_flags[0] & 0x3f) | flags[j];
+    }
+    if (!strcmp(draw, "rope")) {
+      static const uint8 frames[8] = {0,0,2,3,2,3,1,1}, flags[8] = {0,0x40,0,0,0x40,0x40,0,0x40};
+      static const uint8 indices[8] = {4,5,2,3,0,1,6,7};
+      int j = indices[dir * 2 + step];
+      sprite_graphics[0] = frames[j]; sprite_oam_flags[0] = (sprite_oam_flags[0] & 0x3f) | flags[j];
+    }
+    if (!strcmp(draw, "mini-helmasaur")) {
+      static const uint8 frames[8] = {3,4,3,4,2,2,5,5}, flags[8] = {0x40,0x40,0,0,0,0x40,0x40,0};
+      int j = dir * 2 + step;
+      sprite_graphics[0] = frames[j]; sprite_oam_flags[0] = (sprite_oam_flags[0] & ~0x40) | flags[j];
+    }
+    if (!strcmp(draw, "wizzrobe") || !strcmp(draw, "stalfos")) sprite_graphics[0] = dir * 2 + step;
+    if (!strcmp(draw, "gibdo")) {
+      const uint8 frames[8] = {2,3,9,11,0,1,4,5}; sprite_graphics[0] = frames[dir * 2 + step];
+    }
+    if (!strcmp(draw, "pengator")) sprite_graphics[0] = dir * 5 + step;
+    if (!strcmp(draw, "beamos")) sprite_D[0] = step * 2;
+    if (!strcmp(draw, "zol")) { sprite_ai_state[0] = 1; byte_7E0FC6 = 0; }
+    if (!strcmp(draw, "kholdstare")) { sprite_A[0] = step; sprite_graphics[0] = step & 3; }
+    if (!strcmp(draw, "mothula")) sprite_pause[0] = 1; /* Body only, no broad ground shadow. */
+    if (!strcmp(draw, "helmasaur-king")) {
+      sprite_C[0] = step / 3; /* Intact, chipped, broken and absent mask. */
+      sprite_delay_aux4[0] = 1; /* Draw without bomb collision side effects. */
+      for (int i = 0; i < 4; i++) overlord_x_lo[i] = (step + i) % 3;
+      overlord_x_lo[4] = (step % 8) * 4;
+      WORD(overlord_gen1[5]) = (step % 8) * 32;
+      WORD(overlord_gen2[1]) = 0;
+      overlord_gen1[7] = 48;
+      overlord_gen2[3] = 0;
+    }
     if (!strcmp(draw, "thief")) sprite_graphics[0] = dir * 3 + step;
     if (!strcmp(draw, "zora")) sprite_ai_state[0] = 2;
     if (!strcmp(draw, "ganon")) {
@@ -203,6 +271,27 @@ int main(int argc, char **argv) {
     cur_sprite_x = cur_sprite_y = 96;
     BG2HOFS_copy2 = BG2VOFS_copy2 = 0;
     link_x_coord = link_y_coord = 200;
+    if (!strcmp(draw, "lanmola") || !strcmp(draw, "moldorm-boss")) {
+      /* Bounded straight travel history, spaced as the reference's lookback
+       * buffers expect; use real segmented draw assembly, never a tile atlas. */
+      static const int8 dx[4] = {1,-1,0,0}, dy[4] = {0,0,1,-1};
+      int count = !strcmp(draw, "lanmola") ? 64 : 128;
+      sprite_subtype2[0] = step * 2;
+      for (int age = 0; age < count; age++) {
+        int j = (sprite_subtype2[0] - age) & (count - 1);
+        int x = 96 - dx[dir] * age, y = 96 - dy[dir] * age;
+        moldorm_x_lo[j] = x; moldorm_y_lo[j] = y;
+        g_ram[0x1fc80 + j] = g_ram[0x1fd80 + j] = 0; /* sprite_main.c's private history high-byte aliases */
+        beamos_x_hi[j] = 0;
+        beamos_y_hi[j] = (int[]){0,8,4,12}[dir];
+      }
+      sprite_D[0] = (int[]){0,8,4,12}[dir];
+      sprite_x_vel[0] = dx[dir] * 16; sprite_y_vel[0] = dy[dir] * 16;
+      sprite_z_vel[0] = 0;
+      sprite_delay_aux2[0] = 1; /* Moldorm tail draw without damage checks. */
+      sprite_delay_aux4[0] = 0;
+      if (!strcmp(draw, "lanmola")) { garnish_y_lo[0] = 7; sprite_ai_state[0] = 2; }
+    }
     if (!strcmp(draw, "link")) {
       main_module_index = 7; submodule_index = 0;
       link_x_coord = link_y_coord = 96;
@@ -250,6 +339,9 @@ int main(int argc, char **argv) {
     for (int slot = 0; slot < 128; slot++) {
       OamEnt *oam = &oam_buf[slot];
       if (oam->y == 0xf0) continue;
+      if (!strcmp(draw, "armos-knight") && oam->charnum == 0xe4 && (oam->flags & 0x3f) == 0x25) continue;
+      if ((!strcmp(draw, "arrghus") || !strcmp(draw, "wallmaster")) && slot >= 125) continue;
+      if (!strcmp(draw, "lanmola") && oam->charnum == 0x6c && oam->flags == 0x34) continue;
       if (!strcmp(draw, "ganon") && slot >= 125) continue; /* Large boss shadow. */
       int size = (bytewise_extended_oam[slot] & 2) ? 16 : 8;
       /* Draw routines add their shadow even when flags3 has it disabled. */

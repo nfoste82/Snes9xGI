@@ -20,16 +20,17 @@ def contact_sheet(output, manifest):
         row, col = divmod(index, 8)
         for pose in actor['poses'][:1]:
             x0, y0, x1, y1 = pose['bounds']
+            scale = min(2, 72 / max(1, x1-x0), 92 / max(1, y1-y0))
             for part in reversed(pose['parts']):
                 for p, ink in enumerate(part['indices']):
                     if not ink:
                         continue
-                    x = col*80 + max(0, (80-2*(x1-x0))//2) + 2*(part['x']-x0+(7-p%8 if part['hflip'] else p%8))
-                    y = row*100 + 4 + 2*(part['y']-y0+(7-p//8 if part['vflip'] else p//8))
+                    x = int(col*80 + (80-scale*(x1-x0))/2 + scale*(part['x']-x0+(7-p%8 if part['hflip'] else p%8)))
+                    y = int(row*100 + 4 + scale*(part['y']-y0+(7-p//8 if part['vflip'] else p//8)))
                     c = part['colors'][p]
                     color = bytes(round(((c >> shift) & 31)*255/31) for shift in (0, 5, 10))
-                    for dy in (0, 1):
-                        for dx in (0, 1):
+                    for dy in range(max(1, round(scale))):
+                        for dx in range(max(1, round(scale))):
                             if 0 <= x+dx < width and 0 <= y+dy < height:
                                 at = ((y+dy)*width+x+dx)*3
                                 rgb[at:at+3] = color

@@ -19,7 +19,9 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 		const auto &p=!scene && !main.instanceId && uint8_t(main.owner>>24)==uint8_t(RemasterSourceType::Backdrop)?f.subPixels[i]:main;
 		if(!p.instanceId || p.instanceId>f.tileInstances.size() || p.tilePixel>=64)continue;
 		const auto &in=f.tileInstances[p.instanceId-1];
-		const auto *m=S9xRemasterFrameMetadataForTile(f,in.tileId);
+		const auto *original=S9xRemasterFrameMetadataForTile(f,in.tileId);
+		const auto resolved=original?S9xRemasterResolveInstanceGeometry(*original,in):RemasterFrameAssetMetadata{};
+		const auto *m=original?&resolved:nullptr;
 		const RemasterFrameMaterial *mat=nullptr;
 		std::string name=in.material;
 		if(m && m->hasMaterialSelectors && !m->materialSelectors[p.tilePixel].empty())name=m->materialSelectors[p.tilePixel];

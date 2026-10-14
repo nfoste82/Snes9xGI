@@ -212,7 +212,10 @@ static bool RemasterNpcDecodePose(NSDictionary *pose, NSString *hash, RemasterFr
 		if (![entry[@"tile_hash"] isEqual:identity]) return false;
 		parts.push_back(part);
 	}
-	return S9xRemasterBuildNpcPoseFrame(parts, hash.UTF8String ?: "", frame, canvas);
+	if (!S9xRemasterBuildNpcPoseFrame(parts, hash.UTF8String ?: "", frame, canvas)) return false;
+	const NSUInteger facing = [@[@"north", @"south", @"east", @"west"] indexOfObject:pose[@"facing"]];
+	for (auto &instance : frame.tileInstances) instance.geometryFacing = facing == NSNotFound ? 0 : facing + 1;
+	return true;
 }
 
 // The adapter emits each OAM slot's subtiles in canonical row-major order,

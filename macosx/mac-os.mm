@@ -690,6 +690,9 @@ static NSButton			*remasterNormalFillTileButton;
 static NSButton			*remasterNormalApplyAnimationButton;
 static NSButton			*remasterOppositeFacingDirectButton;
 static NSButton *remasterNormalIgnoreTransformButton;
+static NSButton *remasterGeometryByFacingButton;
+static NSPopUpButton *remasterGeometryFacingSelector;
+static unsigned remasterGeometryFacing = 0;
 static NSColorWell		*remasterEmissionColor;
 static NSTextField *remasterEmissionDepthInput;
 static NSTextField *remasterEmissionDepthLabel;
@@ -793,6 +796,7 @@ static RemasterAssetMetadata remasterClipboardMetadata;
 static NSInteger remasterClipboardLayer = -1;
 static bool remasterClipboardHasData = false;
 static NSString *remasterClipboardToken;
+static unsigned remasterClipboardGeometryFacing = 0;
 
 #include "../remaster/layer_editor.h"
 
@@ -802,9 +806,33 @@ static bool RemasterEffectiveHeightPreview ()
 		remasterHeightDomainSelector.indexOfSelectedItem == 1;
 }
 
+static RemasterGeometryLayers &RemasterEditingGeometry(RemasterAssetMetadata &asset)
+{
+	return S9xRemasterFlipGeometryForEditing(asset, remasterGeometryFacing);
+}
+
+static const RemasterGeometryLayers &RemasterEditingGeometry(const RemasterAssetMetadata &asset)
+{
+	return S9xRemasterFlipGeometryForEditing(asset, remasterGeometryFacing);
+}
+
+static unsigned RemasterInspectorPreviewFlip()
+{
+	const auto found = remasterEditingProfile.assets.find(remasterSelectedTile);
+	return found != remasterEditingProfile.assets.end() && found->second.geometryByFlip &&
+		remasterGeometryFacing >= 1 && remasterGeometryFacing <= 4 ? remasterGeometryFacing - 1 : 0;
+}
+
 static const std::array<uint8_t, 64> *RemasterAuthoredHeight (const RemasterTileContentId &tile,
 	RemasterHeightSampling &sampling)
 {
+	const auto found = remasterEditingProfile.assets.find(tile);
+	if (remasterEditingProfileLoaded && found != remasterEditingProfile.assets.end() && found->second.geometryByFlip)
+	{
+		const auto &g = RemasterEditingGeometry(found->second);
+		sampling = g.heightSampling;
+		return g.hasHeight ? &g.height : nullptr;
+	}
 	return S9xRemasterInspectorAuthoredHeight(remasterEditingProfileLoaded ? &remasterEditingProfile : nullptr,
 		remasterReplayFrame, tile, sampling);
 }
@@ -843,12 +871,13 @@ static void DecodeRemasterNormal (const uint8_t *encoded, float &x, float &y, fl
 static std::array<uint8_t, 3> EffectiveRemasterNormal (const RemasterTileContentId &tileId, size_t pixel)
 {
 	auto editable = remasterEditingProfile.assets.find(tileId);
-	if (editable != remasterEditingProfile.assets.end() && editable->second.hasNormals)
+	if (editable != remasterEditingProfile.assets.end() && RemasterEditingGeometry(editable->second).hasNormals)
 	{
 		const size_t offset = pixel * 3;
-		return {{ editable->second.normalXyz[offset], editable->second.normalXyz[offset + 1],
-			editable->second.normalXyz[offset + 2] }};
+		const auto &g = RemasterEditingGeometry(editable->second);
+		return {{ g.normalXyz[offset], g.normalXyz[offset + 1], g.normalXyz[offset + 2] }};
 	}
+	if (editable != remasterEditingProfile.assets.end() && editable->second.geometryByFlip) return {{128, 128, 255}};
 	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, tileId);
 	if (captured && captured->hasNormals)
 	{
@@ -890,6 +919,10 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.hasEmission = captured->hasEmission;
 		metadata.directLightingOppositeFacing = captured->directLightingOppositeFacing;
 		metadata.normalIgnoreTileTransform = captured->normalIgnoreTileTransform;
+		metadata.geometryByFacing = captured->geometryByFacing;
+		metadata.facingGeometry = captured->facingGeometry;
+		metadata.geometryByFlip = captured->geometryByFlip;
+		metadata.flipGeometry = captured->flipGeometry;
 		metadata.heightSampling = captured->heightSampling;
 	}
 	auto editable = remasterEditingProfile.assets.find(tileId);
@@ -934,6 +967,15 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	}
 	metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
 	metadata.normalIgnoreTileTransform = source.normalIgnoreTileTransform;
+	metadata.geometryByFacing = source.geometryByFacing;
+	metadata.facingGeometry = source.facingGeometry;
+	metadata.geometryByFlip = source.geometryByFlip;
+	metadata.flipGeometry = source.flipGeometry;
+	if (S9xRemasterHasGeometryVariants(source))
+	{
+		metadata.height = source.height; metadata.hasHeight = source.hasHeight; metadata.heightSampling = source.heightSampling;
+		metadata.normalXyz = source.normalXyz; metadata.hasNormals = source.hasNormals;
+	}
 	metadata.emissionDepth = source.emissionDepth;
 	metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 	metadata.combineEmitters = source.combineEmitters;
@@ -974,7 +1016,9 @@ static bool RemasterClipboardAvailable (NSInteger layer)
 static bool RemasterMetadataHasData (const RemasterAssetMetadata &metadata)
 {
 	return metadata.hasMaterialSelectors || metadata.hasOcclusion || metadata.hasHeight || metadata.hasNormals ||
-		metadata.hasEmission || metadata.emissionDepth > 0 || metadata.emissionOmnidirectional || !metadata.combineEmitters.empty() || metadata.directLightingOppositeFacing || metadata.normalIgnoreTileTransform || metadata.hasTileSemantics || metadata.tileRole != RemasterTileRole::Unknown;
+		metadata.hasEmission || metadata.emissionDepth > 0 || metadata.emissionOmnidirectional || !metadata.combineEmitters.empty() || metadata.directLightingOppositeFacing || metadata.normalIgnoreTileTransform || metadata.geometryByFacing ||
+		std::any_of(metadata.facingGeometry.begin(), metadata.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) || metadata.geometryByFlip ||
+		std::any_of(metadata.flipGeometry.begin(), metadata.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) || metadata.hasTileSemantics || metadata.tileRole != RemasterTileRole::Unknown;
 }
 
 static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, RemasterAssetMetadata &destination,
@@ -1010,14 +1054,13 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	}
 	else if (layer == RemasterEditorHeight)
 	{
-		destination.height = source.height;
-		destination.hasHeight = source.hasHeight;
-		destination.heightSampling = source.heightSampling;
+		auto &d = RemasterEditingGeometry(destination); const auto &s = RemasterEditingGeometry(source);
+		d.height = s.height; d.hasHeight = s.hasHeight; d.heightSampling = s.heightSampling;
 	}
 	else if (layer == RemasterEditorNormal)
 	{
-		destination.normalXyz = source.normalXyz;
-		destination.hasNormals = source.hasNormals;
+		auto &d = RemasterEditingGeometry(destination); const auto &s = RemasterEditingGeometry(source);
+		d.normalXyz = s.normalXyz; d.hasNormals = s.hasNormals;
 		destination.directLightingOppositeFacing = source.directLightingOppositeFacing;
 		destination.normalIgnoreTileTransform = source.normalIgnoreTileTransform;
 	}
@@ -1046,6 +1089,8 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 	if (metadata.directLightingOppositeFacing)
 		version = std::max<uint32_t>(version, 6);
 	if (metadata.normalIgnoreTileTransform) version = std::max<uint32_t>(version, 23);
+	if (metadata.geometryByFacing || std::any_of(metadata.facingGeometry.begin(), metadata.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; })) version = 24;
+	if (metadata.geometryByFlip || std::any_of(metadata.flipGeometry.begin(), metadata.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; })) version = 25;
 	return version;
 }
 
@@ -5428,6 +5473,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterTilePixelSelected = false;
 	if (instance && std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), instance->tileId) != remasterSelectedTiles.end())
 	{
+		remasterGeometryFacing = 1 + S9xRemasterGeometryFlipIndex(instance->hFlip, instance->vFlip);
 		const auto &pickedPixel = instanceFromSubscreen ? subPixel : mainPixel;
 		if (pickedPixel.tilePixel < 64)
 		{
@@ -5810,6 +5856,19 @@ void QuitWithFatalError ( NSString *message)
 		remasterNormalIgnoreTransformButton.action = @selector(changeRemasterNormalIgnoreTransform:);
 		remasterNormalIgnoreTransformButton.toolTip = @"Keep authored normal directions fixed for every placement of this tile. Artwork and per-pixel locations still flip; H/V flips and normal yaw do not change the normal vector. Defaults to off.";
 		[contentView addSubview:remasterNormalIgnoreTransformButton];
+		remasterGeometryByFacingButton = [[NSButton alloc] initWithFrame:NSMakeRect(244, 500, 285, 28)];
+		remasterGeometryByFacingButton.title = @"Tile: Geometry varies by tile flips";
+		remasterGeometryByFacingButton.buttonType = NSButtonTypeSwitch;
+		remasterGeometryByFacingButton.target = self;
+		remasterGeometryByFacingButton.action = @selector(changeRemasterGeometryByFacing:);
+		remasterGeometryByFacingButton.toolTip = @"Independent geometry for Normal, Flipped horz, Flipped vert, and Flipped both. Gameplay selects by the tile's H/V flags. Authored normals keep their chosen direction. Animation-wide operations skip this tile. Disabling preserves the maps.";
+		[contentView addSubview:remasterGeometryByFacingButton];
+		remasterGeometryFacingSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(540, 500, 200, 28) pullsDown:NO];
+		[remasterGeometryFacingSelector addItemsWithTitles:@[@"Default / fallback", @"Normal", @"Flipped horz", @"Flipped vert", @"Flipped both"]];
+		remasterGeometryFacingSelector.target = self;
+		remasterGeometryFacingSelector.action = @selector(changeRemasterGeometryFacing:);
+		remasterGeometryFacingSelector.toolTip = @"Both previews match the selected flips. Paint on the displayed pixels; normals are gameplay-space directions (+Y stays +Y). Missing layers use Default in gameplay; editing starts a new layer.";
+		[contentView addSubview:remasterGeometryFacingSelector];
 		remasterEmissionColor = [[NSColorWell alloc] initWithFrame:NSMakeRect(168, 377, 80, 28)];
 		remasterEmissionColor.color = [NSColor colorWithCalibratedRed:1.0 green:0.4 blue:0.1 alpha:1.0];
 		[contentView addSubview:remasterEmissionColor];
@@ -6244,12 +6303,14 @@ void QuitWithFatalError ( NSString *message)
 			entry.heightOffset, entry.hFlip ? @"H" : @"", entry.vFlip ? @"V" : @""]];
 		if (id == heightInstance) [remasterHeightOccurrenceSelector selectItemAtIndex:remasterHeightOccurrenceSelector.numberOfItems - 1];
 	}
-	const bool hasNormals = (editableMetadata && editableMetadata->hasNormals) ||
-		(capturedMetadata && capturedMetadata->hasNormals);
+	const bool facingSpecific = editableMetadata && editableMetadata->geometryByFlip;
+	const auto *editableGeometry = editableMetadata ? &RemasterEditingGeometry(*editableMetadata) : nullptr;
+	const bool hasNormals = (editableGeometry && editableGeometry->hasNormals) || (!facingSpecific &&
+		(capturedMetadata && capturedMetadata->hasNormals));
 	const bool hasEmission = (editableMetadata && editableMetadata->hasEmission) ||
 		(capturedMetadata && capturedMetadata->hasEmission);
 	const std::array<uint8_t, 192> *normals = hasNormals ?
-		(editableMetadata && editableMetadata->hasNormals ? &editableMetadata->normalXyz : &capturedMetadata->normalXyz) : nullptr;
+		(editableGeometry && editableGeometry->hasNormals ? &editableGeometry->normalXyz : &capturedMetadata->normalXyz) : nullptr;
 	const bool canRender = asset != nullptr || capturedMetadata != nullptr || remasterEditingProfileLoaded || effectiveHeight.available;
 	std::array<uint8_t, 64 * 3> visibleColors = {};
 	std::array<uint32_t, 64> visibleColorCounts = {};
@@ -6286,11 +6347,12 @@ void QuitWithFatalError ( NSString *message)
 			hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace bytesPerRow:size * 4 bitsPerPixel:32];
 		uint8_t *pixels = bitmap.bitmapData;
 		const unsigned maximum = (1u << std::min<unsigned>(remasterSelectedTile.bitDepth, 8)) - 1;
+		const unsigned previewFlip = RemasterInspectorPreviewFlip();
 		for (NSInteger y = 0; y < size; y++)
 		{
 			for (NSInteger x = 0; x < size; x++)
 			{
-				const size_t source = (y / 16) * 8 + x / 16;
+				const size_t source = S9xRemasterGeometryCanonicalPixel(static_cast<unsigned>((y / 16) * 8 + x / 16), previewFlip);
 				const uint8_t paletteIndex = asset ? asset->indices[source] : 0;
 				const uint8_t decodedArtwork = paletteIndex ?
 					static_cast<uint8_t>(48 + paletteIndex * 207 / maximum) :
@@ -6368,8 +6430,8 @@ void QuitWithFatalError ( NSString *message)
 					uint8_t overlay[3] = {};
 					if (showHeight)
 					{
-						const float sampleX = (x + 0.5f) / 16.0f - 0.5f;
-						const float sampleY = (y + 0.5f) / 16.0f - 0.5f;
+						const float sampleX = ((previewFlip & 1 ? size - 1 - x : x) + 0.5f) / 16.0f - 0.5f;
+						const float sampleY = ((previewFlip & 2 ? size - 1 - y : y) + 0.5f) / 16.0f - 0.5f;
 						const NSInteger preview = remasterHeightPreviewMode.indexOfSelectedItem;
 						if (effectivePreview)
 						{
@@ -6387,8 +6449,8 @@ void QuitWithFatalError ( NSString *message)
 							const float dy = SampleRemasterHeight(*height, sampling, sampleX, sampleY + 0.5f) -
 								SampleRemasterHeight(*height, sampling, sampleX, sampleY - 0.5f);
 							const float length = std::sqrt(dx * dx + dy * dy + 1.0f);
-							overlay[0] = static_cast<uint8_t>(std::lround((-dx / length * 0.5f + 0.5f) * 255.0f));
-							overlay[1] = static_cast<uint8_t>(std::lround((-dy / length * 0.5f + 0.5f) * 255.0f));
+							overlay[0] = static_cast<uint8_t>(std::lround(((previewFlip & 1 ? dx : -dx) / length * 0.5f + 0.5f) * 255.0f));
+							overlay[1] = static_cast<uint8_t>(std::lround(((previewFlip & 2 ? dy : -dy) / length * 0.5f + 0.5f) * 255.0f));
 							overlay[2] = static_cast<uint8_t>(std::lround((1.0f / length * 0.5f + 0.5f) * 255.0f));
 						}
 						else
@@ -6437,8 +6499,8 @@ void QuitWithFatalError ( NSString *message)
 							const float dy = ((*height)[bottom] - (*height)[top]) / 255.0f *
 								remasterReplayFrame.lightingCoordinateScale;
 							const float length = std::sqrt(dx * dx + dy * dy + 4.0f);
-							nx = -dx / length;
-							ny = -dy / length;
+							nx = (previewFlip & 1 ? dx : -dx) / length;
+							ny = (previewFlip & 2 ? dy : -dy) / length;
 							nz = 2.0f / length;
 						}
 						pixel[0] = static_cast<uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
@@ -6626,6 +6688,29 @@ void QuitWithFatalError ( NSString *message)
 		[self updateRemasterSemantics:sender];
 		return;
 	}
+	if (layer == RemasterEditorHeight || layer == RemasterEditorNormal)
+	{
+		std::set<RemasterTileContentId> touched(remasterSelectedTiles.begin(), remasterSelectedTiles.end());
+		auto snapshot = CaptureRemasterAssetSnapshot(touched);
+		bool changed = false;
+		for (const auto &tile : touched)
+		{
+			auto found = remasterEditingProfile.assets.find(tile);
+			if (found == remasterEditingProfile.assets.end()) continue;
+			auto &g = RemasterEditingGeometry(found->second);
+			if (layer == RemasterEditorHeight) { changed |= g.hasHeight; g.hasHeight = false; g.heightSampling = RemasterHeightSampling::Nearest; }
+			else { changed |= g.hasNormals; g.hasNormals = false; }
+			if (!RemasterMetadataHasData(found->second)) remasterEditingProfile.assets.erase(found);
+		}
+		if (!changed) return;
+		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:) object:snapshot];
+		[remasterUndoManager setActionName:@"Reset Geometry Layer"];
+		remasterMetadataNeedsSync = remasterNonSceneDirty = remasterEditingProfileDirty = true;
+		SyncRemasterEditingMetadataToFrame();
+		[self showRemasterVariantAtIndex:remasterVariantIndex];
+		[remasterNpcPoseView setNeedsDisplay:YES];
+		return;
+	}
 	if (layer == RemasterEditorNormal && remasterSelectedTiles.size() > 1)
 	{
 		std::string before;
@@ -6743,6 +6828,7 @@ void QuitWithFatalError ( NSString *message)
 		return;
 	remasterClipboardMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
 	remasterClipboardLayer = layer;
+	remasterClipboardGeometryFacing = remasterGeometryFacing;
 	remasterClipboardHasData = true;
 	remasterClipboardToken = [NSUUID UUID].UUIDString;
 	NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
@@ -6778,7 +6864,16 @@ void QuitWithFatalError ( NSString *message)
 	{
 		RemasterAssetMetadata &destination = remasterEditingProfile.assets[tileId];
 		destination.tileId = tileId;
-		CopyRemasterMetadataLayer(remasterClipboardMetadata, destination, layer);
+		if (layer == RemasterEditorHeight || layer == RemasterEditorNormal)
+		{
+			const auto &s = S9xRemasterFlipGeometryForEditing(remasterClipboardMetadata, remasterClipboardGeometryFacing);
+			auto &d = RemasterEditingGeometry(destination);
+			if (layer == RemasterEditorHeight) { d.height = s.height; d.hasHeight = s.hasHeight; d.heightSampling = s.heightSampling; }
+			else { d.normalXyz = s.normalXyz; d.hasNormals = s.hasNormals;
+				destination.normalIgnoreTileTransform = remasterClipboardMetadata.normalIgnoreTileTransform;
+				destination.directLightingOppositeFacing = remasterClipboardMetadata.directLightingOppositeFacing; }
+		}
+		else CopyRemasterMetadataLayer(remasterClipboardMetadata, destination, layer);
 		if (!RemasterMetadataHasData(destination))
 			remasterEditingProfile.assets.erase(tileId);
 	}
@@ -6814,6 +6909,15 @@ void QuitWithFatalError ( NSString *message)
 	for (const auto &tileId : remasterSelectedTiles)
 	{
 		auto mirrored = EffectiveRemasterMetadata(tileId);
+		if (S9xRemasterHasGeometryVariants(mirrored) && (layer == RemasterEditorHeight || layer == RemasterEditorNormal))
+		{
+			auto &g = RemasterEditingGeometry(mirrored);
+			if (layer == RemasterEditorHeight) { if (!g.hasHeight) continue; S9xRemasterFlipLayerPixels(g.height, horizontal); }
+			else { if (!g.hasNormals) continue; S9xRemasterFlipLayerPixels(g.normalXyz, horizontal); }
+			auto &destination = remasterEditingProfile.assets[tileId]; destination.tileId = tileId;
+			CopyRemasterMetadataLayer(mirrored, destination, layer);
+			continue;
+		}
 		if (!S9xRemasterFlipMetadataLayer(mirrored, static_cast<int>(layer), horizontal)) continue;
 		auto &destination = remasterEditingProfile.assets[tileId];
 		destination.tileId = tileId;
@@ -6880,7 +6984,18 @@ void QuitWithFatalError ( NSString *message)
 	{
 		RemasterAssetMetadata destination = sourceMetadata;
 		destination.tileId = tileId;
-		destination.combineEmitters = EffectiveRemasterMetadata(tileId).combineEmitters;
+		const auto existing = EffectiveRemasterMetadata(tileId);
+		destination.combineEmitters = existing.combineEmitters;
+		if (S9xRemasterHasGeometryVariants(sourceMetadata) || S9xRemasterHasGeometryVariants(existing))
+		{
+			static_cast<RemasterGeometryLayers &>(destination) = static_cast<const RemasterGeometryLayers &>(existing);
+			destination.geometryByFacing = existing.geometryByFacing;
+			destination.facingGeometry = existing.facingGeometry;
+			destination.geometryByFlip = existing.geometryByFlip;
+			destination.flipGeometry = existing.flipGeometry;
+			destination.normalIgnoreTileTransform = existing.normalIgnoreTileTransform;
+			destination.directLightingOppositeFacing = existing.directLightingOppositeFacing;
+		}
 		if (sourceMetadata.hasEmission && !(tileId == remasterSelectedTile))
 		{
 			std::array<std::array<uint8_t, 3>, 64> destinationArtwork = {};
@@ -7267,8 +7382,20 @@ void QuitWithFatalError ( NSString *message)
 	remasterValueBrush.frame = NSMakeRect(emissionLayer ? 414 : 376, 380, 120, 22);
 	remasterValueUpButton.frame = NSMakeRect(emissionLayer ? 538 : 500, 377, 30, 28);
 	remasterValueInput.frame = NSMakeRect(emissionLayer ? 454 : 416, 399, 40, 20);
-	remasterValueLabel.frame = layer == RemasterEditorNormal ? NSMakeRect(350, 400, 390, 18) :
+	remasterValueLabel.frame = layer == RemasterEditorNormal ? NSMakeRect(350, 468, 390, 18) :
 		(emissionLayer ? NSMakeRect(573, 379, 167, 24) : NSMakeRect(535, 379, 205, 24));
+	// Geometry authoring occupies the previously empty upper-right area. Keep
+	// every layer-specific row above the shared copy/paste row at y=270.
+	remasterNormalPixelScopeLabel.frame = NSMakeRect(244, 468, 100, 16);
+	remasterNormalPreset.frame = NSMakeRect(244, 440, 90, 28);
+	remasterNormalXInput.frame = NSMakeRect(340, 440, 70, 24);
+	remasterNormalYInput.frame = NSMakeRect(420, 440, 70, 24);
+	remasterNormalZInput.frame = NSMakeRect(500, 440, 70, 24);
+	remasterNormalUpdateButton.frame = NSMakeRect(578, 438, 80, 28);
+	remasterNormalApplyAnimationButton.frame = NSMakeRect(244, 400, 150, 28);
+	remasterNormalFillTileButton.frame = NSMakeRect(401, 400, 130, 28);
+	remasterNormalIgnoreTransformButton.frame = NSMakeRect(244, 360, 288, 28);
+	remasterOppositeFacingDirectButton.frame = NSMakeRect(540, 360, 200, 28);
 	remasterOcclusionFillOpaqueButton.hidden = layer != RemasterEditorOcclusion;
 	remasterHeightSamplingSelector.hidden = layer != RemasterEditorHeight;
 	remasterHeightPreviewMode.hidden = layer != RemasterEditorHeight;
@@ -7347,6 +7474,25 @@ void QuitWithFatalError ( NSString *message)
 		remasterEditingProfile.assets.at(remasterSelectedTile).hasNormals;
 	remasterOppositeFacingDirectButton.enabled = editable;
 	remasterNormalIgnoreTransformButton.enabled = editable;
+	const bool geometryLayer = layer == RemasterEditorHeight || layer == RemasterEditorNormal;
+	remasterGeometryByFacingButton.frame = layer == RemasterEditorHeight ?
+		NSMakeRect(168, 530, 285, 28) : NSMakeRect(244, 500, 285, 28);
+	remasterGeometryFacingSelector.frame = layer == RemasterEditorHeight ?
+		NSMakeRect(460, 530, 270, 28) : NSMakeRect(540, 500, 200, 28);
+	remasterGeometryByFacingButton.hidden = !geometryLayer;
+	remasterGeometryFacingSelector.hidden = !geometryLayer;
+	remasterGeometryByFacingButton.enabled = editable;
+	const auto geometryAsset = remasterEditingProfile.assets.find(remasterSelectedTile);
+	const bool byFacing = geometryAsset != remasterEditingProfile.assets.end() && geometryAsset->second.geometryByFlip;
+	remasterGeometryByFacingButton.state = byFacing ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterGeometryFacingSelector.enabled = editable && byFacing;
+	[remasterGeometryFacingSelector selectItemAtIndex:remasterGeometryFacing];
+	if (byFacing) { remasterHeightApplyAnimationButton.enabled = NO; remasterNormalApplyAnimationButton.enabled = NO; }
+	if (geometryAsset != remasterEditingProfile.assets.end() && geometryAsset->second.geometryByFacing)
+	{ remasterHeightApplyAnimationButton.enabled = NO; remasterNormalApplyAnimationButton.enabled = NO; }
+	// Flip-set vectors already describe gameplay space, so this legacy option
+	// cannot change their direction a second time.
+	if (byFacing && remasterGeometryFacing) remasterNormalIgnoreTransformButton.enabled = NO;
 	remasterEmissionColor.enabled = editable;
 	remasterEmissionPaintMode.enabled = editable;
 	remasterEmissionColorScope.enabled = editable;
@@ -7364,7 +7510,13 @@ void QuitWithFatalError ( NSString *message)
 		for (const auto &tileId : remasterSelectedTiles)
 		{
 			auto metadata = EffectiveRemasterMetadata(tileId);
-			canFlip |= S9xRemasterFlipMetadataLayer(metadata, static_cast<int>(layer), true);
+			if (S9xRemasterHasGeometryVariants(metadata) && (layer == RemasterEditorHeight || layer == RemasterEditorNormal))
+			{
+				const auto &geometry = RemasterEditingGeometry(metadata);
+				canFlip |= layer == RemasterEditorHeight ? geometry.hasHeight : geometry.hasNormals;
+			}
+			else
+				canFlip |= S9xRemasterFlipMetadataLayer(metadata, static_cast<int>(layer), true);
 		}
 	remasterFlipLayerHorizontalButton.enabled = remasterFlipLayerVerticalButton.enabled = canFlip;
 	remasterCopyTileButton.enabled = !remasterVariants.empty();
@@ -7567,7 +7719,7 @@ void QuitWithFatalError ( NSString *message)
 		return NO;
 	const size_t x = std::min<size_t>(7, static_cast<size_t>((point.x - NSMinX(imageRect)) * 8 / NSWidth(imageRect)));
 	const size_t y = std::min<size_t>(7, static_cast<size_t>((NSMaxY(imageRect) - point.y) * 8 / NSHeight(imageRect)));
-	*pixel = y * 8 + x;
+	*pixel = S9xRemasterGeometryCanonicalPixel(static_cast<unsigned>(y * 8 + x), RemasterInspectorPreviewFlip());
 	return YES;
 }
 
@@ -7670,11 +7822,12 @@ void QuitWithFatalError ( NSString *message)
 	}
 	else if (layer == RemasterEditorHeight)
 	{
-		const bool hadLayer = metadata.hasHeight;
-		S9xRemasterInspectorInitializeAuthoredHeight(metadata);
+		auto &g = RemasterEditingGeometry(metadata);
+		const bool hadLayer = g.hasHeight;
+		if (!hadLayer) { g.height.fill(0); g.hasHeight = true; g.heightSampling = RemasterHeightSampling::Nearest; }
 		const uint8_t value = remasterStrokeValue;
-		remasterStrokeChanged |= !hadLayer || metadata.height[pixel] != value;
-		metadata.height[pixel] = value;
+		remasterStrokeChanged |= !hadLayer || g.height[pixel] != value;
+		g.height[pixel] = value;
 	}
 	else if (layer == RemasterEditorNormal)
 	{
@@ -7682,16 +7835,18 @@ void QuitWithFatalError ( NSString *message)
 		{
 			RemasterAssetMetadata &target = remasterEditingProfile.assets[tileId];
 			target.tileId = tileId;
+			auto &g = RemasterEditingGeometry(target);
 			const RemasterFrameAssetMetadata *targetCaptured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, tileId);
-			const bool hadLayer = target.hasNormals;
-			if (!hadLayer && targetCaptured && targetCaptured->hasNormals)
-				target.normalXyz = targetCaptured->normalXyz;
-			target.hasNormals = true;
+			const bool hadLayer = g.hasNormals;
+			if (!hadLayer && !S9xRemasterHasGeometryVariants(target) && targetCaptured && targetCaptured->hasNormals)
+				g.normalXyz = targetCaptured->normalXyz;
+			else if (!hadLayer) for (unsigned p = 0; p < 64; p++) { g.normalXyz[p*3] = g.normalXyz[p*3+1] = 128; g.normalXyz[p*3+2] = 255; }
+			g.hasNormals = true;
 			const size_t offset = pixel * 3;
 			for (size_t component = 0; component < 3; component++)
 			{
-				remasterStrokeChanged |= !hadLayer || target.normalXyz[offset + component] != remasterStrokeNormal[component];
-				target.normalXyz[offset + component] = remasterStrokeNormal[component];
+				remasterStrokeChanged |= !hadLayer || g.normalXyz[offset + component] != remasterStrokeNormal[component];
+				g.normalXyz[offset + component] = remasterStrokeNormal[component];
 			}
 		}
 	}
@@ -7838,12 +7993,13 @@ void QuitWithFatalError ( NSString *message)
 	}
 	else if (layer == RemasterEditorHeight)
 	{
-		const bool hadLayer = metadata.hasHeight;
-		S9xRemasterInspectorInitializeAuthoredHeight(metadata);
-		if (hadLayer && metadata.height[remasterSelectedTilePixel] == value)
+		auto &g = RemasterEditingGeometry(metadata);
+		const bool hadLayer = g.hasHeight;
+		if (!hadLayer) { g.height.fill(0); g.hasHeight = true; }
+		if (hadLayer && g.height[remasterSelectedTilePixel] == value)
 			return;
-		metadata.height[remasterSelectedTilePixel] = value;
-		metadata.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
+		g.height[remasterSelectedTilePixel] = value;
+		g.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
 			RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
 	}
 	else
@@ -7944,10 +8100,11 @@ void QuitWithFatalError ( NSString *message)
 	metadata.tileId = remasterSelectedTile;
 	const RemasterHeightSampling sampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
 		RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
-	if (metadata.hasHeight && metadata.heightSampling == sampling)
+	auto &g = RemasterEditingGeometry(metadata);
+	if (g.hasHeight && g.heightSampling == sampling)
 		return;
-	S9xRemasterInspectorInitializeAuthoredHeight(metadata);
-	metadata.heightSampling = sampling;
+	if (!g.hasHeight) { g.height.fill(0); g.hasHeight = true; }
+	g.heightSampling = sampling;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
@@ -7955,6 +8112,36 @@ void QuitWithFatalError ( NSString *message)
 	std::string current;
 	if (S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics))
 		UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)changeRemasterGeometryByFacing:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	const bool enabled = remasterGeometryByFacingButton.state != NSControlStateValueOff;
+	std::set<RemasterTileContentId> touched(remasterSelectedTiles.begin(), remasterSelectedTiles.end());
+	if (!remasterUndoManager) remasterUndoManager = [[NSUndoManager alloc] init];
+	auto snapshot = CaptureRemasterAssetSnapshot(touched);
+	for (const auto &tile : touched)
+	{
+		auto &asset = remasterEditingProfile.assets[tile]; asset.tileId = tile; asset.geometryByFlip = enabled;
+		if (!RemasterMetadataHasData(asset)) remasterEditingProfile.assets.erase(tile);
+	}
+	if (enabled) remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, 25u);
+	if (!enabled) remasterGeometryFacing = 0;
+	else if (!remasterGeometryFacing) remasterGeometryFacing = 1;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:) object:snapshot];
+	[remasterUndoManager setActionName:@"Change Flip-Specific Geometry"];
+	remasterMetadataNeedsSync = remasterNonSceneDirty = remasterEditingProfileDirty = true;
+	SyncRemasterEditingMetadataToFrame();
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+	[remasterNpcPoseView setNeedsDisplay:YES];
+}
+
+- (void)changeRemasterGeometryFacing:(id)sender
+{
+	[self endRemasterTileStroke];
+	remasterGeometryFacing = static_cast<unsigned>(std::max<NSInteger>(0, remasterGeometryFacingSelector.indexOfSelectedItem));
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
@@ -8027,13 +8214,14 @@ void QuitWithFatalError ( NSString *message)
 	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
 	metadata.tileId = remasterSelectedTile;
 	const uint8_t value = static_cast<uint8_t>(remasterValueBrush.integerValue);
-	const bool changed = !metadata.hasHeight ||
-		std::any_of(metadata.height.begin(), metadata.height.end(), [value](uint8_t item) { return item != value; });
+	auto &g = RemasterEditingGeometry(metadata);
+	const bool changed = !g.hasHeight ||
+		std::any_of(g.height.begin(), g.height.end(), [value](uint8_t item) { return item != value; });
 	if (!changed)
 		return;
-	metadata.height.fill(value);
-	metadata.hasHeight = true;
-	metadata.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
+	g.height.fill(value);
+	g.hasHeight = true;
+	g.heightSampling = remasterHeightSamplingSelector.indexOfSelectedItem == 1 ?
 		RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
@@ -8055,9 +8243,9 @@ void QuitWithFatalError ( NSString *message)
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
 	auto existing = remasterEditingProfile.assets.find(remasterSelectedTile);
-	const bool hadHeight = existing != remasterEditingProfile.assets.end() && existing->second.hasHeight;
-	std::array<uint8_t, 64> height = hadHeight ? existing->second.height : std::array<uint8_t, 64>{};
-	RemasterHeightSampling sampling = hadHeight ? existing->second.heightSampling : RemasterHeightSampling::Nearest;
+	const bool hadHeight = existing != remasterEditingProfile.assets.end() && RemasterEditingGeometry(existing->second).hasHeight;
+	std::array<uint8_t, 64> height = hadHeight ? RemasterEditingGeometry(existing->second).height : std::array<uint8_t, 64>{};
+	RemasterHeightSampling sampling = hadHeight ? RemasterEditingGeometry(existing->second).heightSampling : RemasterHeightSampling::Nearest;
 	bool changed = false;
 	for (uint8_t &sample : height)
 	{
@@ -8070,9 +8258,10 @@ void QuitWithFatalError ( NSString *message)
 		return;
 	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
 	metadata.tileId = remasterSelectedTile;
-	metadata.height = height;
-	metadata.hasHeight = true;
-	metadata.heightSampling = sampling;
+	auto &g = RemasterEditingGeometry(metadata);
+	g.height = height;
+	g.hasHeight = true;
+	g.heightSampling = sampling;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
@@ -8090,7 +8279,7 @@ void QuitWithFatalError ( NSString *message)
 	if (!remasterEditingProfileLoaded || remasterVariants.size() < 2)
 		return;
 	auto source = remasterEditingProfile.assets.find(remasterSelectedTile);
-	if (source == remasterEditingProfile.assets.end() || !source->second.hasHeight)
+	if (source == remasterEditingProfile.assets.end() || !source->second.hasHeight || S9xRemasterHasGeometryVariants(source->second))
 		return;
 	const std::array<uint8_t, 64> sourceHeight = source->second.height;
 	const RemasterHeightSampling sourceSampling = source->second.heightSampling;
@@ -8102,6 +8291,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		RemasterAssetMetadata &metadata = remasterEditingProfile.assets[tileId];
 		metadata.tileId = tileId;
+		if (S9xRemasterHasGeometryVariants(metadata)) continue;
 		changed |= !metadata.hasHeight || metadata.height != sourceHeight ||
 			metadata.heightSampling != sourceSampling;
 		metadata.hasHeight = true;
@@ -8216,20 +8406,21 @@ void QuitWithFatalError ( NSString *message)
 		RemasterAssetMetadata &metadata = remasterEditingProfile.assets[tileId];
 		metadata.tileId = tileId;
 		const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, tileId);
-		const bool hadLayer = metadata.hasNormals;
-		if (!hadLayer && captured && captured->hasNormals)
-			metadata.normalXyz = captured->normalXyz;
+		auto &g = RemasterEditingGeometry(metadata);
+		const bool hadLayer = g.hasNormals;
+		if (!hadLayer && !S9xRemasterHasGeometryVariants(metadata) && captured && captured->hasNormals)
+			g.normalXyz = captured->normalXyz;
 		else if (!hadLayer)
 			for (size_t pixel = 0; pixel < 64; pixel++)
 			{
-				metadata.normalXyz[pixel * 3] = 128;
-				metadata.normalXyz[pixel * 3 + 1] = 128;
-				metadata.normalXyz[pixel * 3 + 2] = 255;
+				g.normalXyz[pixel * 3] = 128;
+				g.normalXyz[pixel * 3 + 1] = 128;
+				g.normalXyz[pixel * 3 + 2] = 255;
 			}
 		const size_t offset = remasterSelectedTilePixel * 3;
-		changed |= !hadLayer || !std::equal(value.begin(), value.end(), metadata.normalXyz.begin() + offset);
-		std::copy(value.begin(), value.end(), metadata.normalXyz.begin() + offset);
-		metadata.hasNormals = true;
+		changed |= !hadLayer || !std::equal(value.begin(), value.end(), g.normalXyz.begin() + offset);
+		std::copy(value.begin(), value.end(), g.normalXyz.begin() + offset);
+		g.hasNormals = true;
 	}
 	if (!changed)
 	{
@@ -8298,14 +8489,15 @@ void QuitWithFatalError ( NSString *message)
 		const std::array<uint8_t, 3> &value = values[index++];
 		RemasterAssetMetadata &metadata = remasterEditingProfile.assets[tileId];
 		metadata.tileId = tileId;
-		changed |= !metadata.hasNormals;
+		auto &g = RemasterEditingGeometry(metadata);
+		changed |= !g.hasNormals;
 		for (size_t pixel = 0; pixel < 64; pixel++)
 			for (size_t component = 0; component < 3; component++)
 			{
-				changed |= metadata.normalXyz[pixel * 3 + component] != value[component];
-				metadata.normalXyz[pixel * 3 + component] = value[component];
+				changed |= g.normalXyz[pixel * 3 + component] != value[component];
+				g.normalXyz[pixel * 3 + component] = value[component];
 			}
-		metadata.hasNormals = true;
+		g.hasNormals = true;
 	}
 	if (!changed)
 		return;
@@ -8324,7 +8516,7 @@ void QuitWithFatalError ( NSString *message)
 	if (!remasterEditingProfileLoaded || remasterVariants.size() < 2)
 		return;
 	auto source = remasterEditingProfile.assets.find(remasterSelectedTile);
-	if (source == remasterEditingProfile.assets.end() || !source->second.hasNormals)
+	if (source == remasterEditingProfile.assets.end() || !source->second.hasNormals || S9xRemasterHasGeometryVariants(source->second))
 		return;
 	const std::array<uint8_t, 192> sourceNormals = source->second.normalXyz;
 	std::string before;
@@ -8335,6 +8527,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		RemasterAssetMetadata &metadata = remasterEditingProfile.assets[tileId];
 		metadata.tileId = tileId;
+		if (S9xRemasterHasGeometryVariants(metadata)) continue;
 		changed |= !metadata.hasNormals || metadata.normalXyz != sourceNormals;
 		metadata.hasNormals = true;
 		metadata.normalXyz = sourceNormals;

@@ -230,6 +230,8 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)generateRemasterNpcHeightRamp:(id)sender;
 - (void)applyRemasterNpcNormals:(id)sender;
 - (void)changeRemasterNormalIgnoreTransform:(id)sender;
+- (void)changeRemasterGeometryByFacing:(id)sender;
+- (void)changeRemasterGeometryFacing:(id)sender;
 - (void)toggleRemasterNpcPlayback:(id)sender;
 - (void)loadRemasterNpcLibrary:(id)sender;
 - (void)showRemasterProfileSettings;

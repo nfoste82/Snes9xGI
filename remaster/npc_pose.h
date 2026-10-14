@@ -30,6 +30,7 @@ inline bool S9xRemasterNpcCanAuthorLayer(const RemasterProfile &profile,
 	const RemasterTileContentId &tile, bool normals, bool overwrite)
 {
 	const auto found = profile.assets.find(tile);
+	if (found != profile.assets.end() && S9xRemasterHasGeometryVariants(found->second)) return false;
 	return overwrite || found == profile.assets.end() ||
 		!(normals ? found->second.hasNormals : found->second.hasHeight);
 }
@@ -65,7 +66,9 @@ inline std::array<uint8_t, 3> S9xRemasterNpcDebugColor(const RemasterFrame &fram
 {
 	const auto &pixel = frame.mainPixels[at];
 	const auto &instance = frame.tileInstances[pixel.instanceId - 1];
-	const auto *metadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+	const auto *sourceMetadata = S9xRemasterFrameMetadataForTile(frame, instance.tileId);
+	const auto resolved = sourceMetadata ? S9xRemasterResolveInstanceGeometry(*sourceMetadata, instance) : RemasterFrameAssetMetadata{};
+	const auto *metadata = sourceMetadata ? &resolved : nullptr;
 	const size_t p = pixel.tilePixel;
 	if (view == RemasterNpcDebugView::Normals)
 	{

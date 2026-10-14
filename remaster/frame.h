@@ -37,7 +37,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 31;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 33;
 
 struct RemasterFramePixel
 {
@@ -100,8 +100,24 @@ struct RemasterFrameAssetMetadata
 	bool hasEmission = false;
 	bool directLightingOppositeFacing = false;
 	bool normalIgnoreTileTransform = false;
+	bool geometryByFacing = false;
+	std::array<RemasterGeometryLayers, 4> facingGeometry;
+	bool geometryByFlip = false;
+	std::array<RemasterGeometryLayers, 4> flipGeometry;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
 };
+
+inline RemasterFrameAssetMetadata S9xRemasterResolveFacingGeometry(const RemasterFrameAssetMetadata &source, unsigned facing)
+{
+	auto result = source;
+	if (source.geometryByFacing && facing >= 1 && facing <= 4)
+	{
+		const auto &g = source.facingGeometry[facing - 1];
+		if (g.hasHeight) { result.height = g.height; result.hasHeight = true; result.heightSampling = g.heightSampling; }
+		if (g.hasNormals) { result.normalXyz = g.normalXyz; result.hasNormals = true; }
+	}
+	return result;
+}
 
 struct RemasterFrameMaterial
 {
@@ -131,6 +147,7 @@ struct RemasterFrameTileInstance
 	int32_t heightOffset = 0; // signed placement datum; authored local arrays stay bytes
 	std::array<uint8_t, 64> placementHeight = {};
 	int8_t normalYaw = 0;
+	uint8_t geometryFacing = 0; // Unknown/default, north, south, east, west.
 	bool hFlip = false;
 	bool vFlip = false;
 	bool hasPlacementHeight = false;
@@ -140,6 +157,23 @@ struct RemasterFrameTileInstance
 	std::string assetGroup;
 	std::string material;
 };
+
+inline RemasterFrameAssetMetadata S9xRemasterResolveInstanceGeometry(
+	const RemasterFrameAssetMetadata &source, const RemasterFrameTileInstance &instance)
+{
+	if (!source.geometryByFlip) return S9xRemasterResolveFacingGeometry(source, instance.geometryFacing);
+	auto result = source;
+	const auto &g = source.flipGeometry[S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip)];
+	if (g.hasHeight) { result.height = g.height; result.hasHeight = true; result.heightSampling = g.heightSampling; }
+	if (g.hasNormals)
+	{
+		result.normalXyz = g.normalXyz; result.hasNormals = true;
+		// This set already describes the final gameplay direction. Pixel positions
+		// still follow the canonical artwork lookup, but vectors must not flip twice.
+		result.normalIgnoreTileTransform = true;
+	}
+	return result;
+}
 
 // CPU/Metal RG32Float v2 wire value. Local profile/placement relief stays unsigned;
 // only the composed height is signed. No rendering-origin bias or clipping.
@@ -3027,6 +3061,10 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.hasEmission = source.hasEmission;
 		metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
 		metadata.normalIgnoreTileTransform = source.normalIgnoreTileTransform;
+		metadata.geometryByFacing = source.geometryByFacing;
+		metadata.facingGeometry = source.facingGeometry;
+		metadata.geometryByFlip = source.geometryByFlip;
+		metadata.flipGeometry = source.flipGeometry;
 		metadata.heightSampling = source.heightSampling;
 		frame.assetMetadata.push_back(metadata);
 	}
@@ -3595,6 +3633,20 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			if (!input.ReadU8(fixed) || fixed > 1) return false;
 			metadata.normalIgnoreTileTransform = fixed != 0;
 		}
+		for (unsigned variant = 0; variant < (result.schemaVersion >= 33 ? 2u : result.schemaVersion >= 32 ? 1u : 0u); variant++)
+		{
+			uint8_t enabled;
+			if (!input.ReadU8(enabled) || enabled > 1) return false;
+			(variant ? metadata.geometryByFlip : metadata.geometryByFacing) = enabled != 0;
+			for (auto &g : variant ? metadata.flipGeometry : metadata.facingGeometry)
+			{
+				uint8_t h, n, sampling;
+				if (!input.ReadU8(h) || h > 1 || !input.ReadU8(n) || n > 1 || !input.ReadU8(sampling) || sampling > 1 || (!h && sampling)) return false;
+				g.hasHeight = h; g.hasNormals = n; g.heightSampling = static_cast<RemasterHeightSampling>(sampling);
+				if (h) for (auto &v : g.height) if (!input.ReadU8(v)) return false;
+				if (n) for (auto &v : g.normalXyz) if (!input.ReadU8(v)) return false;
+			}
+		}
 	}
 	result.materials.resize(materialCount);
 	for (RemasterFrameMaterial &material : result.materials)
@@ -3663,6 +3715,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		instance.hFlip = hFlip != 0;
 		instance.vFlip = vFlip != 0;
 		instance.normalYaw = normalYaw == 255 ? -1 : static_cast<int8_t>(normalYaw);
+		if (result.schemaVersion >= 32 && (!input.ReadU8(instance.geometryFacing) || instance.geometryFacing > 4)) return false;
 		if (result.schemaVersion >= 20)
 		{
 			uint8_t hasPlacementHeight = 0;
@@ -4258,6 +4311,19 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			if (metadata.hasDoorframeMask) RemasterFrameSerialization::U64(bytes, metadata.doorframeMask);
 		}
 		RemasterFrameSerialization::U8(bytes, metadata.normalIgnoreTileTransform ? 1 : 0);
+		for (unsigned variant = 0; variant < 2; variant++)
+		{
+			RemasterFrameSerialization::U8(bytes, (variant ? metadata.geometryByFlip : metadata.geometryByFacing) ? 1 : 0);
+			for (const auto &g : variant ? metadata.flipGeometry : metadata.facingGeometry)
+			{
+				RemasterFrameSerialization::U8(bytes, g.hasHeight ? 1 : 0);
+				RemasterFrameSerialization::U8(bytes, g.hasNormals ? 1 : 0);
+				if (g.heightSampling > RemasterHeightSampling::Linear || (!g.hasHeight && g.heightSampling != RemasterHeightSampling::Nearest)) return false;
+				RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(g.heightSampling));
+				if (g.hasHeight) bytes.insert(bytes.end(), g.height.begin(), g.height.end());
+				if (g.hasNormals) bytes.insert(bytes.end(), g.normalXyz.begin(), g.normalXyz.end());
+			}
+		}
 	}
 	for (const RemasterFrameMaterial &material : frame.materials)
 	{
@@ -4296,6 +4362,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U32(bytes, static_cast<uint32_t>(instance.heightOffset));
 		RemasterFrameSerialization::U8(bytes, instance.normalYaw < 0 ? 255 :
 			static_cast<uint8_t>(instance.normalYaw));
+		if (instance.geometryFacing > 4) return false;
+		RemasterFrameSerialization::U8(bytes, instance.geometryFacing);
 		RemasterFrameSerialization::U8(bytes, instance.hasPlacementHeight ? 1 : 0);
 		if (instance.hasPlacementHeight)
 			bytes.insert(bytes.end(), instance.placementHeight.begin(), instance.placementHeight.end());

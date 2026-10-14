@@ -101,7 +101,17 @@ inline bool S9xRemasterOcclusionNeedsStorage (bool hasOcclusion, const std::arra
 	return hasOcclusion && std::any_of(coverage.begin(), coverage.end(), [](uint8_t value) { return value < 255; });
 }
 
-struct RemasterAssetMetadata
+// Geometry arrays use canonical artwork pixel positions. Flip-specific normal
+// vectors are authored in gameplay space, not reflected again at render time.
+struct RemasterGeometryLayers
+{
+	std::array<uint8_t, 64> height = {};
+	std::array<uint8_t, 192> normalXyz = {};
+	bool hasHeight = false, hasNormals = false;
+	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
+};
+
+struct RemasterAssetMetadata : RemasterGeometryLayers
 {
 	RemasterTileContentId tileId;
 	RemasterTileRole tileRole = RemasterTileRole::Unknown;
@@ -114,23 +124,58 @@ struct RemasterAssetMetadata
 	std::string tileSemanticNote;
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
-	std::array<uint8_t, 64> height = {};
-	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
 	float emissionDepth = 0.0f;
 	bool emissionOmnidirectional = false;
 	std::vector<RemasterTileContentId> combineEmitters;
 	bool hasMaterialSelectors = false;
 	bool hasOcclusion = false;
-	bool hasHeight = false;
-	bool hasNormals = false;
 	bool hasEmission = false;
 	bool directLightingOppositeFacing = false;
 	bool normalIgnoreTileTransform = false;
-	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
+	bool geometryByFacing = false;
+	std::array<RemasterGeometryLayers, 4> facingGeometry;
+	bool geometryByFlip = false;
+	std::array<RemasterGeometryLayers, 4> flipGeometry;
 };
 
+inline unsigned S9xRemasterGeometryFlipIndex(bool hFlip, bool vFlip)
+{
+	return unsigned(hFlip) | (unsigned(vFlip) << 1);
+}
+
+inline unsigned S9xRemasterGeometryCanonicalPixel(unsigned pixel, unsigned flip)
+{
+	return pixel ^ ((flip & 1) ? 7u : 0u) ^ ((flip & 2) ? 56u : 0u);
+}
+
+inline bool S9xRemasterHasGeometryVariants(const RemasterAssetMetadata &asset)
+{
+	return asset.geometryByFlip || asset.geometryByFacing;
+}
+
+// Editor selection: 0 = shared fallback, 1..4 = normal, H, V, H+V.
+inline RemasterGeometryLayers &S9xRemasterFlipGeometryForEditing(RemasterAssetMetadata &asset, unsigned selection)
+{
+	return asset.geometryByFlip && selection >= 1 && selection <= 4 ? asset.flipGeometry[selection - 1] : static_cast<RemasterGeometryLayers &>(asset);
+}
+
+inline const RemasterGeometryLayers &S9xRemasterFlipGeometryForEditing(const RemasterAssetMetadata &asset, unsigned selection)
+{
+	return asset.geometryByFlip && selection >= 1 && selection <= 4 ? asset.flipGeometry[selection - 1] : static_cast<const RemasterGeometryLayers &>(asset);
+}
+
 // Doorframe edits are deliberately independent of authored height/normal arrays.
+inline RemasterGeometryLayers &S9xRemasterGeometryForEditing(RemasterAssetMetadata &asset, unsigned facing)
+{
+	return asset.geometryByFacing && facing >= 1 && facing <= 4 ? asset.facingGeometry[facing - 1] : static_cast<RemasterGeometryLayers &>(asset);
+}
+
+inline const RemasterGeometryLayers &S9xRemasterGeometryForEditing(const RemasterAssetMetadata &asset, unsigned facing)
+{
+	return asset.geometryByFacing && facing >= 1 && facing <= 4 ? asset.facingGeometry[facing - 1] : static_cast<const RemasterGeometryLayers &>(asset);
+}
+
 // Absent is unknown; painting even a false pixel creates an explicit mask.
 inline bool S9xRemasterPaintDoorframe (RemasterAssetMetadata &metadata, unsigned pixel, bool value)
 {
@@ -1055,6 +1100,47 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!ParseBool(value, asset->normalIgnoreTileTransform))
 					fail(lineNumber, "normal_ignore_tile_transform must be true or false");
 			}
+			else if (key == "geometry_by_facing")
+			{
+				if (parsed.schemaVersion < 24) fail(lineNumber, "geometry_by_facing requires schema_version 24");
+				if (!ParseBool(value, asset->geometryByFacing)) fail(lineNumber, "geometry_by_facing must be true or false");
+			}
+			else if (key == "geometry_by_flip")
+			{
+				if (parsed.schemaVersion < 25) fail(lineNumber, "geometry_by_flip requires schema_version 25");
+				if (!ParseBool(value, asset->geometryByFlip)) fail(lineNumber, "geometry_by_flip must be true or false");
+			}
+			else if (key.compare(0, 7, "facing_") == 0 || key.compare(0, 5, "flip_") == 0)
+			{
+				const bool flip = key.compare(0, 5, "flip_") == 0;
+				if (parsed.schemaVersion < (flip ? 25u : 24u)) fail(lineNumber, "geometry keys require a newer schema_version");
+				const char *facings[] = {"north", "south", "east", "west"};
+				const char *flips[] = {"normal", "horz", "vert", "both"};
+				bool recognized = false;
+				for (unsigned i = 0; i < 4; i++)
+				{
+					const std::string prefix = std::string(flip ? "flip_" : "facing_") + (flip ? flips[i] : facings[i]) + "_";
+					if (key.compare(0, prefix.size(), prefix) != 0) continue;
+					auto &layers = flip ? asset->flipGeometry[i] : asset->facingGeometry[i];
+					const auto suffix = key.substr(prefix.size());
+					if (suffix == "height" || suffix == "normal_xyz")
+					{
+						recognized = true;
+						std::vector<uint8_t> values;
+						if (!ParseByteArray(value, values) || values.size() != (suffix == "height" ? 64 : 192))
+							fail(lineNumber, "facing geometry array has invalid size or values");
+						else if (suffix == "height") { std::copy(values.begin(), values.end(), layers.height.begin()); layers.hasHeight = true; }
+						else { std::copy(values.begin(), values.end(), layers.normalXyz.begin()); layers.hasNormals = true; }
+					}
+					else if (suffix == "height_sampling")
+					{
+						recognized = true; std::string sampling;
+						if (!ParseString(value, sampling) || (sampling != "nearest" && sampling != "linear")) fail(lineNumber, "invalid facing height_sampling");
+						else layers.heightSampling = sampling == "linear" ? RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
+					}
+				}
+				if (!recognized) fail(lineNumber, "unknown facing geometry key");
+			}
 			else if (key == "combine_emitters")
 			{
 				std::vector<std::string> hashes;
@@ -1133,8 +1219,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 23)
-		fail(0, "schema_version must be an integer in [1, 23]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 25)
+		fail(0, "schema_version must be an integer in [1, 25]");
 	if(!parsed.obstacleGroups.empty() && parsed.schemaVersion<22)fail(0,"obstacle_groups requires schema_version 22");
 	S9xRemasterValidateObstacleGroups(parsed.obstacleGroups,diagnostics);
 	for(size_t g=0;g<parsed.obstacleGroups.size();g++)for(size_t m=0;m<parsed.obstacleGroups[g].members.size();m++) {
@@ -1236,8 +1322,16 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			fail(0, "doorframe_mask requires tile_role = door");
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
+		for (const auto &facing : item.facingGeometry)
+			if (!facing.hasHeight && facing.heightSampling != RemasterHeightSampling::Nearest)
+				fail(0, "facing height_sampling requires facing height");
+		for (const auto &flip : item.flipGeometry)
+			if (!flip.hasHeight && flip.heightSampling != RemasterHeightSampling::Nearest)
+				fail(0, "flip height_sampling requires flip height");
 		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && !item.emissionOmnidirectional && item.combineEmitters.empty() &&
-			!item.directLightingOppositeFacing && !item.normalIgnoreTileTransform && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
+			!item.directLightingOppositeFacing && !item.normalIgnoreTileTransform && !item.geometryByFacing && !item.geometryByFlip &&
+			std::none_of(item.flipGeometry.begin(), item.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) &&
+			std::none_of(item.facingGeometry.begin(), item.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
 			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, direct_lighting_opposite_facing, or a known tile_role");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
@@ -1378,6 +1472,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	bool hasNormals = false;
 	bool hasOppositeFacingDirectLighting = false;
 	bool hasFixedNormalDirection = false;
+	bool hasFacingGeometry = false;
+	bool hasFlipGeometry = false;
 	bool hasDiffuseReflectance = false;
 	bool hasEmissionDepth = false;
 	bool hasCombinedEmitters = false;
@@ -1392,10 +1488,12 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		hasNormals |= entry.second.hasNormals;
 		hasOppositeFacingDirectLighting |= entry.second.directLightingOppositeFacing;
 		hasFixedNormalDirection |= entry.second.normalIgnoreTileTransform;
+		hasFacingGeometry |= entry.second.geometryByFacing || std::any_of(entry.second.facingGeometry.begin(), entry.second.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; });
+		hasFlipGeometry |= entry.second.geometryByFlip || std::any_of(entry.second.flipGeometry.begin(), entry.second.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; });
 	}
 	for (const auto &entry : profile.materials)
 		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
-	const uint32_t requiredSchema = std::max<uint32_t>(hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const uint32_t requiredSchema = std::max<uint32_t>(hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -1462,7 +1560,9 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		const bool storeOcclusion = S9xRemasterOcclusionNeedsStorage(asset.hasOcclusion, asset.occlusion);
 		// A tile with only default coverage needs no asset table at all.
 		if (asset.hasOcclusion && !storeOcclusion && !asset.hasMaterialSelectors && !asset.hasHeight &&
-			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing && !asset.normalIgnoreTileTransform && !asset.hasTileSemantics && asset.tileRole == RemasterTileRole::Unknown)
+			!asset.hasNormals && !asset.hasEmission && asset.emissionDepth == 0 && !asset.emissionOmnidirectional && asset.combineEmitters.empty() && !asset.directLightingOppositeFacing && !asset.normalIgnoreTileTransform && !asset.geometryByFacing && !asset.geometryByFlip &&
+			std::none_of(asset.flipGeometry.begin(), asset.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) &&
+			std::none_of(asset.facingGeometry.begin(), asset.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) && !asset.hasTileSemantics && asset.tileRole == RemasterTileRole::Unknown)
 			continue;
 		output << "\n[[assets]]\n";
 		output << "tile_hash = " << Quote(TileId(asset.tileId)) << "\n";
@@ -1500,6 +1600,27 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			output << "direct_lighting_opposite_facing = true\n";
 		if (asset.normalIgnoreTileTransform)
 			output << "normal_ignore_tile_transform = true\n";
+		if (asset.geometryByFacing) output << "geometry_by_facing = true\n";
+		if (asset.geometryByFlip) output << "geometry_by_flip = true\n";
+		const char *facings[] = {"north", "south", "east", "west"};
+		const char *flips[] = {"normal", "horz", "vert", "both"};
+		for (unsigned f = 0; f < 8; f++)
+		{
+			const auto &g = f < 4 ? asset.facingGeometry[f] : asset.flipGeometry[f - 4];
+			const std::string prefix = f < 4 ? std::string("facing_") + facings[f] + "_" : std::string("flip_") + flips[f - 4] + "_";
+			if (g.hasHeight)
+			{
+				output << prefix << "height = [";
+				for (size_t i = 0; i < 64; i++) output << (i ? ", " : "") << unsigned(g.height[i]);
+				output << "]\n" << prefix << "height_sampling = " << Quote(g.heightSampling == RemasterHeightSampling::Linear ? "linear" : "nearest") << "\n";
+			}
+			if (g.hasNormals)
+			{
+				output << prefix << "normal_xyz = [";
+				for (size_t i = 0; i < 192; i++) output << (i ? ", " : "") << unsigned(g.normalXyz[i]);
+				output << "]\n";
+			}
+		}
 		if (asset.hasEmission)
 		{
 			output << "emission_rgba = [";

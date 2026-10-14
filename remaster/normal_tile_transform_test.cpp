@@ -64,7 +64,7 @@ int main()
 	std::vector<uint8_t> bytes; RemasterFrame replay;
 	assert(S9xSerializeRemasterFrame(frame, bytes));
 	assert(S9xDeserializeRemasterFrame(bytes, replay));
-	assert(replay.schemaVersion == 31 && replay.assetMetadata[0].normalIgnoreTileTransform);
+	assert(replay.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION && replay.assetMetadata[0].normalIgnoreTileTransform);
 	cache.update(replay, false); assert(cache.surface[2 * 4 + 2] > 0.99f);
 	bytes.pop_back(); assert(!S9xDeserializeRemasterFrame(bytes, replay));
 	RemasterFrameTileInstance turned; turned.hFlip = turned.vFlip = true; turned.normalYaw = 1;

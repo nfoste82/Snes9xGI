@@ -727,9 +727,9 @@ int main ()
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());
-	previousVersionBytes.erase(emissionStart + 256, emissionStart + 267); // v21 depth, v24 peer count, v25 role, v27 omni, v31 normal transform
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 293); // metadata extensions through v33 (empty facing/flip maps)
 	previousVersionBytes.erase(previousVersionBytes.end() - 5, previousVersionBytes.end()); // v30 palette flag and empty palette-artwork count
-	previousVersionBytes.erase(previousVersionBytes.end() - 7, previousVersionBytes.end()); // v18 priority/offset (now 4 bytes), yaw, placement flag
+	previousVersionBytes.erase(previousVersionBytes.end() - 8, previousVersionBytes.end()); // priority/offset, yaw, v32 facing, placement flag
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v23 representatives

@@ -60,6 +60,28 @@ class NpcWorkbenchTests(unittest.TestCase):
             special = contexts(atlas, zora, {0x81: (12, 8)})
             self.assertEqual(next(iter(special[0x52]))[:3], (12, 8, 0))
 
+    def test_dungeon_enemy_palettes_and_spawned_contexts(self):
+        models = {entry['key']: entry for entry in CATALOG}
+        for key in ('keese', 'rat', 'rope', 'armos-knight', 'lanmola',
+                    'moldorm-boss', 'helmasaur-king', 'mothula', 'blind-boss',
+                    'arrghus', 'kholdstare', 'vitreous'):
+            self.assertTrue(models[key]['dungeon_palette'])
+        with tempfile.TemporaryDirectory() as tmp:
+            atlas = Path(tmp) / 'atlas.sqlite'
+            with sqlite3.connect(atlas) as db:
+                db.execute('CREATE TABLE world_record(kind TEXT, data_json TEXT)')
+                records = [('dungeon_rooms', dict(room_id=2, enemy_blockset=6, palette=10)),
+                           ('dungeon_rooms', dict(room_id=3, enemy_blockset=6, palette=11)),
+                           ('dungeon_sprites', dict(type_id=0x6d, room_id=2)),
+                           ('dungeon_sprites', dict(type_id=0x6d, room_id=3)),
+                           ('dungeon_sprites', dict(type_id=0x109, record_kind='overlord', room_id=2))]
+                db.executemany('INSERT INTO world_record VALUES (?,?)',
+                               [(kind, json.dumps(record)) for kind, record in records])
+            rats = contexts(atlas, models['rat'])[0x6d]
+            self.assertEqual({entry[:3] for entry in rats}, {(0x46, 30, 0), (0x46, 31, 0)})
+            hands = contexts(atlas, models['wallmaster'])[0x90]
+            self.assertEqual(next(iter(hands))[:3], (0x46, 30, 0))
+
     def part(self, **kwargs):
         return dict(x=0, y=0, slot=0, hflip=False, vflip=False,
                     indices=[1]*64, colors=[32767]*64, **kwargs)
