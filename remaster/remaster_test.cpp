@@ -724,6 +724,14 @@ int main ()
 	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
 	assert(decodedFrame.tileInstances[0].heightOffset == 48);
 	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
+	// Legacy fixtures use one unsigned byte per local sample, before the normals.
+	std::vector<uint8_t> wideHeight;
+	for (int16_t h : frameMetadata.height) RemasterFrameSerialization::U16(wideHeight, static_cast<uint16_t>(h));
+	auto heightStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(), wideHeight.begin(), wideHeight.end());
+	assert(heightStart != previousVersionBytes.end());
+	const size_t heightOffset = heightStart - previousVersionBytes.begin();
+	previousVersionBytes.erase(heightStart, heightStart + 128);
+	previousVersionBytes.insert(previousVersionBytes.begin() + heightOffset, frameMetadata.height.begin(), frameMetadata.height.end());
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());

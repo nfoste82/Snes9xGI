@@ -18,8 +18,9 @@ struct Uniforms {
     uint32_t sampleIndex, sampleCount, randomSeed;
     float reflectanceBoost;
     simd_float4 camera, sphere, color, heightRange;
+	simd_float4 directionalDirection, directionalColorBrightness;
 };
-static_assert(sizeof(Uniforms) == 128, "Uniform ABI");
+static_assert(sizeof(Uniforms) == 160, "Uniform ABI");
 
 static void require(bool ok, NSString *message) {
     if (!ok) throw std::runtime_error(message ? message.UTF8String : "Metal failure");
@@ -89,9 +90,9 @@ int main(int argc, const char **argv) {
                 return data;
             };
             NSData *uniformData = read(@"uniforms.bin");
-            require(uniformData.length == sizeof(Uniforms), @"Uniform snapshot ABI mismatch");
-            Uniforms u;
-            memcpy(&u, uniformData.bytes, sizeof(u));
+            require(uniformData.length == sizeof(Uniforms) || uniformData.length == 128, @"Uniform snapshot ABI mismatch");
+            Uniforms u = {};
+            memcpy(&u, uniformData.bytes, uniformData.length);
             std::printf("uniforms_fnv=%016llx\n", (unsigned long long)hash(uniformData.bytes, uniformData.length));
             require(u.width > 0 && u.width <= 512 && u.height > 0 && u.height <= 512 &&
                 u.passIndex == 0 && u.color.w == 0, @"Requires bounded Direct snapshot without sphere");

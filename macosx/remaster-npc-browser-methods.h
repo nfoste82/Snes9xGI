@@ -39,7 +39,7 @@
 		remasterNpcPlayButton.target = self; remasterNpcPlayButton.action = @selector(toggleRemasterNpcPlayback:);
 		remasterNpcPlayButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin; [content addSubview:remasterNpcPlayButton];
 		remasterNpcDebugSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 574, 240, 28) pullsDown:NO];
-		[remasterNpcDebugSelector addItemsWithTitles:@[@"Debug View: Artwork", @"Debug View: Normals", @"Debug View: Height (local 0–255)", @"Debug View: Occlusion", @"Debug View: Emission", @"Debug View: Material"]];
+		[remasterNpcDebugSelector addItemsWithTitles:@[@"Debug View: Artwork", @"Debug View: Normals", @"Debug View: Height (signed local)", @"Debug View: Occlusion", @"Debug View: Emission", @"Debug View: Material"]];
 		remasterNpcDebugSelector.target = self; remasterNpcDebugSelector.action = @selector(changeRemasterNpcDebugView:);
 		remasterNpcDebugSelector.autoresizingMask = NSViewMinYMargin;
 		remasterNpcDebugSelector.toolTip = @"Entire pose, including unsaved profile edits. Magenta means missing height/material data; normals use height-derived or flat defaults.";
@@ -103,7 +103,7 @@
 		remasterNpcHeightDisplayMin = [defaults doubleForKey:@"RemasterNpcHeightDisplayMin"];
 		remasterNpcHeightDisplayMax = [defaults doubleForKey:@"RemasterNpcHeightDisplayMax"];
 		if (!std::isfinite(remasterNpcHeightDisplayMin) || !std::isfinite(remasterNpcHeightDisplayMax) ||
-			remasterNpcHeightDisplayMin < 0 || remasterNpcHeightDisplayMax > 255 ||
+			remasterNpcHeightDisplayMin < -32768 || remasterNpcHeightDisplayMax > 32767 ||
 			remasterNpcHeightDisplayMax <= remasterNpcHeightDisplayMin)
 		{ remasterNpcHeightDisplayMin = 0; remasterNpcHeightDisplayMax = 32; }
 		remasterNpcHeightRangeView = [[NSView alloc] initWithFrame:NSMakeRect(16, 502, 480, 28)];
@@ -123,7 +123,7 @@
 		{
 			input.target = self; input.action = @selector(changeRemasterNpcHeightRange:);
 			[(NSTextFieldCell *)input.cell setSendsActionOnEndEditing:YES];
-			input.toolTip = @"Display range only (0–255, max greater than min). Press Return or leave the field to apply. Remembered across sessions.";
+			input.toolTip = @"Display range only (-32768–32767, max greater than min). Press Return or leave the field to apply. Remembered across sessions.";
 			[remasterNpcHeightRangeView addSubview:input];
 		}
 		[self changeRemasterNpcDebugView:nil];
@@ -242,7 +242,7 @@
 	for (NSUInteger i = 0; i < 2; i++)
 	{
 		NSScanner *scanner = [NSScanner scannerWithString:inputs[i].stringValue];
-		if (![scanner scanDouble:&values[i]] || !scanner.isAtEnd || !std::isfinite(values[i]) || values[i] < 0 || values[i] > 255)
+		if (![scanner scanDouble:&values[i]] || !scanner.isAtEnd || !std::isfinite(values[i]) || values[i] < -32768 || values[i] > 32767)
 		{
 			NSBeep();
 			remasterNpcHeightMinInput.doubleValue = remasterNpcHeightDisplayMin;
@@ -330,7 +330,7 @@
 		[alert runModal]; return;
 	}
 	[self stopRemasterNpcPlayback];
-	std::map<RemasterTileContentId, std::array<uint8_t, 64>> ramps;
+	std::map<RemasterTileContentId, std::array<int16_t, 64>> ramps;
 	const BOOL allPoses = remasterNpcHeightAllPosesButton.state == NSControlStateValueOn;
 	NSArray *actors = allPoses ? remasterNpcContexts : @[remasterNpcActor];
 	const BOOL overwrite = remasterNpcOverwriteButton.state == NSControlStateValueOn;

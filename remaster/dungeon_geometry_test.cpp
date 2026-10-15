@@ -156,7 +156,7 @@ int main()
 	// Complete constructed input is not publishable during room construction,
 	// even if its room ID still matches the last cached room.
 	std::array<uint8_t, 16384> maps = {};
-	context.constructedMaps = maps.data(); context.submodule = 1;
+	context.constructedMaps = maps.data(); context.submodule = 2;
 	assert(!S9xRemasterDungeonHeightInputsPublishable(context, context.roomIndex));
 	context.submodule = 0;
 	assert(S9xRemasterDungeonHeightInputsPublishable(context, context.roomIndex));

@@ -6,6 +6,7 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  auto array=[&](const auto &a){for(auto x:a)v(x);};
 	array(m.producerHashes);array(m.producerFlips);array(m.producerZeroFloor);array(m.producerObstacle);
 	array(m.producerAuthoredObstacle);
+	array(m.producerOwnedWall);
 	array(m.producerGeneratedObstacle);
  v(m.roomIndex);array(m.offsets);for(auto &a:m.planeOffsets)array(a);
  v(m.componentCount);v(m.constraintCount);v(m.conflictingComponentCount);array(m.solvedPlaneCells);

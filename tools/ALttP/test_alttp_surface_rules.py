@@ -430,7 +430,7 @@ class SurfaceRulesTests(unittest.TestCase):
 
     def test_height_range_rejects_entire_connected_group(self):
         s = scene(["floor", "stair", "floor"], [{"layer": 1, "x": 0, "y": 0,
-            "region": "surface", "height": 230, "evidence": "reviewed level"}])
+            "region": "surface", "height": 2147483640, "evidence": "reviewed level"}])
         report = solve(s, templates())
         self.assertTrue(any(issue["reason"] == "height_out_of_range" for issue in report["issues"]))
         self.assertTrue(all(item["status"] == "unknown" for item in report["audit"]

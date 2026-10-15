@@ -23,7 +23,7 @@ inline void S9xRemasterAttachWallMounts(const RemasterDungeonFloorContext &c,
    if(!exact || !seed || (north?(x==0 || x+w>=64):(y==0 || y+h>=64)))continue;
    // Tangent ends must each carry the same displayed cross section and solved
    // structural plane. No nearest-wall search or propagation through a gap.
-   struct Part{int cell,base;std::array<uint8_t,64> local;int plane;};std::vector<Part> parts;
+   struct Part{int cell,base;std::array<int16_t,64> local;int plane;};std::vector<Part> parts;
    bool complete=true;
    for(int band=0;band<(north?h:w);band++) {
     int a=north?(y+band)*64+x-1:(y-1)*64+x+band;
@@ -49,10 +49,10 @@ inline void S9xRemasterAttachWallMounts(const RemasterDungeonFloorContext &c,
     if(!complete || plane<0){complete=false;break;}
     for(int k=0;k<(north?w:h);k++) {
      int i=north?(y+band)*64+x+k:(y+k)*64+x+band;
-     const auto &t=c.placements[i];std::array<uint8_t,64> local={};
+     const auto &t=c.placements[i];std::array<int16_t,64> local={};
      for(int py=0;py<8;py++)for(int px=0;px<8;px++) {
-      int v=effective[py*8+px]-base;if(v<0 || v>255)complete=false;
-      local[(t.vflip?7-py:py)*8+(t.hflip?7-px:px)]=uint8_t(v);
+      int v=effective[py*8+px]-base;if(v<INT16_MIN || v>INT16_MAX){complete=false;continue;}
+      local[(t.vflip?7-py:py)*8+(t.hflip?7-px:px)]=int16_t(v);
      }
      parts.push_back({i,base,local,plane});
     }

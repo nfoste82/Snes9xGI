@@ -7,6 +7,7 @@ here from complete tilemaps and completed collision arrays.
 from collections import deque
 import re
 from alttp_collision_reachability import LEADING, STEPS
+from alttp_height_samples import valid_heights
 
 
 def validate_groups(profile):
@@ -106,7 +107,7 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
     floor_ids = {h for name in ('dungeon_floor', 'wall_tops') for h in profile.get('asset_groups', {}).get(name, {}).get('tile_hashes', [])}
     roles = {a['tile_hash']: a.get('tile_role', 'unknown') for a in profile.get('assets', [])}
     for local in assets.values():
-        if local is not None and (not isinstance(local, list) or len(local) != 64 or any(type(h) is not int or not 0 <= h <= 255 for h in local)):
+        if local is not None and not valid_heights(local, profile.get('schema_version', 1)):
             raise ValueError('invalid authored obstacle local array')
     state = state or solution
     stairs = solution.get('stairs', [])

@@ -71,5 +71,28 @@ int main() {
   c.bg1GraphicsBase=32;S9xRemasterDungeonPlacements(c,profile,*tiles);assert(!(*tiles)[corner].terminalCorner);c.bg1GraphicsBase=0;
   put(4096+inside,999);S9xRemasterDungeonPlacements(c,profile,*tiles);assert(!(*tiles)[corner].terminalCorner);
  }
- std::cout<<"PASS complete columns/torch transforms, overwrites, floor veto, absent witnesses, BG ownership, immutable relief\n";
+ // Ordered strip endpoint fold with a perpendicular authored seam survives
+ // interior overwrites. Both axes and all placement flips, not a hash whitelist.
+ for(int axis=0;axis<2;axis++)for(int flip=0;flip<4;flip++) {
+  maps->fill(0xff);tpl->fill(0xff);profile.assetGroups.clear();
+  profile.assetGroups["wall_faces"].tileIds={ids[1],ids[2],ids[3]};
+  for(int y=0;y<8;y++)for(int x=0;x<8;x++)profile.assets[ids[0]].height[y*8+x]=-37+std::max(7-x,7-y);
+  const int origin=20*64+20;
+  for(int k=0;k<3;k++) {int word=k|(flip<<14);source(0xbe6,axis?k*4:k,word);put(origin+k*(axis?1:64),word);}
+  // Match the fold's flat outward edge with signed authored band3.
+  const int sign=(axis?(flip&2):(flip&1))?1:-1;
+  const int neighbor=origin+(axis?64:1)*sign;
+  profile.assets[ids[3]].height.fill(-30);put(neighbor,3|(flip<<14));
+  S9xRemasterDungeonPlacements(c,profile,*tiles);
+  assert(tiles->at(origin).surface==S::Wall && tiles->at(origin).wallTemplateOffset==0xbe6);
+  assert(tiles->at(origin).height==profile.assets[ids[0]].height);
+  for(int k=0;k<3;k++)source(0xc06,axis?k*4:k,k|(flip<<14));
+  S9xRemasterDungeonPlacements(c,profile,*tiles);assert(tiles->at(origin).surface==S::Unknown); // multiple owners
+  for(int k=0;k<3;k++)source(0xc06,axis?k*4:k,0xffff);
+  put(origin+2*(axis?1:64),999);S9xRemasterDungeonPlacements(c,profile,*tiles);
+  assert(tiles->at(origin).surface==S::Unknown);
+  put(origin+2*(axis?1:64),2|(flip<<14));put(neighbor,999);
+  S9xRemasterDungeonPlacements(c,profile,*tiles);assert(tiles->at(origin).surface==S::Unknown);
+ }
+ std::cout<<"PASS complete columns/torch and endpoint-fold transforms, overwrites, floor veto, absent witnesses, BG ownership, immutable relief\n";
 }

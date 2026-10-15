@@ -41,9 +41,11 @@ struct Uniforms
     simd_float4 debugPositionRadius;
     simd_float4 debugColorIntensity;
 	simd_float4 heightPreviewRange;
+	simd_float4 directionalDirection;
+	simd_float4 directionalColorBrightness;
 };
 static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
-static_assert(sizeof(Uniforms) == 128 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
+static_assert(sizeof(Uniforms) == 160 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
 
 constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
 constexpr unsigned receiver = receiverY * width + receiverX;
@@ -109,11 +111,16 @@ int main()
             id<MTLComputePipelineState> sampledDirectTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterSampledDirect"] error:&error];
             require(sampledDirectTransport != nil, error.localizedDescription);
+			id<MTLComputePipelineState> directionalTransport = [device newComputePipelineStateWithFunction:
+				[library newFunctionWithName:@"remasterDirectionalLight"] error:&error];
+			require(directionalTransport != nil, error.localizedDescription);
             id<MTLComputePipelineState> preparePatches = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
 			[directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:3];
 			bool adaptiveDepth = getenv("S9X_REMASTER_TEST_ADAPTIVE_DEPTH") != nullptr;
 			[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
+			bool hoistReceiver = getenv("S9X_REMASTER_TEST_REFERENCE_RECEIVER_EMISSION") == nullptr;
+			[directConstants setConstantValue:&hoistReceiver type:MTLDataTypeBool atIndex:7];
             id<MTLComputePipelineState> clusteredTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             bool noClusters = false;
@@ -194,7 +201,8 @@ int main()
                                  const std::vector<RemasterEmitterPatch> *customPatches = nullptr, bool expandedDepth = false,
                                    float originalContribution = 0.65f, const std::vector<Light> *sceneLights = nullptr,
                                      unsigned directBatchSize = 8, bool adaptiveSpheres = false,
-                                     const std::vector<RemasterHiddenDirectSample> *hidden = nullptr) {
+                                      const std::vector<RemasterHiddenDirectSample> *hidden = nullptr,
+									  const RemasterDirectionalLight *directionalLight = nullptr) {
                 const Field directBindings[] = {Source, Occlusion, Output, Emission,
                     Height, Surface, Direct, Participation, OppositeFacing};
 				const Field indirectBindings[] = {Source, Occlusion, Surface, Height,
@@ -241,6 +249,12 @@ int main()
                         std::pow(debugLight->color.y, 2.2f), std::pow(debugLight->color.z, 2.2f),
                         debugLight->intensity / 25.0f};
                 }
+				if (directionalLight && directionalLight->enabled) {
+					const auto &d = directionalLight->direction; const auto &c = directionalLight->color;
+					const float length = std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+					uniforms.directionalDirection = {d[0]/length,d[1]/length,d[2]/length,0};
+					uniforms.directionalColorBrightness = {c[0],c[1],c[2],directionalLight->brightness};
+				}
                 (void)lightZ; // Legacy point-light argument; transport uses explicit sources.
                 id<MTLCommandBuffer> command = [queue commandBuffer];
                 id<MTLTexture> visibilityBlocks = nil;
@@ -447,6 +461,17 @@ int main()
                     [reduce dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
                     [reduce endEncoding];
                 }
+				if (directionalLight && directionalLight->enabled && bounce && !composing) {
+					id<MTLComputeCommandEncoder> parallel = [command computeCommandEncoder];
+					[parallel setComputePipelineState:directionalTransport];
+					for (unsigned i : {0u,1u,2u,3u,4u,7u,9u}) [parallel setTexture:textures[i] atIndex:i];
+					[parallel setTexture:visibilityBlocks atIndex:10];
+					[parallel setTexture:textures[count-1] atIndex:11];
+					[parallel setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+					[parallel setBuffer:meshBuffer offset:0 atIndex:3];
+					[parallel dispatchThreads:MTLSizeMake(width,height,1) threadsPerThreadgroup:MTLSizeMake(8,8,1)];
+					[parallel endEncoding];
+				}
                 id<MTLTexture> presentation = textures[composing ? 4 : bounce ? 8 : 2];
                 if (selectedPixel >= 0)
                 {
@@ -527,6 +552,32 @@ int main()
                 }
                 return result;
             };
+			{
+				Scene input = scene();
+				input[PreviousBounce].assign(width*height, simd_float4{});
+				input[Surface][receiver] = {8,0,0,1};
+				input[Reflectance][receiver] = {1,1,1,1};
+				RemasterDirectionalLight light; light.color = {{1,0.5f,0.25f}}; light.brightness = 2;
+				auto parallelTrial = [&](const Scene &s, bool half = false) {
+					return run(s,true,0,8,-1,nullptr,half,0,1,0,1,1,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
+						nullptr,false,nullptr,false,0.65f,nullptr,8,false,nullptr,&light).bounce;
+				};
+				auto value = parallelTrial(input);
+				require(std::abs(value.x-1.9f)<0.001 && std::abs(value.y-0.95f)<0.001 && std::abs(value.z-0.475f)<0.001,
+					@"Parallel light illuminates an emitter-free scene with linear RGB brightness");
+				require(std::abs(parallelTrial(input,true).x-1.9f)<0.003, @"Parallel light supports production half-float radiance");
+				input[Participation][receiver].y = 0;
+				require(parallelTrial(input).x == 0, @"Parallel light preserves non-receivers/HUD");
+				input[Participation][receiver].y = 1;
+				light.direction = {{0,0,1}};
+				require(parallelTrial(input).x == 0, @"Parallel ray direction is travel direction, not direction to source");
+				light.direction = {{-1,0,0}}; input[Surface][receiver] = {8,1,0,0};
+				require(parallelTrial(input).x > 1.89, @"Parallel oblique ray reaches viewport boundary");
+				blocker(input,12,1,true,8);
+				require(parallelTrial(input).x == 0, @"Parallel ray is blocked by authored mesh");
+				light.enabled = false;
+				require(parallelTrial(input).x == 0, @"Disabled parallel light contributes nothing");
+			}
             auto average = [&](simd_float4 first, simd_float4 second) {
                 MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
                     texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float width:1 height:1 mipmapped:NO];

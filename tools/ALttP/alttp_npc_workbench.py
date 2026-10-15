@@ -257,8 +257,9 @@ def validate_layers(layers):
     for name, data in layers.items():
         if not isinstance(data, list) or len(data) != (192 if name == "normal_xyz" else 64):
             raise ValueError(f"invalid {name} size")
-        if any(type(v) is not int or not 0 <= v <= 255 for v in data):
-            raise ValueError("layer values must be bytes")
+        lo, hi = (-32768, 32767) if name == 'height' else (0, 255)
+        if any(type(v) is not int or not lo <= v <= hi for v in data):
+            raise ValueError("height values must be signed int16; other layers must be bytes")
         if name == "normal_xyz" and any(data[p:p+3] == [128, 128, 128] for p in range(0, 192, 3)):
             raise ValueError("normal must be nonzero")
 
@@ -309,8 +310,9 @@ def merge_profile(text: str, edits: dict) -> tuple[str, int]:
         text += (f'\n[asset_groups.{group}]\ntile_hashes = {json.dumps(new_members)}\n'
                  f'\n[[rules]]\nasset_group = "{group}"\nsource = "object"\nmaterial = "{material}"\n')
     # Independent normal layers require schema v5. Keep newer versions intact.
-    if count and parsed["schema_version"] < 5:
-        text = re.sub(r"(?m)^schema_version\s*=\s*\d+", "schema_version = 5", text, count=1)
+    required_schema = 27 if any(v < 0 or v > 255 for layers in edits.values() for v in layers.get('height', ())) else 5
+    if count and parsed["schema_version"] < required_schema:
+        text = re.sub(r"(?m)^schema_version\s*=\s*\d+", f"schema_version = {required_schema}", text, count=1)
     result = tomllib.loads(text)
     for name in parsed:
         if name not in ("assets", "schema_version", "asset_groups", "rules", "materials") and result[name] != parsed[name]:

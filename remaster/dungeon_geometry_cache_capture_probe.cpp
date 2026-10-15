@@ -119,6 +119,138 @@ int main(int argc,char **argv){try {
    }
  };
   run();const auto epoch=s.runtimeDungeonHeightEpoch;run();
+  if(const char *samples=std::getenv("ALTTP_PERF_GEOMETRY_MODES")) {
+   const int count=std::max(10,std::atoi(samples));
+   const auto original=c;
+   for(int mode=0;mode<5;mode++) {
+    std::vector<double> times;uint64_t classifications=0,solves=0,packetDigest=UINT64_C(14695981039346656037),mapDigest=packetDigest;
+    std::ofstream packets,maps;const bool exact=std::getenv("ALTTP_PERF_EXACT_MODES");
+    if(exact){packets.open(out+"-mode"+std::to_string(mode)+".packets",std::ios::binary);maps.open(out+"-mode"+std::to_string(mode)+".maps");}
+    for(int n=0;n<count+5;n++) {
+     c=original;
+     if(mode==1){s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;s.dungeonClassificationInputs->valid=false;}
+     if(mode==2){c.linkX+=n%8;c.backgroundScrollY+=n%8;for(auto &a:c.terrainActors)if(a.state){a.x+=n%8;a.y+=n%4;}}
+     if(mode==3)c.linkPlane=n%2;
+     if(mode==4)c.hasTerrainActors=false; // actor evidence ablation, not a historical follower-free scene
+#ifdef ALTTP_TEST_CACHE_STAGES
+     S9xRemasterDungeonCacheStages()={};
+#endif
+     run();if(n>=5)times.push_back(endframeMs);
+     if(n>=5 && exact) {
+      std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"mode packet serialization");
+      packets.write(reinterpret_cast<const char *>(bytes.data()),bytes.size());
+      for(auto b:bytes)packetDigest=(packetDigest^b)*UINT64_C(1099511628211);
+      const auto inventory=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+      maps<<inventory<<'\n';
+      for(unsigned char b:inventory)mapDigest=(mapDigest^b)*UINT64_C(1099511628211);
+     }
+#ifdef ALTTP_TEST_CACHE_STAGES
+     classifications+=S9xRemasterDungeonCacheStages().classifications;solves+=S9xRemasterDungeonCacheStages().solves;
+#endif
+    }
+    std::sort(times.begin(),times.end());std::cout<<"geometry_mode="<<mode<<" measured="<<times.size()<<" median_ms="<<times[times.size()/2]<<" p95_ms="<<times[times.size()*95/100]<<" classifications="<<classifications<<" solves="<<solves<<" packet_digest="<<std::hex<<packetDigest<<" map_digest="<<mapDigest<<std::dec<<'\n';
+   }
+   return 0;
+  }
+  if(std::getenv("ALTTP_STATIC_STAIR_REGRESSION")) {
+   check(c.roomIndex==0x71,"room071 fixture required");
+   check(s.runtimeDungeonHeightMap.configuredStairFallbacks==0 && s.runtimeDungeonBg1HeightMap.authoredSupportRelations.size()==2,"both signed authored stair relations");
+   check(s.runtimeDungeonBg1HeightMap.structuralConflicts==0 && s.runtimeDungeonBg1HeightMap.solvedWallCells>=564,"northern BG1 conflict not repaired");
+   for(int y:{11,12,13})check(s.runtimeDungeonBg1HeightMap.offsets[y*64+12]==(13-y)*8,"north stairwell wall effective base");
+   for(int x:{12,19})for(int y:{36,37,38})check(s.runtimeDungeonHeightMap.offsets[y*64+x]==24+(38-y)*8,"southern far wall effective base");
+   size_t adjusted=0,otherUnapplied=0;
+   for(const auto *pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(size_t at=0;at<pixels->size();at++) {
+    const auto &px=(*pixels)[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances[px.instanceId-1];
+    if(i.source!=RemasterSourceType::Background || i.sourceIndex!=0)continue;
+    const int cell=((c.backgroundScrollY+at/frame->width)&511)/8*64+((c.backgroundScrollX+at%frame->width)&511)/8;
+    const auto &m=s.runtimeDungeonBg1HeightMap;
+    if(m.offsets[cell]!=255 && m.offsets[cell]>0 && m.producerHashes[cell]==i.tileId.hash &&
+      s.dungeonRetainedBg1->at(cell).surface==RemasterDungeonFloorContext::Surface::Wall) {
+     check(i.heightOffset==m.offsets[cell],"solved BG1 actual wall instance base not applied");
+     adjusted+=i.heightOffset==m.offsets[cell];otherUnapplied+=i.heightOffset!=m.offsets[cell];
+    }
+   }
+   std::cout<<"actual adjusted BG1 wall pixel usages="<<adjusted<<" other unmatched wall usages="<<otherUnapplied<<'\n';
+   std::cout<<"PASS actual room071 static solve: north BG1 base16/8/0, south far walls40/32/24; two authored24 stair relations, configured50 unchanged\n";
+  }
+  if(const char *phasesPath=std::getenv("ALTTP_TORCH_PHASE_REGRESSION")) {
+   const auto phases=read(phasesPath);check(phases.size()==3072,"three ROM DMA phases");
+   const auto originalInstances=captured->tileInstances;auto animated=input;
+   for(int n=0;n<6;n++) {
+    std::copy_n(phases.data()+(n%3)*1024,1024,animated.data()+24584+0x7600);c.graphics=animated.data()+24584;
+    captured->tileInstances=originalInstances;captured->assets.clear();std::set<uint64_t> ids;
+    for(auto &i:captured->tileInstances)if(i.source==RemasterSourceType::Background && i.sourceIndex<2) {
+     const int base=i.sourceIndex?c.graphicsBase:c.bg1GraphicsBase;const uint16_t address=uint16_t(base+(i.tileNumber&1023)*32);RemasterFrameAsset a;
+     for(int y=0;y<8;y++)for(int x=0;x<8;x++){int v=0;for(int b=0;b<4;b++)v|=((c.graphics[uint16_t(address+b/2*16+y*2+b%2)]>>(7-x))&1)<<b;a.indices[y*8+x]=v;}
+     a.tileId={S9xRemasterHashTile(4,a.indices),1,4};i.tileId=a.tileId;if(ids.insert(a.tileId.hash).second)captured->assets.push_back(a);
+    }
+    run();
+    for(int x:{44,45,50,51})for(int y:{54,55})check(s.runtimeDungeonHeightMap.offsets[y*64+x]==24,"actual torch animation base lost");
+    std::vector<uint8_t> cached;check(S9xSerializeRemasterFrame(*frame,cached),"phase packet");
+    s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;s.dungeonClassificationInputs->valid=false;run();
+    std::vector<uint8_t> full;check(S9xSerializeRemasterFrame(*frame,full) && full==cached,"phase cached/full effective packet differs");
+   }
+   std::cout<<"PASS three ROM-proven DMA phases repeated: eight torch members base24, exact cached/full packets; own metadata unchanged\n";
+   return 0;
+  }
+  if(std::getenv("ALTTP_SUBTILE_HEIGHT_REGRESSION")) {
+   std::vector<uint8_t> settled;check(S9xSerializeRemasterFrame(*frame,settled),"settled packet");
+   const auto inventory=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+   for(int phase=0;phase<9;phase++) {
+    // Lifecycle ablation on exact recorded inputs, NOT a captured traversal.
+    c.submodule=phase==8?5:1;c.constructionPhase=phase==8?0:phase;run();
+    std::vector<uint8_t> current;check(S9xSerializeRemasterFrame(*frame,current) && current==settled,"subtile/shutter effective packet reset");
+    check(inventory==dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap),"subtile/shutter map changed");
+   }
+   c.submodule=c.constructionPhase=0;run();
+   std::cout<<"PASS exact captured packet invariant through subtile phases0..7 and shutter handler5 (lifecycle ablation only)\n";
+  }
+  if(const char *benchmark=std::getenv("ALTTP_PLANE_CACHE_BENCHMARK")) {
+   const int count=std::max(4,std::atoi(benchmark));
+   double cachedMs=0,fullMs=0;uint64_t cachedClassify=0,fullClassify=0,cachedSolves=0,fullSolves=0;
+   std::array<std::string,2> inventories;
+   std::array<std::vector<uint8_t>,2> packets;
+   for(int n=0;n<count;n++) {
+    c.linkPlane=n%2;
+    // Only the first sample needs a forced boundary. Subsequent samples must
+    // invalidate naturally on the plane change, after the oracle's same plane.
+    if(!n){s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;}
+#ifdef ALTTP_TEST_CACHE_STAGES
+    S9xRemasterDungeonCacheStages()={};
+#endif
+    const auto before=s.runtimeDungeonHeightEpoch;run();cachedMs+=endframeMs;
+    check(s.runtimeDungeonHeightEpoch>before,"plane solve invalidation lost");
+    const auto inventory=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+    std::vector<uint8_t> cachedPacket;check(S9xSerializeRemasterFrame(*frame,cachedPacket),"cached plane packet");
+#ifdef ALTTP_TEST_CACHE_STAGES
+    cachedClassify+=S9xRemasterDungeonCacheStages().classifications;cachedSolves+=S9xRemasterDungeonCacheStages().solves;
+#ifndef ALTTP_TEST_DISABLE_CLASSIFICATION_REUSE
+    check(!S9xRemasterDungeonCacheStages().classifications,"plane-only classified again");
+#endif
+#endif
+    s.dungeonClassificationInputs->valid=false;s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;
+#ifdef ALTTP_TEST_CACHE_STAGES
+    S9xRemasterDungeonCacheStages()={};
+#endif
+    run();fullMs+=endframeMs;
+    check(inventory==dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap),"plane cached/full complete inventory differs");
+    std::vector<uint8_t> fullPacket;check(S9xSerializeRemasterFrame(*frame,fullPacket) && cachedPacket==fullPacket,"plane cached/full packet differs");
+    inventories[c.linkPlane]=inventory;
+    packets[c.linkPlane]=std::move(fullPacket);
+#ifdef ALTTP_TEST_CACHE_STAGES
+    fullClassify+=S9xRemasterDungeonCacheStages().classifications;fullSolves+=S9xRemasterDungeonCacheStages().solves;
+#endif
+   }
+   for(int p=0;p<2;p++){
+    std::ofstream file(out+"-plane"+std::to_string(p)+".inventory");file<<inventories[p];
+    std::ofstream packet(out+"-plane"+std::to_string(p)+".s9xrmf",std::ios::binary);
+    packet.write(reinterpret_cast<const char *>(packets[p].data()),packets[p].size());
+   }
+   std::cout<<"plane_alternating frames="<<count<<" cached_mean_ms="<<cachedMs/count<<" full_mean_ms="<<fullMs/count
+    <<" cached_classifications="<<cachedClassify<<" full_classifications="<<fullClassify
+    <<" cached_solves="<<cachedSolves<<" full_solves="<<fullSolves<<" exact_inventory_planes=2\n";
+   return 0;
+  }
   if(const char *samples=std::getenv("ALTTP_STAIR_RECURRING_SAMPLES")) {
    std::vector<std::vector<uint8_t>> sequence;std::stringstream names(samples);std::string name;
    while(std::getline(names,name,';')){auto sample=read(name+".dungeon-input.bin");check(sample.size()==input.size() && std::equal(input.begin()+8,input.begin()+24584,sample.begin()+8),"recurring topology differs");sequence.push_back(std::move(sample));}
@@ -242,10 +374,45 @@ int main(int argc,char **argv){try {
  check(s.runtimeDungeonHeightEpoch>epoch,"full baseline not exercised");
 #endif
  check(S9xWriteRemasterFrame(*frame,out+".s9xrmf"),"packet write");
+ if(std::getenv("ALTTP_PLACEMENT_DIAGNOSTICS")) {
+  auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();
+  std::ofstream diagnostic(out+"-placements.jsonl");
+  auto maps=std::make_unique<std::array<uint8_t,16384>>();
+  for(int bg=0;bg<2;bg++) {
+   auto dc=c;dc.placementBackgroundIndex=bg;
+   if(!bg){std::copy_n(c.constructedMaps+8192,8192,maps->begin());std::copy_n(c.constructedMaps,8192,maps->begin()+8192);dc.constructedMaps=maps->data();dc.graphicsBase=c.bg1GraphicsBase;dc.bg1GraphicsBase=c.graphicsBase;}
+   S9xRemasterDungeonPlacements(dc,profile,*tiles);
+   const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
+   for(int cell=0;cell<4096;cell++) {
+    const auto &t=tiles->at(cell);const int address=(bg?0:8192)+cell*2;
+    const int word=c.constructedMaps[address]|c.constructedMaps[address+1]<<8;
+    diagnostic<<"{\"bg\":"<<bg<<",\"x\":"<<cell%64<<",\"y\":"<<cell/64<<",\"hash\":\""<<std::hex<<t.tileHash<<std::dec
+     <<"\",\"word\":"<<word<<",\"surface\":"<<int(t.surface)<<",\"template\":"<<t.wallTemplateOffset
+     <<",\"terminal\":"<<t.terminalCorner<<",\"high_corner\":"<<t.highCornerFace<<",\"base\":"<<m.offsets[cell]
+     <<",\"planes\":["<<m.structuralPlaneOffsets[0][cell]<<','<<m.structuralPlaneOffsets[1][cell]
+     <<"],\"attributes\":["<<int(c.collisionAttributes[cell])<<','<<int(c.collisionAttributes[4096+cell])<<"],\"height\":[";
+    for(int p=0;p<64;p++){if(p)diagnostic<<',';diagnostic<<t.height[p];}diagnostic<<"]}\n";
+   }
+  }
+  std::ofstream pixels(out+"-effective.jsonl");
+  for(int which=0;which<2;which++) {
+   const auto &f=which?*frame:*captured;
+   for(size_t at=0;at<f.mainPixels.size();at++) {
+    const auto &px=f.mainPixels[at];if(!px.instanceId)continue;const auto &i=f.tileInstances[px.instanceId-1];
+    if(i.source!=RemasterSourceType::Background || i.sourceIndex>1)continue;
+    const auto *m=S9xRemasterFrameMetadataForTile(f,i.tileId);
+    const int local=m && m->hasHeight?m->height[px.tilePixel]:0;
+    pixels<<"{\"recomputed\":"<<which<<",\"bg\":"<<int(i.sourceIndex)<<",\"x\":"<<((c.backgroundScrollX+at%f.width)&511)/8
+     <<",\"y\":"<<((c.backgroundScrollY+at/f.width)&511)/8<<",\"hash\":\""<<std::hex<<i.tileId.hash<<std::dec
+     <<"\",\"base\":"<<i.heightOffset<<",\"pixel\":"<<int(px.tilePixel)<<",\"effective\":"<<i.heightOffset+(i.hasPlacementHeight?i.placementHeight[px.tilePixel]:local)<<"}\n";
+   }
+  }
+ }
  std::ofstream inventory(out+".inventory");inventory<<dungeonMapInventory(s.runtimeDungeonBg1HeightMap)<<'\n'<<dungeonMapInventory(s.runtimeDungeonHeightMap)<<'\n';
  std::ofstream report(out+".json");report<<"{\"room\":"<<c.roomIndex<<",\"profile_pin\":\""<<hex.str()<<"\",\"matched_pixels\":"<<matched<<",\"layers\":[";
  for(int bg=0;bg<2;bg++) {if(bg)report<<',';const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
-   report<<"{\"bg\":"<<bg<<",\"conflicts\":"<<m.structuralConflicts<<",\"unknown_walls\":"<<m.unknownWallCells
+    report<<"{\"bg\":"<<bg<<",\"conflicts\":"<<m.structuralConflicts<<",\"unknown_walls\":"<<m.unknownWallCells
+     <<",\"solved_walls\":"<<m.solvedWallCells<<",\"required_planes\":["<<m.requiredPlaneCells[0]<<','<<m.requiredPlaneCells[1]<<']'
     <<",\"authored_obstacle_cells\":"<<m.authoredObstacleCells<<",\"solved_authored_obstacle_cells\":"<<m.solvedAuthoredObstacleCells
     <<",\"unmatched_authored_obstacle_cells\":"<<m.unmatchedAuthoredObstacleCells
     <<",\"missing\":["<<m.unknownPlaneCells[0]<<','<<m.unknownPlaneCells[1]<<"],\"geometry_conflicts\":[";

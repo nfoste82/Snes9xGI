@@ -137,9 +137,11 @@ class NpcWorkbenchTests(unittest.TestCase):
         self.assertEqual(tomllib.loads(exported)['schema_version'], 5)
         with self.assertRaises(ValueError):
             merge_profile(source.replace(SUPPORTED_US_SHA256, '0'*64), {})
-        for data in ([1]*63, [256]*64, [True]*64):
+        for data in ([1]*63, [32768]*64, [-32769]*64, [True]*64):
             with self.assertRaises(ValueError):
                 validate_layers(dict(height=data))
+        exported, _ = merge_profile(source, {key: dict(height=[-32768, 32767]*32)})
+        self.assertEqual(tomllib.loads(exported)['schema_version'], 27)
         with self.assertRaises(ValueError):
             validate_layers(dict(normal_xyz=[128]*192))
 

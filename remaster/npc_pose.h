@@ -43,13 +43,13 @@ inline std::array<uint8_t, 192> S9xRemasterNpcUniformNormals(const std::array<ui
 	return normals;
 }
 
-inline std::array<uint8_t, 64> S9xRemasterNpcHeightRamp(int bottomPixelY, int tileY, bool vFlip)
+inline std::array<int16_t, 64> S9xRemasterNpcHeightRamp(int bottomPixelY, int tileY, bool vFlip)
 {
-	std::array<uint8_t, 64> height;
+	std::array<int16_t, 64> height;
 	for (unsigned p = 0; p < 64; p++)
 	{
 		const int displayY = tileY + (vFlip ? 7 - int(p / 8) : int(p / 8));
-		height[p] = static_cast<uint8_t>(std::max(0, std::min(255, bottomPixelY - displayY)));
+		height[p] = static_cast<int16_t>(std::max(0, std::min(32767, bottomPixelY - displayY)));
 	}
 	return height;
 }

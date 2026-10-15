@@ -235,6 +235,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)toggleRemasterNpcPlayback:(id)sender;
 - (void)loadRemasterNpcLibrary:(id)sender;
 - (void)showRemasterProfileSettings;
+- (void)showRemasterAreaSettings;
 - (void)savePreviousWorkspace;
 - (NSString *)restorePreviousWorkspace;
 - (BOOL)isAudioMuted;

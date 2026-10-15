@@ -137,7 +137,7 @@ struct RemasterLightingFieldCache
 			if ((m && m->hasHeight) || instance.hasPlacementHeight || instance.heightOffset)
 			{
 				const int local = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] : m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
-				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<uint8_t>(local)); height[i*2+1] = 1;
+				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
 			}
 			surface[i*4] = height[i*2] * frame.lightingCoordinateScale;
 			if (m && m->hasNormals)

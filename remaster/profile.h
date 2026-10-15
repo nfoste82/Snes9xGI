@@ -105,7 +105,7 @@ inline bool S9xRemasterOcclusionNeedsStorage (bool hasOcclusion, const std::arra
 // vectors are authored in gameplay space, not reflected again at render time.
 struct RemasterGeometryLayers
 {
-	std::array<uint8_t, 64> height = {};
+	std::array<int16_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	bool hasHeight = false, hasNormals = false;
 	RemasterHeightSampling heightSampling = RemasterHeightSampling::Nearest;
@@ -229,6 +229,58 @@ struct RemasterObstacleGroup
 	std::vector<RemasterObstacleMember> members;
 };
 
+// Direction is the direction rays travel, in source-pixel XYZ (+Z toward camera).
+struct RemasterDirectionalLight
+{
+	bool enabled = true;
+	std::array<float, 3> direction = {{0, 0, -1}};
+	std::array<float, 3> color = {{1.0f, 0.97f, 0.92f}}; // linear RGB
+	float brightness = 0.2f; // UI 4/100; persisted linear illumination (UI / 20).
+	bool operator==(const RemasterDirectionalLight &b) const
+	{ return enabled == b.enabled && direction == b.direction && color == b.color && brightness == b.brightness; }
+};
+
+inline float S9xRemasterDirectionalBrightnessToUi(float brightness) { return brightness * 20.0f; }
+inline float S9xRemasterDirectionalBrightnessFromUi(float brightness) { return brightness / 20.0f; }
+
+struct RemasterAreaContext
+{
+	// 0..319 indoor room; 320 Light World; 321 Dark World; 0xffff unknown.
+	uint16_t id = 0xffff;
+	bool romDark = false;
+	bool valid() const { return id <= 321; }
+};
+
+inline std::string S9xRemasterAreaKey(uint16_t id)
+{
+	if (id == 320) return "light_world";
+	if (id == 321) return "dark_world";
+	if (id >= 320) return {};
+	char key[16]; std::snprintf(key, sizeof(key), "room_%03x", id); return key;
+}
+
+inline bool S9xRemasterValidAreaKey(const std::string &key)
+{
+	for (uint16_t id = 0; id <= 321; ++id) if (key == S9xRemasterAreaKey(id)) return true;
+	return false;
+}
+
+inline RemasterDirectionalLight S9xRemasterDefaultAreaLight(bool indoors)
+{
+	RemasterDirectionalLight light;
+	// Normalized (0, -0.488, -0.87), stored as a unit vector.
+	if (indoors) light.direction = {{0.0f, -0.4892137774788156f, -0.8721639065708393f}};
+	return light;
+}
+
+inline bool S9xRemasterValidDirectionalLight(const RemasterDirectionalLight &light)
+{
+	double length = 0;
+	for (float v : light.direction) { if (!std::isfinite(v) || std::abs(v) > 1e6f) return false; length += double(v)*v; }
+	for (float v : light.color) if (!std::isfinite(v) || v < 0 || v > 1) return false;
+	return length > 1e-12 && std::isfinite(light.brightness) && light.brightness >= 0 && light.brightness <= 16;
+}
+
 struct RemasterProfile
 {
 	uint32_t schemaVersion = 0;
@@ -251,7 +303,16 @@ struct RemasterProfile
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
 	std::vector<RemasterProfileRule> rules;
 	std::vector<RemasterObstacleGroup> obstacleGroups;
+	std::map<std::string, RemasterDirectionalLight> areaLights;
 };
+
+inline RemasterDirectionalLight S9xRemasterAreaLight(const RemasterProfile &profile, RemasterAreaContext area)
+{
+	const auto found = profile.areaLights.find(S9xRemasterAreaKey(area.id));
+	if (area.valid() && found != profile.areaLights.end()) return found->second;
+	RemasterDirectionalLight light = S9xRemasterDefaultAreaLight(area.id < 320);
+	light.enabled = area.valid() && !area.romDark; return light;
+}
 
 // Scene Controls change these small values without replacing the tile atlas.
 struct RemasterSceneSettings
@@ -541,6 +602,27 @@ namespace RemasterProfileParsing
 		return true;
 	}
 
+	inline bool ParseHeightArray (const std::string &value, std::vector<int16_t> &parsed, uint32_t schema)
+	{
+		if (value.size() < 2 || value.front() != '[' || value.back() != ']') return false;
+		parsed.clear();
+		const char *cursor = value.c_str() + 1, *end = value.c_str() + value.size() - 1;
+		auto space = [&] { while (cursor < end && std::isspace(static_cast<unsigned char>(*cursor))) ++cursor; };
+		space();
+		while (cursor < end)
+		{
+			char *next = nullptr; errno = 0;
+			const long number = std::strtol(cursor, &next, 10);
+			if (errno || next == cursor || next > end || number < (schema >= 27 ? -32768 : 0) ||
+				number > (schema >= 27 ? 32767 : 255)) return false;
+			parsed.push_back(static_cast<int16_t>(number)); cursor = next; space();
+			if (cursor == end) return true;
+			if (*cursor++ != ',') return false;
+			space(); if (cursor == end) return false;
+		}
+		return true;
+	}
+
 	inline bool ParseTileId (const std::string &value, RemasterTileContentId &id)
 	{
 		if (value.size() != 24 || value.compare(0, 3, "v1:") || value.compare(4, 4, "bpp:"))
@@ -654,7 +736,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
@@ -670,6 +752,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	RemasterProfileRule *rule = nullptr;
 	RemasterObstacleMember *obstacleMember = nullptr;
 	size_t obstacleIndex = 0;
+	std::string areaKey;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
 
@@ -742,7 +825,13 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			else
 			{
 				std::string name;
-				if (parseNamedSection(line, "[materials.", lineNumber, name))
+				if (parseNamedSection(line, "[area_lights.", lineNumber, name))
+				{
+					section = Section::Area; areaKey = name;
+					if (!S9xRemasterValidAreaKey(name)) fail(lineNumber, "invalid area light key");
+					if (!parsed.areaLights.emplace(name, S9xRemasterDefaultAreaLight(name.compare(0, 5, "room_") == 0)).second) fail(lineNumber, "duplicate area light");
+				}
+				else if (parseNamedSection(line, "[materials.", lineNumber, name))
 				{
 					if (parsed.materials.count(name))
 						fail(lineNumber, "duplicate material '" + name + "'");
@@ -779,6 +868,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		std::string key = Trim(line.substr(0, equals));
 		std::string value = Trim(line.substr(equals + 1));
 		std::string keyScope = std::to_string(static_cast<int>(section));
+		if (section == Section::Area) keyScope += ":" + areaKey;
 		if (material)
 			keyScope += ":" + material->name;
 		if (group)
@@ -802,6 +892,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		bool valid = true;
 		switch (section)
 		{
+		case Section::Area:
+		{
+			auto &light = parsed.areaLights[areaKey];
+			if (key == "enabled") valid = ParseBool(value, light.enabled);
+			else if (key == "direction") valid = ParseFloat3(value, light.direction);
+			else if (key == "color") valid = ParseFloat3(value, light.color);
+			else if (key == "brightness") valid = ParseFloat(value, light.brightness);
+			else { fail(lineNumber, "unknown area light key '" + key + "'"); break; }
+			if (!valid) fail(lineNumber, "invalid area light value for '" + key + "'");
+			break;
+		}
 		case Section::ObstacleGroup:
 			if(key!="name" || !ParseString(value,parsed.obstacleGroups[obstacleIndex-1].name))fail(lineNumber,"invalid obstacle group key/value");
 			break;
@@ -1064,9 +1165,9 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			}
 			else if (key == "height")
 			{
-				std::vector<uint8_t> heights;
-				if (!ParseByteArray(value, heights) || heights.size() != 64)
-					fail(lineNumber, "height must contain exactly 64 values in [0, 255]");
+				std::vector<int16_t> heights;
+				if (!ParseHeightArray(value, heights, parsed.schemaVersion) || heights.size() != 64)
+					fail(lineNumber, parsed.schemaVersion >= 27 ? "height must contain exactly 64 integers in [-32768, 32767]" : "height must contain exactly 64 values in [0, 255]");
 				else
 				{
 					std::copy(heights.begin(), heights.end(), asset->height.begin());
@@ -1127,9 +1228,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					{
 						recognized = true;
 						std::vector<uint8_t> values;
-						if (!ParseByteArray(value, values) || values.size() != (suffix == "height" ? 64 : 192))
+						std::vector<int16_t> heights;
+						if (suffix == "height" ? (!ParseHeightArray(value, heights, parsed.schemaVersion) || heights.size() != 64) : (!ParseByteArray(value, values) || values.size() != 192))
 							fail(lineNumber, "facing geometry array has invalid size or values");
-						else if (suffix == "height") { std::copy(values.begin(), values.end(), layers.height.begin()); layers.hasHeight = true; }
+						else if (suffix == "height") { std::copy(heights.begin(), heights.end(), layers.height.begin()); layers.hasHeight = true; }
 						else { std::copy(values.begin(), values.end(), layers.normalXyz.begin()); layers.hasNormals = true; }
 					}
 					else if (suffix == "height_sampling")
@@ -1219,8 +1321,11 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 25)
-		fail(0, "schema_version must be an integer in [1, 25]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 27)
+		fail(0, "schema_version must be an integer in [1, 27]");
+	if (!parsed.areaLights.empty() && parsed.schemaVersion < 26) fail(0, "area_lights requires schema_version 26");
+	for (const auto &entry : parsed.areaLights)
+		if (!S9xRemasterValidDirectionalLight(entry.second)) fail(0, "invalid directional light: " + entry.first);
 	if(!parsed.obstacleGroups.empty() && parsed.schemaVersion<22)fail(0,"obstacle_groups requires schema_version 22");
 	S9xRemasterValidateObstacleGroups(parsed.obstacleGroups,diagnostics);
 	for(size_t g=0;g<parsed.obstacleGroups.size();g++)for(size_t m=0;m<parsed.obstacleGroups[g].members.size();m++) {
@@ -1493,14 +1598,19 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	}
 	for (const auto &entry : profile.materials)
 		hasDiffuseReflectance |= entry.second.hasDiffuseReflectance;
-	const uint32_t requiredSchema = std::max<uint32_t>(hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const bool hasSignedHeight = std::any_of(profile.assets.begin(), profile.assets.end(), [](const auto &entry) {
+		auto wide = [](const auto &g) { return g.hasHeight && std::any_of(g.height.begin(), g.height.end(), [](int16_t h) { return h < 0 || h > 255; }); };
+		return wide(entry.second) || std::any_of(entry.second.facingGeometry.begin(), entry.second.facingGeometry.end(), wide) ||
+			std::any_of(entry.second.flipGeometry.begin(), entry.second.flipGeometry.end(), wide);
+	});
+	const uint32_t requiredSchema = std::max<uint32_t>(hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
 	const bool hasTileSemantics = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.hasTileSemantics; });
 	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.hasDoorframeMask; });
-	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, hasEmissionDepth ? 14u : requiredSchema))) << "\n\n";
+	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema)))) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1520,6 +1630,16 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output << "emitter_patch_size = " << unsigned(profile.emitterPatchSize) << "\n";
 	if (profile.representativeEmitters) output << "representative_emitters = " << unsigned(profile.representativeEmitters) << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
+	for (const auto &entry : profile.areaLights)
+	{
+		const auto &light = entry.second;
+		if (!S9xRemasterValidAreaKey(entry.first) || !S9xRemasterValidDirectionalLight(light)) return false;
+		output << "\n[area_lights." << entry.first << "]\n";
+		output << "enabled = " << (light.enabled ? "true" : "false") << "\n";
+		output << "direction = [" << light.direction[0] << ", " << light.direction[1] << ", " << light.direction[2] << "]\n";
+		output << "color = [" << light.color[0] << ", " << light.color[1] << ", " << light.color[2] << "]\n";
+		output << "brightness = " << light.brightness << "\n";
+	}
 	for (const auto &entry : profile.materials)
 	{
 		const RemasterMaterial &material = entry.second;
@@ -1584,7 +1704,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		{
 			output << "height = [";
 			for (size_t i = 0; i < asset.height.size(); i++)
-				output << (i ? ", " : "") << unsigned(asset.height[i]);
+				output << (i ? ", " : "") << int(asset.height[i]);
 			output << "]\n";
 			output << "height_sampling = " << Quote(asset.heightSampling == RemasterHeightSampling::Linear ?
 				"linear" : "nearest") << "\n";
@@ -1611,7 +1731,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			if (g.hasHeight)
 			{
 				output << prefix << "height = [";
-				for (size_t i = 0; i < 64; i++) output << (i ? ", " : "") << unsigned(g.height[i]);
+				for (size_t i = 0; i < 64; i++) output << (i ? ", " : "") << int(g.height[i]);
 				output << "]\n" << prefix << "height_sampling = " << Quote(g.heightSampling == RemasterHeightSampling::Linear ? "linear" : "nearest") << "\n";
 			}
 			if (g.hasNormals)

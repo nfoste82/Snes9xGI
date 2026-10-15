@@ -175,9 +175,11 @@ typedef struct
 	vector_float4 debugPositionRadius;
 	vector_float4 debugColorIntensity;
 	vector_float4 heightPreviewRange;
+	vector_float4 directionalDirection;
+	vector_float4 directionalColorBrightness;
 } RemasterLightingUniforms;
 
-static_assert(sizeof(RemasterLightingUniforms) == 128 &&
+static_assert(sizeof(RemasterLightingUniforms) == 160 &&
 	offsetof(RemasterLightingUniforms, cameraDirection) == 64, "Metal uniform ABI");
 
 struct RemasterRadianceMetrics
@@ -306,6 +308,7 @@ id<MTLComputePipelineState>	remasterPrepareDirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterDirectTransportPipelineState = nil;
 id<MTLComputePipelineState> remasterBatchedDirectPipelineState = nil;
 id<MTLComputePipelineState> remasterSampledDirectPipelineState = nil;
+id<MTLComputePipelineState> remasterDirectionalPipelineState = nil;
 id<MTLComputePipelineState> remasterPreparePatchesPipelineState = nil;
 id<MTLComputePipelineState> remasterClusteredDirectPipelineState = nil;
 id<MTLComputePipelineState> remasterClusteredBatchedPipelineState = nil;
@@ -680,6 +683,8 @@ static void S9xInitMetal (void)
 	remasterDirectTransportPipelineState = [metalDevice newComputePipelineStateWithFunction:directTransport error:&error];
 	remasterSampledDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterSampledDirect"] error:&error];
+	remasterDirectionalPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterDirectionalLight"] error:&error];
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:1];
 	remasterBatchedDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
@@ -688,6 +693,8 @@ static void S9xInitMetal (void)
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:3];
 	bool adaptiveDepth = !std::getenv("S9X_REMASTER_FULL_DEPTH_SAMPLES");
 	[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
+	bool hoistReceiver = !(RemasterBenchmarkActive() && std::getenv("S9X_REMASTER_REFERENCE_RECEIVER_EMISSION"));
+	[directConstants setConstantValue:&hoistReceiver type:MTLDataTypeBool atIndex:7];
 	remasterClusteredBatchedPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
 	[directConstants setConstantValue:&unpreparedDirect type:MTLDataTypeBool atIndex:1];
@@ -753,6 +760,7 @@ static void S9xDeinitMetal (void)
 	remasterDirectTransportPipelineState = nil;
 	remasterBatchedDirectPipelineState = remasterReduceDirectPipelineState = nil;
 	remasterSampledDirectPipelineState = nil;
+	remasterDirectionalPipelineState = nil;
 	remasterPreparePatchesPipelineState = nil;
 	remasterClusteredDirectPipelineState = remasterClusteredBatchedPipelineState = nil;
 	remasterBatchedIndirectPipelineState = nil;
@@ -1343,6 +1351,15 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					std::max<uint32_t>(1, samplesPerFrame), ++remasterRandomSeed, reflectanceBoost, { normalizedCameraDirection.x,
 					normalizedCameraDirection.y, normalizedCameraDirection.z, 0.0f }, {}, {} };
 			const uint64_t previewRange = remasterHeightPreviewRange.load(std::memory_order_relaxed);
+			if (frame && frame->directionalLight.enabled && S9xRemasterValidDirectionalLight(frame->directionalLight) &&
+				!(RemasterBenchmarkActive() && std::getenv("S9X_REMASTER_BENCHMARK_DIRECTIONAL_OFF")))
+			{
+				const auto &d = frame->directionalLight.direction;
+				const auto &c = frame->directionalLight.color;
+				const float length = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+				uniforms.directionalDirection = {d[0]/length, d[1]/length, d[2]/length, 0};
+				uniforms.directionalColorBrightness = {c[0], c[1], c[2], frame->directionalLight.brightness};
+			}
 			uniforms.lightCount = static_cast<uint32_t>(sceneLights.size());
 			uniforms.heightPreviewRange = { static_cast<float>(int32_t(uint32_t(previewRange))),
 				static_cast<float>(int32_t(uint32_t(previewRange >> 32))), float(frameSphereSampleCount),
@@ -1556,6 +1573,25 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
 					}
 
+					if (!visibilityView && uniforms.directionalColorBrightness.w > 0)
+					{
+						if (!remasterDirectionalPipelineState) return false;
+						id<MTLComputeCommandEncoder> directional = stageCounters.encoder(commandBuffer, "direct_directional");
+						[directional setComputePipelineState:remasterDirectionalPipelineState];
+						[directional setTexture:sourceTexture atIndex:0];
+						[directional setTexture:occlusionTexture atIndex:1];
+						[directional setTexture:surfaceTexture atIndex:2];
+						[directional setTexture:heightTexture atIndex:3];
+						[directional setTexture:participationTexture atIndex:4];
+						[directional setTexture:finalDirect atIndex:7];
+						[directional setTexture:oppositeFacingTexture atIndex:9];
+						[directional setTexture:visibilityBlocksTexture atIndex:10];
+						[directional setTexture:reflectanceTexture atIndex:11];
+						[directional setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+						[directional setBuffer:resources->mesh offset:0 atIndex:3];
+						[directional dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+						[directional endEncoding];
+					}
 					// Direct is deterministic and need not be recomputed for each indirect sample.
 					uniforms.diagnosticStage = 0;
 					uniforms.sampleCount = connectionCount;
@@ -1824,10 +1860,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							state.performanceMetrics.drawableMs = drawableMs;
 							state.performanceMetrics.gpuFrameMs = gpuMs;
 							state.performanceMetrics.gpuDirectMs = state.performanceMetrics.gpuIndirectMs = 0.0;
+							state.performanceMetrics.gpuDirectionalMs = 0.0;
 							state.performanceMetrics.gpuStageTimingsAvailable = !gpuStages.empty();
 							for (const auto &stage : gpuStages)
 							{
-								if (stage.first == "direct_transport" || stage.first == "direct_reduce") state.performanceMetrics.gpuDirectMs += stage.second;
+								if (stage.first == "direct_transport" || stage.first == "direct_reduce" || stage.first == "direct_directional") state.performanceMetrics.gpuDirectMs += stage.second;
+								if (stage.first == "direct_directional") state.performanceMetrics.gpuDirectionalMs += stage.second;
 								if (stage.first == "indirect_transport" || stage.first == "indirect_reduce") state.performanceMetrics.gpuIndirectMs += stage.second;
 							}
 							state.performanceMetrics.droppedPresentations = dropped;

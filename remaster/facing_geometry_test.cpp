@@ -51,7 +51,7 @@ int main()
 	assert(S9xRemasterNpcDebugColor(frame, 2, RemasterNpcDebugView::Normals)[1] > 200);
 	std::vector<uint8_t> bytes; RemasterFrame replay;
 	assert(S9xSerializeRemasterFrame(frame, bytes) && S9xDeserializeRemasterFrame(bytes, replay));
-	assert(replay.schemaVersion == 33 && replay.assetMetadata[0].geometryByFacing);
+	assert(replay.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION && replay.assetMetadata[0].geometryByFacing);
 	assert(replay.tileInstances[4].geometryFacing == 4 && replay.assetMetadata[0].facingGeometry[3].height[0] == 40);
 	bytes.pop_back(); assert(!S9xDeserializeRemasterFrame(bytes, replay));
 	std::cout << "Facing-specific geometry editing isolation, persistence, fallback and lighting passed\n";

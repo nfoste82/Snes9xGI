@@ -291,7 +291,8 @@ def _semantic_wall_layers(annotation: dict) -> dict[str, tuple[int, ...]]:
 def _format_layer(name: str, values: tuple[int, ...]) -> str:
     expected = {"height": 64, "normal_xyz": 192,
                 "occlusion": 64, "emission_rgba": 256}[name]
-    if len(values) != expected or any(not 0 <= v <= 255 for v in values):
+    lo, hi = (-32768, 32767) if name == 'height' else (0, 255)
+    if len(values) != expected or any(type(v) is not int or not lo <= v <= hi for v in values):
         raise ProfileGenerationError(f"generated {name} has invalid values")
     return f"{name} = [" + ", ".join(str(v) for v in values) + "]\n"
 
@@ -302,6 +303,9 @@ def _render_profile(source_text: str, authored: dict[str, dict],
                     tile_roles: dict[str, str] | None = None) -> str:
     """Keep original text and insert only absent fields / new asset tables."""
     parsed_source = tomllib.loads(source_text)
+    if any(v < 0 or v > 255 for layers in generated.values() for v in layers.get('height', ())):
+        source_text = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$',
+                             f"schema_version = {max(27, parsed_source.get('schema_version', 1))}", source_text, count=1)
     validate_groups(parsed_source)
     # Work on asset/rule sections without swallowing interleaved/appended group
     # member tables. Keep their original text, never reauthor coordinates/Z.
@@ -715,13 +719,16 @@ def generate_profile(database: Path, source: Path, output: Path,
         # may be dropped: runtime extent requires this explicit classification.
         from alttp_activate_diagonal_semantics import activate
         candidate, _ = activate(candidate, json.loads(semantics_path.read_text()))
-    semantic_schema = 21 if door_annotations else 18
+    signed_schema = 27 if any(v < 0 or v > 255 for a in tomllib.loads(candidate).get('assets', []) for v in a.get('height', ())) else 1
+    semantic_schema = max(signed_schema, 21 if door_annotations else 18)
     if semantics_path:
         candidate = re.sub(r'(?m)^schema_version\s*=\s*\d+\s*$',
                             f"schema_version = {max(semantic_schema, profile.get('schema_version', 1))}", candidate, count=1)
     parsed = tomllib.loads(candidate)
     validate_groups(parsed)
     for key, value in profile.items():
+        if key == "schema_version":
+            value = max(signed_schema, value)
         if key == "schema_version" and semantics_path:
             value = max(semantic_schema, value)
         if key == "schema_version" and upper_floor_height and value < 13:

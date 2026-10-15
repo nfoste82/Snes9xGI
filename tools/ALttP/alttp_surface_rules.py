@@ -46,7 +46,7 @@ def _region(template: dict, placement: dict) -> dict:
     height = template["height"]
     if type(height) is int:
         height = [height] * 64
-    if not isinstance(height, list) or len(height) != 64 or any(type(v) is not int or not 0 <= v <= 255 for v in height):
+    if not isinstance(height, list) or len(height) != 64 or any(type(v) is not int or not -32768 <= v <= 32767 for v in height):
         raise ValueError("local height must be an integer or 64 integer samples")
     mask = _flipped([bool(_mask(template["mask"]) & (1 << i)) for i in range(64)],
                     placement["hflip"], placement["vflip"])
@@ -366,7 +366,7 @@ def solve(scene: dict, rules: dict) -> dict:
     out_of_range_groups = set()
     for node, result in results.items():
         if result["height_offset"] is not None and any(
-                not 0 <= result["height_offset"] + nodes[node]["height"][i] <= 255
+                not -2147483648 <= result["height_offset"] + nodes[node]["height"][i] <= 2147483647
                 for i in range(64) if nodes[node]["mask"][i]):
             issues.append({"node": list(node), "reason": "height_out_of_range"})
             out_of_range_groups.add(tuple(result["group"]))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from alttp_height_samples import height_bytes
 
 
 def calibrated_diagonal(source, cap_normals=None, floor_normals=None):
@@ -118,7 +119,7 @@ class ReferenceTemplates:
                 raise ValueError('reference template requires evidence')
             for field, size in (('height', 64), ('normal_xyz', 192)):
                 if field in entry and (len(entry[field]) != size or
-                        any(type(v) is not int or not 0 <= v <= 255 for v in entry[field])):
+                        any(type(v) is not int or not (-32768 if field == 'height' else 0) <= v <= (32767 if field == 'height' else 255) for v in entry[field])):
                     raise ValueError('invalid reference ' + field)
             if 'floor_mask' in entry:
                 mask = int(entry['floor_mask'], 0)
@@ -178,7 +179,7 @@ class ReferenceTemplates:
                     missing.append(entry['id'])
                 continue
             for values, size in ((heights, 64), (normals, 192)):
-                if len(values) != size or any(type(v) is not int or not 0 <= v <= 255 for v in values):
+                if len(values) != size or any(type(v) is not int or not (-32768 if size == 64 else 0) <= v <= (32767 if size == 64 else 255) for v in values):
                     raise ValueError('invalid source reference samples: ' + entry['reference'])
             for h, v in transforms:
                 matches.append((entry['id'], h, v,
@@ -213,7 +214,8 @@ class ReferenceTemplates:
                 'config_sha256': self.digest, 'records': records,
                 'references': [{ 'template': e['id'], 'tile_hash': e['reference'],
                     'status': e.get('status', 'user_selected_reference'), 'evidence': e['evidence'],
-                    'height_sha256': hashlib.sha256(bytes(self.authored.get(e['reference'], {}).get('height', []))).hexdigest(),
+                    'height_encoding': 'signed-int16-le',
+                    'height_sha256': hashlib.sha256(height_bytes(self.authored.get(e['reference'], {}).get('height', []))).hexdigest(),
                     'normal_sha256': hashlib.sha256(bytes(self.authored.get(e['reference'], {}).get('normal_xyz', []))).hexdigest()}
                     for e in self.entries],
                 'counts': {s: sum(r['classification'] == s for r in records)

@@ -10,6 +10,11 @@ in [Room 061 performance plan](room061-performance-plan.md).
 
 ## Visible Room 061 torches, slot 006 (October 6)
 
+For the Room060 slot-A user fixture, the receiver-emission hoisting optimization,
+same-build reference switch (`--reference-receiver-emission`), exact image checks
+and variable short/60-second live results, see
+[Area lighting performance follow-up](../remaster/area_lighting.md#receiver-emission-optimization-october-14).
+
 User's near-torch view requires `Zelda_ALTTP.006.frz`; slot 002 initially contains
 no visible emitters. Root backup profile has three representatives. In 180
 deterministic frames, 117 have 848 emitting pixels/108 prepared direct samples;

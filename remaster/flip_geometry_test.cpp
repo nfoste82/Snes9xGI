@@ -60,7 +60,7 @@ int main()
 	assert(cache.updatedPixels == 64 && std::fabs(cache.height[24 * 2] * 255 - 9) < 0.001f);
 	std::vector<uint8_t> bytes; RemasterFrame replay;
 	assert(S9xSerializeRemasterFrame(frame, bytes) && S9xDeserializeRemasterFrame(bytes, replay));
-	assert(replay.schemaVersion == 33 && replay.assetMetadata[0].geometryByFlip);
+	assert(replay.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION && replay.assetMetadata[0].geometryByFlip);
 	assert(replay.assetMetadata[0].flipGeometry[3].height == asset.flipGeometry[3].height);
 	asset.geometryByFlip = false;
 	assert(S9xRemasterSerializeProfile(profile, text, errors) && S9xRemasterParseProfile(text, decoded, errors));

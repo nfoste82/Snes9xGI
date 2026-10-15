@@ -47,7 +47,21 @@ int main(){try {
  check(s.runtimeDungeonHeightEpoch==epoch && s.dungeonGeometryReuseCount==1,"equivalent animation not reused");
  check(s.runtimeDungeonHeightKey!=key && s.runtimeDungeonHeightKey==s.runtimeDungeonObservedInputKey && s.runtimeDungeonSolveGeometryKey==solveKey,"evidence/solve identities conflated");
  check(s.runtimeDungeonHeightMap.producerHashes[0]==b.hash && s.runtimeDungeonBg1HeightMap.producerHashes[0]==b.hash,"stale producer");differential();
- check(f->tileInstances[0].tileId==b,"animated source identity not refreshed");
+  check(f->tileInstances[0].tileId==b,"animated source identity not refreshed");
+  // Same-room internal doorway camera transition: no raw-authored reset.
+  // Every phase still processes exact input invalidation (including animation).
+  for(int phase=0;phase<8;phase++) {
+   c.submodule=1;c.constructionPhase=phase;run();
+   check(S9xRemasterDungeonHeightInputsPublishable(c,7),"subtile topology suppressed");
+   check(s.runtimeDungeonHeightValid && f->tileInstances[0].heightOffset==s.runtimeDungeonHeightMap.offsets[10*64+10],"subtile placement reset");
+  }
+  c.submodule=1;c.constructionPhase=8;
+  check(!S9xRemasterDungeonHeightInputsPublishable(c,7),"unsupported subtile phase accepted");
+  c.submodule=2;c.constructionPhase=0;
+  check(!S9xRemasterDungeonHeightInputsPublishable(c,7),"partial supertile accepted");
+  c.submodule=5;run();
+  check(S9xRemasterDungeonHeightInputsPublishable(c,7),"post-subtile shutter reset");
+  c.submodule=0;c.constructionPhase=0;run();
  const auto *animatedMetadata=S9xRemasterFrameMetadataForTile(*f,b);
  check(animatedMetadata && animatedMetadata->emissionRgba==profile.assets[b].emissionRgba,"animated emission stale");
  epoch=s.runtimeDungeonHeightEpoch;c.linkX++;c.backgroundScrollX++;c.hasTerrainActors=true;c.terrainActors[0].state=10;run();
@@ -73,7 +87,9 @@ int main(){try {
  check(!S9xRemasterDungeonArtworkGeometryEquivalent(metadata,a.hash,b.hash),"normals dependency");
  metadata.assets[a]=metadata.assets[b];metadata.assets[a].hasOcclusion=true;metadata.assets[a].occlusion[63]=0;
  check(!S9xRemasterDungeonArtworkGeometryEquivalent(metadata,a.hash,b.hash),"occlusion dependency");
- metadata.assets.erase(a);check(!S9xRemasterDungeonArtworkGeometryEquivalent(metadata,a.hash,b.hash),"missing metadata dependency");
+  metadata.assets.erase(a);check(!S9xRemasterDungeonArtworkGeometryEquivalent(metadata,a.hash,b.hash),"missing metadata dependency");
+  {uint8_t blank[64]={};RemasterProfile empty;
+   check(!S9xRemasterDungeonArtworkGeometryEquivalent(empty,S9xRemasterHashTile(4,blank),a.hash),"blank/nonblank border dependency");}
  // Inventory contract includes all fields, including observer and ownership-only fields.
  RemasterDungeonFloorContext::Placement t,u;
 #define DIFFERENT(field,value) u=t;u.field=value;check(!t.sameGeometry(u),#field)

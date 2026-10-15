@@ -39,7 +39,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
             if any(h[y*8+x] != f+8*(2-band)+7-(x if axis else y)
                    for y in range(8) for x in range(8)):
                 return {}
-    if not 0 <= foot < 231:
+    if not -32768 <= foot <= 32767-24:
         return {}
     for axis,off in enumerate((0x2e8,0x2c8)):
         h=local_for_word(word(off))
@@ -105,7 +105,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
             low_foot=f
             if any(h[y*8+x]!=f+8*(2-band)+7-(x if axis else y) for y in range(8) for x in range(8)):return result
     displacement=foot-low_foot
-    if low_foot<0 or displacement<=0 or displacement%8:return result
+    if low_foot < -32768 or displacement<=0 or displacement%8:return result
     shift=displacement//8;extent=4+shift;composed={}
     for kind in range(12):
         high=0x420+kind*10;low=high+120;reverse=bool(word(high)&0x8000)
@@ -175,7 +175,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
             if extent<2 or not 0<=top<64 or not boundary(snapshot.cell(layer,x,top)):continue
             if extent<=4:continue
             maximum=minimum+(extent-1)*8
-            if maximum>254:continue
+            if minimum < -32768 or maximum > 32767:continue
             for row in range(extent):
                 intercept=minimum+7+row*8
                 result[x,y+row*up]=dict(height=[max(minimum,min(maximum,intercept-xx-yy)) for yy in range(8) for xx in range(8)],
@@ -328,7 +328,7 @@ def diagonal_previews(snapshot, profile, template_data, layer=1, owned=None):
                     members.append(t);yy+=up
                 if len(members)<=4 or not 0<=yy<64 or semantic(snapshot.cell(layer,x,yy)) or not boundary(snapshot.cell(layer,x,yy)):continue
                 maximum=(len(members)-1)*8
-                if maximum>254:continue
+                if maximum > 32767:continue
                 for row,t in enumerate(members):
                     intercept=7+row*8
                     claims.setdefault((t.x,t.y),set()).add((intercept,0,maximum))

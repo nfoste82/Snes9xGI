@@ -189,7 +189,15 @@ class AnnotationStore:
             if not key or key[1] not in remaining:
                 return block
             remaining.remove(key[1])
-            block = re.sub(r'(?m)^(tile_role|doorframe_mask|tile_semantics_authored|tile_semantic_\w+)\s*=.*\n?', '', block)
+            # Omission in a Door annotation edits semantics, not the independent
+            # authored pixel mask. Preserve each member's own mask (including
+            # explicit empty); replacing it requires an explicit mask field.
+            # Leaving Door must still remove the now-inapplicable payload.
+            preserve_mask = annotation['role'] == 'door' and 'doorframe_mask' not in annotation
+            removed = r'tile_role|tile_semantics_authored|tile_semantic_\w+'
+            if not preserve_mask:
+                removed += '|doorframe_mask'
+            block = re.sub(r'(?m)^(' + removed + r')\s*=.*\n?', '', block)
             return block.rstrip() + '\n' + fields + '\n'
         text = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', replace, text)
         additions = ''.join('\n[[assets]]\ntile_hash = ' + quote(key) + '\n' + fields

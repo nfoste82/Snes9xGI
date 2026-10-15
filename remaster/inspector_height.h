@@ -3,6 +3,28 @@
 
 #include "frame.h"
 
+// Tile-local contrast is independent of the scene height-view multiplier.
+// These display bounds never alter authored samples or placement bases.
+struct RemasterInspectorHeightPreviewRange
+{
+	int minimum = 0, maximum = 255;
+	uint8_t grayscale(float sample) const
+	{
+		const float value = (sample - minimum) / float(std::max(1, maximum - minimum));
+		return static_cast<uint8_t>(std::lround(std::max(0.0f, std::min(1.0f, value)) * 255.0f));
+	}
+};
+
+inline RemasterInspectorHeightPreviewRange S9xRemasterInspectorLocalPreviewRange(
+	const std::array<int16_t, 64> &height)
+{
+	const auto bounds = std::minmax_element(height.begin(), height.end());
+	if (*bounds.first != *bounds.second) return {int(*bounds.first), int(*bounds.second)};
+	// Flat data stays flat, including authored zero. Its exact value is reported
+	// separately; avoid pretending a constant layer has a gradient.
+	return {std::min(0, int(*bounds.first)), std::max(255, int(*bounds.second))};
+}
+
 inline void S9xRemasterInspectorInitializeAuthoredHeight (RemasterAssetMetadata &asset)
 {
 	if (!asset.hasHeight) asset.height.fill(0);
@@ -12,7 +34,7 @@ inline void S9xRemasterInspectorInitializeAuthoredHeight (RemasterAssetMetadata 
 // Inspector authoring never reads instance geometry. A loaded profile is
 // authoritative, including an absent/reset layer; capture fallback is local
 // asset data copied by ApplyProfileToFrame, not an effective placement array.
-inline const std::array<uint8_t, 64> *S9xRemasterInspectorAuthoredHeight (
+inline const std::array<int16_t, 64> *S9xRemasterInspectorAuthoredHeight (
 	const RemasterProfile *profile, const RemasterFrame &frame, const RemasterTileContentId &tile,
 	RemasterHeightSampling &sampling)
 {
@@ -55,7 +77,7 @@ inline uint32_t S9xRemasterInspectorHeightInstance (const RemasterFrame &frame,
 
 struct RemasterInspectorEffectiveHeight
 {
-	const std::array<uint8_t, 64> *local = nullptr;
+	const std::array<int16_t, 64> *local = nullptr;
 	int32_t base = 0;
 	bool available = false;
 	bool placementOverride = false;
@@ -64,7 +86,7 @@ struct RemasterInspectorEffectiveHeight
 };
 
 inline RemasterInspectorEffectiveHeight S9xRemasterInspectorEffectiveHeight (
-	const RemasterFrameTileInstance *instance, const std::array<uint8_t, 64> *authored)
+	const RemasterFrameTileInstance *instance, const std::array<int16_t, 64> *authored)
 {
 	RemasterInspectorEffectiveHeight result;
 	if (!instance) return result;

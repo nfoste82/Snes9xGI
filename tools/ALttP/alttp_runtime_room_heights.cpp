@@ -141,7 +141,7 @@ int main(int argc, char **argv)
 				<< ",\"kind\":\"" << (tiles[i].surface == RemasterDungeonFloorContext::Surface::Wall ? "authored_wall" : "authored_obstacle") << "\",\"planes\":[";
 			bool firstPlane = true;
 			for (int p = 0; p < 2; p++) if ((tiles[i].surface == RemasterDungeonFloorContext::Surface::Wall ?
-				map.structuralPlaneOffsets[p][i] : map.planeOffsets[p][i]) == map.offsets[i])
+				map.structuralPlaneOffsets[p][i] : tiles[i].obstacleAssembly ? map.structuralPlaneOffsets[p][i] : map.planeOffsets[p][i]) == map.offsets[i])
 			{ if (!firstPlane) std::cout << ','; firstPlane = false; std::cout << p; }
 			const auto floor=S9xRemasterMixedFloorBase(map,i);
 			std::cout << "]";

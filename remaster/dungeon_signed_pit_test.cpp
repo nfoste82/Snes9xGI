@@ -53,13 +53,8 @@ int main(int argc, char **argv)
 		assert(f.assetMetadata[0].height==m.height);
 		std::vector<uint8_t> bytes; assert(S9xSerializeRemasterFrame(f,bytes));
 		RemasterFrame decoded; assert(S9xDeserializeRemasterFrame(bytes,decoded));
-		assert(decoded.schemaVersion==26 && decoded.tileInstances[0].heightOffset==-24);
-		// The previous schema's byte offset must still decode without reinterpretation.
-		f.tileInstances[0].heightOffset=50; assert(S9xSerializeRemasterFrame(f,bytes));
-		bytes.erase(bytes.end()-5,bytes.end()-2); // three extra offset bytes, before yaw/flag
-		bytes[8]=25;
-		assert(S9xDeserializeRemasterFrame(bytes,decoded));
-		assert(decoded.schemaVersion==25 && decoded.tileInstances[0].heightOffset==50);
+		assert(decoded.schemaVersion==REMASTER_FRAME_SCHEMA_VERSION && decoded.tileInstances[0].heightOffset==-24);
+		assert(decoded.assetMetadata[0].height==m.height);
 	}
 	if (argc==2) {
 		auto loaded=std::make_unique<RemasterDungeonHeightMap>();

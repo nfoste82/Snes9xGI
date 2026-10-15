@@ -13,6 +13,7 @@ import tomllib
 
 from alttp_room_geometry import RoomSnapshot
 from alttp_collision_reachability import read_attributes
+from alttp_height_samples import valid_heights
 
 SIZE = 64
 UNKNOWN = 255
@@ -51,8 +52,7 @@ def _profile(profile: dict) -> tuple[dict[str, list[int]], set[str]]:
         if tile_hash in assets:
             raise ValueError("profile contains duplicate tile hashes")
         if height is not None:
-            if not isinstance(height, list) or len(height) != 64 or not all(
-                    isinstance(v, int) and 0 <= v <= 255 for v in height):
+            if not valid_heights(height, profile.get('schema_version', 1)):
                 raise ValueError(f"asset {tile_hash} has an invalid height array")
             assets[tile_hash] = height
     walls = set(profile.get("asset_groups", {}).get("wall_faces", {}).get("tile_hashes", []))

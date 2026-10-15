@@ -50,6 +50,54 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    def test_door_semantic_save_preserves_independent_masks_unless_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, marker = root / 'profile.toml', root / 'marker.json'
+            ids = ['v1:4bpp:0123456789abcdef', 'v1:4bpp:fedcba9876543210',
+                   'v1:4bpp:1111111111111111']
+            masks = ['3f3f3f3f1f1f1f1f', '0000000000000000', None]
+            protected = dict(height=list(range(64)), height_sampling='linear',
+                             occlusion=[0, 255] * 32, normal_xyz=[128, 128, 255] * 64,
+                             emission_rgba=[0] * 256, geometry_by_flip=True,
+                             flip_horz_height=[7] * 64)
+            text = f'schema_version = 25\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+            for key, mask in zip(ids, masks):
+                text += f'\n[[assets]]\ntile_hash = "{key}"\ntile_role = "door"\n'
+                for field, value in protected.items():
+                    text += f'{field} = {json.dumps(value)}\n'
+                if mask is not None:
+                    text += f'doorframe_mask = "{mask}"\n'
+            profile.write_text(text)
+            marker.write_text(json.dumps(dict(profile=str(profile))))
+            store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
+
+            def check(expected_masks, role):
+                assets = tomllib.loads(profile.read_text())['assets']
+                self.assertEqual([a.get('doorframe_mask') for a in assets], expected_masks)
+                for asset in assets:
+                    self.assertEqual(asset['tile_role'], role)
+                    self.assertEqual({k: asset[k] for k in protected}, protected)
+                self.assertFalse(profile.with_name(profile.name + '.semantics.tmp').exists())
+
+            # Group semantics must not copy one member's mask onto another,
+            # invent an unknown mask, or erase explicit empty authoring.
+            store.save_group(ids, dict(role='door', note='note only'), store.refresh())
+            check(masks, 'door')
+            store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
+            store.save_group(ids, dict(role='door', note='after reload'), store.refresh())
+            check(masks, 'door')
+            # An explicit empty mask is a replacement, not omission.
+            store.save_group(ids, dict(role='door', doorframe_mask='0000000000000000'), store.refresh())
+            check(['0000000000000000'] * 3, 'door')
+            store.save_group(ids, dict(role='door', doorframe_mask='ffffffffffffffff'), store.refresh())
+            check(['ffffffffffffffff'] * 3, 'door')
+            store.save_group(ids, dict(role='other'), store.refresh())
+            check([None] * 3, 'other')
+            # Returning to Door must not resurrect a mask removed by role change.
+            store.save_group(ids, dict(role='door'), store.refresh())
+            check([None] * 3, 'door')
+
     def test_registered_schema22_semantic_save_preserves_group_records(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); profile=root/'profile.toml'; marker=root/'marker.json'

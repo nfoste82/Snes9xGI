@@ -117,5 +117,53 @@ int main ()
 	S9xRemasterApplyProfileToFrame(reloaded, frame);
 	check(frame.assetMetadata.front().height == captured.height && frame.tileInstances[0].heightOffset == -32 &&
 		frame.tileInstances[0].placementHeight[3] == 6, "undo/refresh restores authored local map without changing placement geometry");
+	// Existing wall assets can encode an assembly band as part of local art.
+	// Preview contrast is not authority to subtract that band from authored data.
+	// Exercise both orientations and every placement flip, independently of base.
+	for (int band : {16, 32}) for (bool horizontal : {false, true})
+	{
+		auto &wall = reloaded.assets.at(tile);
+		for (size_t p = 0; p < 64; ++p)
+			wall.height[p] = band + 7 - int(horizontal ? p % 8 : p / 8);
+		wall.heightSampling = RemasterHeightSampling::Linear;
+		reloaded.heightPreviewMultiplier = 12;
+		S9xRemasterApplyProfileToFrame(reloaded, frame);
+		for (const auto *source : {static_cast<const RemasterProfile *>(&reloaded), static_cast<const RemasterProfile *>(nullptr)})
+		{
+			authored = S9xRemasterInspectorAuthoredHeight(source, frame, tile, sampling);
+			check(authored && *authored == wall.height && sampling == RemasterHeightSampling::Linear,
+				"wall band remains authored in profile and capture, regardless of preview multiplier");
+			const auto contrast = S9xRemasterInspectorLocalPreviewRange(*authored);
+			check(contrast.minimum == band && contrast.maximum == band + 7,
+				"banded wall preview uses actual local range");
+			for (int step = 0; step < 7; step++)
+				check(contrast.grayscale(band + step) < contrast.grayscale(band + step + 1),
+					"every wall step remains visible without scene-multiplier clipping");
+			for (bool h : {false, true}) for (bool v : {false, true})
+			{
+				auto instance = upper;
+				instance.hFlip = h; instance.vFlip = v; instance.heightOffset = -8;
+				const auto result = S9xRemasterInspectorEffectiveHeight(&instance, authored);
+				for (size_t p = 0; p < 64; ++p)
+				{
+					const auto canonical = S9xRemasterInspectorCanonicalPixel(instance, p);
+					check(result.at(canonical) == wall.height[canonical] - 8,
+						"wall local band and contextual base compose once after flips");
+				}
+			}
+		}
+	}
+	std::array<int16_t, 64> signedRelief;
+	for (size_t p = 0; p < 64; p++) signedRelief[p] = -32768 + int(p) * 1040;
+	const auto signedContrast = S9xRemasterInspectorLocalPreviewRange(signedRelief);
+	check(signedContrast.grayscale(-32768) == 0 && signedContrast.grayscale(32752) == 255,
+		"signed wide preview spans its full range without wrapping");
+	signedRelief.fill(0);
+	check(S9xRemasterInspectorLocalPreviewRange(signedRelief).grayscale(0) == 0,
+		"authored zero stays flat black, distinct from missing layer");
+	signedRelief.fill(32);
+	const auto flatContrast = S9xRemasterInspectorLocalPreviewRange(signedRelief);
+	check(flatContrast.minimum < flatContrast.maximum && flatContrast.grayscale(32) == 32,
+		"flat nonzero layer does not acquire a fabricated gradient");
 	std::cout << "inspector height separation checks passed\n";
 }

@@ -19,7 +19,8 @@ int main()
 		require(topRamp[p] == 15 - p / 8, "ramp continues across tile boundary, every column");
 		require(flippedRamp[p] == p / 8, "vertical flip maps display ramp to canonical pixels");
 	}
-	require(S9xRemasterNpcHeightRamp(400, 0, false)[0] == 255, "height ramp saturates at byte limit");
+	require(S9xRemasterNpcHeightRamp(400, 0, false)[0] == 400, "height ramp preserves relief above 255");
+	require(S9xRemasterNpcHeightRamp(40000, 0, false)[0] == 32767, "height ramp saturates at signed sample limit");
 	require(S9xRemasterNpcHeightRamp(15, 20, false)[0] == 0, "height ramp clamps below base");
 	RemasterNpcPosePart front, back;
 	std::fill(front.asset.indices, front.asset.indices + 64, 1);

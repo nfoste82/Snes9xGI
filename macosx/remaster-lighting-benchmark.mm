@@ -25,8 +25,9 @@ struct Uniforms
 	uint32_t sampleIndex, sampleCount, randomSeed;
 	float reflectanceBoost;
     simd_float4 cameraDirection, debugPositionRadius, debugColorIntensity, heightPreviewRange;
+	simd_float4 directionalDirection, directionalColorBrightness;
 };
-static_assert(sizeof(Uniforms) == 128 && offsetof(Uniforms, cameraDirection) == 64,
+static_assert(sizeof(Uniforms) == 160 && offsetof(Uniforms, cameraDirection) == 64,
     "Metal uniforms ABI");
 
 static uint64_t checksum(const void *data, size_t size)

@@ -90,7 +90,7 @@ int main(int argc,char **argv){try{
      require(map->planeOffsets[0][i]==(authoredObstacle?50:255),"obstacle upper support regression");
      require(map->offsets[i]==(authoredObstacle?50:0) && !map->fallbackDirections[i],"obstacle relief replaced or wrong visible base");
     }else {
-     require((*tiles)[i].surface==RemasterDungeonFloorContext::Surface::Obstacle && std::all_of((*tiles)[i].height.begin(),(*tiles)[i].height.end(),[](uint8_t h){return h==0;}),"candidate obstacle metadata not preserved");
+     require((*tiles)[i].surface==RemasterDungeonFloorContext::Surface::Obstacle && std::all_of((*tiles)[i].height.begin(),(*tiles)[i].height.end(),[](int16_t h){return h==0;}),"candidate obstacle metadata not preserved");
      if(std::getenv("ASSERT_ACTIVATION"))require(map->planeOffsets[0][i]==50 && map->planeOffsets[1][i]==0 && map->offsets[i]==50 && !map->fallbackDirections[i],"actual activation obstacle base/local regression");
     }
     const auto &t=(*tiles)[i];std::cout<<"experiment="<<authoredObstacle<<" BG="<<layer+1<<" xy="<<i%64<<','<<i/64<<" hash="<<std::hex<<t.tileHash<<std::dec<<" role="<<int(t.surface)<<" attr="<<int(c.collisionAttributes[i])<<'/'<<int(c.collisionAttributes[4096+i])<<" local="<<int(*std::min_element(t.height.begin(),t.height.end()))<<".."<<int(*std::max_element(t.height.begin(),t.height.end()))<<" planes="<<map->planeOffsets[0][i]<<'/'<<map->planeOffsets[1][i]<<" visible="<<map->offsets[i]<<" fallback="<<int(map->fallbackDirections[i])<<'\n';

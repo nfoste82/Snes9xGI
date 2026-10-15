@@ -110,6 +110,10 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                                      keyEquivalent:@""];
 	profileSettingsItem.target = self;
 	[windowMenu addItem:profileSettingsItem];
+	NSMenuItem *areaSettingsItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Area Settings", nil)
+		action:@selector(showRemasterAreaSettings:) keyEquivalent:@""];
+	areaSettingsItem.target = self;
+	[windowMenu addItem:areaSettingsItem];
     [self importRecentItems];
 
     NSWindow *gameWindow = [[NSWindow alloc] initWithContentRect:s9xView.frame styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -669,7 +673,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	else if (action == @selector(showRemasterNpcBrowser:)) {
 		return YES;
 	}
-	else if (action == @selector(showRemasterProfileSettings:)) {
+	else if (action == @selector(showRemasterProfileSettings:) || action == @selector(showRemasterAreaSettings:)) {
 		return [self.s9xEngine isRemasterProfileLoaded];
 	}
 	else if (action == @selector(updateDeviceSetting:)) {
@@ -834,6 +838,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 - (IBAction)showRemasterProfileSettings:(id)sender
 {
 	[self.s9xEngine showRemasterProfileSettings];
+}
+
+- (IBAction)showRemasterAreaSettings:(id)sender
+{
+	[self.s9xEngine showRemasterAreaSettings];
 }
 
 - (IBAction)openRemasterFrame:(id)sender

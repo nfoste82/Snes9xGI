@@ -20,6 +20,10 @@ def main():
     parser.add_argument("--presentation", choices=("deterministic", "live"), default="deterministic")
     parser.add_argument("--connections", type=int, help="Override profile connection count")
     parser.add_argument("--composite-only", action="store_true", help="Measure only Composite with zero bounces")
+    parser.add_argument("--directional-light", choices=("profile", "off"), default="profile",
+                         help="Disable only the directional pass for a controlled same-profile comparison")
+    parser.add_argument("--reference-receiver-emission", action="store_true",
+                        help="Benchmark the original per-source receiver-emission check")
     parser.add_argument("--timeout", type=float, default=1800, help="Wall-clock timeout in seconds")
     args = parser.parse_args()
     executable = args.app.expanduser().resolve()
@@ -37,6 +41,12 @@ def main():
     if args.connections is not None:
         command += ["--benchmark-connections", str(args.connections)]
     environment = os.environ.copy()
+    environment.pop("S9X_REMASTER_BENCHMARK_DIRECTIONAL_OFF", None)
+    environment.pop("S9X_REMASTER_REFERENCE_RECEIVER_EMISSION", None)
+    if args.reference_receiver_emission:
+        environment["S9X_REMASTER_REFERENCE_RECEIVER_EMISSION"] = "1"
+    if args.directional_light == "off":
+        environment["S9X_REMASTER_BENCHMARK_DIRECTIONAL_OFF"] = "1"
     if args.composite_only:
         environment["S9X_REMASTER_BENCHMARK_COMPOSITE_ONLY"] = "1"
     environment.pop("S9X_REMASTER_GI_METRICS", None)

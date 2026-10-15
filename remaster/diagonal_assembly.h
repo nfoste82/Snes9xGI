@@ -50,7 +50,7 @@ inline void S9xRemasterSemanticDiagonalExtents(Placements &tiles)
 		// The diagonal projection occupies one extra partial band. Only the
 		// actual terminator clips the final band; never an intrinsic internal cap.
 		const int maximum=minimum+(extent-1)*8;
-		if(maximum>254)continue;
+		if(minimum<INT16_MIN || maximum>INT16_MAX)continue;
 		// Semantic extent is a shape rule, not license to repair incompatible
 		// cardinal datum. Preserve original approved four-band shell when its
 		// authored foot convention agrees; larger spans replace internal caps.
@@ -131,7 +131,7 @@ struct RemasterDiagonalAssemblyContacts
 struct RemasterDiagonalAssemblyGeometry
 {
 	int cell = -1, intercept = 0, minimum = 0, maximum = 0;
-	std::array<uint8_t,64> height = {};
+	std::array<int16_t,64> height = {};
 };
 
 inline bool S9xRemasterSolveDiagonalAssembly(
@@ -141,7 +141,7 @@ inline bool S9xRemasterSolveDiagonalAssembly(
 {
 	geometry.clear();
 	if(!contacts.supportVerified || !contacts.topVerified || !contacts.sameAssembly || contacts.conflict ||
-		contacts.minimum<0 || contacts.maximum>254 || contacts.maximum<=contacts.minimum)return false;
+		contacts.minimum<INT16_MIN || contacts.maximum>INT16_MAX || contacts.maximum<=contacts.minimum)return false;
 	// Heap-backed fixed cell index: repeats in asset identity do not matter,
 	// duplicate ownership claims do. Entire conflicted assembly rejects.
 	std::vector<int> claims(4096,-1);

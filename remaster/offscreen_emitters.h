@@ -109,7 +109,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		}
 		float power=0, sx=0, sy=0, sz=0; unsigned count=0;
 		std::array<float,3> color={};
-		const std::array<uint8_t,64> *placementLocal=nullptr;
+		const std::array<int16_t,64> *placementLocal=nullptr;
 		for(const auto &preview:map->localHeightPreviews)if(preview.cell==cell){placementLocal=&preview.height;break;}
 		for (int y=0; y<8; y++) for (int x=0; x<8; x++)
 		{

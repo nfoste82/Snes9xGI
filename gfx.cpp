@@ -746,9 +746,25 @@ void S9xEndScreenRefresh (void)
 				heldLamp.linkScreenX = static_cast<int16_t>(dungeonFloor.linkX - dungeonFloor.backgroundScrollX);
 				heldLamp.linkScreenY = static_cast<int16_t>(dungeonFloor.linkY - dungeonFloor.backgroundScrollY);
 			}
+			RemasterAreaContext area;
+			if (dungeonFloor.verifiedAlttpRom)
+			{
+				if (dungeonFloor.indoors && dungeonFloor.roomIndex < 320)
+				{
+					area.id = dungeonFloor.roomIndex;
+					// US ROM room header pointers at $04:F502 (LoROM).
+					const size_t pointer = 0x27502 + size_t(area.id) * 2;
+					const uint16_t address = Memory.ROM[pointer] | Memory.ROM[pointer + 1] << 8;
+					const size_t header = address == 0xffef ? 0x16dc5 : 0x20000 + (address & 0x7fff);
+					area.romDark = (Memory.ROM[header] & 1) != 0;
+				}
+				else if (!dungeonFloor.indoors)
+					area.id = (Memory.RAM[0x8a] & 0x40) ? 321 : 320;
+			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
-				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp);
+				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp, &area,
+				IPPU.TotalEmulatedFrames);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

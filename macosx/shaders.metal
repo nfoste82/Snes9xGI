@@ -54,6 +54,8 @@ typedef struct
 	float4 debugPositionRadius;
 	float4 debugColorIntensity;
 	float4 heightPreviewRange;
+	float4 directionalDirection;
+	float4 directionalColorBrightness;
 } RemasterLightingUniforms;
 
 // Radiance calibration: byte 25 is 100 linear radiance units, not display white.
@@ -840,6 +842,7 @@ constant bool remasterBatchedDirectPass [[function_constant(1)]];
 constant bool remasterClusteredDirectPass [[function_constant(3)]];
 constant bool remasterAdaptiveSpherePass [[function_constant(4)]];
 constant bool remasterAdaptiveDepthPass [[function_constant(6)]];
+constant bool remasterHoistReceiverEmission [[function_constant(7)]];
 
 kernel void remasterPrepareDirectSamples(
 	texture2d<float, access::read> occlusion [[texture(0)]],
@@ -1071,6 +1074,57 @@ kernel void remasterSampledDirect(
 	indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
 }
 
+// Independent of emitter budgets/batches; runs before the first indirect bounce.
+kernel void remasterDirectionalLight(
+	texture2d<float, access::read> source [[texture(0)]],
+	texture2d<float, access::read> occlusion [[texture(1)]],
+	texture2d<float, access::read> surfaceField [[texture(2)]],
+	texture2d<float, access::read> heightField [[texture(3)]],
+	texture2d<float, access::read> participationField [[texture(4)]],
+	texture2d<float, access::read_write> direct [[texture(7)]],
+	texture2d<float, access::read> oppositeFacingField [[texture(9)]],
+	texture2d<float, access::read> visibilityBlocks [[texture(10)]],
+	texture2d<float, access::read> reflectanceField [[texture(11)]],
+	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+	const device RemasterMeshCell *mesh [[buffer(3)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height) return;
+	float2 participation = participationField.read(pixel).rg;
+	if (participation.r < 0.5 || participation.g < 0.5) return;
+	float4 surface = surfaceField.read(pixel);
+	bool oppositeFacing = oppositeFacingField.read(pixel).r > 0.5;
+	float3 incoming = 0;
+	if (uniforms.directionalColorBrightness.w > 0)
+	{
+		float3 towardLight = -uniforms.directionalDirection.xyz;
+		float cosine = saturate(dot(surface.gba, towardLight));
+		if (oppositeFacing) cosine = max(cosine, saturate(dot(surface.gba * float3(-1,-1,1), towardLight)));
+		if (cosine > 0)
+		{
+			float visibility = 1.0;
+			// A vertical ray cannot cross another XY cell. Oblique rays use the mesh DDA.
+			if (any(abs(towardLight.xy) > float2(0.000001)))
+			{
+				float3 origin = remasterSurfaceRayEndpoint(pixel, surface, occlusion, heightField, mesh);
+				float distance = 1e7;
+				if (towardLight.x > 0.000001) distance = min(distance, (float(uniforms.width) - origin.x) / towardLight.x);
+				if (towardLight.x < -0.000001) distance = min(distance, -origin.x / towardLight.x);
+				if (towardLight.y > 0.000001) distance = min(distance, (float(uniforms.height) - origin.y) / towardLight.y);
+				if (towardLight.y < -0.000001) distance = min(distance, -origin.y / towardLight.y);
+				visibility = remasterVisibility(origin, origin + towardLight * max(0.0, distance),
+					occlusion, heightField, surfaceField, visibilityBlocks, mesh);
+			}
+			incoming += uniforms.directionalColorBrightness.rgb *
+				(uniforms.directionalColorBrightness.w * cosine * visibility);
+		}
+	}
+	float4 authored = reflectanceField.read(pixel);
+	float3 albedo = authored.a > 0.5 ? saturate(authored.rgb) : remasterAlbedo(source.read(pixel).rgb);
+	albedo = remasterBoostReflectance(albedo, uniforms.reflectanceBoost);
+	direct.write(float4(direct.read(pixel).rgb + albedo * incoming, 1.0), pixel);
+}
+
 kernel void remasterIndirectBounce(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> occlusion [[texture(1)]],
@@ -1150,6 +1204,11 @@ kernel void remasterIndirectBounce(
 	uint firstSample = batched ? grid.z * batchSize : 0;
 	uint endSample = batched ? min(sampleTotal, firstSample + batchSize) : sampleTotal;
 	bool adaptiveDepth = is_function_constant_defined(remasterAdaptiveDepthPass) ? remasterAdaptiveDepthPass : false;
+	// Receiver membership cannot change while enumerating this frame's sources.
+	// Most receivers emit nothing, so avoid entering the exclusion helper for
+	// every source (and repeating its emission texture read).
+	bool hoistReceiver = is_function_constant_defined(remasterHoistReceiverEmission) ? remasterHoistReceiverEmission : true;
+	bool emittingReceiver = !hoistReceiver || (clusteredDirect && any(previousBounce.read(pixel).rgb > 0.0));
 	for (uint sampleIndex = firstSample; sampleIndex < endSample; sampleIndex++)
 	{
 		float2 samplePoint;
@@ -1226,7 +1285,7 @@ kernel void remasterIndirectBounce(
 			preparedSample = directSamples[sampleIndex];
 			if (clusteredDirect) {
 				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
-				if (sourceRecord.x != 0xffffffffu)
+				if (emittingReceiver && sourceRecord.x != 0xffffffffu)
 					preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
 						pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
 				if (all(preparedSample.radiance.rgb <= 0)) continue;
