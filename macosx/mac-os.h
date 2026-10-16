@@ -268,6 +268,8 @@ extern id<S9xInputDelegate> inputDelegate;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;
+- (void)chooseRemasterAreaReview;
+- (NSString *)openRemasterAreaReview:(NSURL *)fileURL;
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL;
 - (void)startRemasterBenchmarkIfRequested;
 

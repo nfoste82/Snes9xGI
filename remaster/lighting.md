@@ -265,6 +265,50 @@ light per scan. See `offscreen_emitters.md` for capture timings and regressions.
 
 ## Connected surface meshes
 
+### Mesh diagnostic
+
+Cycle lighting views with Command-Shift-D to **Mesh** (after Emission). The
+diagnostic draws the actual generated center-fan triangles, shell bottoms/sides,
+and structural wall closures over dim artwork at 4x source resolution. Cyan is a
+sheet, amber a finite shell, pink a base-closed structural wall. Transparent
+receivers are dimmed; unknown-height pixels have no triangles. A fixed oblique
+projection `(x + .35*z, y - .65*z)` separates elevated geometry from its original
+screen footprint. Depth testing retains the frontmost faces. This is a geometry
+inspection view, not an editing coordinate transform: selection still uses the
+original screen coordinates. Mesh presentation bypasses light transport and runs
+synchronously; it is intended for paused inspection, not performance measurement.
+
+`surface_mesh_capture_probe.cpp` exports the same view and a per-pixel mesh CSV:
+
+```sh
+clang++ -std=c++17 -O2 remaster/surface_mesh_capture_probe.cpp -o build/remaster-tests/surface-mesh-capture-probe
+build/remaster-tests/surface-mesh-capture-probe capture.s9xrmf Profiles/ALttP/alttp-profile.toml build/remaster-tests/scene
+```
+
+Courtyard capture `frame_overworld_x0868_y0715.s9xrmf` (schema35, scale200)
+demonstrates a mixed-semantics boundary: tree pixel (124,144), hash
+`1f1ef598c2067de7`, local sample0 is authored height0 but tile role Obstacle,
+therefore a unit shell with top at +0.5. Floor sample (124,128) is height0 with
+role Floor, therefore a sheet at0. Matching shading normals do not eliminate
+this physical step. The tree canopy is disconnected from its ground samples;
+there is no single whole-tile triangle spanning those heights. The supplied
+capture has no scene-pixel appendix and many ordinary grass pixels have unknown
+height, which further limits the represented ground. Across the complete frame,
+540 opaque known zero-height samples are sheets and718 are shells;128 shell
+samples have nonflat reconstructed corners (not all belong to the tree).
+
+This diagnostic does not repair the ground outline. A general repair needs
+pixel-level ground/obstacle semantics within mixed tiles (and known surrounding
+ground), or a separately specified shell/ground contact convention with transport
+regressions. Height zero or +Z shading alone is insufficient evidence to turn
+arbitrary sprites, bars and props into floor sheets. Existing heights/normals and
+production visibility geometry remain unchanged by this view.
+
+Validation:39/39 portable mesh checks, including sheet/shell visualization,
+unknown exclusion, deterministic rasterization and full/cache equivalence;
+macOS arm64 Debug build passed. Offline capture export visually inspected;
+interactive app cycling/presentation has not yet been checked.
+
 Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
 compact 48-byte patch per screen pixel; Metal expands its corner heights into
 four triangles meeting at the authored pixel center. Shading positions remain

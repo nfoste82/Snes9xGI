@@ -35,7 +35,7 @@ int main()
 	S9xRemasterApplyProfileToFrame(loaded, f);
 	std::vector<uint8_t> bytes; assert(S9xSerializeRemasterFrame(f, bytes));
 	RemasterFrame decoded; assert(S9xDeserializeRemasterFrame(bytes, decoded));
-	assert(decoded.schemaVersion == 35 && decoded.assetMetadata[0].height == a.height);
+	assert(decoded.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION && decoded.assetMetadata[0].height == a.height);
 	assert(decoded.assetMetadata[0].facingGeometry[0].height == a.facingGeometry[0].height);
 	assert(decoded.assetMetadata[0].flipGeometry[3].height == a.flipGeometry[3].height);
 	RemasterLightingFieldCache fields; fields.update(decoded, false);

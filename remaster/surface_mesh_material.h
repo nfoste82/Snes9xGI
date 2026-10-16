@@ -10,8 +10,16 @@ namespace RemasterSurfaceMesh
 // Unclassified elevated BG details remain finite even when they touch a wall.
 // Missing structural semantics must not close their underpasses.
 inline void classify(Sample &sample, RemasterSourceType source, unsigned sourceIndex,
-	RemasterSurfaceClass surfaceClass, const std::string &assetGroup, uint32_t instanceId)
+	RemasterSurfaceClass surfaceClass, const std::string &assetGroup, uint32_t instanceId,
+	RemasterTileRole role = RemasterTileRole::Unknown, bool occurrenceRole = false)
 {
+	// Explicit occurrence semantics override structural material defaults, including
+	// Unknown: unresolved artwork must never inherit a wall shell from its hash.
+	if (occurrenceRole || role != RemasterTileRole::Unknown)
+	{
+		surfaceClass = role == RemasterTileRole::Wall || role == RemasterTileRole::WallCorner ? RemasterSurfaceClass::WallFace :
+			role == RemasterTileRole::Floor ? RemasterSurfaceClass::Floor : RemasterSurfaceClass::Unclassified;
+	}
 	const bool object = source == RemasterSourceType::Object;
 	const bool wall = surfaceClass == RemasterSurfaceClass::WallFace ||
 		(surfaceClass == RemasterSurfaceClass::WallTop && assetGroup != "stair_rails");

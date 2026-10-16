@@ -37,7 +37,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 35;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 36;
 
 struct RemasterFramePixel
 {
@@ -134,6 +134,10 @@ struct RemasterFrameMaterial
 	bool hasDiffuseReflectance = false;
 };
 
+// Inherit preserves pre-v36 captures. Unresolved/Conflict explicitly prohibit
+// hash-global geometry fallback; neither is an implicit flat surface.
+enum class RemasterOccurrenceGeometryStatus : uint8_t { Inherit, Resolved, Unresolved, Conflict, Count };
+
 struct RemasterFrameTileInstance
 {
 	RemasterTileContentId tileId;
@@ -151,6 +155,17 @@ struct RemasterFrameTileInstance
 	bool hFlip = false;
 	bool vFlip = false;
 	bool hasPlacementHeight = false;
+	RemasterOccurrenceGeometryStatus geometryStatus = RemasterOccurrenceGeometryStatus::Inherit;
+	// Resolved overrides role (even Unknown); absent geometry arrays continue to
+	// inherit the selected asset variant. Supply flat/+Z arrays to replace relief.
+	RemasterTileRole placementTileRole = RemasterTileRole::Unknown;
+	// All arrays use canonical row-major artwork order, like placementHeight.
+	// Vectors use the asset byte encoding and normally follow placement flips/yaw.
+	std::array<uint8_t, 192> placementNormalXyz = {};
+	std::array<uint8_t, 64> placementOcclusion = {};
+	bool hasPlacementNormals = false;
+	bool hasPlacementOcclusion = false;
+	bool placementNormalIgnoreTileTransform = false;
 	bool hasPaletteArtwork = false;
 	std::array<uint16_t, 64> paletteRgb555 = {}; // canonical, unflipped
 	RemasterProfileMatchStatus matchStatus = RemasterProfileMatchStatus::NoMatch;
@@ -158,19 +173,51 @@ struct RemasterFrameTileInstance
 	std::string material;
 };
 
+inline bool S9xRemasterInstanceGeometryUnresolved(const RemasterFrameTileInstance &instance)
+{
+	return instance.geometryStatus == RemasterOccurrenceGeometryStatus::Unresolved ||
+		instance.geometryStatus == RemasterOccurrenceGeometryStatus::Conflict;
+}
+
+inline RemasterTileRole S9xRemasterResolveInstanceTileRole(RemasterTileRole canonical,
+	const RemasterFrameTileInstance &instance)
+{
+	return instance.geometryStatus == RemasterOccurrenceGeometryStatus::Inherit ? canonical :
+		instance.geometryStatus == RemasterOccurrenceGeometryStatus::Resolved ? instance.placementTileRole : RemasterTileRole::Unknown;
+}
+
+inline bool S9xRemasterValidOccurrenceGeometry(const RemasterFrameTileInstance &instance)
+{
+	if (instance.geometryStatus >= RemasterOccurrenceGeometryStatus::Count || instance.placementTileRole >= RemasterTileRole::Count)
+		return false;
+	if (instance.geometryStatus != RemasterOccurrenceGeometryStatus::Resolved &&
+		(instance.placementTileRole != RemasterTileRole::Unknown || instance.hasPlacementNormals || instance.hasPlacementOcclusion)) return false;
+	return !instance.placementNormalIgnoreTileTransform || instance.hasPlacementNormals;
+}
+
 inline RemasterFrameAssetMetadata S9xRemasterResolveInstanceGeometry(
 	const RemasterFrameAssetMetadata &source, const RemasterFrameTileInstance &instance)
 {
-	if (!source.geometryByFlip) return S9xRemasterResolveFacingGeometry(source, instance.geometryFacing);
-	auto result = source;
-	const auto &g = source.flipGeometry[S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip)];
-	if (g.hasHeight) { result.height = g.height; result.hasHeight = true; result.heightSampling = g.heightSampling; }
-	if (g.hasNormals)
+	auto result = source.geometryByFlip ? source : S9xRemasterResolveFacingGeometry(source, instance.geometryFacing);
+	if (source.geometryByFlip)
 	{
-		result.normalXyz = g.normalXyz; result.hasNormals = true;
-		// This set already describes the final gameplay direction. Pixel positions
-		// still follow the canonical artwork lookup, but vectors must not flip twice.
-		result.normalIgnoreTileTransform = true;
+		const auto &g = source.flipGeometry[S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip)];
+		if (g.hasHeight) { result.height = g.height; result.hasHeight = true; result.heightSampling = g.heightSampling; }
+		// Flip variants already describe final vector directions, not pixel order.
+		if (g.hasNormals) { result.normalXyz = g.normalXyz; result.hasNormals = true; result.normalIgnoreTileTransform = true; }
+	}
+	result.tileRole = S9xRemasterResolveInstanceTileRole(source.tileRole, instance);
+	if (S9xRemasterInstanceGeometryUnresolved(instance))
+	{
+		result.hasHeight = result.hasNormals = result.hasOcclusion = false;
+		result.height = {}; result.normalXyz = {}; result.occlusion = {};
+		result.directLightingOppositeFacing = result.normalIgnoreTileTransform = false;
+	}
+	else
+	{
+		if (instance.hasPlacementHeight) { result.height = instance.placementHeight; result.hasHeight = true; result.heightSampling = RemasterHeightSampling::Nearest; }
+		if (instance.hasPlacementNormals) { result.normalXyz = instance.placementNormalXyz; result.hasNormals = true; result.normalIgnoreTileTransform = instance.placementNormalIgnoreTileTransform; }
+		if (instance.hasPlacementOcclusion) { result.occlusion = instance.placementOcclusion; result.hasOcclusion = true; }
 	}
 	return result;
 }
@@ -3994,6 +4041,19 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 				for (auto &color : instance.paletteRgb555)
 					if (!input.ReadU16(color) || color > 0x7fff) return false;
 		}
+		if (result.schemaVersion >= 36)
+		{
+			uint8_t status, role, flags;
+			if (!input.ReadU8(status) || !input.ReadU8(role) || !input.ReadU8(flags) || (flags & ~7u)) return false;
+			instance.geometryStatus = static_cast<RemasterOccurrenceGeometryStatus>(status);
+			instance.placementTileRole = static_cast<RemasterTileRole>(role);
+			instance.hasPlacementNormals = (flags & 1) != 0;
+			instance.hasPlacementOcclusion = (flags & 2) != 0;
+			instance.placementNormalIgnoreTileTransform = (flags & 4) != 0;
+			if (!S9xRemasterValidOccurrenceGeometry(instance)) return false;
+			if (instance.hasPlacementNormals) for (auto &v : instance.placementNormalXyz) if (!input.ReadU8(v)) return false;
+			if (instance.hasPlacementOcclusion) for (auto &v : instance.placementOcclusion) if (!input.ReadU8(v)) return false;
+		}
 	}
 	result.lights.resize(lightCount);
 	for (RemasterFrameLight &light : result.lights)
@@ -4211,7 +4271,7 @@ inline bool S9xRemasterFramePaletteArtwork (const RemasterFrame &frame,
 inline uint64_t S9xRemasterContinuedDiagonalNormalMask(const RemasterFrameTileInstance &instance,
 	const RemasterFrameAssetMetadata *metadata)
 {
-	if(!instance.hasPlacementHeight || !metadata || !metadata->hasNormals || !metadata->hasHeight ||
+	if(instance.geometryStatus != RemasterOccurrenceGeometryStatus::Inherit || !instance.hasPlacementHeight || !metadata || !metadata->hasNormals || !metadata->hasHeight ||
 		metadata->tileRole==RemasterTileRole::Obstacle || instance.assetGroup=="obstacles")return 0;
 	const auto &h=instance.placementHeight;const int lo=*std::min_element(h.begin(),h.end()),hi=*std::max_element(h.begin(),h.end());
 	int intercept=-1;
@@ -4231,12 +4291,13 @@ inline std::pair<int, int> S9xRemasterFrameHeightRange (const RemasterFrame &fra
 	std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> byTile;
 	for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
 		byTile.emplace(metadata.tileId, &metadata);
+	std::vector<RemasterFrameAssetMetadata> effective(frame.tileInstances.size());
 	std::vector<const RemasterFrameAssetMetadata *> byInstance(frame.tileInstances.size(), nullptr);
 	for (size_t i = 0; i < frame.tileInstances.size(); i++)
 	{
 		const auto found = byTile.find(frame.tileInstances[i].tileId);
-		if (found != byTile.end())
-			byInstance[i] = found->second;
+		effective[i] = S9xRemasterResolveInstanceGeometry(found != byTile.end() ? *found->second : RemasterFrameAssetMetadata{}, frame.tileInstances[i]);
+		byInstance[i] = &effective[i];
 	}
 	int minimum = INT_MAX, maximum = INT_MIN;
 	bool foundHeight = false;
@@ -4246,6 +4307,7 @@ inline std::pair<int, int> S9xRemasterFrameHeightRange (const RemasterFrame &fra
 			continue;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 		const RemasterFrameAssetMetadata *metadata = byInstance[pixel.instanceId - 1];
+		if (S9xRemasterInstanceGeometryUnresolved(instance)) continue;
 		if ((!metadata || !metadata->hasHeight) && !instance.hasPlacementHeight && !instance.heightOffset)
 			continue;
 		const int localHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
@@ -4428,7 +4490,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	}
 	for (const RemasterFrameTileInstance &instance : frame.tileInstances)
 		if (!RemasterFrameSerialization::ValidTileId(instance.tileId) || instance.ppuPriority > 3 ||
-			instance.normalYaw < -1 || instance.normalYaw > 1)
+			instance.normalYaw < -1 || instance.normalYaw > 1 || !S9xRemasterValidOccurrenceGeometry(instance))
 			return false;
 	for (const RemasterFrameMaterial &material : frame.materials)
 		if (material.hasDiffuseReflectance)
@@ -4641,6 +4703,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 				if (color > 0x7fff) return false;
 				RemasterFrameSerialization::U16(bytes, color);
 			}
+		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(instance.geometryStatus));
+		RemasterFrameSerialization::U8(bytes, static_cast<uint8_t>(instance.placementTileRole));
+		RemasterFrameSerialization::U8(bytes, (instance.hasPlacementNormals ? 1 : 0) |
+			(instance.hasPlacementOcclusion ? 2 : 0) | (instance.placementNormalIgnoreTileTransform ? 4 : 0));
+		if (instance.hasPlacementNormals) bytes.insert(bytes.end(), instance.placementNormalXyz.begin(), instance.placementNormalXyz.end());
+		if (instance.hasPlacementOcclusion) bytes.insert(bytes.end(), instance.placementOcclusion.begin(), instance.placementOcclusion.end());
 	}
 	for (const RemasterFrameLight &light : frame.lights)
 	{

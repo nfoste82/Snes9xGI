@@ -25,7 +25,8 @@ struct RemasterLightingFieldCache
 			if (x.hasHeight != y.hasHeight || x.height != y.height || x.hasNormals != y.hasNormals ||
 				x.normalXyz != y.normalXyz || x.heightSampling != y.heightSampling) return false;
 		}
-		return a.hasMaterialSelectors == b.hasMaterialSelectors && a.materialSelectors == b.materialSelectors &&
+		return a.tileRole == b.tileRole && a.heightSampling == b.heightSampling &&
+			a.hasMaterialSelectors == b.hasMaterialSelectors && a.materialSelectors == b.materialSelectors &&
 			a.hasOcclusion == b.hasOcclusion && a.occlusion == b.occlusion &&
 			a.hasHeight == b.hasHeight && a.height == b.height && a.hasNormals == b.hasNormals &&
 			a.normalXyz == b.normalXyz && a.directLightingOppositeFacing == b.directLightingOppositeFacing &&
@@ -36,6 +37,10 @@ struct RemasterLightingFieldCache
 		return a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
 			a.heightOffset == b.heightOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
 			a.placementHeight == b.placementHeight && a.hFlip == b.hFlip && a.vFlip == b.vFlip &&
+			a.geometryStatus == b.geometryStatus && a.placementTileRole == b.placementTileRole &&
+			a.hasPlacementNormals == b.hasPlacementNormals && a.placementNormalXyz == b.placementNormalXyz &&
+			a.hasPlacementOcclusion == b.hasPlacementOcclusion && a.placementOcclusion == b.placementOcclusion &&
+			a.placementNormalIgnoreTileTransform == b.placementNormalIgnoreTileTransform &&
 			a.normalYaw == b.normalYaw && a.geometryFacing == b.geometryFacing && a.assetGroup == b.assetGroup && a.material == b.material;
 	}
 	static bool materialEqual(const RemasterFrameMaterial &a, const RemasterFrameMaterial &b)
@@ -62,7 +67,9 @@ struct RemasterLightingFieldCache
 		std::map<std::string, const RemasterFrameMaterial *> materials;
 		for (const auto &m : frame.materials) materials[m.name] = &m;
 		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size());
-		std::map<std::pair<RemasterTileContentId, unsigned>, RemasterFrameAssetMetadata> resolvedMetadata;
+		// Share only canonical resolutions. Contextual overrides require an
+		// occurrence identity even when hash/facing/flip all match.
+		std::map<std::tuple<RemasterTileContentId, unsigned, size_t>, RemasterFrameAssetMetadata> resolvedMetadata;
 		std::vector<bool> dirty(frame.tileInstances.size(), full);
 		std::vector<uint64_t> normalMasks(frame.tileInstances.size());
 		std::map<RemasterTileContentId, bool> metadataDirty;
@@ -76,20 +83,30 @@ struct RemasterLightingFieldCache
 			const auto &instance = frame.tileInstances[i];
 			const auto found = metadata.find(instance.tileId);
 			const auto *original = found == metadata.end() ? nullptr : found->second;
+			const bool contextual = instance.geometryStatus != RemasterOccurrenceGeometryStatus::Inherit ||
+				instance.hasPlacementHeight || instance.hasPlacementNormals || instance.hasPlacementOcclusion;
 			const auto *m = original;
-			if (original && (original->geometryByFacing || original->geometryByFlip))
+			if (contextual || (original && (original->geometryByFacing || original->geometryByFlip)))
 			{
-				const auto key = std::make_pair(instance.tileId, original->geometryByFlip ?
-					S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip) : unsigned(instance.geometryFacing));
+				const unsigned variant = original && original->geometryByFlip ?
+					S9xRemasterGeometryFlipIndex(instance.hFlip, instance.vFlip) : unsigned(instance.geometryFacing);
+				const auto key = std::make_tuple(instance.tileId, variant, contextual ? i+1 : 0);
 				auto foundResolved = resolvedMetadata.find(key);
 				if (foundResolved == resolvedMetadata.end()) foundResolved = resolvedMetadata.emplace(key,
-					S9xRemasterResolveInstanceGeometry(*original, instance)).first;
+					S9xRemasterResolveInstanceGeometry(original ? *original : RemasterFrameAssetMetadata{}, instance)).first;
 				m = &foundResolved->second;
 			}
 			instanceMetadata[i] = m;
-			normalMasks[i] = S9xRemasterContinuedDiagonalNormalMask(instance, m);
+			if (instance.hasPlacementHeight && instance.geometryStatus == RemasterOccurrenceGeometryStatus::Inherit && original)
+			{
+				// This legacy correction compares authored caps to replacement relief;
+				// comparing effective relief to itself would erase the diagnostic mask.
+				auto baselineInstance = instance; baselineInstance.hasPlacementHeight = false;
+				const auto baseline = S9xRemasterResolveInstanceGeometry(*original, baselineInstance);
+				normalMasks[i] = S9xRemasterContinuedDiagonalNormalMask(instance, &baseline);
+			}
 			dirty[i] = full || i >= instances_.size() || !instanceEqual(instance, instances_[i]) ||
-				(m ? metadataDirty[instance.tileId] : metadata_.count(instance.tileId) != 0) ||
+				(original ? metadataDirty[instance.tileId] : metadata_.count(instance.tileId) != 0) ||
 				i >= normalMasks_.size() || normalMasks[i] != normalMasks_[i];
 		}
 		updatedPixels = 0;
@@ -122,7 +139,8 @@ struct RemasterLightingFieldCache
 			if (m && m->hasMaterialSelectors && !m->materialSelectors[pixel.tilePixel].empty()) material = materials.find(m->materialSelectors[pixel.tilePixel]);
 			const auto *mat = material == materials.end() ? nullptr : material->second;
 			RemasterSurfaceMesh::classify(samples[i], instance.source, instance.sourceIndex,
-				mat ? mat->surfaceClass : RemasterSurfaceClass::Unclassified, instance.assetGroup, pixel.instanceId);
+				mat ? mat->surfaceClass : RemasterSurfaceClass::Unclassified, instance.assetGroup, pixel.instanceId,
+				m ? m->tileRole : RemasterTileRole::Unknown, instance.geometryStatus != RemasterOccurrenceGeometryStatus::Inherit);
 			samples[i].wallBase = instance.heightOffset / 255.0f * frame.lightingCoordinateScale;
 			if (mat && mat->surfaceClass == RemasterSurfaceClass::UserInterface) participation[i*2] = participation[i*2+1] = 0;
 			else if (mat && !mat->receivesGi) participation[i*2+1] = 0;
@@ -131,12 +149,13 @@ struct RemasterLightingFieldCache
 				std::copy(mat->diffuseReflectance.begin(), mat->diffuseReflectance.end(), reflectance.begin()+i*4);
 				reflectance[i*4+3] = 1;
 			}
-			occlusion[i*2] = m && m->hasOcclusion ? m->occlusion[pixel.tilePixel] : 255;
-			occlusion[i*2+1] = 255;
+			const bool unresolved = S9xRemasterInstanceGeometryUnresolved(instance);
+			occlusion[i*2] = unresolved ? 0 : m && m->hasOcclusion ? m->occlusion[pixel.tilePixel] : 255;
+			occlusion[i*2+1] = unresolved ? 0 : 255;
 			opposite[i] = m && m->directLightingOppositeFacing ? 255 : 0;
-			if ((m && m->hasHeight) || instance.hasPlacementHeight || instance.heightOffset)
+			if (!unresolved && ((m && m->hasHeight) || instance.heightOffset))
 			{
-				const int local = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] : m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
+				const int local = m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
 				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
 			}
 			surface[i*4] = height[i*2] * frame.lightingCoordinateScale;

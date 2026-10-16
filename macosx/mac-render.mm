@@ -256,6 +256,7 @@ static void LogRemasterRadianceMetrics (const char *label, uint32_t bounce,
 
 #include "../remaster/surface_mesh_material.h"
 #include "../remaster/surface_mesh_cache.h"
+#include "../remaster/surface_mesh_debug.h"
 #include "../remaster/lighting_field_cache.h"
 #include "../remaster/field_upload_cache.h"
 #include "../remaster/emitter_patches.h"
@@ -533,8 +534,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	}
 	else if (lighting)
 		debugMode = RemasterDebugMode::Original;
-	const int resourceSlot = lighting ? AcquireRemasterResourceSlot(!asynchronous) : -1;
-	if (lighting && resourceSlot < 0)
+	const bool meshView = lighting && lightingView == RemasterLightingView::Mesh;
+	if (meshView) asynchronous = false;
+	const int resourceSlot = lighting && !meshView ? AcquireRemasterResourceSlot(!asynchronous) : -1;
+	if (lighting && !meshView && resourceSlot < 0)
 	{
 		TraceRemasterStairPresentation("slot_drop", frame.width, frame.height, resourceSlot, frame.lights.size());
 		droppedRemasterPresentations.fetch_add(1, std::memory_order_relaxed);
@@ -616,7 +619,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
 		lightingField.data(), emissionField.data(), heightField.data(), surfaceField.data(), participationField.data(),
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
-		lighting && frame.schemaVersion >= 5,
+		lighting && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
 		resourceSlot, !asynchronous, &mesh, &frame);
@@ -965,7 +968,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		for (const auto &instance : frame->tileInstances)
 		{
 			const auto found = roles.find(instance.tileId);
-			tileRoles.push_back(found == roles.end() ? RemasterTileRole::Unknown : found->second);
+			tileRoles.push_back(S9xRemasterResolveInstanceTileRole(found == roles.end() ? RemasterTileRole::Unknown : found->second, instance));
 		}
 	}
 
@@ -1058,9 +1061,23 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		}
 	}
 	
-	const int diagramScale = debugMode == RemasterDebugMode::FloorWalls && frame ? 4 : 1;
+	const bool meshView = lightingView == RemasterLightingView::Mesh && frame && mesh && !mesh->empty();
+	const int diagramScale = (debugMode == RemasterDebugMode::FloorWalls && frame) || meshView ? 4 : 1;
 	std::vector<uint8_t> diagram;
-	if (diagramScale > 1) diagram = S9xRemasterDrawRoomDebugView(*frame, buffer, diagramScale);
+	if (meshView)
+	{
+		// Use the exact generated patches supplied to transport, including their
+		// geometric normals/closure, not the separately authored shading normals.
+		std::vector<RemasterSurfaceMesh::Sample> samples(mesh->size());
+		for (size_t i = 0; i < samples.size(); i++)
+		{
+			samples[i].height = surfaceField[i*4];
+			samples[i].known = heightField[i*2+1] != 0 && participation[i*2] != 0;
+			samples[i].coverage = occlusion[i*2]/255.f;
+		}
+		diagram = RemasterSurfaceMesh::debugView(width, height, buffer, samples, *mesh, diagramScale);
+	}
+	else if (diagramScale > 1) diagram = S9xRemasterDrawRoomDebugView(*frame, buffer, diagramScale);
 	const int sourceWidth = width * diagramScale, sourceHeight = height * diagramScale;
 	CGSize layerSize = metalLayer.bounds.size;
 	

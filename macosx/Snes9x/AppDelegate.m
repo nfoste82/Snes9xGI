@@ -89,6 +89,10 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                                keyEquivalent:@""];
 	openFrameItem.target = self;
 	[viewMenuItem.submenu addItem:openFrameItem];
+	NSMenuItem *reviewItem = [[NSMenuItem alloc] initWithTitle:@"Open Area Review…"
+		action:@selector(openRemasterAreaReview:) keyEquivalent:@""];
+	reviewItem.target = self;
+	[viewMenuItem.submenu addItem:reviewItem];
 	NSMenuItem *profileItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Load Remaster Profile...", nil)
 	                                                     action:@selector(loadRemasterProfile:)
 	                                              keyEquivalent:@""];
@@ -542,6 +546,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 - (BOOL)openURL:(NSURL *)url
 {
+	if ([url.pathExtension caseInsensitiveCompare:@"json"] == NSOrderedSame)
+	{
+		NSString *error = [self.s9xEngine openRemasterAreaReview:url];
+		if (error.length)
+		{
+			NSAlert *alert = [NSAlert new];
+			alert.messageText = @"Unable to Open Area Review";
+			alert.informativeText = error;
+			[alert runModal];
+		}
+		return error == nil;
+	}
 	if ([url.pathExtension caseInsensitiveCompare:@"toml"] == NSOrderedSame)
 	{
 		NSString *error = [self.s9xEngine loadRemasterProfile:url];
@@ -664,7 +680,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame] ||
 			[self.s9xEngine canShowRemasterTileEditor];
 	}
-	else if (action == @selector(openRemasterFrame:)) {
+	else if (action == @selector(openRemasterFrame:) || action == @selector(openRemasterAreaReview:)) {
 		return ![self.s9xEngine isRunning] || [self.s9xEngine isPaused];
 	}
 	else if (action == @selector(showRemasterTileEditor:)) {
@@ -862,6 +878,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return;
 
 	[self openURL:panel.URL];
+}
+
+- (IBAction)openRemasterAreaReview:(id)sender
+{
+	[self.s9xEngine chooseRemasterAreaReview];
 }
 
 - (IBAction)resume:(id)sender

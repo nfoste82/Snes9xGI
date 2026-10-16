@@ -1145,6 +1145,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::Normal: return @"Normals";
 	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
 	case RemasterLightingView::Emission: return @"Emission";
+	case RemasterLightingView::Mesh: return @"Mesh (cyan sheets, amber shells, pink walls)";
 	case RemasterLightingView::Composite:
 	default: return @"Composite";
 	}
@@ -4273,6 +4274,16 @@ void QuitWithFatalError ( NSString *message)
 @end
 
 @interface S9xEngine () <NSWindowDelegate, NSTextFieldDelegate>
+@property (nonatomic, strong) NSPanel *areaReviewPanel;
+@property (nonatomic, strong) NSPopUpButton *areaReviewPicker;
+@property (nonatomic, strong) NSTextField *areaReviewStatus;
+@property (nonatomic, strong) NSTextField *areaReviewDetails;
+@property (nonatomic, strong) NSButton *areaReviewPrevious;
+@property (nonatomic, strong) NSButton *areaReviewNext;
+@property (nonatomic, strong) NSDictionary *areaReviewManifest;
+@property (nonatomic, strong) NSURL *areaReviewURL;
+@property (nonatomic) NSInteger areaReviewIndex;
+@property (nonatomic) BOOL openingAreaReviewFrame;
 - (void)readRemasterNpcLibrary:(NSURL *)url;
 - (void)stopRemasterNpcPlayback;
 - (void)configureRemasterNpcAnimationForPart:(NSUInteger)partIndex;
@@ -4482,9 +4493,13 @@ void QuitWithFatalError ( NSString *message)
 @end
 
 #include "remaster-npc-browser.h"
+#include "remaster-overworld-review-methods.h"
 
 @implementation S9xEngine
 #include "remaster-npc-browser-methods.h"
+#define S9X_AREA_REVIEW_METHODS
+#include "remaster-overworld-review-methods.h"
+#undef S9X_AREA_REVIEW_METHODS
 
 - (instancetype)init
 {
@@ -5164,7 +5179,7 @@ void QuitWithFatalError ( NSString *message)
 		return @"The file is not a valid supported remaster frame capture.";
 	if (frame.width > MAX_SNES_WIDTH || frame.height > MAX_SNES_HEIGHT)
 		return @"The captured frame dimensions are not supported by this renderer.";
-	if (!remasterEditingProfileLoaded && !frame.profileRomSha256.empty())
+	if (!self.openingAreaReviewFrame && !remasterEditingProfileLoaded && !frame.profileRomSha256.empty())
 	{
 		NSString *lastPath = [[NSUserDefaults standardUserDefaults] stringForKey:RemasterLastProfilePathKey];
 		if (lastPath.length)
@@ -5189,11 +5204,11 @@ void QuitWithFatalError ( NSString *message)
 			}
 		}
 	}
-	const bool incompatibleProfile = remasterEditingProfileLoaded &&
+	const bool incompatibleProfile = !self.openingAreaReviewFrame && remasterEditingProfileLoaded &&
 		frame.profileRomSha256 != remasterEditingProfile.romSha256;
 	if (incompatibleProfile && ![self confirmDiscardingRemasterChanges])
 		return @"";
-	if (!incompatibleProfile)
+	if (!incompatibleProfile && !self.openingAreaReviewFrame)
 		SyncRemasterEditingMetadataToFrame(frame);
 	const std::pair<int, int> heightRange = S9xRemasterFrameHeightRange(frame);
 	remasterHeightPreviewMin = heightRange.first;
@@ -5207,13 +5222,15 @@ void QuitWithFatalError ( NSString *message)
 	}
 	const RemasterDebugLight previousLight = GetRemasterDebugLight();
 	ClearRemasterDebugLightRedraw();
-	SetRemasterDebugLight(RemasterDebugLight());
+	if (!self.openingAreaReviewFrame)
+		SetRemasterDebugLight(RemasterDebugLight());
 	if (!DrawRemasterFrame(frame, RemasterDebugMode::Original, nullptr, remasterLightingEnabled, remasterLightingView))
 	{
 		SetRemasterDebugLight(previousLight);
 		return @"The captured frame could not be presented.";
 	}
-	[self resetRemasterDebugLight];
+	if (!self.openingAreaReviewFrame)
+		[self resetRemasterDebugLight];
 	if (incompatibleProfile)
 	{
 		S9xRemasterState().requestedInspectableFrames.store(false);

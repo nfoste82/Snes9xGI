@@ -723,21 +723,67 @@ int main ()
 	assert(decodedFrame.tileInstances.size() == 1);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
 	assert(decodedFrame.tileInstances[0].heightOffset == 48);
-	std::vector<uint8_t> previousVersionBytes = firstFrameBytes;
-	// Legacy fixtures use one unsigned byte per local sample, before the normals.
-	std::vector<uint8_t> wideHeight;
-	for (int16_t h : frameMetadata.height) RemasterFrameSerialization::U16(wideHeight, static_cast<uint16_t>(h));
-	auto heightStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(), wideHeight.begin(), wideHeight.end());
-	assert(heightStart != previousVersionBytes.end());
-	const size_t heightOffset = heightStart - previousVersionBytes.begin();
-	previousVersionBytes.erase(heightStart, heightStart + 128);
-	previousVersionBytes.insert(previousVersionBytes.begin() + heightOffset, frameMetadata.height.begin(), frameMetadata.height.end());
+	// These singleton fixtures have no optional placement/palette payloads or
+	// appendices. Normalize the modern wire layout to v25 before older downgrades.
+	auto singletonV25Bytes = [] (const RemasterFrame &fixture) {
+		assert(fixture.assetMetadata.size() == 1 && fixture.tileInstances.size() == 1);
+		assert(fixture.lights.empty() && fixture.paletteArtworkColors.empty() && !fixture.area.valid());
+		assert(fixture.scenePixels.empty() && fixture.hiddenEmitters.empty());
+		const auto &metadata = fixture.assetMetadata[0];
+		const auto &instance = fixture.tileInstances[0];
+		assert(metadata.hasHeight && metadata.hasEmission && metadata.tileRole != RemasterTileRole::Door);
+		assert(!metadata.emissionOmnidirectional && !metadata.normalIgnoreTileTransform);
+		assert(!metadata.geometryByFacing && !metadata.geometryByFlip);
+		for (const auto *variants : { &metadata.facingGeometry, &metadata.flipGeometry })
+			for (const auto &geometry : *variants) assert(!geometry.hasHeight && !geometry.hasNormals);
+		assert(!instance.hasPlacementHeight && !instance.hasPaletteArtwork && instance.geometryFacing == 0);
+		assert(instance.geometryStatus == RemasterOccurrenceGeometryStatus::Inherit);
+		assert(instance.placementTileRole == RemasterTileRole::Unknown);
+		assert(!instance.hasPlacementNormals && !instance.hasPlacementOcclusion && !instance.placementNormalIgnoreTileTransform);
+		assert(instance.heightOffset >= 0 && instance.heightOffset <= 255);
+		std::vector<uint8_t> result;
+		assert(S9xSerializeRemasterFrame(fixture, result));
+		// v35 widened canonical local heights from unsigned bytes to signed LE16.
+		std::vector<uint8_t> wideHeight, byteHeight;
+		for (int16_t h : metadata.height)
+		{
+			assert(h >= 0 && h <= 255);
+			RemasterFrameSerialization::U16(wideHeight, static_cast<uint16_t>(h));
+			byteHeight.push_back(static_cast<uint8_t>(h));
+		}
+		auto height = std::search(result.begin(), result.end(), wideHeight.begin(), wideHeight.end());
+		assert(height != result.end());
+		const size_t offset = height - result.begin();
+		result.erase(height, height + wideHeight.size());
+		result.insert(result.begin() + offset, byteHeight.begin(), byteHeight.end());
+		const auto emission = std::search(result.begin(), result.end(), metadata.emissionRgba.begin(), metadata.emissionRgba.end());
+		assert(emission != result.end());
+		// Keep depth, peer count/IDs and role; remove v27 omni, v31 normal
+		// transform and v32/v33 empty facing/flip maps (26 bytes).
+		const auto extensions = emission + 256 + 4 + 4 + metadata.combineEmitters.size() * 10 + 1;
+		assert(std::all_of(extensions, extensions + 28, [] (uint8_t value) { return value == 0; }));
+		result.erase(extensions, extensions + 28);
+		std::vector<uint8_t> modernTail;
+		RemasterFrameSerialization::U8(modernTail, instance.ppuPriority);
+		RemasterFrameSerialization::U32(modernTail, static_cast<uint32_t>(instance.heightOffset));
+		RemasterFrameSerialization::U8(modernTail, static_cast<uint8_t>(instance.normalYaw));
+		// Facing, placement-height flag, palette flag, v36 status/role/flags,
+		// then the empty palette-artwork table count.
+		modernTail.insert(modernTail.end(), 10, 0);
+		assert(result.size() >= modernTail.size());
+		assert(std::equal(modernTail.begin(), modernTail.end(), result.end() - modernTail.size()));
+		result.erase(result.end() - modernTail.size(), result.end());
+		result.insert(result.end(), { instance.ppuPriority, static_cast<uint8_t>(instance.heightOffset),
+			static_cast<uint8_t>(instance.normalYaw), 0 });
+		result[8] = 25;
+		return result;
+	};
+	std::vector<uint8_t> previousVersionBytes = singletonV25Bytes(frame);
 	const auto emissionStart = std::search(previousVersionBytes.begin(), previousVersionBytes.end(),
 		frameMetadata.emissionRgba.begin(), frameMetadata.emissionRgba.end());
 	assert(emissionStart != previousVersionBytes.end());
-	previousVersionBytes.erase(emissionStart + 256, emissionStart + 293); // metadata extensions through v33 (empty facing/flip maps)
-	previousVersionBytes.erase(previousVersionBytes.end() - 5, previousVersionBytes.end()); // v30 palette flag and empty palette-artwork count
-	previousVersionBytes.erase(previousVersionBytes.end() - 8, previousVersionBytes.end()); // priority/offset, yaw, v32 facing, placement flag
+	previousVersionBytes.erase(emissionStart + 256, emissionStart + 265); // depth, empty peer count, role
+	previousVersionBytes.erase(previousVersionBytes.end() - 4, previousVersionBytes.end()); // priority/offset, yaw, placement flag
 	const size_t boostOffset = 8 + 4 + 4 + 4 + 4 + frame.profileRomSha256.size() + 28;
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v22 patch size
 	previousVersionBytes.erase(previousVersionBytes.begin() + boostOffset + 4); // v23 representatives
@@ -746,7 +792,14 @@ int main ()
 	previousVersionBytes[8] = 16;
 	RemasterFrame previousVersionFrame;
 	assert(S9xDeserializeRemasterFrame(previousVersionBytes, previousVersionFrame));
+	assert(previousVersionFrame.schemaVersion == 16);
 	assert(previousVersionFrame.reflectanceBoost == 0.0f);
+	assert(previousVersionFrame.assetMetadata[0].height == frameMetadata.height);
+	assert(previousVersionFrame.assetMetadata[0].normalXyz == frameMetadata.normalXyz);
+	assert(previousVersionFrame.assetMetadata[0].emissionRgba == frameMetadata.emissionRgba);
+	assert(previousVersionFrame.materials[0].diffuseReflectance == frameMaterial.diffuseReflectance);
+	assert(previousVersionFrame.tileInstances[0].hFlip && previousVersionFrame.tileInstances[0].heightOffset == 0);
+	assert(previousVersionFrame.tileInstances[0].geometryStatus == RemasterOccurrenceGeometryStatus::Inherit);
 	float normalX = 0.6f;
 	float normalY = -0.8f;
 	float normalZ = 0.25f;
@@ -1460,7 +1513,7 @@ material = "missing"
 
 	assert(S9xRemasterLoadProfile("Profiles/ALttP/alttp-profile.toml", profile, diagnostics));
 	assert(profile.materials.size() == 10);
-	assert(profile.assetGroups.size() == 12);
+	assert(profile.assetGroups.size() == 11);
 	assert(profile.rules.size() == 11);
 	context = {};
 	context.tileId = { UINT64_C(0xded4f16afe03288a), 1, 4 };
@@ -1495,16 +1548,18 @@ material = "missing"
 		(std::vector<RemasterTileContentId> { { UINT64_C(0x34eb3798eedfa0fc), 1, 4 },
 			{ UINT64_C(0x9c36635bd77c6108), 1, 4 }, { UINT64_C(0xa8d1d0722ff1bda3), 1, 4 } }));
 	const RemasterTileContentId flame = { UINT64_C(0x34eb3798eedfa0fc), 1, 4 };
+	// The v15 emission fixture must not inherit newer signed-height, geometry
+	// or area-light authoring from the checked-in game profile.
+	const auto flameEmission = profile.assets.at(flame).emissionRgba;
+	profile = RemasterProfile();
+	profile.gameTitle = "Emission compatibility";
+	profile.romSha256 = std::string(64, '0');
 	profile.assets[flame].tileId = flame;
+	profile.assets[flame].hasEmission = true;
+	profile.assets[flame].emissionRgba = flameEmission;
 	profile.assets[flame].emissionDepth = 3.25f;
 	profile.emitterPatchSize = 2; // Explicit fixture; loaded user profile may change.
 	profile.schemaVersion = 15; profile.representativeEmitters = 0;
-	for (auto &entry : profile.assets)
-	{
-		entry.second.combineEmitters.clear();
-		entry.second.tileRole = RemasterTileRole::Unknown;
-		entry.second.emissionOmnidirectional = false;
-	}
 	std::string volumeText;
 	std::vector<RemasterProfileDiagnostic> volumeDiagnostics;
 	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
@@ -1540,22 +1595,25 @@ material = "missing"
 	RemasterFrame representativeDecoded;
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.representativeEmitters == 4);
-	// Schema22 lacks only the new representative setting byte.
-	// Remove v24 metadata peer counts before downgrading this singleton fixture.
+	representativeBytes = singletonV25Bytes(representativeFrame);
+	// v23 has neither the v24 peer count nor the v25 role.
 	const auto representativeEmission = std::search(representativeBytes.begin(),representativeBytes.end(),
 		representativeFrame.assetMetadata[0].emissionRgba.begin(),representativeFrame.assetMetadata[0].emissionRgba.end());
 	assert(representativeEmission != representativeBytes.end());
-	representativeBytes.erase(representativeEmission+260,representativeEmission+266);
-	const auto representativeTail = representativeBytes.end() - representativeFrame.lights.size() * 32;
-	representativeBytes.erase(representativeTail-5,representativeTail-2); // pre-v26 offset
+	representativeBytes.erase(representativeEmission + 260, representativeEmission + 265);
 	representativeBytes[8] = 23;
 	assert(S9xDeserializeRemasterFrame(representativeBytes,representativeDecoded));
 	assert(representativeDecoded.assetMetadata[0].combineEmitters.empty());
+	assert(representativeDecoded.representativeEmitters == 4);
+	assert(representativeDecoded.assetMetadata[0].height == representativeFrame.assetMetadata[0].height);
+	assert(representativeDecoded.assetMetadata[0].emissionDepth == 3.5f);
+	assert(representativeDecoded.tileInstances[0].ppuPriority == 2 && representativeDecoded.tileInstances[0].heightOffset == 48);
 	representativeBytes[8] = 22;
 	const size_t representativesOffset = 8 + 4 + 4 + 4 + 4 + representativeFrame.profileRomSha256.size() + 33;
 	representativeBytes.erase(representativeBytes.begin() + representativesOffset);
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.representativeEmitters == 0);
+	assert(representativeDecoded.tileInstances[0].heightOffset == 48);
 	assert(S9xRemasterFrameMetadataForTile(volumeFrame, flame)->emissionDepth == 3.25f);
 	const RemasterTileContentId peer = {UINT64_C(0xe41e81c4f0f14d5f),1,4};
 	profile.assets[flame].combineEmitters = {peer};
@@ -1580,16 +1638,18 @@ material = "missing"
 	assert(representativeDecoded.assetMetadata[0].tileRole == RemasterTileRole::WallCorner);
 	assert((S9xRemasterTileRoleColor(RemasterTileRole::Unknown) >> 16) == 255);
 	// v24 captures preserve emitter peers but have no authored role byte.
+	representativeBytes = singletonV25Bytes(representativeFrame);
 	const auto roleEmission = std::search(representativeBytes.begin(), representativeBytes.end(),
 		representativeFrame.assetMetadata[0].emissionRgba.begin(), representativeFrame.assetMetadata[0].emissionRgba.end());
 	assert(roleEmission != representativeBytes.end());
-	representativeBytes.erase(roleEmission + 274, roleEmission + 276); // v25 role + v27 omni
-	const auto roleTail = representativeBytes.end() - representativeFrame.lights.size() * 32;
-	representativeBytes.erase(roleTail-5,roleTail-2); // pre-v26 offset
+	representativeBytes.erase(roleEmission + 274); // v25 role after depth, count and one 10-byte peer
 	representativeBytes[8] = 24;
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.assetMetadata[0].tileRole == RemasterTileRole::Unknown);
 	assert(representativeDecoded.assetMetadata[0].combineEmitters == std::vector<RemasterTileContentId>{peer});
+	assert(representativeDecoded.assetMetadata[0].height == representativeFrame.assetMetadata[0].height);
+	assert(representativeDecoded.assetMetadata[0].emissionRgba == representativeFrame.assetMetadata[0].emissionRgba);
+	assert(representativeDecoded.tileInstances[0].heightOffset == 48);
 	profile.assets[flame].combineEmitters = {peer,peer};
 	assert(!S9xRemasterSerializeProfile(profile,volumeText,volumeDiagnostics));
 	profile.assets[flame].combineEmitters = {flame};

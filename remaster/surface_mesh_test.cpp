@@ -1,5 +1,6 @@
 #include "surface_mesh_material.h"
 #include "surface_mesh_cache.h"
+#include "surface_mesh_debug.h"
 #include <cstring>
 #include <cstdio>
 
@@ -157,6 +158,25 @@ int main()
 		check("flat tiled tabletop shells stay coplanar without assembly grouping", flat);
 		if (surfaceClass == RemasterSurfaceClass::Prop)
 			check("prop draw domains remain separate at tabletop seam", samples[7].domain != samples[8].domain);
+	}
+	{
+		std::vector<Sample> pair(2);
+		for (auto &s : pair) { s.known = true; s.coverage = 1; s.height = 0; }
+		classify(pair[0], RemasterSourceType::Background, 1, RemasterSurfaceClass::Floor, "", 1);
+		classify(pair[1], RemasterSourceType::Background, 1, RemasterSurfaceClass::Unclassified, "", 2, RemasterTileRole::Obstacle);
+		auto patches = build(2,1,pair,200.f/255);
+		check("equal authored heights can have different sheet/shell blocking faces", patches[0].thickness == 0 && patches[1].thickness == 1);
+		auto image = debugView(2,1,nullptr,pair,patches,16);
+		bool cyan = false, amber = false;
+		for (size_t i = 0; i < image.size(); i += 4) {
+			cyan |= image[i+2] > image[i] && image[i+1] > image[i];
+			amber |= image[i] > image[i+1] && image[i+1] > image[i+2];
+		}
+		check("mesh diagnostic distinguishes coplanar sheets from finite shell faces", cyan && amber);
+		check("mesh diagnostic deterministic and correctly sized", image == debugView(2,1,nullptr,pair,patches,16) && image.size() == 32*16*4);
+		pair[1].known = false;
+		auto unknown = debugView(2,1,nullptr,pair,patches,16);
+		check("unknown height does not produce diagnostic triangles", image != unknown);
 	}
 	std::printf("%u/%u mesh checks passed; %u failed\n", checks - failures, checks, failures);
 	return failures ? 1 : 0;

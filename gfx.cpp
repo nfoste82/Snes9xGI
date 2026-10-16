@@ -761,10 +761,61 @@ void S9xEndScreenRefresh (void)
 				else if (!dungeonFloor.indoors)
 					area.id = (Memory.RAM[0x8a] & 0x40) ? 321 : 320;
 			}
+			// Request-only runtime input evidence, pinned with the first animation
+			// frame. No ROM base-map substitution and no live height activation.
+			std::unique_ptr<RemasterOverworldCapture> overworldCapture;
+			const auto &captureState=S9xRemasterState();
+			if(dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors &&
+				captureState.frameCaptureActive && !captureState.animationCapture.frameCount)
+			{
+				overworldCapture=std::make_unique<RemasterOverworldCapture>();
+				auto &e=*overworldCapture;
+				e.Add("wram",Memory.RAM,0x20000);
+				e.Add("vram",Memory.VRAM,0x10000);
+				e.Add("fillram_register_mirror",Memory.FillRAM,0x8000);
+				e.Add("rom_map16_definitions",Memory.ROM+0x78000,3752*8);
+				e.Add("rom_map8_attributes",Memory.ROM+0x71459,512);
+				e.Add("ppu_oam",PPU.OAMData,544);
+				std::vector<uint8_t> palette,lines;
+				auto u16=[](std::vector<uint8_t> &v,unsigned n){v.push_back(n&255);v.push_back((n>>8)&255);};
+				for(unsigned i=0;i<256;i++)u16(palette,PPU.CGDATA[i]);
+				e.Add("ppu_cgram_u16",palette.data(),palette.size());
+				const unsigned lineCount=std::min<unsigned>(IPPU.RenderedScreenHeight,240);
+				for(unsigned y=0;y<lineCount;y++)for(unsigned bg=0;bg<4;bg++) {
+					u16(lines,LineData[y].BG[bg].HOffset);u16(lines,LineData[y].BG[bg].VOffset);
+				}
+				e.Add("renderer_line_scroll_hv_u16",lines.data(),lines.size());
+				std::string profileText;std::vector<RemasterProfileDiagnostic> diagnostics;
+				const bool profilePinned=S9xRemasterSerializeProfile(captureState.activeProfile,profileText,diagnostics);
+				if(profilePinned)e.Add("profile_toml",reinterpret_cast<const uint8_t *>(profileText.data()),profileText.size());
+				std::ostringstream m;
+				m << "\"rom_sha256\":\"66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb\","
+				  << "\"emulated_frame\":"<<IPPU.TotalEmulatedFrames<<",\"width\":"<<IPPU.RenderedScreenWidth
+				  << ",\"height\":"<<IPPU.RenderedScreenHeight<<",\"profile_pinned\":"<<(profilePinned?"true":"false")<<','
+				  << S9xRemasterOverworldWramMetadata(Memory.RAM)
+				  << ",\"ppu\":{\"mode\":"<<unsigned(PPU.BGMode)<<",\"bg3_priority\":"<<unsigned(PPU.BG3Priority)
+				  << ",\"forced_blank\":"<<unsigned(PPU.ForcedBlanking)<<",\"brightness\":"<<unsigned(PPU.Brightness)
+				  << ",\"mosaic\":"<<unsigned(PPU.Mosaic)<<",\"screen_height\":"<<PPU.ScreenHeight
+				  << ",\"obj_name_base_bytes\":"<<PPU.OBJNameBase<<",\"obj_name_select_bytes\":"<<PPU.OBJNameSelect
+				  << ",\"obj_size_select\":"<<unsigned(PPU.OBJSizeSelect)<<",\"bg\":[";
+				for(unsigned bg=0;bg<4;bg++) {
+					if(bg)m<<',';const auto &b=PPU.BG[bg];
+					m << "{\"index\":"<<bg<<",\"map_base_words\":"<<b.SCBase<<",\"map_size\":"<<b.SCSize
+					  << ",\"name_base_words\":"<<b.NameBase<<",\"tile_size\":"<<unsigned(b.BGSize)
+					  << ",\"h_offset\":"<<b.HOffset<<",\"v_offset\":"<<b.VOffset<<",\"mosaic\":"<<unsigned(PPU.BGMosaic[bg])<<'}';
+				}
+				m << "]},\"line_scroll\":{\"lines\":"<<lineCount<<",\"stride\":16,\"bg_order\":[0,1,2,3],"
+				  << "\"v_includes_renderer_plus_one\":true},"
+				  << "\"limitations\":[\"end-of-frame VRAM/registers; not a raster-write history\","
+				  << "\"FillRAM is a register mirror, not authoritative write-only PPU latch state\","
+				  << "\"Map16 buffers may be partially updated during transitions; no settled-state claim\","
+				  << "\"historical writer ownership and legal movement are not captured by this snapshot\"]";
+				e.metadata=m.str();
+			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
 				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp, &area,
-				IPPU.TotalEmulatedFrames);
+				IPPU.TotalEmulatedFrames,overworldCapture.get());
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ALTTP complete-area candidate review</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#15191f;color:#e3e9f0;font:14px system-ui}header{padding:12px 18px;background:#242c36}h1{font-size:20px;margin:0 0 6px}button,select,input,textarea{font:inherit;background:#303d4e;color:#fff;border:1px solid #64758a;border-radius:3px;padding:5px}button,a{cursor:pointer}a{color:#8ecfff}button:hover{background:#465972}main{display:grid;grid-template-columns:minmax(300px,1fr) 390px;height:calc(100vh - 150px)}#scroll{overflow:auto;position:relative;background:#090c10}#stage{position:relative}canvas{position:absolute;left:0;top:0;image-rendering:pixelated}aside{overflow:auto;padding:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#summary{color:#ffd276}#notice{margin-top:5px;color:#ffd276}nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px}#viewportInfo{padding:6px;border:1px solid #677581}textarea{width:100%;height:62px}#issues button{display:block;text-align:left;width:100%;margin:5px 0}.muted{color:#afbac8}h2{font-size:16px}#storage{color:#ffc36b}details{margin:8px 0}#legend{padding:6px;min-height:34px}@media(max-width:800px){main{grid-template-columns:1fr;height:auto}#scroll{height:65vh}aside{max-height:70vh}}
+</style>
+<header><h1>Castle · complete-area candidate review</h1><div id="summary"></div><div id="pin"></div><details><summary>Revision, scope and blockers</summary><pre id="metadata"></pre></details></header>
+<nav><label>View <select id="mode"><option value="art">ROM index artwork</option><option value="role">Effective role</option><option value="height">Effective height</option><option value="normal">Candidate normals</option><option value="occlusion">Authored occlusion</option><option value="blocking">Geometry light blocking</option><option value="coverage">Coverage / missing</option></select></label><label>Plane <select id="plane"></select></label><label>Zoom <select id="zoom"><option value="0.5">50%</option><option value="0.75" selected>75%</option><option value="1">100%</option><option value="2">200%</option><option value="4">400%</option></select></label><button id="fit">Fit area</button><label><input type="checkbox" id="grid" checked>Viewport grid</label><button id="prevViewport">◀ Viewport</button><select id="viewport" aria-label="Viewport"></select><button id="nextViewport">Viewport ▶</button></nav>
+<div id="legend"></div>
+<main><div id="scroll"><div id="stage"><canvas id="raster"></canvas><canvas id="overlay"></canvas></div></div><aside>
+<div id="viewportInfo"></div><div id="notice">Static complete-area inspection is not runtime capture coverage.</div>
+<h2>Occurrence inspector</h2><div class="muted">Click artwork to inspect a placement and exact pixel. Pan with scrollbars, trackpad or Shift-drag.</div><pre id="inspector">Select an occurrence.</pre>
+<h2>Issue annotation</h2><textarea id="note" placeholder="Short note for selected occurrence"></textarea><button id="addIssue">Add issue</button> <button id="export">Export issues JSON</button><div id="storage"></div>
+<div><button id="prevIssue">◀ Issue</button> <button id="nextIssue">Issue ▶</button></div><div id="issues"></div>
+</aside></main>
+<script id="review-data" type="application/json">/*__REVIEW_DATA__*/</script>
+<script>
+'use strict';
+const D=JSON.parse(document.getElementById('review-data').textContent);
+const $=id=>document.getElementById(id), text=(id,v)=>$(id).textContent=v;
+const [x0,y0,x1,y1]=D.bounds,W=x1-x0,H=y1-y0;
+const placements=D.rows.map(row=>Object.fromEntries(D.fields.map((k,i)=>[k,D.pools[k]&&row[i]!==null?D.pools[k][row[i]]:row[i]])));
+const lookup=new Map(placements.map(p=>[[p.x,p.y,p.layer,p.surface].join(','),p]));
+const scope={rom_sha256:D.pin.rom_sha256,area:D.pin.area,world:D.pin.world,state_key:D.pin.state_key,graphics_context:D.pin.graphics_context};
+const storageKey='alttp-overworld-issues-v1:'+JSON.stringify(scope);
+let issues=[],issueIndex=-1,selected=null,zoom=.75,art=null;
+try{issues=JSON.parse(localStorage.getItem(storageKey)||'[]');if(!Array.isArray(issues))issues=[]}catch(e){text('storage','Local storage unavailable. Keep an exported JSON copy.');}
+text('summary',`${D.status.toUpperCase()} · ${D.verdict||'generated candidate'} · ${D.solved}/${D.total} solved · ${D.missing} missing required geometry · ${D.conflicts} conflicts · ${D.viewports.filter(v=>v.linked).length}/${D.viewports.length} linked viewports`);
+text('pin',`Area ${D.pin.area} · ${D.pin.world} · State: ${D.pin.state_key}`);
+text('metadata',JSON.stringify({generation_revision:D.generation_revision,candidate_revision:D.revision,pin:D.pin,scope:D.scope,calibration:D.calibration,blockers:D.blockers,counts:D.counts,reported_coverage:D.reported_coverage,capture_checks:D.capture_checks},null,2));
+D.planes.forEach(([l,s])=>{let o=new Option(`BG ${l} / support surface ${s}`,`${l},${s}`);$('plane').add(o)});
+D.viewports.forEach((v,i)=>$('viewport').add(new Option(`${i+1}: (${v.x},${v.y}) ${v.linked?'linked packet':'NO LINKED DATA'}`,i)));
+for(const id of ['raster','overlay']){$(id).width=W;$(id).height=H}
+function dimensions(z){zoom=z;for(const id of ['stage','raster','overlay']){$(id).style.width=W*z+'px';$(id).style.height=H*z+'px'}}
+dimensions(zoom);
+const colors={floor:[67,174,105],wall:[56,139,255],cap:[255,188,64],obstacle:[215,95,224],transition:[65,224,210]};
+const heightValues=placements.filter(p=>p.status==='solved'&&p.base!==null&&p.local).flatMap(p=>p.local.map(v=>v+p.base));
+const minHeight=heightValues.reduce((a,b)=>Math.min(a,b),Infinity),maxHeight=heightValues.reduce((a,b)=>Math.max(a,b),-Infinity);
+function hatch(x,y){return ((x+y)%8<3)?[238,48,160]:[48,29,52]}
+function plane(){return $('plane').value.split(',').map(Number)}
+function draw(){
+ const ctx=$('raster').getContext('2d'),mode=$('mode').value,[layer,surface]=plane();
+ if(mode==='art'&&art){ctx.drawImage(art,0,0); // Animated/unresolved graphics are never presented as verified artwork.
+  for(const p of placements.filter(p=>p.layer===layer&&p.surface===surface&&p.graphics_status!=='resolved')){ctx.fillStyle='#ef30a0';ctx.fillRect(p.x*8-x0,p.y*8-y0,8,8)}
+ }else{
+  const image=ctx.createImageData(W,H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let c=hatch(x,y),o=(y*W+x)*4;image.data.set([...c,255],o)}
+  for(const p of placements){if(p.layer!==layer||p.surface!==surface)continue;
+   for(let i=0;i<64;i++){const x=p.x*8-x0+i%8,y=p.y*8-y0+Math.floor(i/8);if(x<0||y<0||x>=W||y>=H)continue;
+    let c=hatch(x,y),n=p.normals?.[i];
+    if(mode==='role'&&p.role!=='unknown')c=colors[p.role]||[200,200,200];
+    if(mode==='height'&&p.status==='solved'&&p.base!==null&&p.local?.length===64){let v=Math.round(255*(p.base+p.local[i]-minHeight)/Math.max(1,maxHeight-minHeight));c=[v,v,v]}
+    if(mode==='normal'&&p.status==='solved'&&Array.isArray(n)&&n.length===3)c=n.map(v=>Math.max(0,Math.min(255,Math.round((v+1)*127.5))));
+    if(mode==='occlusion'&&p.occlusion?.length===64)c=[p.occlusion[i],p.occlusion[i],p.occlusion[i]];
+    if(mode==='coverage')c=p.status==='solved'?[45,165,98]:p.status==='conflict'?[255,30,30]:p.status==='classified'?[231,160,32]:hatch(x,y);
+    image.data.set([...c,255],(y*W+x)*4);
+   }
+  }ctx.putImageData(image,0,0);
+ }
+ const legends={art:art?'ROM-derived grayscale index artwork, not original game RGB. Magenta = unresolved/animated graphics.':'No artwork data. Magenta hatching = unavailable.',role:'Floor green · wall blue · cap gold · obstacle purple · transition cyan. Role classification does not imply solved geometry.',height:`Base + placement-local height: black ${minHeight}, white ${maxHeight}. Magenta hatching = missing effective geometry.`,normal:'Signed candidate normals → RGB (n+1)/2. No normals inferred from height. Magenta hatching = missing.',occlusion:'Authored occlusion only (0 black – 255 white). Magenta hatching = no authored occlusion data; not a light-blocking result.',blocking:'UNSUPPORTED: no geometry-based visibility/occlusion raster supplied. Use a linked replay for actual light blocking.',coverage:'Solved green · classified but unsolved amber · conflict red · unresolved magenta hatch. Full-area denominators above.'};
+ text('legend',legends[mode]);overlay();
+}
+function overlay(){const ctx=$('overlay').getContext('2d');ctx.clearRect(0,0,W,H);ctx.lineWidth=1/zoom;
+ if($('grid').checked)D.viewports.forEach((v,i)=>{ctx.strokeStyle=v.linked?'#69ff9b':'#ffb45b';ctx.strokeRect(v.x-x0,v.y-y0,v.width,v.height);ctx.font=`${12/zoom}px system-ui`;ctx.fillStyle=ctx.strokeStyle;ctx.fillText(String(i+1),v.x-x0+3,v.y-y0+14/zoom)});
+ const v=D.viewports[Number($('viewport').value)];if(v){ctx.strokeStyle='white';ctx.lineWidth=3/zoom;ctx.strokeRect(v.x-x0,v.y-y0,v.width,v.height)}
+ for(const i of issues.filter(i=>i.status!=='resolved')){ctx.fillStyle=i.revision===D.revision?'#ff5252':'#ffb55b';ctx.beginPath();ctx.arc(i.pixel.x-x0,i.pixel.y-y0,4/zoom,0,2*Math.PI);ctx.fill()}
+ if(selected){ctx.strokeStyle='#fff';ctx.lineWidth=2/zoom;ctx.strokeRect(selected.p.x*8-x0,selected.p.y*8-y0,8,8)}
+}
+function navigateViewport(delta=0,scroll=true){let index=(Number($('viewport').value)+delta+D.viewports.length)%D.viewports.length;$('viewport').value=index;const v=D.viewports[index],el=$('viewportInfo');el.replaceChildren();const title=document.createElement('div');title.textContent=`Viewport ${index+1}: ${v.x},${v.y} · ${v.width}×${v.height} · ${v.linked?'registered packet (not automatically validated)':'No linked data'}`;el.append(title);
+ for(const [key,label] of [['capture','Open linked .s9xrmf'],['launcher','Open command launcher']])if(v[key]){const a=document.createElement('a');a.textContent=v[key].exists?label:`Missing ${key} file`;if(v[key].exists)a.href=v[key].href;el.append(document.createElement('br'),a)}
+ const provenance=document.createElement('pre');provenance.textContent=JSON.stringify({status:v.status,provenance:v.provenance||'No capture provenance supplied',matching_checks_passed:v.matching_checks_passed||false},null,2);el.append(provenance);
+ if(scroll)$('scroll').scrollTo({left:(v.x-x0)*zoom,top:(v.y-y0)*zoom});overlay();}
+function inspect(px,py,l,s){const p=lookup.get([Math.floor(px/8),Math.floor(py/8),l,s].join(','));if(!p){text('inspector','No placement data on selected plane.');selected=null;return}const i=(py%8)*8+px%8;selected={p,px,py};const details={...p,pixel:{x:px,y:py,local_index:i},effective_height:p.status==='solved'&&p.base!==null&&p.local?p.base+p.local[i]:null,effective_normal:p.normals?.[i]??'unsupported',authored_occlusion:p.occlusion?.[i]??'unsupported',geometry_light_blocking:'unsupported: requires linked replay'};delete details.local;delete details.normals;delete details.occlusion;text('inspector',JSON.stringify(details,null,2));overlay()}
+let drag=null,moved=false;
+$('overlay').onpointerdown=e=>{moved=false;if(e.shiftKey){drag={x:e.clientX,y:e.clientY,left:$('scroll').scrollLeft,top:$('scroll').scrollTop};$('overlay').setPointerCapture(e.pointerId)}};
+$('overlay').onpointermove=e=>{if(drag){moved=true;$('scroll').scrollLeft=drag.left+drag.x-e.clientX;$('scroll').scrollTop=drag.top+drag.y-e.clientY}};
+$('overlay').onpointerup=()=>{drag=null};
+$('overlay').onclick=e=>{if(moved)return;const r=$('overlay').getBoundingClientRect();inspect(x0+Math.floor((e.clientX-r.left)/zoom),y0+Math.floor((e.clientY-r.top)/zoom),...plane())};
+function save(){try{localStorage.setItem(storageKey,JSON.stringify(issues))}catch(e){text('storage','Could not persist notes. Export JSON before closing.')}renderIssues();overlay()}
+function jumpIssue(index){if(!issues.length)return;issueIndex=(index+issues.length)%issues.length;const i=issues[issueIndex];$('mode').value=i.mode;$('plane').value=`${i.map_position.layer},${i.map_position.surface}`;draw();inspect(i.pixel.x,i.pixel.y,i.map_position.layer,i.map_position.surface);$('scroll').scrollTo({left:(i.pixel.x-x0)*zoom-$('scroll').clientWidth/2,top:(i.pixel.y-y0)*zoom-$('scroll').clientHeight/2})}
+function renderIssues(){const el=$('issues');el.replaceChildren();issues.forEach((i,n)=>{const b=document.createElement('button');b.textContent=`${n+1}. ${i.status} · ${i.revision===D.revision?'current revision':'STALE revision'} · (${i.map_position.x},${i.map_position.y}) ${i.note}`;b.onclick=()=>jumpIssue(n);const resolve=document.createElement('button');resolve.textContent=i.status==='resolved'?'Reopen':'Mark resolved';resolve.onclick=()=>{i.status=i.status==='resolved'?'open':'resolved';i.updated_at=new Date().toISOString();save()};el.append(b,resolve)})}
+$('addIssue').onclick=()=>{if(!selected||!$('note').value.trim()){text('storage','Select a placement and enter a note.');return}const {p,px,py}=selected;issues.push({id:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),scope,revision:D.revision,generation_revision:D.generation_revision,map_position:{x:p.x,y:p.y,layer:p.layer,surface:p.surface},pixel:{x:px,y:py},mode:$('mode').value,note:$('note').value.trim(),status:'open',created_at:new Date().toISOString()});$('note').value='';save()};
+$('export').onclick=()=>{const blob=new Blob([JSON.stringify({format:'ALTPOWISSUES1',scope,candidate_revision:D.revision,issues},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`overworld-area-${D.pin.area}-issues.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$('prevIssue').onclick=()=>jumpIssue(issueIndex-1);$('nextIssue').onclick=()=>jumpIssue(issueIndex+1);
+$('prevViewport').onclick=()=>navigateViewport(-1);$('nextViewport').onclick=()=>navigateViewport(1);$('viewport').onchange=()=>navigateViewport();
+$('mode').onchange=draw;$('plane').onchange=()=>{selected=null;draw()};$('grid').onchange=overlay;
+$('zoom').onchange=()=>{dimensions(Number($('zoom').value));overlay()};$('fit').onclick=()=>{dimensions(Math.min($('scroll').clientWidth/W,$('scroll').clientHeight/H));$('scroll').scrollTo(0,0);overlay()};
+renderIssues();draw();navigateViewport(0,false);
+if(D.artwork){const img=new Image();img.onload=()=>{art=img;draw()};img.src=D.artwork}
+</script></html>

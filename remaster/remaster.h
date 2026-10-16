@@ -9,6 +9,7 @@
 
 #include "frame.h"
 #include "capture_path.h"
+#include "overworld_capture.h"
 #include "profile.h"
 #include "area_light_transition.h"
 #include "held_lamp.h"
@@ -267,6 +268,7 @@ struct RemasterState
 		bool publishable=false;
 	};
 	std::unique_ptr<DungeonCaptureEvidence> animationDungeonEvidence;
+	std::unique_ptr<RemasterOverworldCapture> animationOverworldEvidence;
 	uint32_t requestedFrameCount = 1;
 	uint32_t activeFrameCount = 0;
 	std::string lastWrittenCapturePath;
@@ -805,6 +807,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.activeFrameCount = state.requestedFrameCount;
 			state.animationCapture = RemasterAnimationCapture();
 			state.animationDungeonEvidence.reset();
+			state.animationOverworldEvidence.reset();
 			state.capturePitch = pitch;
 			state.captureWidth = width;
 			state.captureHeight = height;
@@ -2494,7 +2497,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr,
 	const RemasterDungeonFloorContext *dungeonFloor = nullptr,
 	const RemasterHeldLampState *heldLamp = nullptr, const RemasterAreaContext *area = nullptr,
-	uint32_t emulatedFrame = 0)
+	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr)
 {
 	RemasterState &state = S9xRemasterState();
 	state.currentArea.store(area ? uint32_t(area->id) | (uint32_t(area->romDark) << 16) : 0xffff);
@@ -3268,6 +3271,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.animationDungeonEvidence=S9xRemasterPinDungeonCaptureEvidence(dungeonFloor,
 					state.activeProfile,appliedDungeonHeightMap,state.runtimeDungeonHeightKey,
 					state.runtimeDungeonHeightEpoch,runtimeInputsPublishable);
+				if(overworldCapture)state.animationOverworldEvidence=std::make_unique<RemasterOverworldCapture>(*overworldCapture);
 			}
 			S9xRemasterAddAnimationCaptureFrame(state.animationCapture, frame);
 			if (state.animationCapture.frameCount >= state.activeFrameCount)
@@ -3278,12 +3282,15 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 					S9xRemasterWriteUniqueCapture(bytes, state.activeFramePath, state.lastWrittenCapturePath))
 				{
 					result |= RemasterCaptureFrame;
+					if(state.animationOverworldEvidence && !state.animationOverworldEvidence->Write(state.lastWrittenCapturePath))
+						std::fprintf(stderr,"Overworld input sidecar write failed: %s\n",state.lastWrittenCapturePath.c_str());
 					if (state.animationDungeonEvidence){const auto &e=*state.animationDungeonEvidence;
 						S9xRemasterWriteDungeonCaptureEvidence(state.lastWrittenCapturePath,e.context,e.profile,
 							e.map.get(),e.key,e.epoch,e.publishable);}
 				}
 				state.frameCaptureActive = false;
 				state.animationDungeonEvidence.reset();
+				state.animationOverworldEvidence.reset();
 			}
 		}
 		// Bounded opt-in chronology at the SAME finalized packet boundary as
@@ -3320,6 +3327,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		state.frameCaptureActive = false;
 		state.animationCapture = RemasterAnimationCapture();
 		state.animationDungeonEvidence.reset();
+		state.animationOverworldEvidence.reset();
 	}
 	return result;
 }

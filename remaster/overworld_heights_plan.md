@@ -1,7 +1,10 @@
 # Castle-first overworld height generation
 
-Status: implementation plan, 2026-10-15. Runtime overworld height generation
-has not been implemented or validated by this investigation.
+Status: partial implementation, 2026-10-15. Portable classification, authored
+castle geometry, occurrence transport, linked replay proposals, and review UI
+are implemented. Full-area readiness and live activation remain incomplete.
+See [implementation and review instructions](overworld_review.md) for actual
+counts, launch paths, checks, and remaining evidence gaps.
 
 ## Goal and first fixture
 
@@ -75,6 +78,53 @@ height: a compressed artwork ramp's derived normal need not be an appropriate
 structural-wall normal.
 
 ## Implementation sequence
+
+### Automatic classification strategy and verified collision input
+
+Use offline-generated reusable semantics with automatic placement resolution,
+plus a runtime adapter for actual map state and changes. Human review targets
+generated area candidates and recurring failure classes; it should not require
+painting every tile or walking every area to establish classifications.
+
+The reference engine's `Overworld_GetTileAttributeAtLocation` in
+`build/remaster-geometry/room-preview-engine-v21/src/tile_detect.c` verifies:
+
+```text
+sample position + area offsets/masks
+  -> current WRAM Map16 placement
+  -> selected Map8 definition word
+  -> collision attribute table[word & 0x1ff]
+  -> horizontal-flip adjustment for attributes 0x10..0x1b
+```
+
+The attribute table is 512 bytes at SNES `$8E:9459`; Map16 definitions are at
+`$8F:8000`. WRAM `$7E:2000`, named `overworld_tileattr` in the reference, contains
+Map16 IDs in this lookup, not completed collision bytes. This is not a separate
+arbitrary collision value attached to each Map16. Movement interpretation adds
+player state, direction, multi-point footprint sampling, and within-cell slope
+tests. Reproduce those contracts explicitly; passable does not always mean a
+flat floor (water, pits, and transitions), and blocked does not mean wall.
+
+A read-only probe of the supplied schema-35 capture found the shared hash in
+these background tile slots:
+
+| Map8 tile index / collision-table index | Palette | Captured instances |
+| --- | --- | --- |
+| 271 / 271 | 6 | 317, including 11 horizontal flips |
+| 347 / 347 | 6 | 2, including 1 vertical flip |
+| 369 / 369 | 7 | 67 |
+
+Thus identical decoded artwork can select different collision-table entries.
+This probe does not establish the entries' values or label these slots as
+terrace versus wall. The frame's tile instances are rendering records, not a
+complete unique-placement denominator. Next export the actual attributes and
+map each reported wall/floor occurrence to its logical Map8/Map16 placement.
+
+Automatically retain raw and adjusted attributes alongside behavior class,
+Map32/Map16/member provenance, final graphics identity, and state. Resolve
+roles using their combined evidence, then solve height/support separately.
+Generate complete areas in batches and audit all available areas/states after
+each reusable rule change. Overlay and special-area gaps must be listed.
 
 ### Prerequisite: resolve shared-artwork semantics per placement
 
@@ -247,3 +297,43 @@ their connecting route, and the western obstacle, followed by one calibrated
 castle wall family covering its distinct facings and corners. This produces a
 reviewable foundation for automatic outdoor coverage and an early test of the
 current lighting-space representation.
+
+## Fast area-review workflow (required deliverable)
+
+Provide a small area-review catalog using the existing linked `.s9xrmf` replay
+and diagnostics, consistent with `AIDocs/alttp/03-scene-browser-plan.md`.
+Build the castle review slice alongside generation so an automatically prepared
+candidate can be inspected before scaling the pipeline to the entire overworld.
+
+- Show area/world/state, thumbnail, generation revision, complete-area coverage,
+  missing/conflict counts, and status: `generated`, `blocked`, `ready for review`,
+  `issues found`, or `reviewed`. Reserve `ready for review` for a candidate that
+  passes automated complete-area checks and matching capture checks. Human
+  review remains a separate recorded result.
+- One click opens the candidate in Snes9x with a viewport grid/minimap for the
+  complete area. Previous/next viewport preserves diagnostic mode, selected
+  light setup, and comparison settings; previous/next ready area avoids file
+  picking. Include explicit state selection and unsupported viewport markers.
+- Offer Original, effective Role, Height, Normals, Occlusion, direct/indirect
+  lighting, and shadow/visibility views. Distinguish authored occlusion data
+  from actual geometry-based light blocking; check both. Add controlled light
+  presets from several directions and a retained previous candidate for A/B.
+- Inspecting an occurrence shows map position, hash, Map8 index, Map16/Map32
+  membership, collision attribute/behavior, resolved role, owning assembly,
+  support/base, local geometry source, effective height/normal/occlusion, and
+  classification evidence. Shared hashes must expose distinct occurrence data.
+- A quick issue marker records area/state, placement/pixel, diagnostic mode,
+  candidate revision, and a short note. Reopening or regeneration preserves
+  its location and identifies stale/resolved notes. Export findings so repeated
+  issues can become shared-rule regressions.
+- Use genuinely linked runtime captures with generated occurrence geometry.
+  Generate coverage viewports deterministically from pinned state and compare
+  them with live gameplay. A complete-area inspection overview can aid navigation,
+  but static PNGs or reconstructed reference images do not count as runtime
+  coverage. Every viewport's capture provenance must remain explicit.
+
+The minimal review UI can start with a generated local catalog that launches
+replay and a viewport selector; a full game-wide browser is not a prerequisite
+for reviewing the first castle candidate. Acceptance is opening the complete
+castle candidate, checking each diagnostic across all viewports without manual
+file selection, marking an issue, regenerating, and returning to that issue.
