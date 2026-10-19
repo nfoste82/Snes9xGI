@@ -49,7 +49,8 @@ inline std::vector<uint8_t> debugView(unsigned width, unsigned height,
 		const auto &s = samples[p]; const auto &m = mesh[p];
 		if (!s.known) continue;
 		// Transparent receivers are shown dimly, but do not acquire blocker faces.
-		std::array<float,3> color = m.solidWall > .5f ? std::array<float,3>{255,95,220} :
+		std::array<float,3> color = s.fallbackGround ? std::array<float,3>{130,255,105} :
+			m.solidWall > .5f ? std::array<float,3>{255,95,220} :
 			m.thickness > 0 ? std::array<float,3>{255,180,65} : std::array<float,3>{70,220,255};
 		if (s.coverage <= 0) for (float &c : color) c *= .35f;
 		Vertex vertices[] = {{float(x),float(y),m.corners[0]}, {float(x+1),float(y),m.corners[1]},

@@ -84,7 +84,7 @@ struct RemasterLightingFieldCache
 			const auto found = metadata.find(instance.tileId);
 			const auto *original = found == metadata.end() ? nullptr : found->second;
 			const bool contextual = instance.geometryStatus != RemasterOccurrenceGeometryStatus::Inherit ||
-				instance.hasPlacementHeight || instance.hasPlacementNormals || instance.hasPlacementOcclusion;
+				instance.hasPlacementHeight || instance.hasPlacementNormals || instance.hasPlacementOcclusion || frame.contextGeometry.count(i+1);
 			const auto *m = original;
 			if (contextual || (original && (original->geometryByFacing || original->geometryByFlip)))
 			{
@@ -93,7 +93,7 @@ struct RemasterLightingFieldCache
 				const auto key = std::make_tuple(instance.tileId, variant, contextual ? i+1 : 0);
 				auto foundResolved = resolvedMetadata.find(key);
 				if (foundResolved == resolvedMetadata.end()) foundResolved = resolvedMetadata.emplace(key,
-					S9xRemasterResolveInstanceGeometry(original ? *original : RemasterFrameAssetMetadata{}, instance)).first;
+					S9xRemasterResolveFrameGeometry(original ? *original : RemasterFrameAssetMetadata{}, frame, i)).first;
 				m = &foundResolved->second;
 			}
 			instanceMetadata[i] = m;
@@ -108,7 +108,10 @@ struct RemasterLightingFieldCache
 			dirty[i] = full || i >= instances_.size() || !instanceEqual(instance, instances_[i]) ||
 				(original ? metadataDirty[instance.tileId] : metadata_.count(instance.tileId) != 0) ||
 				i >= normalMasks_.size() || normalMasks[i] != normalMasks_[i];
+			if (frame.contextGeometry.count(i+1) || contextInstances_.count(i+1)) dirty[i] = true;
 		}
+		contextInstances_.clear();
+		for (const auto &entry : frame.contextGeometry) contextInstances_.insert(entry.first);
 		updatedPixels = 0;
 		for (size_t i = 0; i < count; i++)
 		{
@@ -150,15 +153,29 @@ struct RemasterLightingFieldCache
 				reflectance[i*4+3] = 1;
 			}
 			const bool unresolved = S9xRemasterInstanceGeometryUnresolved(instance);
+			// Provisional visible BG ground, never a claim of solved/authored geometry.
+			// Explicit unresolved placements and UI remain absent. A placement base
+			// alone is not relief: use a flat sheet there rather than a prop shell.
+			const bool fallbackGround = !unresolved && instance.source == RemasterSourceType::Background &&
+				participation[i*2] != 0 && !(m && m->hasHeight);
+			if (fallbackGround)
+			{
+				samples[i].fallbackGround = true;
+				samples[i].sheet = true;
+				samples[i].solidWall = false;
+				// Isolate provisional flats from authored ramps and other floor bases.
+				samples[i].domain = (uint64_t(3) << 48) | uint32_t(instance.heightOffset);
+			}
 			occlusion[i*2] = unresolved ? 0 : m && m->hasOcclusion ? m->occlusion[pixel.tilePixel] : 255;
 			occlusion[i*2+1] = unresolved ? 0 : 255;
 			opposite[i] = m && m->directLightingOppositeFacing ? 255 : 0;
-			if (!unresolved && ((m && m->hasHeight) || instance.heightOffset))
+			if (!unresolved && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
 			{
 				const int local = m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
 				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
 			}
 			surface[i*4] = height[i*2] * frame.lightingCoordinateScale;
+			if (fallbackGround) surface[i*4+3] = 1;
 			if (m && m->hasNormals)
 			{
 				authoredNormals[i] = 1;
@@ -178,6 +195,7 @@ struct RemasterLightingFieldCache
 		materials_ = frame.materials; width_ = frame.width; height_ = frame.height; scale_ = frame.lightingCoordinateScale;
 	}
 private:
+	std::set<uint32_t> contextInstances_;
 	uint32_t width_ = 0, height_ = 0;
 	float scale_ = 0;
 	std::vector<uint64_t> keys_, normalMasks_;

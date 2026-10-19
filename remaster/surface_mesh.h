@@ -33,6 +33,7 @@ struct Sample
 	uint64_t domain = 0;
 	bool solidWall = false;
 	float wallBase = 0;
+	bool fallbackGround = false;
 };
 
 // Domains describe placement/object identity, not tile hashes. Floor and wall

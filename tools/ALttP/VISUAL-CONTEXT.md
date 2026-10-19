@@ -52,6 +52,13 @@ Overview does not move pan state. Images/provenance default to the sibling
 
 ## Strict data boundary
 
+Reference-guided generation is a separate consumer workflow: see
+`AIDocs/alttp/09-reference-guided-world-authoring.md` for user-corrected object
+examples, transferable shape/normal rules and a copyable agent brief. References
+must be explicitly allowed and supplied **outside** the sealed ROM-only bundle.
+This does not loosen existing height-blind experiment restrictions or change what
+the visual-context tool reads/writes. Label runs using references accordingly.
+
 The sealed input bundle contains exactly four files:
 
 * `artwork.png`: complete base ROM BG artwork (no sprites or annotations).

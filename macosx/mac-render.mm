@@ -271,7 +271,8 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
 	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1, bool = true,
 	const std::array<float, 3> * = nullptr, int = -1, bool = true,
-	const std::vector<RemasterSurfaceMesh::Cell> * = nullptr, const RemasterFrame * = nullptr);
+	const std::vector<RemasterSurfaceMesh::Cell> * = nullptr, const RemasterFrame * = nullptr,
+	const std::vector<RemasterSurfaceMesh::Sample> * = nullptr);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -564,7 +565,15 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		owners.push_back(pixel.owner);
 	static std::vector<uint8_t> highlights;
 	highlights.clear();
-	if (selectedTiles && !selectedTiles->empty())
+	if (frame.contextLocationSelection || !frame.selectedContextInstances.empty()) {
+		highlights.assign(frame.mainPixels.size(), 0);
+		for (size_t i=0;i<scenePixels.size();i++) {
+			auto id=scenePixels[i].instanceId;
+			if (!id && i<frame.subPixels.size()) id=frame.subPixels[i].instanceId;
+			if (frame.selectedContextInstances.count(id)) highlights[i]=1;
+		}
+	}
+	else if (selectedTiles && !selectedTiles->empty())
 	{
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (const RemasterTileContentId &tileId : *selectedTiles)
@@ -622,7 +631,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		lighting && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
-		resourceSlot, !asynchronous, &mesh, &frame);
+		resourceSlot, !asynchronous, &mesh, &frame, &meshSamples);
 }
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
@@ -935,7 +944,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	float originalSceneContribution, float heightPreviewMultiplier, float reflectanceBoost,
 	uint8_t samplesPerFrame, bool sampleAccumulation,
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion,
-	const std::vector<RemasterSurfaceMesh::Cell> *mesh, const RemasterFrame *frame)
+	const std::vector<RemasterSurfaceMesh::Cell> *mesh, const RemasterFrame *frame,
+	const std::vector<RemasterSurfaceMesh::Sample> *meshSamples)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
@@ -1074,6 +1084,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			samples[i].height = surfaceField[i*4];
 			samples[i].known = heightField[i*2+1] != 0 && participation[i*2] != 0;
 			samples[i].coverage = occlusion[i*2]/255.f;
+			samples[i].fallbackGround = meshSamples && i < meshSamples->size() && (*meshSamples)[i].fallbackGround;
 		}
 		diagram = RemasterSurfaceMesh::debugView(width, height, buffer, samples, *mesh, diagramScale);
 	}

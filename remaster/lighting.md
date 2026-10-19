@@ -270,8 +270,8 @@ light per scan. See `offscreen_emitters.md` for capture timings and regressions.
 Cycle lighting views with Command-Shift-D to **Mesh** (after Emission). The
 diagnostic draws the actual generated center-fan triangles, shell bottoms/sides,
 and structural wall closures over dim artwork at 4x source resolution. Cyan is a
-sheet, amber a finite shell, pink a base-closed structural wall. Transparent
-receivers are dimmed; unknown-height pixels have no triangles. A fixed oblique
+sheet, green provisional background ground, amber a finite shell, pink a base-closed structural wall. Transparent
+receivers are dimmed; excluded/unknown-height pixels have no triangles. A fixed oblique
 projection `(x + .35*z, y - .65*z)` separates elevated geometry from its original
 screen footprint. Depth testing retains the frontmost faces. This is a geometry
 inspection view, not an editing coordinate transform: selection still uses the
@@ -297,6 +297,9 @@ height, which further limits the represented ground. Across the complete frame,
 540 opaque known zero-height samples are sheets and718 are shells;128 shell
 samples have nonflat reconstructed corners (not all belong to the tree).
 
+These counts describe the original no-fallback path. Provisional background
+ground now fills the unauthored background pixels, as described below.
+
 This diagnostic does not repair the ground outline. A general repair needs
 pixel-level ground/obstacle semantics within mixed tiles (and known surrounding
 ground), or a separately specified shell/ground contact convention with transport
@@ -308,6 +311,39 @@ Validation:39/39 portable mesh checks, including sheet/shell visualization,
 unknown exclusion, deterministic rasterization and full/cache equivalence;
 macOS arm64 Debug build passed. Offline capture export visually inspected;
 interactive app cycling/presentation has not yet been checked.
+
+### Provisional background ground
+
+Lighting field resolution supplies a local height0 ground sheet for valid,
+visible Background-owned pixels without effective authored/placement relief.
+Known signed placement offsets are retained, including negative bases. This is
+enabled for live and replay lighting; no profile/frame schema changes or authored
+data writes are involved. These surfaces participate in normal visibility and
+transport, with the existing per-pixel opacity and material participation.
+Missing normals use +Z; explicitly authored normals still take precedence.
+
+Fallback sheets use an isolated domain per exact signed placement base so they
+cannot deform authored ramps or weld across different floor levels. They have no
+shell thickness or structural wall closure, even if their unknown relief belongs
+to wall/prop artwork. `Sample::fallbackGround` retains provisional status for the
+green Mesh diagnostic and the capture probe's CSV. It is not solved-height
+coverage and does not update the editor's authored Height view or validation.
+
+Sprites, identified HUD/UI, invalid ownership, and explicitly Unresolved/Conflict
+occurrences do not receive fallback ground. An unknown sprite with an existing
+nonzero placement datum retains its previous geometry behavior. Only visible
+samples are represented: ground underneath a canopy still requires another plane.
+Authored zero-height obstacle samples keep their shell semantics, so the mixed
+tree ground-contact outline remains a separate issue.
+
+Validation: `fallback_ground_test.cpp` covers signed bases, +Z and authored-normal
+precedence, authored/placement relief, UI/sprite/unresolved exclusions, subscreen
+and scene channels, ownership loss, authoring/undo and cache/full transitions.
+The supplied courtyard capture has50,036 fallback pixels using its stored
+metadata (the current profile can change counts). The field-cache mutation/full
+oracle passes on that capture;39/39 mesh checks and occurrence-geometry tests
+pass. Debug and Release apps build. Offline fallback mesh export was visually
+inspected; live lighting appearance has not been interactively validated.
 
 Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
 compact 48-byte patch per screen pixel; Metal expands its corner heights into

@@ -33,7 +33,12 @@ int main()
 				require(result.height[p] == source.height[layer == RemasterEditorHeight ? from : p], "height isolation/mirror");
 				require(result.occlusion[p] == source.occlusion[layer == RemasterEditorOcclusion ? from : p], "occlusion isolation/mirror");
 				require(result.materialSelectors[p] == source.materialSelectors[layer == RemasterEditorMaterial ? from : p], "material isolation/mirror");
-				for (size_t c = 0; c < 3; c++) require(result.normalXyz[p * 3 + c] == source.normalXyz[(layer == RemasterEditorNormal ? from : p) * 3 + c], "normal components preserved");
+				for (size_t c = 0; c < 3; c++)
+				{
+					const auto value = source.normalXyz[(layer == RemasterEditorNormal ? from : p) * 3 + c];
+					const bool reflect = layer == RemasterEditorNormal && c == (horizontal ? 0u : 1u);
+					require(result.normalXyz[p * 3 + c] == (reflect ? 255 - value : value), "normal positions and directions reflected; other channels preserved");
+				}
 				for (size_t c = 0; c < 4; c++) require(result.emissionRgba[p * 4 + c] == source.emissionRgba[(layer == RemasterEditorEmission ? from : p) * 4 + c], "RGBA components preserved");
 			}
 			require(result.doorframeMask == (layer == RemasterEditorDoorframe ? UINT64_C(1) << (horizontal ? 13 : 50) : source.doorframeMask), "doorframe bit mirror");
@@ -41,8 +46,17 @@ int main()
 			S9xRemasterFlipMetadataLayer(result, layer, horizontal);
 			require(result.height == source.height && result.occlusion == source.occlusion && result.normalXyz == source.normalXyz && result.emissionRgba == source.emissionRgba && result.materialSelectors == source.materialSelectors && result.doorframeMask == source.doorframeMask, "double flip restores exact data");
 		}
+	// Geometry variants use the same array helper directly in the frontend.
+	for (bool horizontal : {false, true})
+	{
+		auto normals = source.normalXyz;
+		S9xRemasterFlipNormalLayer(normals, horizontal);
+		auto metadata = source;
+		S9xRemasterFlipMetadataLayer(metadata, RemasterEditorNormal, horizontal);
+		require(normals == metadata.normalXyz, "variant helper matches metadata normal flip");
+	}
 	RemasterAssetMetadata empty;
 	require(!S9xRemasterFlipMetadataLayer(empty, RemasterEditorHeight, true) && !empty.hasHeight, "missing layers remain missing");
 	require(!S9xRemasterFlipMetadataLayer(source, RemasterEditorArtwork, true) && !S9xRemasterFlipMetadataLayer(source, RemasterEditorMetadata, false), "nonpixel layers unavailable");
-	std::cout << "Layer flips: axes, channel preservation, isolation, missing data and round trips passed\n";
+	std::cout << "Layer flips: axes, reflected normals, channel preservation, isolation, missing data and round trips passed\n";
 }

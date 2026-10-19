@@ -27,8 +27,9 @@ Rearranged displays retain the window's display-relative position; resolution
 or Dock/menu-bar changes constrain the title bar to the available screen.
 Fullscreen frames are not saved over ordinary window placement.
 
-**View > Mute Audio / Unmute Audio** is available during emulation and authoring.
-Its preference survives relaunches, ROM loads and defrosts. The audio callback
+**Audio > Toggle Mute Audio** is available even without a game loaded, during
+emulation and while authoring. A checkmark indicates that mute is enabled.
+Its local preference survives relaunches, ROM loads and defrosts. The audio callback
 consumes samples normally and silences its output, preserving audio-sync timing
 and the configured volume.
 

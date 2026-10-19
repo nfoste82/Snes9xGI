@@ -37,7 +37,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 36;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 37;
 
 struct RemasterFramePixel
 {
@@ -309,7 +309,107 @@ struct RemasterFrame
 	std::vector<RemasterFrameHiddenEmitter> hiddenEmitters;
 	RemasterAreaContext area;
 	RemasterDirectionalLight directionalLight{false};
+	// Sparse background occurrence identity and selected context; no per-tile payload.
+	std::map<uint32_t, RemasterContextLocation> contextLocations;
+	std::map<uint32_t, RemasterTileContext> contextGeometry;
+	std::set<uint32_t> selectedContextInstances; // editor highlight only, never captured
+	bool contextLocationSelection = false; // empty location selection must not highlight the whole type
 };
+
+inline RemasterFrameAssetMetadata S9xRemasterResolveFrameGeometry(const RemasterFrameAssetMetadata &source,
+	const RemasterFrame &frame, size_t index)
+{
+	auto result = S9xRemasterResolveInstanceGeometry(source, frame.tileInstances[index]);
+	const auto found = frame.contextGeometry.find(static_cast<uint32_t>(index + 1));
+	if (found != frame.contextGeometry.end()) {
+		const auto &c = found->second;
+		result.height = c.height; result.hasHeight = c.hasHeight; result.heightSampling = c.heightSampling;
+		result.normalXyz = c.normalXyz; result.hasNormals = c.hasNormals;
+		result.normalIgnoreTileTransform = c.normalIgnoreTileTransform;
+		result.directLightingOppositeFacing = c.directLightingOppositeFacing;
+	}
+	return result;
+}
+
+inline std::set<uint32_t> S9xRemasterContextSelection(const RemasterProfile &profile,
+	const RemasterFrame &frame, const std::vector<RemasterTileContentId> &tiles, const std::string &name)
+{
+	std::set<uint32_t> selected;
+	for (const auto *pixels : {&frame.mainPixels, &frame.subPixels, &frame.scenePixels})
+		for (const auto &pixel : *pixels) {
+			const auto id = pixel.instanceId;
+			if (!id || id > frame.tileInstances.size()) continue;
+			const auto &instance = frame.tileInstances[id-1];
+			if (instance.source != RemasterSourceType::Background ||
+				std::find(tiles.begin(), tiles.end(), instance.tileId) == tiles.end()) continue;
+			std::string effective;
+			const auto contexts = profile.tileContexts.find(instance.tileId);
+			if (contexts != profile.tileContexts.end() && contexts->second.size() == 1)
+				effective = contexts->second.begin()->first;
+			else if (contexts != profile.tileContexts.end() && contexts->second.size() > 1) {
+				const auto at = frame.contextLocations.find(id);
+				if (at == frame.contextLocations.end()) continue; // legacy capture cannot identify assignments
+				const auto binding = profile.contextBindings.find(at->second);
+				if (binding != profile.contextBindings.end() && binding->second.tile == instance.tileId &&
+					contexts->second.count(binding->second.name)) effective = binding->second.name;
+			}
+			if (effective == name) selected.insert(id);
+		}
+	return selected;
+}
+
+inline void S9xRemasterApplyContextBindings(const RemasterProfile &profile, RemasterFrame &frame)
+{
+	frame.contextGeometry.clear();
+	for (size_t i = 0; i < frame.tileInstances.size(); i++) {
+		const auto &instance = frame.tileInstances[i];
+		if (instance.source != RemasterSourceType::Background) continue;
+		const auto contexts = profile.tileContexts.find(instance.tileId);
+		if (contexts == profile.tileContexts.end() || contexts->second.empty()) continue;
+		if (contexts->second.size() == 1) { frame.contextGeometry[i+1] = contexts->second.begin()->second; continue; }
+		const auto location = frame.contextLocations.find(i+1);
+		if (location == frame.contextLocations.end()) continue;
+		const auto binding = profile.contextBindings.find(location->second);
+		if (binding == profile.contextBindings.end() || !(binding->second.tile == instance.tileId)) continue;
+		const auto selected = contexts->second.find(binding->second.name);
+		if (selected != contexts->second.end()) frame.contextGeometry[i+1] = selected->second;
+	}
+}
+
+// WRAM can already contain the next camera position while the PPU still shows
+// the previous one. Use WRAM only to unwrap the rendered 10-bit scroll value.
+inline int S9xRemasterUnwrapRenderedScroll(int worldHint, int renderedScroll)
+{
+	const unsigned delta = (unsigned(renderedScroll) - unsigned(worldHint)) & 1023;
+	return worldHint + (delta < 512 ? int(delta) : int(delta) - 1024);
+}
+
+// Scroll values must be the renderer's unwrapped game-space BG origin. Reject
+// inconsistent raster scroll/ownership rather than binding an arbitrary location.
+inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array<int,4> &scrollX,
+	const std::array<int,4> &scrollY)
+{
+	frame.contextLocations.clear();
+	if (!frame.area.valid()) return;
+	std::set<uint32_t> conflict;
+	for (const auto *pixels : {&frame.mainPixels, &frame.subPixels, &frame.scenePixels})
+		for (size_t p=0;p<pixels->size();p++) {
+			const auto &pixel=(*pixels)[p];
+			if (!pixel.instanceId || pixel.instanceId>frame.tileInstances.size() || pixel.tilePixel>=64) continue;
+			const auto &in=frame.tileInstances[pixel.instanceId-1];
+			if (in.source!=RemasterSourceType::Background || in.sourceIndex>1) continue;
+			int lx=pixel.tilePixel%8, ly=pixel.tilePixel/8;
+			if(in.hFlip)lx=7-lx;if(in.vFlip)ly=7-ly;
+			const int wx=scrollX[in.sourceIndex]+int(p%frame.width)-lx;
+			const int wy=scrollY[in.sourceIndex]+int(p/frame.width)-ly;
+			RemasterContextLocation at;at.area=frame.area.id;at.background=in.sourceIndex;
+			const int mask=frame.area.id<320?511:65535;
+			at.x=(wx&mask)/8;at.y=(wy&mask)/8;
+			auto inserted=frame.contextLocations.emplace(pixel.instanceId,at);
+			if(!inserted.second && (inserted.first->second<at || at<inserted.first->second))conflict.insert(pixel.instanceId);
+		}
+	for(auto id:conflict)frame.contextLocations.erase(id);
+}
 
 struct RemasterDungeonMovementCache
 {
@@ -3403,6 +3503,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 			instance.assetGroup = match.assetGroup ? match.assetGroup->name : std::string();
 		instance.material = match.material ? match.material->name : std::string();
 	}
+	S9xRemasterApplyContextBindings(profile, frame);
 }
 
 struct RemasterAnimationTrackKey
@@ -4076,10 +4177,23 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		}
 	}
 	bool hasArea = false;
+	bool hasContextLocations = false;
 	while (result.schemaVersion >= 28 && input.offset < bytes.size())
 	{
 		uint32_t tag;
 		if (!input.ReadU32(tag)) return false;
+		if (tag == 0x314c5443u) { // CTL1: sparse stable background locations
+			uint32_t count;
+			if (hasContextLocations || result.schemaVersion<37 || !input.ReadU32(count) || count>result.tileInstances.size()) return false;
+			hasContextLocations=true;
+			for(uint32_t i=0;i<count;i++) {
+				uint32_t id;RemasterContextLocation at;
+				if(!input.ReadU32(id)||!id||id>result.tileInstances.size()||!input.ReadU16(at.area)||at.area>321||
+					!input.ReadU8(at.background)||at.background>1||!input.ReadU16(at.x)||!input.ReadU16(at.y)||
+					!result.contextLocations.emplace(id,at).second)return false;
+			}
+			continue;
+		}
 		if (tag == 0x31415241u) // ARA1: pinned area and parallel-ray lighting
 		{
 			uint8_t dark, enabled;
@@ -4296,7 +4410,7 @@ inline std::pair<int, int> S9xRemasterFrameHeightRange (const RemasterFrame &fra
 	for (size_t i = 0; i < frame.tileInstances.size(); i++)
 	{
 		const auto found = byTile.find(frame.tileInstances[i].tileId);
-		effective[i] = S9xRemasterResolveInstanceGeometry(found != byTile.end() ? *found->second : RemasterFrameAssetMetadata{}, frame.tileInstances[i]);
+		effective[i] = S9xRemasterResolveFrameGeometry(found != byTile.end() ? *found->second : RemasterFrameAssetMetadata{}, frame, i);
 		byInstance[i] = &effective[i];
 	}
 	int minimum = INT_MAX, maximum = INT_MIN;
@@ -4775,6 +4889,16 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			for (float v : e.normal) { if (!std::isfinite(v)) return false; RemasterFrameSerialization::Float(bytes,v); }
 			for (auto v : e.emission) RemasterFrameSerialization::U8(bytes,v);
 			RemasterFrameSerialization::U8(bytes,e.omnidirectional ? 1 : 0);
+		}
+	}
+	if (!frame.contextLocations.empty()) {
+		RemasterFrameSerialization::U32(bytes,0x314c5443u);
+		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(frame.contextLocations.size()));
+		for(const auto &entry:frame.contextLocations) {
+			if(!entry.first || entry.first>frame.tileInstances.size() || entry.second.area>321 || entry.second.background>1)return false;
+			RemasterFrameSerialization::U32(bytes,entry.first);RemasterFrameSerialization::U16(bytes,entry.second.area);
+			RemasterFrameSerialization::U8(bytes,entry.second.background);
+			RemasterFrameSerialization::U16(bytes,entry.second.x);RemasterFrameSerialization::U16(bytes,entry.second.y);
 		}
 	}
 	return true;

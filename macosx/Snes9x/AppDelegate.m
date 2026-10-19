@@ -47,10 +47,15 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	restoreItem.target = self;
 	[fileMenu insertItem:restoreItem atIndex:MIN(1, fileMenu.numberOfItems)];
 	NSMenuItem *viewMenuItem = [NSApp.mainMenu itemWithTitle:NSLocalizedString(@"View", nil)];
-	NSMenuItem *muteItem = [[NSMenuItem alloc] initWithTitle:@"Mute Audio"
+	NSMenuItem *audioMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Audio", nil)
+		action:nil keyEquivalent:@""];
+	audioMenuItem.submenu = [[NSMenu alloc] initWithTitle:audioMenuItem.title];
+	[NSApp.mainMenu insertItem:audioMenuItem atIndex:[NSApp.mainMenu indexOfItem:viewMenuItem] + 1];
+	NSMenuItem *muteItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Toggle Mute Audio", nil)
 		action:@selector(toggleAudioMute:) keyEquivalent:@""];
 	muteItem.target = self;
-	[viewMenuItem.submenu addItem:muteItem];
+	muteItem.state = [self.s9xEngine isAudioMuted] ? NSOnState : NSOffState;
+	[audioMenuItem.submenu addItem:muteItem];
 	NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Debug: Original", nil)
 	                                                   action:@selector(cycleRemasterDebugMode:)
 	                                            keyEquivalent:@"k"];
@@ -660,7 +665,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(openPreviousGameAndWindows:))
 		return [NSUserDefaults.standardUserDefaults dictionaryForKey:@"S9xPreviousWorkspace"] != nil;
 	if (action == @selector(toggleAudioMute:)) {
-		menuItem.title = [self.s9xEngine isAudioMuted] ? @"Unmute Audio" : @"Mute Audio";
+		menuItem.state = [self.s9xEngine isAudioMuted] ? NSOnState : NSOffState;
 		return YES;
 	}
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {

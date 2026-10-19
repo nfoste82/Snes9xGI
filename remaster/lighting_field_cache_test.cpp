@@ -20,23 +20,27 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 		if(!p.instanceId || p.instanceId>f.tileInstances.size() || p.tilePixel>=64)continue;
 		const auto &in=f.tileInstances[p.instanceId-1];
 		const auto *original=S9xRemasterFrameMetadataForTile(f,in.tileId);
-		const auto resolved=original?S9xRemasterResolveInstanceGeometry(*original,in):RemasterFrameAssetMetadata{};
-		const auto *m=original?&resolved:nullptr;
+		const auto resolved=S9xRemasterResolveInstanceGeometry(original?*original:RemasterFrameAssetMetadata{},in);
+		const auto *m=&resolved;
 		const RemasterFrameMaterial *mat=nullptr;
 		std::string name=in.material;
 		if(m && m->hasMaterialSelectors && !m->materialSelectors[p.tilePixel].empty())name=m->materialSelectors[p.tilePixel];
 		for(const auto &candidate:f.materials)if(candidate.name==name){mat=&candidate;break;}
-		RemasterSurfaceMesh::classify(r.samples[i],in.source,in.sourceIndex,mat?mat->surfaceClass:RemasterSurfaceClass::Unclassified,in.assetGroup,p.instanceId);
+		RemasterSurfaceMesh::classify(r.samples[i],in.source,in.sourceIndex,mat?mat->surfaceClass:RemasterSurfaceClass::Unclassified,in.assetGroup,p.instanceId,m->tileRole,in.geometryStatus!=RemasterOccurrenceGeometryStatus::Inherit);
 		r.samples[i].wallBase=in.heightOffset/255.0f*f.lightingCoordinateScale;
 		r.depths[i]=m?m->emissionDepth:0;r.omnidirectional[i]=m && m->emissionOmnidirectional?1:0;
 		if(mat && mat->surfaceClass==RemasterSurfaceClass::UserInterface)r.participation[i*2]=r.participation[i*2+1]=0;
 		else if(mat && !mat->receivesGi)r.participation[i*2+1]=0;
 		if(mat && mat->hasDiffuseReflectance){std::copy(mat->diffuseReflectance.begin(),mat->diffuseReflectance.end(),r.reflectance.begin()+i*4);r.reflectance[i*4+3]=1;}
-		r.occlusion[i*2]=m && m->hasOcclusion?m->occlusion[p.tilePixel]:255;r.occlusion[i*2+1]=255;
+		const bool unresolved=S9xRemasterInstanceGeometryUnresolved(in);
+		const bool fallback=!unresolved && in.source==RemasterSourceType::Background && r.participation[i*2]!=0 && !m->hasHeight;
+		if(fallback){r.samples[i].fallbackGround=true;r.samples[i].sheet=true;r.samples[i].solidWall=false;r.samples[i].domain=(uint64_t(3)<<48)|uint32_t(in.heightOffset);}
+		r.occlusion[i*2]=unresolved?0:m->hasOcclusion?m->occlusion[p.tilePixel]:255;r.occlusion[i*2+1]=unresolved?0:255;
 		r.opposite[i]=m && m->directLightingOppositeFacing?255:0;
 		if(m && m->hasEmission)std::copy_n(m->emissionRgba.begin()+p.tilePixel*4,4,r.emission.begin()+i*4);
-		if((m && m->hasHeight)||in.hasPlacementHeight||in.heightOffset){const auto local=in.hasPlacementHeight?in.placementHeight[p.tilePixel]:m && m->hasHeight?m->height[p.tilePixel]:0;r.height[i*2]=S9xRemasterSignedHeightField(in.heightOffset,local);r.height[i*2+1]=1;}
+		if(!unresolved && (m->hasHeight||in.heightOffset||fallback)){const auto local=m->hasHeight?m->height[p.tilePixel]:0;r.height[i*2]=S9xRemasterSignedHeightField(in.heightOffset,local);r.height[i*2+1]=1;}
 		r.surface[i*4]=r.height[i*2]*f.lightingCoordinateScale;
+		if(fallback)r.surface[i*4+3]=1;
 		if(m && m->hasNormals){r.authoredNormals[i]=1;float x=m->normalXyz[p.tilePixel*3]/127.5f-1,y=m->normalXyz[p.tilePixel*3+1]/127.5f-1,z=m->normalXyz[p.tilePixel*3+2]/127.5f-1;
 			if(S9xRemasterContinuedDiagonalNormalMask(in,m)&(UINT64_C(1)<<p.tilePixel))x=y=z=1;
 			S9xRemasterTransformNormalForTileInstance(in,x,y,z,m->normalIgnoreTileTransform);float length=std::sqrt(x*x+y*y+z*z);
@@ -50,7 +54,7 @@ static void compare(const RemasterLightingFieldCache &a,const RemasterLightingFi
 	assert(a.occlusion==b.occlusion && a.emission==b.emission && a.height==b.height && a.participation==b.participation);
 	assert(a.opposite==b.opposite && a.authoredNormals==b.authoredNormals && a.surface==b.surface && a.reflectance==b.reflectance);
 	assert(a.depths==b.depths && a.omnidirectional==b.omnidirectional && a.samples.size()==b.samples.size());
-	for(size_t i=0;i<a.samples.size();i++){const auto &x=a.samples[i],&y=b.samples[i];assert(x.height==y.height && x.coverage==y.coverage && x.known==y.known && x.sheet==y.sheet && x.domain==y.domain && x.solidWall==y.solidWall && x.wallBase==y.wallBase);}
+	for(size_t i=0;i<a.samples.size();i++){const auto &x=a.samples[i],&y=b.samples[i];assert(x.height==y.height && x.coverage==y.coverage && x.known==y.known && x.sheet==y.sheet && x.domain==y.domain && x.solidWall==y.solidWall && x.wallBase==y.wallBase && x.fallbackGround==y.fallbackGround);}
 }
 int main(int argc,char **argv)
 {

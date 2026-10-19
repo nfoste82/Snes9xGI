@@ -751,6 +751,7 @@ static bool			remasterNonSceneDirty = false;
 @public
 	std::map<RemasterTileContentId, RemasterAssetMetadata> values;
 	std::set<RemasterTileContentId> missing;
+	std::map<RemasterTileContentId, std::map<std::string, RemasterTileContext>> contexts;
 	uint32_t schemaVersion;
 }
 @end
@@ -791,6 +792,8 @@ static S9xRemasterAssetUndoSnapshot *CaptureRemasterAssetSnapshot (
 	snapshot->schemaVersion = remasterEditingProfile.schemaVersion;
 	for (const RemasterTileContentId &tileId : tileIds)
 	{
+		const auto contexts = remasterEditingProfile.tileContexts.find(tileId);
+		if (contexts != remasterEditingProfile.tileContexts.end()) snapshot->contexts.emplace(tileId, contexts->second);
 		const auto found = remasterEditingProfile.assets.find(tileId);
 		if (found == remasterEditingProfile.assets.end())
 			snapshot->missing.insert(tileId);
@@ -818,6 +821,22 @@ static NSInteger remasterClipboardLayer = -1;
 static bool remasterClipboardHasData = false;
 static NSString *remasterClipboardToken;
 static unsigned remasterClipboardGeometryFacing = 0;
+static std::string remasterTileContextName;
+static NSTextField *remasterTileContextInput;
+static NSPopUpButton *remasterContextSelectionMode;
+static NSButton *remasterAssignContextButton;
+static bool remasterSelectLocations = false;
+static std::set<uint32_t> remasterSelectedContextInstances;
+static NSButton *remasterRemoveContextButton, *remasterPreviousContextButton, *remasterNextContextButton, *remasterAddContextButton;
+
+static RemasterTileContext *RemasterSelectedContext(const RemasterTileContentId &tile)
+{
+	if (remasterTileContextName.empty()) return nullptr;
+	auto found = remasterEditingProfile.tileContexts.find(tile);
+	if (found == remasterEditingProfile.tileContexts.end()) return nullptr;
+	auto context = found->second.find(remasterTileContextName);
+	return context == found->second.end() ? nullptr : &context->second;
+}
 
 #include "../remaster/layer_editor.h"
 
@@ -829,16 +848,23 @@ static bool RemasterEffectiveHeightPreview ()
 
 static RemasterGeometryLayers &RemasterEditingGeometry(RemasterAssetMetadata &asset)
 {
+	const auto stored = remasterEditingProfile.assets.find(asset.tileId);
+	if (stored != remasterEditingProfile.assets.end() && &stored->second == &asset)
+		if (auto *context = RemasterSelectedContext(asset.tileId)) return *context;
 	return S9xRemasterFlipGeometryForEditing(asset, remasterGeometryFacing);
 }
 
 static const RemasterGeometryLayers &RemasterEditingGeometry(const RemasterAssetMetadata &asset)
 {
+	const auto stored = remasterEditingProfile.assets.find(asset.tileId);
+	if (stored != remasterEditingProfile.assets.end() && &stored->second == &asset)
+		if (auto *context = RemasterSelectedContext(asset.tileId)) return *context;
 	return S9xRemasterFlipGeometryForEditing(asset, remasterGeometryFacing);
 }
 
 static unsigned RemasterInspectorPreviewFlip()
 {
+	if (RemasterSelectedContext(remasterSelectedTile)) return 0;
 	const auto found = remasterEditingProfile.assets.find(remasterSelectedTile);
 	return found != remasterEditingProfile.assets.end() && found->second.geometryByFlip &&
 		remasterGeometryFacing >= 1 && remasterGeometryFacing <= 4 ? remasterGeometryFacing - 1 : 0;
@@ -847,6 +873,10 @@ static unsigned RemasterInspectorPreviewFlip()
 static const std::array<int16_t, 64> *RemasterAuthoredHeight (const RemasterTileContentId &tile,
 	RemasterHeightSampling &sampling)
 {
+	if (auto *context = RemasterSelectedContext(tile)) {
+		sampling = context->heightSampling;
+		return context->hasHeight ? &context->height : nullptr;
+	}
 	const auto found = remasterEditingProfile.assets.find(tile);
 	if (remasterEditingProfileLoaded && found != remasterEditingProfile.assets.end() && found->second.geometryByFlip)
 	{
@@ -891,6 +921,10 @@ static void DecodeRemasterNormal (const uint8_t *encoded, float &x, float &y, fl
 
 static std::array<uint8_t, 3> EffectiveRemasterNormal (const RemasterTileContentId &tileId, size_t pixel)
 {
+	if (auto *context = RemasterSelectedContext(tileId)) {
+		const size_t p = pixel * 3;
+		return context->hasNormals ? std::array<uint8_t,3>{{context->normalXyz[p], context->normalXyz[p+1], context->normalXyz[p+2]}} : std::array<uint8_t,3>{{128,128,255}};
+	}
 	auto editable = remasterEditingProfile.assets.find(tileId);
 	if (editable != remasterEditingProfile.assets.end() && RemasterEditingGeometry(editable->second).hasNormals)
 	{
@@ -910,6 +944,7 @@ static std::array<uint8_t, 3> EffectiveRemasterNormal (const RemasterTileContent
 
 static bool EffectiveRemasterOppositeFacing (const RemasterTileContentId &tileId)
 {
+	if (auto *context = RemasterSelectedContext(tileId)) return context->directLightingOppositeFacing;
 	auto editable = remasterEditingProfile.assets.find(tileId);
 	if (editable != remasterEditingProfile.assets.end())
 		return editable->second.directLightingOppositeFacing;
@@ -1008,6 +1043,13 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	metadata.tileSemanticCorner = source.tileSemanticCorner;
 	metadata.tileSemanticContextDependent = source.tileSemanticContextDependent;
 	metadata.tileSemanticNote = source.tileSemanticNote;
+	if (auto *context = RemasterSelectedContext(tileId)) {
+		static_cast<RemasterGeometryLayers &>(metadata) = *context;
+		metadata.geometryByFacing = metadata.geometryByFlip = false;
+		metadata.facingGeometry = {}; metadata.flipGeometry = {};
+		metadata.normalIgnoreTileTransform = context->normalIgnoreTileTransform;
+		metadata.directLightingOppositeFacing = context->directLightingOppositeFacing;
+	}
 	return metadata;
 }
 
@@ -1075,13 +1117,18 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	}
 	else if (layer == RemasterEditorHeight)
 	{
-		auto &d = RemasterEditingGeometry(destination); const auto &s = RemasterEditingGeometry(source);
+		auto &d = RemasterEditingGeometry(destination); const auto &s = S9xRemasterFlipGeometryForEditing(source, remasterGeometryFacing);
 		d.height = s.height; d.hasHeight = s.hasHeight; d.heightSampling = s.heightSampling;
 	}
 	else if (layer == RemasterEditorNormal)
 	{
-		auto &d = RemasterEditingGeometry(destination); const auto &s = RemasterEditingGeometry(source);
+		auto &d = RemasterEditingGeometry(destination); const auto &s = S9xRemasterFlipGeometryForEditing(source, remasterGeometryFacing);
 		d.normalXyz = s.normalXyz; d.hasNormals = s.hasNormals;
+		if (auto *context = RemasterSelectedContext(destination.tileId)) {
+			context->directLightingOppositeFacing = source.directLightingOppositeFacing;
+			context->normalIgnoreTileTransform = source.normalIgnoreTileTransform;
+			return;
+		}
 		destination.directLightingOppositeFacing = source.directLightingOppositeFacing;
 		destination.normalIgnoreTileTransform = source.normalIgnoreTileTransform;
 	}
@@ -1145,7 +1192,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::Normal: return @"Normals";
 	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
 	case RemasterLightingView::Emission: return @"Emission";
-	case RemasterLightingView::Mesh: return @"Mesh (cyan sheets, amber shells, pink walls)";
+	case RemasterLightingView::Mesh: return @"Mesh (green fallback, cyan sheets, amber shells, pink walls)";
 	case RemasterLightingView::Composite:
 	default: return @"Composite";
 	}
@@ -1265,6 +1312,21 @@ static bool SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterR
 	if (&frame == &remasterReplayFrame && !remasterMetadataNeedsSync)
 		return false;
 	S9xRemasterApplyProfileToFrame(remasterEditingProfile, frame);
+	// Global editor preview only; no persistent runtime placement binding.
+	if (!remasterTileContextName.empty() && !remasterSelectLocations) {
+		auto preview = remasterEditingProfile;
+		for (const auto &entry : preview.tileContexts) {
+			auto c = entry.second.find(remasterTileContextName);
+			if (c == entry.second.end()) continue;
+			auto &asset = preview.assets[entry.first]; asset.tileId = entry.first;
+			static_cast<RemasterGeometryLayers &>(asset) = c->second;
+			asset.geometryByFlip = asset.geometryByFacing = false;
+			asset.flipGeometry = {}; asset.facingGeometry = {};
+			asset.normalIgnoreTileTransform = c->second.normalIgnoreTileTransform;
+			asset.directLightingOppositeFacing = c->second.directLightingOppositeFacing;
+		}
+		S9xRemasterApplyProfileToFrame(preview, frame);
+	}
 	if (&frame == &remasterReplayFrame)
 		remasterMetadataNeedsSync = false;
 	return true;
@@ -4721,6 +4783,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterObstacleSelection.clear();
 	remasterVariants.clear();
 	remasterReplayFrame = RemasterFrame();
+	remasterSelectedContextInstances.clear();
 	[remasterInspectorPanel orderOut:nil];
 	SetLiveRemasterPresentation(remasterLightingEnabled && remasterEditingProfileLoaded, remasterLightingView);
 	pauseEmulation = false;
@@ -5511,7 +5574,32 @@ void QuitWithFatalError ( NSString *message)
 		else if (extendingSelection) remasterObstacleSelection.erase(selected);
 	}
 
-	if (selectingObstacle)
+	if (remasterSelectLocations && !remasterNpcPicking)
+	{
+		for(auto selected=remasterSelectedContextInstances.begin();selected!=remasterSelectedContextInstances.end();)
+			if(*selected>remasterReplayFrame.tileInstances.size() || !remasterReplayFrame.contextLocations.count(*selected))selected=remasterSelectedContextInstances.erase(selected);else ++selected;
+		if (!extendingSelection) remasterSelectedContextInstances.clear();
+		if (instance && remasterReplayFrame.contextLocations.count(remasterHeightInstanceId)) {
+			if (extendingSelection && remasterSelectedContextInstances.count(remasterHeightInstanceId)) remasterSelectedContextInstances.erase(remasterHeightInstanceId);
+			else remasterSelectedContextInstances.insert(remasterHeightInstanceId);
+		}
+		remasterSelectedTiles.clear();
+		for (auto id:remasterSelectedContextInstances) {
+			const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
+			if(std::find(remasterSelectedTiles.begin(),remasterSelectedTiles.end(),tile)==remasterSelectedTiles.end())remasterSelectedTiles.push_back(tile);
+		}
+		remasterReplayFrame.selectedContextInstances=remasterSelectedContextInstances;
+		remasterReplayFrame.contextLocationSelection=true;
+		remasterTileContextName.clear();
+		if(instance) {
+			auto location=remasterReplayFrame.contextLocations.find(remasterHeightInstanceId);
+			if(location!=remasterReplayFrame.contextLocations.end()) {
+				auto binding=remasterEditingProfile.contextBindings.find(location->second);
+				if(binding!=remasterEditingProfile.contextBindings.end() && binding->second.tile==instance->tileId)remasterTileContextName=binding->second.name;
+			}
+		}
+	}
+	else if (selectingObstacle)
 	{
 		remasterSelectedTiles.clear();
 		for (const auto &cell : remasterObstacleSelection)
@@ -5558,13 +5646,41 @@ void QuitWithFatalError ( NSString *message)
 
 	if (!remasterInspectorPanel)
 	{
-		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 560)
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 602)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
 		remasterInspectorPanel.releasedWhenClosed = NO;
 		remasterInspectorPanel.hidesOnDeactivate = YES;
 		NSView *contentView = remasterInspectorPanel.contentView;
+		NSTextField *contextLabel = [NSTextField labelWithString:@"Context:"];
+		contextLabel.frame = NSMakeRect(20, 570, 62, 22);
+		[contentView addSubview:contextLabel];
+		remasterTileContextInput = [[NSTextField alloc] initWithFrame:NSMakeRect(85, 568, 250, 24)];
+		remasterTileContextInput.target = self;
+		remasterTileContextInput.action = @selector(renameRemasterTileContext:);
+		remasterTileContextInput.toolTip = @"Enter a name to add a context when None is selected, or rename the current context for all selected tile types. None is reserved.";
+		[contentView addSubview:remasterTileContextInput];
+		NSArray *contextTitles = @[@"Add Context", @"Remove Context", @"◀", @"▶"];
+		SEL contextActions[] = {@selector(addRemasterTileContext:), @selector(removeRemasterTileContext:), @selector(previousRemasterTileContext:), @selector(nextRemasterTileContext:)};
+		NSButton * __strong *contextButtons[] = {&remasterAddContextButton, &remasterRemoveContextButton, &remasterPreviousContextButton, &remasterNextContextButton};
+		CGFloat contextX[] = {343, 457, 587, 624};
+		CGFloat contextW[] = {110, 126, 34, 34};
+		for (NSUInteger i=0;i<4;i++) {
+			NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(contextX[i], 566, contextW[i], 28)];
+			button.title = contextTitles[i]; button.bezelStyle = NSBezelStyleRounded;
+			button.target = self; button.action = contextActions[i];
+			*contextButtons[i] = button; [contentView addSubview:button];
+		}
+		remasterContextSelectionMode=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(20,606,180,26) pullsDown:NO];
+		[remasterContextSelectionMode addItemsWithTitles:@[@"Select Tile Types", @"Select Tile Locations"]];
+		remasterContextSelectionMode.target=self;remasterContextSelectionMode.action=@selector(changeRemasterContextSelection:);
+		[contentView addSubview:remasterContextSelectionMode];
+		remasterAssignContextButton=[[NSButton alloc] initWithFrame:NSMakeRect(210,604,170,28)];
+		remasterAssignContextButton.title=@"Assign Context";remasterAssignContextButton.bezelStyle=NSBezelStyleRounded;
+		remasterAssignContextButton.target=self;remasterAssignContextButton.action=@selector(assignRemasterLocationContext:);
+		remasterAssignContextButton.toolTip=@"Bind the previewed context to selected world/room locations. None clears bindings. Command-click to select multiple locations.";
+		[contentView addSubview:remasterAssignContextButton];
 		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 405, 128, 128)];
 		tilePreview.editor = self;
 		remasterTilePreview = tilePreview;
@@ -6030,7 +6146,7 @@ void QuitWithFatalError ( NSString *message)
 			else
 				remasterFlipLayerVerticalButton = button;
 		}
-		remasterFlipLayerHorizontalButton.toolTip = remasterFlipLayerVerticalButton.toolTip = @"Mirror the current 8×8 layer on each selected tile. Normal vectors and emission channels retain their values; only pixel positions move. Supports Undo.";
+		remasterFlipLayerHorizontalButton.toolTip = remasterFlipLayerVerticalButton.toolTip = @"Mirror the current 8×8 layer on each selected tile. Normals also reflect their X direction horizontally or Y direction vertically. Emission channels retain their values. Supports Undo.";
 		remasterApplyTileToVariantsButton = [[NSButton alloc] initWithFrame:NSMakeRect(360, 232, 264, 28)];
 		remasterApplyTileToVariantsButton.title = @"Apply Frame to Other Frames";
 		remasterApplyTileToVariantsButton.font = [NSFont systemFontOfSize:10];
@@ -6065,6 +6181,10 @@ void QuitWithFatalError ( NSString *message)
 		[contentView addSubview:scrollView];
 		remasterInspectorPanel.delegate = self;
 		S9xInitializeWindowPlacement(remasterInspectorPanel, @"RemasterInspector");
+		// Placement restoration includes the old window size. Keep its location,
+		// but migrate the fixed-size inspector so the new header is not clipped.
+		[remasterInspectorPanel setContentSize:NSMakeSize(760, 646)];
+		remasterInspectorPanel.contentMinSize = NSMakeSize(760, 646);
 		[self refreshRemasterEditingControls];
 	}
 
@@ -6731,6 +6851,16 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resetRemasterLayer:(id)sender
 {
+	if (!remasterTileContextName.empty() && (remasterLayerSelector.indexOfSelectedItem == RemasterEditorHeight || remasterLayerSelector.indexOfSelectedItem == RemasterEditorNormal)) {
+		std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+		if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+		for (const auto &tile : remasterSelectedTiles) if (auto *c = RemasterSelectedContext(tile)) {
+			if (remasterLayerSelector.indexOfSelectedItem == RemasterEditorHeight) { c->hasHeight = false; c->height = {}; c->heightSampling = RemasterHeightSampling::Nearest; }
+			else { c->hasNormals = false; c->normalXyz = {}; }
+		}
+		[self finishRemasterContextEdit:@(before.c_str()) action:@"Reset Context Layer"];
+		return;
+	}
 	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty())
 		return;
@@ -6853,6 +6983,13 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resetRemasterTile:(id)sender
 {
+	if (!remasterTileContextName.empty()) {
+		std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+		if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+		for (const auto &tile : remasterSelectedTiles) if (auto *c = RemasterSelectedContext(tile)) *c = RemasterTileContext{};
+		[self finishRemasterContextEdit:@(before.c_str()) action:@"Reset Tile Context"];
+		return;
+	}
 	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() ||
 		!remasterEditingProfile.assets.count(remasterSelectedTile))
@@ -6946,6 +7083,142 @@ void QuitWithFatalError ( NSString *message)
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)finishRemasterContextEdit:(NSString *)before action:(NSString *)action
+{
+	std::string current; std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics)) return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:) object:before];
+	[remasterUndoManager setActionName:action];
+	UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)changeRemasterContextSelection:(id)sender
+{
+	remasterSelectLocations=remasterContextSelectionMode.indexOfSelectedItem==1;
+	remasterReplayFrame.contextLocationSelection=remasterSelectLocations;
+	remasterSelectedContextInstances.clear();remasterReplayFrame.selectedContextInstances.clear();
+	remasterSelectedTiles.clear();remasterSelectionValid=false;
+	remasterTileContextName.clear();remasterMetadataNeedsSync=true;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)assignRemasterLocationContext:(id)sender
+{
+	if(!remasterSelectLocations || remasterSelectedContextInstances.empty() || !remasterEditingProfileLoaded)return;
+	// Validate every selected location first; single-context identities need no binding.
+	for(auto id:remasterSelectedContextInstances) {
+		if(id>remasterReplayFrame.tileInstances.size() || !remasterReplayFrame.contextLocations.count(id)){NSBeep();return;}
+		const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
+		auto contexts=remasterEditingProfile.tileContexts.find(tile);
+		if(!remasterTileContextName.empty() && (contexts==remasterEditingProfile.tileContexts.end() || !contexts->second.count(remasterTileContextName))){NSBeep();return;}
+	}
+	std::string before;std::vector<RemasterProfileDiagnostic> diagnostics;
+	if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,diagnostics))return;
+	for(auto id:remasterSelectedContextInstances) {
+		const auto &at=remasterReplayFrame.contextLocations.at(id);const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
+		auto contexts=remasterEditingProfile.tileContexts.find(tile);
+		if(remasterTileContextName.empty() || contexts==remasterEditingProfile.tileContexts.end() || contexts->second.size()<2)remasterEditingProfile.contextBindings.erase(at);
+		else remasterEditingProfile.contextBindings[at]={tile,remasterTileContextName};
+	}
+	[self finishRemasterContextEdit:@(before.c_str()) action:@"Assign Location Context"];
+}
+
+- (void)renameRemasterTileContext:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	NSString *input = [remasterTileContextInput.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	const std::string name = input.UTF8String;
+	if (!S9xRemasterValidContextName(name)) { NSBeep(); [self refreshRemasterEditingControls]; return; }
+	if (name == remasterTileContextName) return;
+	// Refuse collisions for the whole selection before making any changes.
+	for (const auto &tile : remasterSelectedTiles) {
+		auto found = remasterEditingProfile.tileContexts.find(tile);
+		if (found != remasterEditingProfile.tileContexts.end() && found->second.count(name)) {
+			NSBeep(); [self refreshRemasterEditingControls]; return;
+		}
+	}
+	std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	for (const auto &tile : remasterSelectedTiles) {
+		const auto existing = EffectiveRemasterMetadata(tile);
+		auto &contexts = remasterEditingProfile.tileContexts[tile];
+		auto old = contexts.find(remasterTileContextName);
+		RemasterTileContext geometry = S9xRemasterNewTileContext(existing, contexts.empty());
+		if (old != contexts.end()) { geometry = old->second; contexts.erase(old); }
+		for(auto &binding:remasterEditingProfile.contextBindings)
+			if(binding.second.tile==tile && binding.second.name==remasterTileContextName)binding.second.name=name;
+		contexts.emplace(name, geometry);
+		// Geometry tools expect an asset identity even when only contexts exist.
+		auto &asset = remasterEditingProfile.assets[tile]; asset.tileId = tile;
+	}
+	remasterTileContextName = name;
+	remasterGeometryFacing = 0;
+	[self finishRemasterContextEdit:@(before.c_str()) action:@"Add/Rename Tile Context"];
+}
+
+- (void)addRemasterTileContext:(id)sender
+{
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	NSAlert *alert = [[NSAlert alloc] init];
+	alert.messageText = @"Add Tile Context";
+	alert.informativeText = @"The first context preserves existing geometry. Additional contexts start empty. None is reserved.";
+	NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+	alert.accessoryView = input;
+	[alert addButtonWithTitle:@"Add"]; [alert addButtonWithTitle:@"Cancel"];
+	[alert.window makeFirstResponder:input];
+	if ([alert runModal] != NSAlertFirstButtonReturn) return;
+	const auto previous = remasterTileContextName;
+	remasterTileContextName.clear(); remasterTileContextInput.stringValue = input.stringValue;
+	[self renameRemasterTileContext:sender];
+	if (remasterTileContextName.empty()) remasterTileContextName = previous;
+	[self refreshRemasterEditingControls];
+}
+
+- (void)removeRemasterTileContext:(id)sender
+{
+	if (remasterTileContextName.empty() || !remasterEditingProfileLoaded) return;
+	std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	for (const auto &tile : remasterSelectedTiles) {
+		auto found = remasterEditingProfile.tileContexts.find(tile);
+		if (found == remasterEditingProfile.tileContexts.end()) continue;
+		found->second.erase(remasterTileContextName);
+		for(auto b=remasterEditingProfile.contextBindings.begin();b!=remasterEditingProfile.contextBindings.end();) {
+			if(b->second.tile==tile && (b->second.name==remasterTileContextName || found->second.size()<2))b=remasterEditingProfile.contextBindings.erase(b);else ++b;
+		}
+		if (found->second.empty()) remasterEditingProfile.tileContexts.erase(found);
+		auto asset = remasterEditingProfile.assets.find(tile);
+		if (asset != remasterEditingProfile.assets.end() && !RemasterMetadataHasData(asset->second)) remasterEditingProfile.assets.erase(asset);
+	}
+	remasterTileContextName.clear();
+	[self finishRemasterContextEdit:@(before.c_str()) action:@"Remove Tile Context"];
+}
+
+- (void)cycleRemasterTileContext:(NSInteger)direction
+{
+	std::vector<std::string> names = {""};
+	auto found = remasterEditingProfile.tileContexts.find(remasterSelectedTile);
+	if (found != remasterEditingProfile.tileContexts.end()) for (const auto &c : found->second) names.push_back(c.first);
+	auto current = std::find(names.begin(), names.end(), remasterTileContextName);
+	NSInteger index = current == names.end() ? 0 : current - names.begin();
+	remasterTileContextName = names[(index + direction + names.size()) % names.size()];
+	if (remasterSelectLocations) {
+		// Keep the tile-type authoring scope even when this context has no visible
+		// assignments, so further cycling remains available. Only locations change.
+		remasterSelectedContextInstances = S9xRemasterContextSelection(remasterEditingProfile,
+			remasterReplayFrame, remasterSelectedTiles, remasterTileContextName);
+		remasterReplayFrame.contextLocationSelection = true;
+		remasterReplayFrame.selectedContextInstances = remasterSelectedContextInstances;
+	}
+	remasterGeometryFacing = 0;
+	remasterMetadataNeedsSync = true;
+	remasterTilePixelSelected = false;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+- (void)previousRemasterTileContext:(id)sender { [self cycleRemasterTileContext:-1]; }
+- (void)nextRemasterTileContext:(id)sender { [self cycleRemasterTileContext:1]; }
+
 - (void)flipRemasterLayerHorizontal:(id)sender
 {
 	[self flipRemasterLayer:YES];
@@ -6966,11 +7239,12 @@ void QuitWithFatalError ( NSString *message)
 	for (const auto &tileId : remasterSelectedTiles)
 	{
 		auto mirrored = EffectiveRemasterMetadata(tileId);
+		if (!remasterTileContextName.empty() && !RemasterSelectedContext(tileId)) continue;
 		if (S9xRemasterHasGeometryVariants(mirrored) && (layer == RemasterEditorHeight || layer == RemasterEditorNormal))
 		{
 			auto &g = RemasterEditingGeometry(mirrored);
 			if (layer == RemasterEditorHeight) { if (!g.hasHeight) continue; S9xRemasterFlipLayerPixels(g.height, horizontal); }
-			else { if (!g.hasNormals) continue; S9xRemasterFlipLayerPixels(g.normalXyz, horizontal); }
+			else { if (!g.hasNormals) continue; S9xRemasterFlipNormalLayer(g.normalXyz, horizontal); }
 			auto &destination = remasterEditingProfile.assets[tileId]; destination.tileId = tileId;
 			CopyRemasterMetadataLayer(mirrored, destination, layer);
 			continue;
@@ -7000,6 +7274,14 @@ void QuitWithFatalError ( NSString *message)
 	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
 	for (const RemasterTileContentId &tileId : remasterSelectedTiles)
 	{
+		if (!remasterTileContextName.empty()) {
+			if (auto *context = RemasterSelectedContext(tileId)) {
+				static_cast<RemasterGeometryLayers &>(*context) = static_cast<const RemasterGeometryLayers &>(remasterClipboardMetadata);
+				context->normalIgnoreTileTransform = remasterClipboardMetadata.normalIgnoreTileTransform;
+				context->directLightingOppositeFacing = remasterClipboardMetadata.directLightingOppositeFacing;
+			}
+			continue;
+		}
 		if (RemasterMetadataHasData(remasterClipboardMetadata))
 		{
 			RemasterAssetMetadata destination = remasterClipboardMetadata;
@@ -7370,8 +7652,18 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)refreshRemasterEditingControls
 {
+	const auto contexts = remasterEditingProfile.tileContexts.find(remasterSelectedTile);
+	if (!remasterTileContextName.empty() && !RemasterSelectedContext(remasterSelectedTile)) remasterTileContextName.clear();
+	const bool contextEditable = remasterEditingProfileLoaded && !remasterSelectedTiles.empty();
+	remasterAssignContextButton.enabled=contextEditable && remasterSelectLocations && !remasterSelectedContextInstances.empty();
+	remasterTileContextInput.stringValue = remasterTileContextName.empty() ? @"None" : @(remasterTileContextName.c_str());
+	remasterTileContextInput.enabled = contextEditable;
+	remasterRemoveContextButton.enabled = contextEditable && !remasterTileContextName.empty();
+	remasterAddContextButton.enabled = contextEditable;
+	remasterPreviousContextButton.enabled = remasterNextContextButton.enabled = contextEditable && contexts != remasterEditingProfile.tileContexts.end() && !contexts->second.empty();
 	const NSInteger layer = remasterLayerSelector ? remasterLayerSelector.indexOfSelectedItem : 0;
-	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview();
+	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview() &&
+		(remasterTileContextName.empty() || std::all_of(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), [](const auto &tile) { return RemasterSelectedContext(tile) != nullptr; }));
 	remasterHeightDomainSelector.hidden = remasterHeightOccurrenceSelector.hidden = remasterHeightReport.hidden = layer != RemasterEditorHeight;
 	remasterHeightOccurrenceSelector.enabled = !remasterHeightOccurrences.empty();
 	remasterHeightDomainSelector.enabled = !remasterNpcInspectorActive;
@@ -7540,11 +7832,11 @@ void QuitWithFatalError ( NSString *message)
 		NSMakeRect(460, 530, 270, 28) : NSMakeRect(540, 500, 200, 28);
 	remasterGeometryByFacingButton.hidden = !geometryLayer;
 	remasterGeometryFacingSelector.hidden = !geometryLayer;
-	remasterGeometryByFacingButton.enabled = editable;
+	remasterGeometryByFacingButton.enabled = editable && remasterTileContextName.empty();
 	const auto geometryAsset = remasterEditingProfile.assets.find(remasterSelectedTile);
 	const bool byFacing = geometryAsset != remasterEditingProfile.assets.end() && geometryAsset->second.geometryByFlip;
 	remasterGeometryByFacingButton.state = byFacing ? NSControlStateValueOn : NSControlStateValueOff;
-	remasterGeometryFacingSelector.enabled = editable && byFacing;
+	remasterGeometryFacingSelector.enabled = editable && byFacing && remasterTileContextName.empty();
 	[remasterGeometryFacingSelector selectItemAtIndex:remasterGeometryFacing];
 	if (byFacing) { remasterHeightApplyAnimationButton.enabled = NO; remasterNormalApplyAnimationButton.enabled = NO; }
 	if (geometryAsset != remasterEditingProfile.assets.end() && geometryAsset->second.geometryByFacing)
@@ -7582,6 +7874,10 @@ void QuitWithFatalError ( NSString *message)
 	remasterPasteTileButton.enabled = editable && RemasterClipboardAvailable(-1);
 	remasterApplyTileToVariantsButton.enabled = editable && remasterVariants.size() > 1 &&
 		RemasterMetadataHasData(EffectiveRemasterMetadata(remasterSelectedTile));
+	if (!remasterTileContextName.empty()) {
+		remasterHeightApplyAnimationButton.enabled = remasterNormalApplyAnimationButton.enabled = NO;
+		remasterApplyTileToVariantsButton.enabled = NO;
+	}
 	if (layer == RemasterEditorHeight)
 	{
 		RemasterHeightSampling sampling;
@@ -7905,7 +8201,7 @@ void QuitWithFatalError ( NSString *message)
 			auto &g = RemasterEditingGeometry(target);
 			const RemasterFrameAssetMetadata *targetCaptured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, tileId);
 			const bool hadLayer = g.hasNormals;
-			if (!hadLayer && !S9xRemasterHasGeometryVariants(target) && targetCaptured && targetCaptured->hasNormals)
+			if (!hadLayer && remasterTileContextName.empty() && !S9xRemasterHasGeometryVariants(target) && targetCaptured && targetCaptured->hasNormals)
 				g.normalXyz = targetCaptured->normalXyz;
 			else if (!hadLayer) for (unsigned p = 0; p < 64; p++) { g.normalXyz[p*3] = g.normalXyz[p*3+1] = 128; g.normalXyz[p*3+2] = 255; }
 			g.hasNormals = true;
@@ -7982,6 +8278,15 @@ void QuitWithFatalError ( NSString *message)
 		remasterEditingProfile.assets.erase(tileId);
 	for (const auto &entry : snapshot->values)
 		remasterEditingProfile.assets[entry.first] = entry.second;
+	for (const auto &tile : touched) {
+		auto context = snapshot->contexts.find(tile);
+		if (context == snapshot->contexts.end()) remasterEditingProfile.tileContexts.erase(tile);
+		else remasterEditingProfile.tileContexts[tile] = context->second;
+	}
+	for(auto b=remasterEditingProfile.contextBindings.begin();b!=remasterEditingProfile.contextBindings.end();) {
+		auto c=remasterEditingProfile.tileContexts.find(b->second.tile);
+		if(c==remasterEditingProfile.tileContexts.end() || c->second.size()<2 || !c->second.count(b->second.name))b=remasterEditingProfile.contextBindings.erase(b);else ++b;
+	}
 	remasterEditingProfile.schemaVersion = snapshot->schemaVersion;
 	std::string current;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
@@ -8225,6 +8530,14 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterNormalIgnoreTransform:(id)sender
 {
+	if (!remasterTileContextName.empty()) {
+		std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+		if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+		for (const auto &tile : remasterSelectedTiles) if (auto *c = RemasterSelectedContext(tile))
+			c->normalIgnoreTileTransform = remasterNormalIgnoreTransformButton.state != NSControlStateValueOff;
+		[self finishRemasterContextEdit:@(before.c_str()) action:@"Change Context Normal Transform"];
+		return;
+	}
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
 	const bool enabled = remasterNormalIgnoreTransformButton.state != NSControlStateValueOff;
 	std::set<RemasterTileContentId> touched;
@@ -8251,6 +8564,14 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterOppositeFacingDirect:(id)sender
 {
+	if (!remasterTileContextName.empty()) {
+		std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+		if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+		for (const auto &tile : remasterSelectedTiles) if (auto *c = RemasterSelectedContext(tile))
+			c->directLightingOppositeFacing = remasterOppositeFacingDirectButton.state != NSControlStateValueOff;
+		[self finishRemasterContextEdit:@(before.c_str()) action:@"Change Context Direct Lighting"];
+		return;
+	}
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty())
 		return;
 	// A displayed mixed value resolves to enabled if AppKit sends it through the action.
@@ -8486,7 +8807,7 @@ void QuitWithFatalError ( NSString *message)
 		const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(remasterReplayFrame, tileId);
 		auto &g = RemasterEditingGeometry(metadata);
 		const bool hadLayer = g.hasNormals;
-		if (!hadLayer && !S9xRemasterHasGeometryVariants(metadata) && captured && captured->hasNormals)
+		if (!hadLayer && remasterTileContextName.empty() && !S9xRemasterHasGeometryVariants(metadata) && captured && captured->hasNormals)
 			g.normalXyz = captured->normalXyz;
 		else if (!hadLayer)
 			for (size_t pixel = 0; pixel < 64; pixel++)

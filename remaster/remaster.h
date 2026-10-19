@@ -2497,7 +2497,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr,
 	const RemasterDungeonFloorContext *dungeonFloor = nullptr,
 	const RemasterHeldLampState *heldLamp = nullptr, const RemasterAreaContext *area = nullptr,
-	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr)
+	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr,
+	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr)
 {
 	RemasterState &state = S9xRemasterState();
 	state.currentArea.store(area ? uint32_t(area->id) | (uint32_t(area->romDark) << 16) : 0xffff);
@@ -2678,6 +2679,12 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		// Restore the stock ownership plane before capture/publication.
 		const bool hasScene = !frame.scenePixels.empty();
 		if (hasScene) frame.mainPixels.swap(frame.scenePixels);
+		if (contextScrollX && contextScrollY) S9xRemasterLocateContextTiles(frame, *contextScrollX, *contextScrollY);
+		for(auto at=frame.contextLocations.begin();at!=frame.contextLocations.end();) {
+			const auto contexts=state.activeProfile.tileContexts.find(frame.tileInstances[at->first-1].tileId);
+			if(contexts==state.activeProfile.tileContexts.end() || contexts->second.size()<2)at=frame.contextLocations.erase(at);else ++at;
+		}
+		S9xRemasterApplyContextBindings(state.activeProfile, frame);
 		RemasterDungeonHeightApplyDiagnostics dungeonHeightDiagnostics;
 		bool runtimeInputsPublishable = false;
 		const RemasterDungeonHeightMap *appliedDungeonHeightMap = nullptr;

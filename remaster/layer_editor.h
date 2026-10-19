@@ -21,6 +21,15 @@ inline void S9xRemasterFlipLayerPixels(std::array<T, N> &values, bool horizontal
 			values[(y * 8 + x) * (N / 64) + c] = before[((horizontal ? y : 7 - y) * 8 + (horizontal ? 7 - x : x)) * (N / 64) + c];
 }
 
+// Reflect both the sample positions and their directions. With byte/127.5 - 1
+// encoding, 255 - component exactly negates the decoded component.
+inline void S9xRemasterFlipNormalLayer(std::array<uint8_t, 192> &values, bool horizontal)
+{
+	S9xRemasterFlipLayerPixels(values, horizontal);
+	for (size_t p = 0; p < 64; p++)
+		values[p * 3 + (horizontal ? 0 : 1)] = 255 - values[p * 3 + (horizontal ? 0 : 1)];
+}
+
 inline bool S9xRemasterFlipMetadataLayer(RemasterAssetMetadata &metadata, int layer, bool horizontal)
 {
 	switch (layer)
@@ -36,7 +45,7 @@ inline bool S9xRemasterFlipMetadataLayer(RemasterAssetMetadata &metadata, int la
 			S9xRemasterFlipLayerPixels(metadata.height, horizontal); break;
 		case RemasterEditorNormal:
 			if (!metadata.hasNormals) return false;
-			S9xRemasterFlipLayerPixels(metadata.normalXyz, horizontal); break;
+			S9xRemasterFlipNormalLayer(metadata.normalXyz, horizontal); break;
 		case RemasterEditorEmission:
 			if (!metadata.hasEmission) return false;
 			S9xRemasterFlipLayerPixels(metadata.emissionRgba, horizontal); break;

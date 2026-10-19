@@ -139,6 +139,52 @@ struct RemasterAssetMetadata : RemasterGeometryLayers
 	std::array<RemasterGeometryLayers, 4> flipGeometry;
 };
 
+// Sparse, profile-only authoring alternatives. No per-asset/frame context payload
+// is allocated or serialized for ordinary tiles. Selection is an editor concern;
+// runtime placement/context resolution is deliberately independent.
+struct RemasterTileContext : RemasterGeometryLayers
+{
+	bool normalIgnoreTileTransform = false;
+	bool directLightingOppositeFacing = false;
+};
+
+struct RemasterContextLocation
+{
+	uint16_t area = 0xffff, x = 0, y = 0;
+	uint8_t background = 0;
+	bool operator<(const RemasterContextLocation &b) const { return std::tie(area, background, x, y) < std::tie(b.area, b.background, b.x, b.y); }
+};
+struct RemasterContextBinding
+{
+	RemasterTileContentId tile;
+	std::string name;
+};
+
+inline bool S9xRemasterValidContextName(const std::string &name)
+{
+	if (name.empty() || name.size() > 128 || name.front() == ' ' || name.back() == ' ') return false;
+	std::string lower;
+	for (unsigned char c : name)
+	{
+		if (c < 32 || c == 127) return false;
+		lower += c >= 'A' && c <= 'Z' ? char(c + 'a' - 'A') : char(c);
+	}
+	return lower != "none";
+}
+
+// Naming a previously context-free tile preserves its existing local geometry.
+// Additional named alternatives start empty; the default asset is never erased.
+inline RemasterTileContext S9xRemasterNewTileContext(const RemasterAssetMetadata &source, bool firstContext)
+{
+	RemasterTileContext context;
+	if (firstContext) {
+		static_cast<RemasterGeometryLayers &>(context) = source;
+		context.normalIgnoreTileTransform = source.normalIgnoreTileTransform;
+		context.directLightingOppositeFacing = source.directLightingOppositeFacing;
+	}
+	return context;
+}
+
 inline unsigned S9xRemasterGeometryFlipIndex(bool hFlip, bool vFlip)
 {
 	return unsigned(hFlip) | (unsigned(vFlip) << 1);
@@ -304,6 +350,8 @@ struct RemasterProfile
 	std::vector<RemasterProfileRule> rules;
 	std::vector<RemasterObstacleGroup> obstacleGroups;
 	std::map<std::string, RemasterDirectionalLight> areaLights;
+	std::map<RemasterTileContentId, std::map<std::string, RemasterTileContext>> tileContexts;
+	std::map<RemasterContextLocation, RemasterContextBinding> contextBindings;
 };
 
 inline RemasterDirectionalLight S9xRemasterAreaLight(const RemasterProfile &profile, RemasterAreaContext area)
@@ -736,7 +784,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area, Context, Binding };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
@@ -753,6 +801,9 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	RemasterObstacleMember *obstacleMember = nullptr;
 	size_t obstacleIndex = 0;
 	std::string areaKey;
+	struct ContextRecord { RemasterTileContentId tile; std::string name; RemasterTileContext geometry; };
+	std::vector<ContextRecord> contexts;
+	std::vector<std::pair<RemasterContextLocation, RemasterContextBinding>> bindings;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
 
@@ -788,7 +839,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			asset = nullptr;
 			rule = nullptr;
 			obstacleMember = nullptr;
-			if (line == "[game]")
+			if (line == "[[context_bindings]]") { section = Section::Binding; bindings.emplace_back(); }
+			else if (line == "[[tile_contexts]]")
+			{
+				section = Section::Context; contexts.emplace_back();
+			}
+			else if (line == "[game]")
 				section = Section::Game;
 			else if (line == "[lighting_space]")
 			{
@@ -868,6 +924,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		std::string key = Trim(line.substr(0, equals));
 		std::string value = Trim(line.substr(equals + 1));
 		std::string keyScope = std::to_string(static_cast<int>(section));
+		if (section == Section::Context) keyScope += ":" + std::to_string(contexts.size());
+		if (section == Section::Binding) keyScope += ":" + std::to_string(bindings.size());
 		if (section == Section::Area) keyScope += ":" + areaKey;
 		if (material)
 			keyScope += ":" + material->name;
@@ -892,6 +950,42 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		bool valid = true;
 		switch (section)
 		{
+		case Section::Binding:
+		{
+			auto &b = bindings.back();
+			if (key == "tile_hash") valid = ParseString(value, stringValue) && ParseTileId(stringValue, b.second.tile);
+			else if (key == "context") valid = ParseString(value, b.second.name) && S9xRemasterValidContextName(b.second.name);
+			else if (key == "area" || key == "x" || key == "y" || key == "background") {
+				valid = ParseUnsigned(value, unsignedValue) && unsignedValue <= (key == "area" ? 321u : key == "background" ? 3u : 8191u);
+				if (valid) { if (key == "area") b.first.area = unsignedValue; else if (key == "x") b.first.x = unsignedValue;
+					else if (key == "y") b.first.y = unsignedValue; else b.first.background = unsignedValue; }
+			} else valid = false;
+			if (!valid) fail(lineNumber, "invalid context binding value");
+			break;
+		}
+		case Section::Context:
+		{
+			auto &c = contexts.back();
+			if (key == "tile_hash") valid = ParseString(value, stringValue) && ParseTileId(stringValue, c.tile);
+			else if (key == "name") valid = ParseString(value, c.name) && S9xRemasterValidContextName(c.name);
+			else if (key == "height") {
+				std::vector<int16_t> values; valid = ParseHeightArray(value, values, parsed.schemaVersion) && values.size() == 64;
+				if (valid) { std::copy(values.begin(), values.end(), c.geometry.height.begin()); c.geometry.hasHeight = true; }
+			}
+			else if (key == "normal_xyz") {
+				std::vector<uint8_t> values; valid = ParseByteArray(value, values) && values.size() == 192;
+				if (valid) { std::copy(values.begin(), values.end(), c.geometry.normalXyz.begin()); c.geometry.hasNormals = true; }
+			}
+			else if (key == "height_sampling") {
+				valid = ParseString(value, stringValue) && (stringValue == "nearest" || stringValue == "linear");
+				if (valid) c.geometry.heightSampling = stringValue == "linear" ? RemasterHeightSampling::Linear : RemasterHeightSampling::Nearest;
+			}
+			else if (key == "normal_ignore_tile_transform") valid = ParseBool(value, c.geometry.normalIgnoreTileTransform);
+			else if (key == "direct_lighting_opposite_facing") valid = ParseBool(value, c.geometry.directLightingOppositeFacing);
+			else valid = false;
+			if (!valid) fail(lineNumber, "invalid tile context key/value '" + key + "'");
+			break;
+		}
 		case Section::Area:
 		{
 			auto &light = parsed.areaLights[areaKey];
@@ -1321,8 +1415,22 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 27)
-		fail(0, "schema_version must be an integer in [1, 27]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 29)
+		fail(0, "schema_version must be an integer in [1, 29]");
+	for (const auto &c : contexts)
+	{
+		if (parsed.schemaVersion < 28) fail(0, "tile contexts require schema_version 28");
+		if (!c.tile.hashVersion || !S9xRemasterValidContextName(c.name)) fail(0, "tile context requires tile_hash and valid name (None is reserved)");
+		if (!c.geometry.hasHeight && c.geometry.heightSampling != RemasterHeightSampling::Nearest) fail(0, "context height_sampling requires height");
+		if (!parsed.tileContexts[c.tile].emplace(c.name, c.geometry).second) fail(0, "duplicate tile context name");
+	}
+	for (const auto &b : bindings) {
+		const auto c = parsed.tileContexts.find(b.second.tile);
+		if (parsed.schemaVersion < 29 || b.first.area > 321 || !b.second.tile.hashVersion ||
+			c == parsed.tileContexts.end() || c->second.size() < 2 || !c->second.count(b.second.name))
+			fail(0, "binding requires schema 29 and a tile with multiple named contexts");
+		else if (!parsed.contextBindings.emplace(b).second) fail(0, "duplicate context location");
+	}
 	if (!parsed.areaLights.empty() && parsed.schemaVersion < 26) fail(0, "area_lights requires schema_version 26");
 	for (const auto &entry : parsed.areaLights)
 		if (!S9xRemasterValidDirectionalLight(entry.second)) fail(0, "invalid directional light: " + entry.first);
@@ -1436,7 +1544,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (!item.hasMaterialSelectors && !item.hasOcclusion && !item.hasHeight && !item.hasNormals && !item.hasEmission && item.emissionDepth == 0 && !item.emissionOmnidirectional && item.combineEmitters.empty() &&
 			!item.directLightingOppositeFacing && !item.normalIgnoreTileTransform && !item.geometryByFacing && !item.geometryByFlip &&
 			std::none_of(item.flipGeometry.begin(), item.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) &&
-			std::none_of(item.facingGeometry.begin(), item.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics)
+			std::none_of(item.facingGeometry.begin(), item.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; }) && item.tileRole == RemasterTileRole::Unknown && !item.hasTileSemantics && !parsed.tileContexts.count(entry.first))
 			fail(0, "asset requires materials, occlusion, height, normal_xyz, emission_rgba, direct_lighting_opposite_facing, or a known tile_role");
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
@@ -1603,7 +1711,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		return wide(entry.second) || std::any_of(entry.second.facingGeometry.begin(), entry.second.facingGeometry.end(), wide) ||
 			std::any_of(entry.second.flipGeometry.begin(), entry.second.flipGeometry.end(), wide);
 	});
-	const uint32_t requiredSchema = std::max<uint32_t>(hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const uint32_t requiredSchema = std::max<uint32_t>(!profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -1773,6 +1881,28 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			for (size_t i = 0; i < peers.size(); i++) output << (i ? ", " : "") << Quote(TileId(peers[i]));
 			output << "]\n";
 		}
+	}
+	for (const auto &tile : profile.tileContexts) for (const auto &entry : tile.second)
+	{
+		const auto &g = entry.second;
+		output << "\n[[tile_contexts]]\ntile_hash = " << Quote(TileId(tile.first)) << "\nname = " << Quote(entry.first) << "\n";
+		if (g.hasHeight) {
+			output << "height = [";
+			for (size_t i=0;i<64;i++) output << (i ? ", " : "") << int(g.height[i]);
+			output << "]\nheight_sampling = " << Quote(g.heightSampling == RemasterHeightSampling::Linear ? "linear" : "nearest") << "\n";
+		}
+		if (g.hasNormals) {
+			output << "normal_xyz = [";
+			for (size_t i=0;i<192;i++) output << (i ? ", " : "") << unsigned(g.normalXyz[i]);
+			output << "]\n";
+		}
+		if (g.normalIgnoreTileTransform) output << "normal_ignore_tile_transform = true\n";
+		if (g.directLightingOppositeFacing) output << "direct_lighting_opposite_facing = true\n";
+	}
+	for (const auto &b : profile.contextBindings) {
+		output << "\n[[context_bindings]]\narea = " << b.first.area << "\nbackground = " << unsigned(b.first.background)
+			<< "\nx = " << b.first.x << "\ny = " << b.first.y << "\ntile_hash = " << Quote(TileId(b.second.tile))
+			<< "\ncontext = " << Quote(b.second.name) << "\n";
 	}
 	for (const RemasterProfileRule &rule : profile.rules)
 	{

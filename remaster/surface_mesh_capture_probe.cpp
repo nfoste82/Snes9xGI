@@ -58,13 +58,13 @@ int main(int argc, char **argv)
 		auto debug = RemasterSurfaceMesh::debugView(frame->width,frame->height,colors.data(),fields.samples,mesh);
 		write(std::string(argv[3])+"-mesh.ppm",frame->width*4,frame->height*4,debug);
 		std::ofstream csv(std::string(argv[3])+"-mesh.csv");
-		csv << "x,y,known,coverage,height,thickness,solidWall,wallBase,nw,ne,se,sw\n";
+		csv << "x,y,known,coverage,height,thickness,solidWall,wallBase,nw,ne,se,sw,fallbackGround\n";
 		for (size_t i = 0; i < mesh.size(); i++)
 		{
 			const auto &s = fields.samples[i]; const auto &m = mesh[i];
 			csv << i%frame->width << ',' << i/frame->width << ',' << s.known << ',' << s.coverage << ',' << s.height << ',' << m.thickness << ',' << m.solidWall << ',' << m.wallBase;
 			for (float z : m.corners) csv << ',' << z;
-			csv << '\n';
+			csv << ',' << s.fallbackGround << '\n';
 		}
 	}
 }

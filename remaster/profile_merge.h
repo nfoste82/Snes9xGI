@@ -38,6 +38,15 @@ namespace RemasterProfileMerge
 				continue;
 			}
 			if (header == "[[assets]]" && key.empty()) key = "6:" + line;
+			if (header == "[[tile_contexts]]") {
+				if (key.empty()) key = "8:" + line;
+				else if (line.compare(0, 7, "name = ") == 0) key += ":" + line;
+			}
+			if (header == "[[context_bindings]]") {
+				if (key.empty()) key="9:";
+				if (line.compare(0,7,"area = ")==0 || line.compare(0,13,"background = ")==0 ||
+					line.compare(0,4,"x = ")==0 || line.compare(0,4,"y = ")==0) key+=line+":";
+			}
 			if (header == "[[obstacle_groups]]" && key.empty()) key = "5:" + line;
 			block += line + '\n';
 		}

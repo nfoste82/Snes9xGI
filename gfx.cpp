@@ -812,10 +812,29 @@ void S9xEndScreenRefresh (void)
 				  << "\"historical writer ownership and legal movement are not captured by this snapshot\"]";
 				e.metadata=m.str();
 			}
+			std::array<int,4> contextScrollX = {}, contextScrollY = {};
+			for (unsigned bg=0;bg<4;bg++) {
+				contextScrollX[bg]=PPU.BG[bg].HOffset;
+				contextScrollY[bg]=PPU.BG[bg].VOffset+1;
+			}
+			// WRAM retains world coordinates, but can be ahead of the displayed
+			// camera. Unwrap the actual rendered scroll rather than using the
+			// next gameplay position to select location-specific tile geometry.
+			if (dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors) {
+				for (unsigned bg=0;bg<2;bg++) {
+					const unsigned xAddress=0xe0+bg*2, yAddress=0xe6+bg*2;
+					const int worldX=Memory.RAM[xAddress]|Memory.RAM[xAddress+1]<<8;
+					const int worldY=(Memory.RAM[yAddress]|Memory.RAM[yAddress+1]<<8)+1;
+					contextScrollX[bg]=S9xRemasterUnwrapRenderedScroll(worldX,LineData[0].BG[bg].HOffset);
+					contextScrollY[bg]=S9xRemasterUnwrapRenderedScroll(worldY,LineData[0].BG[bg].VOffset);
+				}
+			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
 				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp, &area,
-				IPPU.TotalEmulatedFrames,overworldCapture.get());
+				IPPU.TotalEmulatedFrames,overworldCapture.get(),
+				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollX : nullptr,
+				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollY : nullptr);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

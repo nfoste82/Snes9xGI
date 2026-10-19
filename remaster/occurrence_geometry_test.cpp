@@ -47,7 +47,7 @@ int main()
 {
 	auto f = scene(); std::vector<uint8_t> bytes, again;
 	assert(S9xSerializeRemasterFrame(f, bytes)); RemasterFrame replay;
-	assert(S9xDeserializeRemasterFrame(bytes, replay)); assert(replay.schemaVersion == 36);
+	assert(S9xDeserializeRemasterFrame(bytes, replay)); assert(replay.schemaVersion == REMASTER_FRAME_SCHEMA_VERSION);
 	assert(S9xSerializeRemasterFrame(replay, again) && bytes == again);
 	// Truncated optional byte arrays cannot become silently absent overrides.
 	for (size_t n = 0; n < bytes.size(); n++) {
