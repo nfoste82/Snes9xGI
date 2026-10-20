@@ -5,18 +5,35 @@
 
 int main(int argc, char **argv)
 {
+	assert(S9xRemasterHeldLampDungeonContext(7, 0, 0));
+	assert(S9xRemasterHeldLampSceneContext(7, 0, 0, 0));
+	assert(!S9xRemasterHeldLampSceneContext(7, 2, 0, 7)); // room transition
+	assert(!S9xRemasterHeldLampSceneContext(7, 0, 1, 7));
+	for (unsigned submodule = 0; submodule < 256; submodule++)
+		for (unsigned textStage = 0; textStage < 256; textStage++)
+		{
+			assert(S9xRemasterHeldLampDungeonContext(14, submodule, 7) == (submodule == 2));
+			assert(S9xRemasterHeldLampSceneContext(14, submodule, textStage, 7) == (submodule == 2));
+			assert(!S9xRemasterHeldLampDungeonContext(14, submodule, 9)); // overworld interface
+			assert(!S9xRemasterHeldLampSceneContext(14, submodule, textStage, 9));
+		}
 	RemasterHeldLampState state;
 	state.verifiedRom = state.darkWithLantern = true;
 	state.linkScreenX = 120; state.linkScreenY = 177; state.floorHeight = 24;
 	RemasterHeldLampSettings settings;
 	RemasterFrameLight light;
-	const float xs[] = {128, 128, 116, 140}, ys[] = {177, 201, 189, 189};
+	const float xs[] = {128, 128, 118, 138}, ys[] = {179, 199, 189, 189};
 	for (unsigned d = 0; d < 4; d++) {
 		state.facing = d * 2;
 		assert(S9xRemasterHeldLampLight(state, settings, light));
 		assert(light.x == xs[d] && light.y == ys[d] && light.z == 36);
 		assert(light.radius == 2 && light.intensity == 200);
+		assert(light.hideSource);
+		assert(light.red == 1.0f && light.green == 0.72f && light.blue == 0.38f);
 	}
+	state.submodule = 2; // RenderText uses its own subsubmodule stages.
+	assert(S9xRemasterHeldLampLight(state, settings, light) && light.hideSource);
+	state.submodule = 0;
 	state.darkWithLantern = false;
 	assert(!S9xRemasterHeldLampLight(state, settings, light));
 	state.darkWithLantern = true; state.submodule = 20;
@@ -28,7 +45,7 @@ int main(int argc, char **argv)
 	state.facing = 6; settings.intensity = std::numeric_limits<float>::quiet_NaN();
 	assert(!S9xRemasterHeldLampLight(state, settings, light));
 	settings.intensity = 25; state.linkScreenX = -20;
-	assert(S9xRemasterHeldLampLight(state, settings, light) && light.x == 0);
+	assert(S9xRemasterHeldLampLight(state, settings, light) && light.x == -2);
 	RemasterFrame frame;
 	frame.width = 256; frame.height = 224;
 	frame.profileRomSha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
@@ -56,6 +73,28 @@ int main(int argc, char **argv)
 	frame.mainPixels[dialogue + 2].instanceId = 1;
 	assert(S9xRemasterHeldLampHudPixel(frame, dialogue + 2)); // authored UI on another layer
 	assert(!S9xRemasterHeldLampHudPixel(frame, frame.mainPixels.size()));
+	// Presentation survives capture/replay without changing physical light fields.
+	frame.originalRgb555.resize(frame.mainPixels.size());
+	frame.subPixels.resize(frame.mainPixels.size());
+	frame.mainPixels.assign(frame.mainPixels.size(), {});
+	frame.tileInstances.clear();
+	frame.lights = {light, RemasterFrameLight{}};
+	std::vector<uint8_t> bytes;
+	RemasterFrame replay;
+	assert(S9xSerializeRemasterFrame(frame, bytes) && S9xDeserializeRemasterFrame(bytes, replay));
+	assert(replay.lights.size() == 2 && replay.lights[0].hideSource && !replay.lights[1].hideSource);
+	assert(replay.lights[0].x == light.x && replay.lights[0].y == light.y && replay.lights[0].z == light.z);
+	assert(replay.lights[0].radius == light.radius && replay.lights[0].intensity == light.intensity);
+	assert(replay.lights[0].red == light.red && replay.lights[0].green == light.green && replay.lights[0].blue == light.blue);
+	const auto validBytes = bytes;
+	bytes.back() = 255; // invalid sparse light index
+	assert(!S9xDeserializeRemasterFrame(bytes, replay));
+	bytes = validBytes;
+	bytes.insert(bytes.end(), validBytes.end() - 12, validBytes.end()); // duplicate LVP1
+	assert(!S9xDeserializeRemasterFrame(bytes, replay));
+	frame.lights[0].hideSource = false;
+	assert(S9xSerializeRemasterFrame(frame, bytes) && S9xDeserializeRemasterFrame(bytes, replay));
+	assert(!replay.lights[0].hideSource && !replay.lights[1].hideSource); // no appendix, legacy default
 	if (argc > 1) {
 		assert(S9xReadRemasterFrame(argv[1], frame));
 		unsigned hud = 0, cone = 0, room = 0, actor = 0, knownActor = 0;

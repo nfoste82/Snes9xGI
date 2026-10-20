@@ -4,6 +4,21 @@
 #include "frame.h"
 #include <cmath>
 
+// USA ALTTP: module $0e/submodule $02 runs RenderText over the saved world
+// module ($010c). Other interface modes can replace the room with map/menu art.
+inline bool S9xRemasterHeldLampDungeonContext(uint8_t module, uint8_t submodule,
+	uint8_t savedModule)
+{
+	return module == 7 || (module == 14 && submodule == 2 && savedModule == 7);
+}
+
+inline bool S9xRemasterHeldLampSceneContext(uint8_t module, uint8_t submodule,
+	uint8_t subsubmodule, uint8_t savedModule)
+{
+	return (module == 7 && !submodule && !subsubmodule) ||
+		(module == 14 && submodule == 2 && savedModule == 7);
+}
+
 // Verified USA ALTTP adapter input, copied at the completed-frame boundary.
 // Do not consult live WRAM during replay or infer lamp state from painted colors.
 struct RemasterHeldLampState
@@ -21,7 +36,7 @@ struct RemasterHeldLampState
 // Defaults model a warm small flame at hand height, outside Link's silhouette.
 struct RemasterHeldLampSettings
 {
-	float forwardOffset = 12;
+	float forwardOffset = 10;
 	float lateralOffset = 0;
 	float height = 12;
 	float radius = 2;
@@ -48,6 +63,7 @@ inline bool S9xRemasterHeldLampLight(const RemasterHeldLampState &state,
 	light.radius = settings.radius;
 	light.intensity = settings.intensity;
 	light.red = settings.color[0]; light.green = settings.color[1]; light.blue = settings.color[2];
+	light.hideSource = true; // Presentation only; retain the complete sphere transport.
 	return true;
 }
 

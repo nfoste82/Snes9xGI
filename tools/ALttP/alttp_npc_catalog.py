@@ -14,8 +14,8 @@ def model(key, name, type_id, draw="default", directions=1, steps=2, **kwargs):
 
 
 CATALOG = [
-    model("link", "Link", 0, "link", 4, 6, world=0,
-          explicit_contexts=[(1, 0, 0, "Player draw adapter: green tunic, walking, no equipment")],
+    model("link", "Link", 0, "link", 4, 9, world=0,
+          explicit_contexts=[(1, 0, 0, "Player draw adapter: ROM-backed body and equipment actions")],
           action="walking"),
     model("elder", "Sahasrahla / Aginah", 0x16),
     model("smithy", "Dwarven Swordsmith", 0x1a, "smithy", 2, 5, world=0),

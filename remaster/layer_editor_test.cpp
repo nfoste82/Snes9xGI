@@ -56,7 +56,32 @@ int main()
 		require(normals == metadata.normalXyz, "variant helper matches metadata normal flip");
 	}
 	RemasterAssetMetadata empty;
+	for (const auto delta : {std::pair<int,int>{0,-1}, {0,1}, {-1,0}, {1,0}})
+		for (int layer : {RemasterEditorMaterial, RemasterEditorOcclusion, RemasterEditorHeight, RemasterEditorNormal, RemasterEditorEmission, RemasterEditorDoorframe})
+		{
+			auto result = source;
+			result.height[20] = -123;
+			const auto original = result;
+			require(S9xRemasterShiftMetadataLayer(result,layer,delta.first,delta.second), "authored layer shifts");
+			for (int y=0;y<8;y++) for (int x=0;x<8;x++) {
+				const int p=y*8+x, sx=x-delta.first, sy=y-delta.second;
+				const bool inside=sx>=0 && sx<8 && sy>=0 && sy<8;
+				const int from=inside ? sy*8+sx : 0;
+				require(result.height[p] == (layer==RemasterEditorHeight ? (inside ? original.height[from] : 0) : original.height[p]), "signed height shift and zero edge");
+				require(result.occlusion[p] == (layer==RemasterEditorOcclusion ? (inside ? original.occlusion[from] : 255) : original.occlusion[p]), "occlusion shift and default edge");
+				require(result.materialSelectors[p] == (layer==RemasterEditorMaterial ? (inside ? original.materialSelectors[from] : "") : original.materialSelectors[p]), "material shift and fallback edge");
+				for (int c=0;c<3;c++) require(result.normalXyz[p*3+c] == (layer==RemasterEditorNormal ? (inside ? original.normalXyz[from*3+c] : c==2 ? 255 : 128) : original.normalXyz[p*3+c]), "normal translation preserves directions and fills +Z");
+				for (int c=0;c<4;c++) require(result.emissionRgba[p*4+c] == (layer==RemasterEditorEmission ? (inside ? original.emissionRgba[from*4+c] : 0) : original.emissionRgba[p*4+c]), "RGBA translation and clear edge");
+				const bool expected=layer==RemasterEditorDoorframe ? inside && (original.doorframeMask & (UINT64_C(1)<<from)) : original.doorframeMask & (UINT64_C(1)<<p);
+				require(bool(result.doorframeMask & (UINT64_C(1)<<p)) == expected,"mask shift without wrapping");
+			}
+			require(result.heightSampling==source.heightSampling && result.emissionDepth==3 && result.emissionOmnidirectional,"shift preserves options");
+		}
+	for (int layer=RemasterEditorArtwork;layer<=RemasterEditorDoorframe;layer++)
+		require(!S9xRemasterShiftMetadataLayer(empty,layer,1,0),"shift does not create absent layers");
+	require(!S9xRemasterShiftMetadataLayer(source,RemasterEditorArtwork,1,0) && !S9xRemasterShiftMetadataLayer(source,RemasterEditorMetadata,0,1),"nonpixel layers cannot shift");
+	require(!S9xRemasterShiftMetadataLayer(source,RemasterEditorHeight,1,1),"diagonal shifts rejected");
 	require(!S9xRemasterFlipMetadataLayer(empty, RemasterEditorHeight, true) && !empty.hasHeight, "missing layers remain missing");
 	require(!S9xRemasterFlipMetadataLayer(source, RemasterEditorArtwork, true) && !S9xRemasterFlipMetadataLayer(source, RemasterEditorMetadata, false), "nonpixel layers unavailable");
-	std::cout << "Layer flips: axes, reflected normals, channel preservation, isolation, missing data and round trips passed\n";
+	std::cout << "Layer flips and shifts: axes, normals, channels, signed heights, edge defaults, isolation and missing data passed\n";
 }

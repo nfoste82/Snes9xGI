@@ -130,25 +130,9 @@ static std::vector<RemasterTileContentId> RemasterNpcVisibleTiles(const Remaster
 			NSRectFillUsingOperation(NSMakeRect(rect.origin.x + x * scale, rect.origin.y + y * scale, scale, scale), NSCompositingOperationSourceOver);
 		}
 	}
-	// Thin canonical tile boundaries aid picking overlapping multipart poses.
-	[[NSColor colorWithCalibratedWhite:1 alpha:0.12] setStroke];
-	for (unsigned y = 0; y < frame.height; y++) for (unsigned x = 0; x < frame.width; x++)
-	{
-		const auto &pixel = frame.mainPixels[y * frame.width + x];
-		if (!pixel.instanceId) continue;
-		if (x == 0 || frame.mainPixels[y * frame.width + x - 1].instanceId != pixel.instanceId)
-		{
-			NSBezierPath *path = [NSBezierPath bezierPath];
-			[path moveToPoint:NSMakePoint(rect.origin.x + x * scale, rect.origin.y + y * scale)];
-			[path lineToPoint:NSMakePoint(rect.origin.x + x * scale, rect.origin.y + (y + 1) * scale)]; [path stroke];
-		}
-		if (y == 0 || frame.mainPixels[(y - 1) * frame.width + x].instanceId != pixel.instanceId)
-		{
-			NSBezierPath *path = [NSBezierPath bezierPath];
-			[path moveToPoint:NSMakePoint(rect.origin.x + x * scale, rect.origin.y + y * scale)];
-			[path lineToPoint:NSMakePoint(rect.origin.x + (x + 1) * scale, rect.origin.y + y * scale)]; [path stroke];
-		}
-	}
+	// Keep the assembled surface unobstructed. Tile-instance outlines look like
+	// seams in normal/height maps, especially on large multipart actors. Picking
+	// uses the ownership buffer, and selected identities retain their yellow tint.
 }
 }
 - (void)mouseDown:(NSEvent *)event

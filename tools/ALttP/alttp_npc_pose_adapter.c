@@ -1,6 +1,7 @@
 /* Offline draw-only harness for a local, ROM-backed snesrev/zelda3 engine.
  * No AI/state mutation in the emulator; each pose starts from the same RAM.
  * Usage: alttp-npc-poses TYPE GFX PALETTE DRAW DIRECTIONS STEPS WORLD FOLLOWER VARIANT
+ *        [LINK_ACTION SWORD SHIELD ARMOR]
  */
 #define main zelda3_gui_main
 #include "src/main.c"
@@ -11,6 +12,7 @@
 #include "src/dungeon.h"
 #include "src/misc.h"
 #include "src/player_oam.h"
+#include "src/player.h"
 
 /* Existing local engine objects may contain the room inspection hooks. */
 void AlttpCaptureLine(Ppu *ppu, unsigned line) { (void)ppu; (void)line; }
@@ -132,13 +134,18 @@ static void WriteTile(unsigned address, unsigned palette) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 10) return 2;
+  if (argc != 10 && argc != 14) return 2;
   int type = strtol(argv[1], NULL, 0), gfx = strtol(argv[2], NULL, 0);
   int pal = strtol(argv[3], NULL, 0);
   draw = argv[4];
   int directions = atoi(argv[5]), steps = atoi(argv[6]);
   int world = atoi(argv[7]), follower = atoi(argv[8]);
   variant = atoi(argv[9]);
+  int link_action = argc == 14 ? atoi(argv[10]) : 0;
+  int sword = argc == 14 ? atoi(argv[11]) : 0;
+  int shield = argc == 14 ? atoi(argv[12]) : 0;
+  int armor = argc == 14 ? atoi(argv[13]) : 0;
+  if (link_action < 0 || link_action > 11 || sword < 0 || sword > 4 || shield < 0 || shield > 3 || armor < 0 || armor > 2) return 2;
   if (directions < 1 || directions > 4 || steps < 1 || steps > 32 || follower < 0 || follower > 13) return 2;
   if (type < 0 || type >= 243 || gfx < 0 || gfx >= 144 || pal < 0 || pal >= 256) return 2;
   ParseConfigFile(NULL);
@@ -169,9 +176,11 @@ int main(int argc, char **argv) {
     Dungeon_LoadPalettes();
   }
   if (!strcmp(draw, "link")) {
-    link_armor = link_item_gloves = 0;
-    link_sword_type = link_shield_type = 0;
+    link_armor = armor; link_item_gloves = 0;
+    link_sword_type = sword; link_shield_type = shield;
+    DecompressSwordGraphics(); DecompressShieldGraphics();
     Palette_Load_LinkArmorAndGloves();
+    Palette_Load_Sword(); Palette_Load_Shield();
   }
   if (follower) { follower_indicator = follower; LoadFollowerGraphics(); }
   memcpy(checkpoint, g_ram, sizeof(g_ram));
@@ -305,6 +314,32 @@ int main(int argc, char **argv) {
       link_item_in_hand = button_b_frames = link_picking_throw_state = 0;
       link_is_in_deep_water = draw_water_ripples_or_grass = player_near_pit_state = 0;
       palette_swap_flag = sort_sprites_setting = link_is_on_lower_level = 0;
+      link_position_mode = link_unk_master_sword = player_unk1 = 0;
+      link_cape_mode = countdown_for_blink = is_standing_in_doorway = 0;
+      button_mask_b_y = link_dma_var3 = link_dma_var4 = link_dma_var5 = 0;
+      link_maybe_swim_faster = 0; joypad1H_last = 0;
+      swimcoll_var7[0] = swimcoll_var7[1] = 0;
+      switch (link_action) {
+      case 0: break;
+      case 1: button_mask_b_y = 0x80; button_b_frames = step; link_animation_steps = 0; break;
+      case 2: button_mask_b_y = 0x80; button_b_frames = 9; break;
+      case 3: button_mask_b_y = 0x80; button_b_frames = 10 + step; link_animation_steps = 0; break;
+      case 4: {
+        /* Chronological sequence from player.c; guarded by Python source audit. */
+        static const uint8 spin[48] = {10,11,10,6,7,8,9,2,3,4,5,10, 0,1,0,2,3,4,5,6,7,8,9,0,
+                                     12,13,12,4,5,6,7,8,9,2,3,12, 14,15,14,8,9,2,3,4,5,6,7,14};
+        link_player_handler_state = kPlayerState_SpinAttacking;
+        state_for_spin_attack = spin[dir * 12 + step];
+        button_mask_b_y = 0x80; button_b_frames = 144; break;
+      }
+      case 5: link_is_bunny_mirror = 1; break;
+      case 6: link_player_handler_state = kPlayerState_Swimming; break;
+      case 7: link_auxiliary_state = 1; break;
+      case 8: link_auxiliary_state = link_electrocute_on_touch = 1; player_handler_timer = step; break;
+      case 9: link_pose_for_item = 1; break;
+      case 10: link_pose_for_item = 2; break;
+      case 11: link_force_hold_sword_up = 1; break;
+      }
     }
     Draw(type);
     if (!strcmp(draw, "link")) {
@@ -316,6 +351,11 @@ int main(int argc, char **argv) {
       memcpy(&g_zenv.vram[0x4000], &kLinkGraphics[dma_source_addr_3 - 0x8000], 0x40);
       memcpy(&g_zenv.vram[0x4020], &kLinkGraphics[dma_source_addr_4 - 0x8000], 0x40);
       memcpy(&g_zenv.vram[0x4040], &kLinkGraphics[dma_source_addr_5 - 0x8000], 0x20);
+      /* Equipment and item transfers are independent of body DMA. */
+      const unsigned dest[] = {0x4050,0x4070,0x4090,0x4150,0x4170,0x4190};
+      const unsigned src[] = {dma_source_addr_6,dma_source_addr_7,dma_source_addr_8,
+                              dma_source_addr_11,dma_source_addr_12,dma_source_addr_13};
+      for (unsigned i=0;i<6;i++) memcpy(&g_zenv.vram[dest[i]], &g_ram[src[i]], 0x40);
     }
     if (!strcmp(draw, "uncle")) {
       /* Uncle_Draw sets the same sword/shield DMA selectors as Link. */
@@ -333,12 +373,19 @@ int main(int argc, char **argv) {
       memcpy(&g_zenv.vram[0x4300], &g_ram[a + 0x200], 0x40);
       memcpy(&g_zenv.vram[0x4320], &g_ram[b + 0x200], 0x40);
     }
-    printf("%s{\"direction\":%d,\"step\":%d,\"graphics\":%d,\"parts\":[", first_pose ? "" : ",", dir, step, sprite_graphics[0]);
+    printf("%s{\"direction\":%d,\"step\":%d,\"graphics\":%d,", first_pose ? "" : ",", dir, step, sprite_graphics[0]);
+    if (!strcmp(draw, "link"))
+      printf("\"draw_state\":{\"action\":%d,\"oam_action\":%u,\"animation\":%u,\"body_dma_index\":%u,\"button_b_frames\":%u,\"handler\":%u,\"spin_frame\":%u},",
+             link_action, value_computed_for_player_oam, link_animation_steps, link_dma_graphics_index,
+             button_b_frames, link_player_handler_state, state_for_spin_attack);
+    printf("\"parts\":[");
     first_pose = 0;
     int first_part = 1;
     for (int slot = 0; slot < 128; slot++) {
       OamEnt *oam = &oam_buf[slot];
       if (oam->y == 0xf0) continue;
+      if (!strcmp(draw, "link") && (oam->charnum == 0x6c || oam->charnum == 0x28) &&
+          (oam->flags & 0x3f) == 0x28) continue; /* Link's paired ground shadow. */
       if (!strcmp(draw, "armos-knight") && oam->charnum == 0xe4 && (oam->flags & 0x3f) == 0x25) continue;
       if ((!strcmp(draw, "arrghus") || !strcmp(draw, "wallmaster")) && slot >= 125) continue;
       if (!strcmp(draw, "lanmola") && oam->charnum == 0x6c && oam->flags == 0x34) continue;

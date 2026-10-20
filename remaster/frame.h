@@ -256,6 +256,7 @@ struct RemasterFrameLight
 	float green = 0.0f;
 	float blue = 0.0f;
 	float intensity = 0.0f;
+	bool hideSource = false; // Suppress visible sphere, never its emitted light.
 };
 
 // Source-only samples behind HUD ink: no receiver, artwork or occluder plane.
@@ -4178,10 +4179,24 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	}
 	bool hasArea = false;
 	bool hasContextLocations = false;
+	bool hasLightPresentation = false;
 	while (result.schemaVersion >= 28 && input.offset < bytes.size())
 	{
 		uint32_t tag;
 		if (!input.ReadU32(tag)) return false;
+		if (tag == 0x3150564cu) // LVP1: sparse hidden sphere indices
+		{
+			uint32_t count;
+			if (hasLightPresentation || !input.ReadU32(count) || !count || count > result.lights.size()) return false;
+			hasLightPresentation = true;
+			for (uint32_t i = 0; i < count; i++)
+			{
+				uint32_t index;
+				if (!input.ReadU32(index) || index >= result.lights.size() || result.lights[index].hideSource) return false;
+				result.lights[index].hideSource = true;
+			}
+			continue;
+		}
 		if (tag == 0x314c5443u) { // CTL1: sparse stable background locations
 			uint32_t count;
 			if (hasContextLocations || result.schemaVersion<37 || !input.ReadU32(count) || count>result.tileInstances.size()) return false;
@@ -4890,6 +4905,15 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			for (auto v : e.emission) RemasterFrameSerialization::U8(bytes,v);
 			RemasterFrameSerialization::U8(bytes,e.omnidirectional ? 1 : 0);
 		}
+	}
+	const size_t hiddenLightCount = std::count_if(frame.lights.begin(), frame.lights.end(),
+		[](const RemasterFrameLight &light) { return light.hideSource; });
+	if (hiddenLightCount)
+	{
+		RemasterFrameSerialization::U32(bytes, 0x3150564cu); // LVP1
+		if (!RemasterFrameSerialization::Size(bytes, hiddenLightCount)) return false;
+		for (size_t i = 0; i < frame.lights.size(); i++)
+			if (frame.lights[i].hideSource) RemasterFrameSerialization::U32(bytes, static_cast<uint32_t>(i));
 	}
 	if (!frame.contextLocations.empty()) {
 		RemasterFrameSerialization::U32(bytes,0x314c5443u);

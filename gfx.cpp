@@ -629,7 +629,8 @@ void S9xStartScreenRefresh (void)
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
 		S9xRemasterBeginFrame(GFX.ScreenSize, GFX.RealPPL,
 			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight,
-			Memory.RAM[0x458] && Memory.RAM[0x1b] && Memory.RAM[0x10] == 7);
+			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampDungeonContext(
+				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0x10c]));
 	}
 
 	if (++IPPU.FrameCount == (uint32)Memory.ROMFramesPerSecond)
@@ -737,7 +738,8 @@ void S9xEndScreenRefresh (void)
 				S9xRemasterDungeonStairsFromAttributes(dungeonFloor);
 			}
 			RemasterHeldLampState heldLamp;
-			heldLamp.verifiedRom = dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && dungeonFloor.module == 7;
+			heldLamp.verifiedRom = dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors &&
+				S9xRemasterHeldLampDungeonContext(dungeonFloor.module, dungeonFloor.submodule, Memory.RAM[0x10c]);
 			if (heldLamp.verifiedRom)
 			{
 				heldLamp.darkWithLantern = Memory.RAM[0x458] != 0;
@@ -1201,8 +1203,8 @@ void S9xUpdateScreen (void)
 		if (S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
 			!IPPU.DoubleWidthPixels && !IPPU.Interlace && !IPPU.PseudoHires &&
 			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2])) &&
-			Memory.RAM[0x458] && Memory.RAM[0x1b] && Memory.RAM[0x10] == 7 &&
-			!Memory.RAM[0x11] && !Memory.RAM[0xb0] &&
+			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampSceneContext(
+				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]) &&
 			!std::memcmp(Memory.ROMSHA256, alttpUsSha256, 32))
 		{
 			auto &state = S9xRemasterState();

@@ -11,9 +11,9 @@
 #include <stdexcept>
 #include <fstream>
 #include <chrono>
-struct Light {simd_float3 position;float radius,intensity;uint32_t sampleCount,firstSample;simd_float3 color;};
+struct Light {simd_float3 position;float radius,intensity;uint32_t sampleCount,firstSample,hideSource;simd_float3 color;};
 struct Uniforms {uint32_t width,height,view,lightCount,passIndex,diagnosticStage;float roughness,original,multiplier,padding;uint32_t sampleIndex,sampleCount,seed;float boost;simd_float4 camera,debugPosition,debugColor,range,directionalDirection,directionalColorBrightness;};
-static_assert(sizeof(Light)==48 && sizeof(Uniforms)==160,"ABI");
+static_assert(sizeof(Light)==64 && sizeof(Uniforms)==160,"ABI");
 static void check(bool ok,const char *what){if(!ok)throw std::runtime_error(what);}
 int main(int argc,char **argv){@autoreleasepool {try {
  check(argc>=2,"usage: probe own-packets...");auto device=MTLCreateSystemDefaultDevice();check(device,"Metal device");auto queue=[device newCommandQueue];NSError *error=nil;

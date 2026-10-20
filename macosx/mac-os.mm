@@ -535,6 +535,7 @@ static NSArray *remasterNpcActors;
 static NSArray *remasterNpcTypes, *remasterNpcContexts;
 static NSDictionary *remasterNpcActor, *remasterNpcPose;
 static NSArray *remasterNpcFilteredPoses;
+static NSPopUpButton *remasterNpcActionSelector;
 static NSArray *remasterNpcVariantPoses;
 static std::vector<RemasterFrame> remasterNpcVariantFrames;
 static NSString *remasterNpcRomHash;
@@ -553,6 +554,7 @@ static NSTextField *remasterNpcHeightMinInput, *remasterNpcHeightMaxInput;
 static double remasterNpcHeightDisplayMin = 0, remasterNpcHeightDisplayMax = 32;
 static NSTimer *remasterNpcTimer;
 static NSButton *remasterFlipLayerHorizontalButton, *remasterFlipLayerVerticalButton;
+static NSArray<NSButton *> *remasterShiftLayerButtons;
 
 static bool PresentRemasterInspectionFrame(const RemasterFrame &frame, RemasterDebugMode mode,
 	const std::vector<RemasterTileContentId> *selection, bool lighting, RemasterLightingView view)
@@ -4405,6 +4407,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)flipRemasterLayerHorizontal:(id)sender;
 - (void)flipRemasterLayerVertical:(id)sender;
 - (void)flipRemasterLayer:(BOOL)horizontal;
+- (void)shiftRemasterLayer:(id)sender;
 - (void)copyRemasterTile:(id)sender;
 - (void)pasteRemasterTile:(id)sender;
 - (void)applyRemasterTileToVariants:(id)sender;
@@ -5646,7 +5649,7 @@ void QuitWithFatalError ( NSString *message)
 
 	if (!remasterInspectorPanel)
 	{
-		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 602)
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 646)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
@@ -6147,6 +6150,17 @@ void QuitWithFatalError ( NSString *message)
 				remasterFlipLayerVerticalButton = button;
 		}
 		remasterFlipLayerHorizontalButton.toolTip = remasterFlipLayerVerticalButton.toolTip = @"Mirror the current 8×8 layer on each selected tile. Normals also reflect their X direction horizontally or Y direction vertically. Emission channels retain their values. Supports Undo.";
+		NSMutableArray<NSButton *> *shiftButtons = [NSMutableArray new];
+		NSArray<NSString *> *shiftTitles = @[@"Shift ↑", @"Shift ↓", @"Shift ←", @"Shift →"];
+		for (NSUInteger direction=0;direction<4;direction++) {
+			NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(360+direction*69, 197, 66, 28)];
+			button.title = shiftTitles[direction]; button.tag = direction;
+			button.font = [NSFont systemFontOfSize:10]; button.bezelStyle = NSBezelStyleRounded;
+			button.target = self; button.action = @selector(shiftRemasterLayer:);
+			button.toolTip = @"Shift the displayed layer by one pixel within each selected 8×8 tile; no wrapping. Exposed edges: height/emission/mask zero, normals +Z, occlusion 255, material default. Supports Undo.";
+			[contentView addSubview:button]; [shiftButtons addObject:button];
+		}
+		remasterShiftLayerButtons = shiftButtons;
 		remasterApplyTileToVariantsButton = [[NSButton alloc] initWithFrame:NSMakeRect(360, 232, 264, 28)];
 		remasterApplyTileToVariantsButton.title = @"Apply Frame to Other Frames";
 		remasterApplyTileToVariantsButton.font = [NSFont systemFontOfSize:10];
@@ -6168,7 +6182,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterMetadataToolButton.action = @selector(openRemasterMetadataTool:);
 		remasterMetadataToolButton.toolTip = @"Open the focused tile in the browser, starting the metadata tool in a visible Terminal window if needed. Control-C in Terminal stops the tool.";
 		[contentView addSubview:remasterMetadataToolButton];
-		NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(244, 20, 496, 205)];
+		NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(244, 20, 496, 170)];
 		remasterInspectorScrollView = scrollView;
 		scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 		scrollView.hasVerticalScroller = YES;
@@ -6185,6 +6199,10 @@ void QuitWithFatalError ( NSString *message)
 		// but migrate the fixed-size inspector so the new header is not clipped.
 		[remasterInspectorPanel setContentSize:NSMakeSize(760, 646)];
 		remasterInspectorPanel.contentMinSize = NSMakeSize(760, 646);
+		// Restoring a saved window size can resize this flexible view even
+		// though the inspector's controls use fixed coordinates. Restore its
+		// reserved bounds last so it cannot cover the layer-shift row.
+		remasterInspectorScrollView.frame = NSMakeRect(244, 20, 496, 170);
 		[self refreshRemasterEditingControls];
 	}
 
@@ -7264,6 +7282,40 @@ void QuitWithFatalError ( NSString *message)
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)shiftRemasterLayer:(id)sender
+{
+	if (RemasterEffectiveHeightPreview() || !remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	const NSInteger direction = [sender tag], layer = remasterLayerSelector.indexOfSelectedItem;
+	if (direction < 0 || direction > 3) return;
+	const int dx[] = {0,0,-1,1}, dy[] = {-1,1,0,0};
+	std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	for (const auto &tileId : remasterSelectedTiles) {
+		auto shifted = EffectiveRemasterMetadata(tileId);
+		if (!remasterTileContextName.empty() && !RemasterSelectedContext(tileId)) continue;
+		// Geometry variant previews show flipped artwork; convert the displayed
+		// translation back to canonical pixel coordinates exactly once.
+		const bool variant = S9xRemasterHasGeometryVariants(shifted) && (layer == RemasterEditorHeight || layer == RemasterEditorNormal);
+		const unsigned previewFlip = RemasterInspectorPreviewFlip();
+		const int x = previewFlip & 1 ? -dx[direction] : dx[direction];
+		const int y = previewFlip & 2 ? -dy[direction] : dy[direction];
+		if (variant) {
+			auto &g = RemasterEditingGeometry(shifted);
+			if (layer == RemasterEditorHeight) { if (!g.hasHeight) continue; S9xRemasterShiftLayerPixels(g.height,x,y); }
+			else { if (!g.hasNormals) continue; S9xRemasterShiftLayerPixels(g.normalXyz,x,y,std::array<uint8_t,3>{{128,128,255}}); }
+		} else if (!S9xRemasterShiftMetadataLayer(shifted,static_cast<int>(layer),x,y)) continue;
+		auto &destination = remasterEditingProfile.assets[tileId]; destination.tileId = tileId;
+		CopyRemasterMetadataLayer(shifted,destination,layer);
+	}
+	std::string current;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile,current,diagnostics) || current == before) return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:@"Shift Layer One Pixel"];
+	UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)pasteRemasterTile:(id)sender
 {
 	if (RemasterEffectiveHeightPreview()) return;
@@ -7870,6 +7922,7 @@ void QuitWithFatalError ( NSString *message)
 				canFlip |= S9xRemasterFlipMetadataLayer(metadata, static_cast<int>(layer), true);
 		}
 	remasterFlipLayerHorizontalButton.enabled = remasterFlipLayerVerticalButton.enabled = canFlip;
+	for (NSButton *button in remasterShiftLayerButtons) button.enabled = canFlip;
 	remasterCopyTileButton.enabled = !remasterVariants.empty();
 	remasterPasteTileButton.enabled = editable && RemasterClipboardAvailable(-1);
 	remasterApplyTileToVariantsButton.enabled = editable && remasterVariants.size() > 1 &&

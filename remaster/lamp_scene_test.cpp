@@ -110,6 +110,12 @@ int main(int argc, char **argv)
 	RemasterHeldLampState lamp; lamp.verifiedRom = lamp.darkWithLantern = true;
 	require(S9xRemasterRecoverLampScene(f, s.mainPreMathRgb.data(), 2, 2, lamp) &&
 		f.sceneRgb555[0] == 0x4210 && f.originalRgb555[0] == 0, "recover cone-free scene, preserve Original");
+	lamp.submodule = 2;
+	f.mainPixels[1].owner = S9xRemasterOwner(RemasterSourceType::Background, 2, 3);
+	require(S9xRemasterHeldLampSceneContext(14, 2, 5, 7) &&
+		S9xRemasterRecoverLampScene(f, s.mainPreMathRgb.data(), 2, 2, lamp) &&
+		f.sceneRgb555[0] == 0x4210 && f.scenePixels[1].owner == f.mainPixels[1].owner &&
+		f.originalRgb555[0] == 0, "dialogue retains cone-free room, BG3 ownership and stock Original");
 	f.mainPixels[1].owner = S9xRemasterOwner(RemasterSourceType::Background, 0, 3);
 	require(!S9xRemasterRecoverLampScene(f, s.mainPreMathRgb.data(), 2, 2, lamp), "reject cone-owned main composition");
 	lamp.darkWithLantern = false;

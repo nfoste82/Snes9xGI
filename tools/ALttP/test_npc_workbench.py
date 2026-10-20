@@ -34,7 +34,7 @@ class NpcWorkbenchTests(unittest.TestCase):
             ''')
             self.assertEqual(special_overworld_contexts(engine)[0x81], (14, 8))
         link = next(entry for entry in CATALOG if entry['key'] == 'link')
-        self.assertEqual((link['draw'], link['directions'], link['steps']), ('link', 4, 6))
+        self.assertEqual((link['draw'], link['directions'], link['steps']), ('link', 4, 9))
         self.assertTrue(link['explicit_contexts'])
         ganon = next(entry for entry in CATALOG if entry['key'] == 'ganon')
         self.assertEqual((ganon['type_id'], ganon['draw'], ganon['steps']), (0xd6, 'ganon', 17))

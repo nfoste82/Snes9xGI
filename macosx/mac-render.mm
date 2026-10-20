@@ -58,9 +58,10 @@ typedef struct
 	float intensity;
 	uint32_t sampleCount;
 	uint32_t firstSample;
+	uint32_t hideSource;
 	vector_float3 color;
 } RemasterGpuLight;
-static_assert(sizeof(RemasterGpuLight) == 48 && offsetof(RemasterGpuLight, color) == 32,
+static_assert(sizeof(RemasterGpuLight) == 64 && offsetof(RemasterGpuLight, color) == 48,
 	"Metal sphere-light ABI");
 
 // Opt-in metrics stage counters. Each producing frame owns its sample buffer,
@@ -1294,6 +1295,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						std::getenv("S9X_REMASTER_FULL_SPHERE_SAMPLES") ? 128 :
 						S9xRemasterSphereSamples(source.x, source.y, source.radius, width, height);
 					sphere.firstSample = frameSphereSampleCount;
+					sphere.hideSource = source.hideSource;
 					frameSphereSampleCount += sphere.sampleCount;
 					sceneLights.push_back(sphere);
 					if (panelMetrics)

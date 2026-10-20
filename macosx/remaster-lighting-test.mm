@@ -28,6 +28,7 @@ struct Light
     float radius;
     float intensity;
     uint32_t sampleCount, firstSample;
+    uint32_t hideSource;
     simd_float3 color;
 };
 struct Uniforms
@@ -44,7 +45,7 @@ struct Uniforms
 	simd_float4 directionalDirection;
 	simd_float4 directionalColorBrightness;
 };
-static_assert(sizeof(Light) == 48 && offsetof(Light, color) == 32, "Metal light ABI");
+static_assert(sizeof(Light) == 64 && offsetof(Light, color) == 48, "Metal light ABI");
 static_assert(sizeof(Uniforms) == 160 && offsetof(Uniforms, cameraDirection) == 64, "Metal uniforms ABI");
 
 constexpr unsigned width = 128, height = 17, receiverX = 4, receiverY = 8;
@@ -1737,6 +1738,22 @@ int main()
                 near("geometry above sphere front surface hides glow", illuminate(0).accumulated,
                     simd_float4{ambient, ambient, ambient, 1});
                 sphere[Surface][receiver] = {8, 0, 0, 1};
+                std::vector<Light> sceneLights = {light};
+                auto illuminateScene = [&](int view, bool sampled = false) {
+                    return run(sphere, view < 0, 0, 8, -1, nullptr, half, 0, 0,
+                        0, sampled ? 4096 : 1, 1, simd_float3{0, 0, -1}, view, nullptr, false, false, true,
+                        0, nullptr, sampled, nullptr, false, 0.65f, &sceneLights);
+                };
+                const auto visibleDirect = illuminateScene(-1).bounce;
+                const auto visibleSampled = illuminateScene(-1, true).bounce;
+                positive("visible scene sphere contributes Direct", visibleDirect);
+                check("scene sphere has visible source", illuminateScene(0).accumulated.x > 0.9f,
+                    illuminateScene(0).accumulated, {});
+                sceneLights[0].hideSource = 1;
+                near("hidden scene sphere retains exact Direct", illuminateScene(-1).bounce, visibleDirect);
+                near("hidden scene sphere retains sampled Direct", illuminateScene(-1, true).bounce, visibleSampled);
+                near("hidden scene sphere removes source circle only", illuminateScene(0).accumulated,
+                    simd_float4{ambient, ambient, ambient, 1});
                 const simd_float4 centered = illuminate().bounce;
                 positive("receiver at sphere center has finite illumination", centered);
                 check("sphere center illumination is bounded", centered.x <= 85.6f, centered, {});

@@ -5,7 +5,7 @@
 	[self savePreviousWorkspace];
 	if (!remasterNpcPanel)
 	{
-		remasterNpcPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 808)
+		remasterNpcPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 848)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterNpcPanel.title = @"Remaster NPC Poses";
@@ -13,17 +13,24 @@
 		remasterNpcPanel.hidesOnDeactivate = NO;
 		remasterNpcPanel.delegate = self;
 		NSView *content = remasterNpcPanel.contentView;
-		remasterNpcTypeSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 760, 540, 28) pullsDown:NO];
+		remasterNpcTypeSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 800, 540, 28) pullsDown:NO];
 		remasterNpcTypeSelector.target = self; remasterNpcTypeSelector.action = @selector(changeRemasterNpcType:);
 		remasterNpcTypeSelector.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 		remasterNpcTypeSelector.toolTip = @"Counts include poses across distinct artwork/palette variants. Equivalent source contexts are combined.";
 		[content addSubview:remasterNpcTypeSelector];
-		remasterNpcActorSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 698, 728, 28) pullsDown:NO];
+		remasterNpcActorSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 738, 728, 28) pullsDown:NO];
 		remasterNpcActorSelector.toolTip = @"Graphics/palette context for the selected NPC.";
 		remasterNpcActorSelector.target = self; remasterNpcActorSelector.action = @selector(changeRemasterNpcActor:);
 		remasterNpcActorSelector.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 		[content addSubview:remasterNpcActorSelector];
-		NSButton *load = [[NSButton alloc] initWithFrame:NSMakeRect(574, 760, 170, 28)];
+		remasterNpcActionSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 688, 728, 26) pullsDown:NO];
+		remasterNpcActionSelector.target = self;
+		remasterNpcActionSelector.action = @selector(changeRemasterNpcFacing:);
+		remasterNpcActionSelector.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+		remasterNpcActionSelector.accessibilityLabel = @"Action";
+		remasterNpcActionSelector.toolTip = @"Filter catalogued actions. Missing actions are not generated automatically; see coverage below.";
+		[content addSubview:remasterNpcActionSelector];
+		NSButton *load = [[NSButton alloc] initWithFrame:NSMakeRect(574, 800, 170, 28)];
 		load.title = @"Load Pose Library…"; load.bezelStyle = NSBezelStyleRounded;
 		load.target = self; load.action = @selector(loadRemasterNpcLibrary:);
 		load.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin; [content addSubview:load];
@@ -68,11 +75,11 @@
 		remasterNpcHeightRampButton.toolTip = @"Fill every tile pixel: bottom row 0, increasing by 1 per row upward. Load the matching profile first. Supports Undo.";
 		[content addSubview:remasterNpcHeightRampButton];
 		remasterNpcHeightAllPosesButton = [[NSButton alloc] initWithFrame:NSMakeRect(238, 538, 260, 28)];
-		remasterNpcHeightAllPosesButton.title = @"All animations/poses for this NPC";
+		remasterNpcHeightAllPosesButton.title = @"All catalogued poses for this NPC";
 		remasterNpcHeightAllPosesButton.font = [NSFont systemFontOfSize:12];
 		remasterNpcHeightAllPosesButton.buttonType = NSButtonTypeSwitch;
 		remasterNpcHeightAllPosesButton.autoresizingMask = NSViewMinYMargin;
-		remasterNpcHeightAllPosesButton.toolTip = @"Include every facing, animation and graphics/palette context of the selected NPC.";
+		remasterNpcHeightAllPosesButton.toolTip = @"Include every catalogued action, facing and graphics/palette context. This library is partial: unmodeled actions are not included.";
 		[content addSubview:remasterNpcHeightAllPosesButton];
 		remasterNpcOverwriteButton = [[NSButton alloc] initWithFrame:NSMakeRect(510, 538, 234, 28)];
 		remasterNpcOverwriteButton.title = @"Overwrite authored heights/normals";
@@ -127,9 +134,9 @@
 			[remasterNpcHeightRangeView addSubview:input];
 		}
 		[self changeRemasterNpcDebugView:nil];
-		NSArray<NSString *> *selectorLabels = @[@"NPC", @"Graphics/Palette Context", @"Facing", @"Pose", @"Debug View"];
+		NSArray<NSString *> *selectorLabels = @[@"NPC", @"Graphics/Palette Context", @"Action", @"Facing", @"Pose", @"Debug View"];
 		NSArray<NSPopUpButton *> *selectors = @[remasterNpcTypeSelector, remasterNpcActorSelector,
-			remasterNpcFacingSelector, remasterNpcPoseSelector, remasterNpcDebugSelector];
+			remasterNpcActionSelector, remasterNpcFacingSelector, remasterNpcPoseSelector, remasterNpcDebugSelector];
 		for (NSUInteger index = 0; index < selectors.count; index++)
 		{
 			NSPopUpButton *selector = selectors[index];
@@ -151,7 +158,7 @@
 		remasterNpcStatus.autoresizingMask = NSViewWidthSizable;
 		remasterNpcStatus.stringValue = @"Load a generated poses.json library. Click a pose tile to select it; click a selected tile to clear selection.\nCommand-click toggles individual tiles. Select all tiles selects the current pose. Load the matching profile to edit/save.";
 		[content addSubview:remasterNpcStatus];
-		remasterNpcPanel.minSize = NSMakeSize(760, 668);
+		remasterNpcPanel.minSize = NSMakeSize(760, 708);
 		S9xInitializeWindowPlacement(remasterNpcPanel, @"RemasterNpcPoses");
 	}
 	[remasterNpcPanel makeKeyAndOrderFront:nil];
@@ -485,6 +492,11 @@
 	NSInteger index = remasterNpcActorSelector.indexOfSelectedItem;
 	if (index < 0 || index >= (NSInteger)remasterNpcContexts.count) return;
 	remasterNpcActor = remasterNpcContexts[index];
+	[remasterNpcActionSelector removeAllItems];
+	[remasterNpcActionSelector addItemWithTitle:@"All actions"];
+	NSMutableOrderedSet *actions = [NSMutableOrderedSet new];
+	for (NSDictionary *pose in remasterNpcActor[@"poses"]) [actions addObject:pose[@"action"]];
+	[remasterNpcActionSelector addItemsWithTitles:actions.array];
 	[self changeRemasterNpcFacing:nil];
 }
 
@@ -495,6 +507,8 @@
 	[remasterNpcPoseSelector removeAllItems];
 	for (NSDictionary *pose in remasterNpcActor[@"poses"])
 	{
+		if (remasterNpcActionSelector.indexOfSelectedItem > 0 &&
+			![pose[@"action"] isEqual:remasterNpcActionSelector.titleOfSelectedItem]) continue;
 		if (remasterNpcFacingSelector.indexOfSelectedItem > 0 &&
 			![pose[@"facing"] isEqual:remasterNpcFacingSelector.titleOfSelectedItem]) continue;
 		[filtered addObject:pose];
@@ -517,9 +531,12 @@
 	}
 	remasterNpcPose = remasterNpcFilteredPoses[index];
 	RemasterNpcDecodePose(remasterNpcPose, remasterNpcRomHash, remasterNpcPreviewFrame, &remasterNpcCanvasBounds);
-	remasterNpcStatus.stringValue = [NSString stringWithFormat:@"%@\n%@ · %@ · modeled, unverified%@\nClick to select; click a selected tile to clear all. Cmd-click toggles tiles. Select all tiles selects this pose.\n%@",
+	NSString *coverage = [remasterNpcActor[@"coverage"][@"gaps"] componentsJoinedByString:@" "] ?: @"Legacy library: action coverage has not been audited.";
+	remasterNpcStatus.toolTip = [@"Coverage: PARTIAL — " stringByAppendingString:coverage];
+	remasterNpcStatus.stringValue = [NSString stringWithFormat:@"%@\n%@ · %@ · modeled, unverified%@\nCoverage: PARTIAL — %@\n%@",
 		[remasterNpcActor[@"contexts"] componentsJoinedByString:@" · "], remasterNpcPose[@"facing"], remasterNpcPose[@"action"],
 		[remasterNpcActor[@"graphics_inherited"] boolValue] ? @" · inherited graphics slots" : @"",
+		coverage,
 		remasterEditingProfileLoaded && remasterEditingProfile.romSha256 == remasterNpcRomHash.UTF8String ?
 			@"Matching profile loaded; normal, height, emission and other layers use the existing editor." :
 			@"Read-only artwork: load the matching ALTTP remaster profile to enable editing."];
@@ -539,7 +556,8 @@
 		for (NSUInteger n = 1; n <= remasterNpcFilteredPoses.count; n++)
 		{
 			NSUInteger next = (current + n) % remasterNpcFilteredPoses.count;
-			if ([remasterNpcFilteredPoses[next][@"facing"] isEqual:facing])
+			if ([remasterNpcFilteredPoses[next][@"facing"] isEqual:facing] &&
+				[remasterNpcFilteredPoses[next][@"action"] isEqual:remasterNpcPose[@"action"]])
 			{ [remasterNpcPoseSelector selectItemAtIndex:next]; [weakSelf changeRemasterNpcPose:nil]; break; }
 		}
 	}];

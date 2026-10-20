@@ -10,6 +10,55 @@ enum RemasterEditorLayer
 	RemasterEditorMetadata, RemasterEditorDoorframe
 };
 
+// Translate within one tile, without wrapping or reflecting vector components.
+// Newly exposed samples use the layer's neutral/default pixel.
+template<class T, size_t N>
+inline void S9xRemasterShiftLayerPixels(std::array<T, N> &values, int dx, int dy,
+	const std::array<T, N / 64> &fill = {})
+{
+	static_assert(N % 64 == 0, "8x8 pixel layer required");
+	const auto before = values;
+	for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++)
+		for (size_t c = 0; c < N / 64; c++)
+			values[(y * 8 + x) * (N / 64) + c] =
+				x-dx >= 0 && x-dx < 8 && y-dy >= 0 && y-dy < 8 ?
+				before[((y-dy) * 8 + x-dx) * (N / 64) + c] : fill[c];
+}
+
+inline bool S9xRemasterShiftMetadataLayer(RemasterAssetMetadata &metadata, int layer, int dx, int dy)
+{
+	if (!((dx == 0 && (dy == -1 || dy == 1)) || (dy == 0 && (dx == -1 || dx == 1)))) return false;
+	switch (layer)
+	{
+		case RemasterEditorMaterial:
+			if (!metadata.hasMaterialSelectors) return false;
+			S9xRemasterShiftLayerPixels(metadata.materialSelectors, dx, dy); break;
+		case RemasterEditorOcclusion:
+			if (!metadata.hasOcclusion) return false;
+			S9xRemasterShiftLayerPixels(metadata.occlusion, dx, dy, std::array<uint8_t, 1>{{255}}); break;
+		case RemasterEditorHeight:
+			if (!metadata.hasHeight) return false;
+			S9xRemasterShiftLayerPixels(metadata.height, dx, dy); break;
+		case RemasterEditorNormal:
+			if (!metadata.hasNormals) return false;
+			S9xRemasterShiftLayerPixels(metadata.normalXyz, dx, dy, std::array<uint8_t, 3>{{128,128,255}}); break;
+		case RemasterEditorEmission:
+			if (!metadata.hasEmission) return false;
+			S9xRemasterShiftLayerPixels(metadata.emissionRgba, dx, dy); break;
+		case RemasterEditorDoorframe:
+		{
+			if (!metadata.hasDoorframeMask) return false;
+			const auto before = metadata.doorframeMask; metadata.doorframeMask = 0;
+			for (int y=0;y<8;y++) for (int x=0;x<8;x++)
+				if (x+dx>=0 && x+dx<8 && y+dy>=0 && y+dy<8 && (before & (UINT64_C(1) << (y*8+x))))
+					metadata.doorframeMask |= UINT64_C(1) << ((y+dy)*8+x+dx);
+			break;
+		}
+		default: return false;
+	}
+	return true;
+}
+
 // Mirror pixel locations only; vector/RGBA components remain intact.
 template<class T, size_t N>
 inline void S9xRemasterFlipLayerPixels(std::array<T, N> &values, bool horizontal)

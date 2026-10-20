@@ -31,6 +31,7 @@ typedef struct
 	float intensity;
 	uint sampleCount;
 	uint firstSample;
+	uint hideSource;
 	float3 color;
 } RemasterGpuLight;
 
@@ -685,7 +686,7 @@ kernel void remasterDirectLighting(
 			uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a * remasterEmissionRadiance : float3(0.0);
 		for (uint i = 0; i < uniforms.lightCount; i++) {
 			RemasterGpuLight light = lights[i];
-			if (remasterDebugSphereVisible(float2(pixel) + 0.5, surface.r, float4(light.position, light.radius)))
+			if (!light.hideSource && remasterDebugSphereVisible(float2(pixel) + 0.5, surface.r, float4(light.position, light.radius)))
 				debugEmission += light.color * light.intensity * remasterEmissionRadiance;
 		}
 		output.write(float4(remasterCompositeToDisplay(remasterEmissionAppearance(selfEmission + debugEmission)), 1.0), pixel);
@@ -1526,7 +1527,7 @@ kernel void remasterCompositeLighting(
 		composite += uniforms.debugColorIntensity.rgb * uniforms.debugColorIntensity.a;
 	for (uint i = 0; i < uniforms.lightCount; i++) {
 		RemasterGpuLight light = sceneLights[i];
-		if (remasterDebugSphereVisible(float2(pixel) + 0.5, surfaceField.read(pixel).r, float4(light.position, light.radius)))
+		if (!light.hideSource && remasterDebugSphereVisible(float2(pixel) + 0.5, surfaceField.read(pixel).r, float4(light.position, light.radius)))
 			composite += light.color * light.intensity;
 	}
 	if (uniforms.view == 2)

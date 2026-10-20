@@ -1,5 +1,22 @@
 # Completed-room emitter capture
 
+## Held-lamp presentation
+
+Link's held lamp defaults to a forward offset of 10 source pixels (formerly 12).
+Its radius 2, height 12, intensity 200 and warm color are unchanged. Held lamps
+set `RemasterFrameLight::hideSource`: Composite/Difference and Emission omit the
+source sphere, while direct/indirect transport still receives the complete light.
+Authored and session debug lights retain their visible spheres by default.
+The optional `LVP1` capture appendix stores sparse hidden-light indices; packets
+without it retain visible-source defaults. Older readers reject the new appendix
+rather than silently losing presentation state. Existing captures retain their
+original offsets/presentation and need recapture for the new held-lamp defaults.
+
+Held-lamp anchor/state/HUD and capture round-trip/malformed-index tests pass.
+The Metal harness passes 1387/1387 checks, including unchanged exhaustive and
+sampled Direct when hiding a scene sphere. arm64 Debug and Release builds pass;
+live gameplay appearance has not been checked.
+
 ## October12 camera-edge source continuity (current)
 
 Room fixtures no longer use the sphere approximation described in the historical

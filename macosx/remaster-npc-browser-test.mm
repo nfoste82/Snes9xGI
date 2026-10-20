@@ -63,7 +63,13 @@ int main(int argc, char **argv)
 		for (NSDictionary *actor in document[@"actors"])
 		{
 			if ([actor[@"name"] isEqual:@"Link"])
-			{ if ([actor[@"poses"] count] != 24) return 1; sawLink = true; }
+			{
+				NSUInteger walking = 0;
+				for (NSDictionary *pose in actor[@"poses"])
+					if ([pose[@"action"] isEqual:@"walking"]) walking++;
+				if (walking != 36 || ![actor[@"coverage"][@"status"] isEqual:@"partial"]) return 1;
+				sawLink = true;
+			}
 			if ([actor[@"name"] isEqual:@"Ganon"])
 			{ if ([actor[@"poses"] count] != 34) return 1; sawGanon = true; }
 			if ([actor[@"name"] isEqual:@"King Zora"])
@@ -180,13 +186,13 @@ int main(int argc, char **argv)
 		{
 			if (![actor[@"name"] isEqual:@"Agahnim"]) continue;
 			agahnimContexts++;
-			std::map<std::string, std::array<uint8_t, 64>> ramps;
+			std::map<std::string, std::array<int16_t, 64>> ramps;
 			std::set<std::string> conflicts;
 			for (NSDictionary *pose in actor[@"poses"])
 			{
 				int bottom = INT_MIN;
 				for (NSDictionary *part in pose[@"parts"]) bottom = std::max(bottom, [part[@"y"] intValue] + 7);
-				std::map<std::string, std::array<uint8_t, 64>> local;
+				std::map<std::string, std::array<int16_t, 64>> local;
 				for (NSDictionary *part in pose[@"parts"])
 				{
 					std::string tile = [part[@"tile_hash"] UTF8String];

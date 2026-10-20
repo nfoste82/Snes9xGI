@@ -1,5 +1,23 @@
 # Pre-cone lamp scene capture
 
+## Dialogue-state continuity
+
+The USA adapter also accepts indoor module `$0e`, submodule `$02` (RenderText),
+with saved world module `$010c == 7`. Both the held-lamp producer and raw-color
+capture use this context; the independent scene pass accepts every RenderText
+subsubmodule stage. Normal dungeon scene capture still requires settled module
+7/submodule 0/subsubmodule 0. Inventory/map/other interface states and overworld
+dialogue are not newly enabled. This follows the local reference engine's
+`messaging.c` interface dispatch and `variables.h` saved-module address.
+
+Previously all three integration gates required module 7, so opening dialogue
+removed both the physical lamp and its cone-free scene. BG3 HUD/dialogue pixels
+still bypass lighting using stock ownership/color; Original is unchanged.
+Held-lamp context tests cover all 256 interface substates and 256 text stages,
+and plotter/recovery tests cover dialogue BG3 ownership with cone-free room color.
+Portable tests (including scene ASan/UBSan), arm64 Debug/Release builds and
+`git diff --check` pass. Fresh live dialogue opening/closing has not been checked.
+
 `S9xUpdateScreen` performs an independent bounded scene pass for packet-active,
 SHA-verified USA ALTTP, settled indoor module 7, lamp `$0458` enabled, ordinary
 Mode 1 without interlace/hires or BG2/BG3 mosaic. It reuses the actual tile/OAM

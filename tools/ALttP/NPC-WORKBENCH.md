@@ -57,6 +57,11 @@ normals. Occlusion uses the Pixel Inspector's green-to-red scale (0 green,
 Selected pixels use the same yellow tint as in-game selection; deselect to see
 unmodified debug colors.
 
+The assembled previews do not draw tile-instance boundary outlines. Those faint
+white lines previously looked like vertical/horizontal geometry seams on large
+actors such as Ganon, despite not being present in the authored maps. Ownership
+picking and yellow selected-identity highlighting remain unchanged.
+
 Height view's **Min height / Max height** fields map the display gradient from
 black at min to white at max, clamping values outside that range. The default
 is **0–32**, and both fields are remembered across sessions. Enter values from
@@ -245,6 +250,65 @@ graphics slots remains browsable but suggestions are disabled until its entry
 state is reconstructed.
 
 ## Coverage boundary
+
+### Source inventory and action expansion (2026-10-19)
+
+Generation now writes `coverage.json` and embeds the same inventory in
+`poses.json`. It inventories **all 243 main sprite dispatch entries**, including
+unplaced/dynamically used types, with dispatcher symbols, direct calls, reachable
+draw/animation candidates, state-input names, generated models and explicit gaps.
+This is a static review work queue, **not an exhaustive branch/reachability proof**.
+Current inventory: 83 partially modeled sprite types, 159 unmodeled and one null
+dispatcher. Player, followers, ancilla, garnish, overlords, mixed-BG actors and
+cutscenes are separately listed systems; a sprite dispatch scan cannot cover them.
+
+The expanded library has **242 contexts and 3,380 poses**. Link contributes 1,264
+poses across seven sampled equipment/palette configurations. Walking includes
+all nine steps per direction. Additional bounded actions: sword swings (9),
+charged movement (6), wall taps (3), chronological spin release (12), bunny
+movement (4), swimming idle (2), recoil, electrocution, one/two-handed item holds
+and sword held overhead. Sword/shield and item DMA are applied independently of
+body DMA; body shadows are excluded. Three tunics and all sword/shield levels
+are sampled, **not every equipment combination or glove variant**. Independent
+charge sparkles are ancilla and are not part of the body draw adapter.
+
+`alttp_npc_coverage.py` pins the reference source digests, checks the movement
+bound and compares the adapter's chronological spin table with `player.c`.
+Other newly added bounds remain explicitly inspected state contracts, not
+automatic symbolic derivations. The native and HTML browsers have an Action
+filter; native playback stays within the selected action/facing. Bulk authoring
+is labeled **All catalogued poses** and coverage remains visibly PARTIAL.
+
+Read-only capture artwork audit:
+
+```sh
+python3 -B tools/ALttP/alttp_npc_workbench.py \
+  --audit-capture "$HOME/Library/Application Support/Snes9x/Remaster/frame_overworld_x07f4_y072a.s9xrmf"
+```
+
+Repeat `--audit-capture` for more packets. `capture-audit.json` separates missing
+library artwork from missing captured height/normal layers. It uses the actual
+C++ frame decoder, observes OBJ identities and expands intersecting capture
+animation groups. Groups without a representative OBJ member cannot be assigned;
+the report is an artwork lower bound, not logical-actor attribution or assembled
+pose/state parity. Captured authoring is historical, not the current disk profile.
+The castle fixture reports 46 observed identities, zero absent from the expanded
+library, and ten without captured height/normals. No profile is changed.
+
+Remaining work toward the exhaustive target: review each inventory candidate,
+derive valid state/action vectors and table limits for the other families, model
+dynamic contexts and sequence-dependent assemblies, complete Link item/carry/
+pit/stair/swim/medallion/death/cutscene states and equipment combinations, and add
+state-pinned live actor/assembly parity observations. **No family is marked fully
+verified by this first milestone.** Historical counts/boundaries below describe
+the previous catalog, not the expanded generation.
+
+Validation for this milestone: 13 Python tests; native decoder/counterpart/
+selection corpus over all 3,380 poses and 1,227,524 opaque pixel picks; portable
+NPC assembly test; profile export/idempotence check preserving all 2,058 existing
+assets; full arm64 Release app build. Export check writes a separate candidate,
+not the source profile. Artwork contact sheets were reviewed; interactive Action
+menu, playback, painting/Undo and live sword-state parity still need confirmation.
 
 The expanded catalog contains **99 named character/enemy families, 236
 graphics/palette contexts and 2,140 draw poses** (2026-10-13). The original

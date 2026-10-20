@@ -21,6 +21,7 @@ from alttp_atlas import SUPPORTED_US_SHA256
 from alttp_atlas_graphics import tile_content_id
 from alttp_npc_workbench_support import sprite_tilesets, special_overworld_contexts
 from alttp_npc_catalog import CATALOG, MODELED_TYPES
+from alttp_npc_coverage import link_sequences, build_coverage, compare_observations
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = ROOT / "build/remaster-geometry/npc-workbench"
@@ -125,6 +126,7 @@ def generate(engine: Path, atlas: Path, output: Path):
     with sqlite3.connect(f"file:{atlas}?mode=ro", uri=True) as db:
         bg_hashes = {r[0] for r in db.execute("SELECT DISTINCT content_id FROM graphics_source WHERE source_kind='background'")}
     missing_models = []
+    player_sequences = link_sequences(engine)
     for model in CATALOG:
         type_id, name, action = model["type_id"], model["name"], model["action"]
         indexed = defaultdict(set) if model.get("explicit_contexts") else contexts(atlas, model, special)
@@ -140,37 +142,79 @@ def generate(engine: Path, atlas: Path, output: Path):
                 witnesses = [model["context_note"], *witnesses]
             if not 0 <= palette < 256:
                 continue
-            run = subprocess.run([str(executable), str(type_id), str(gfx), str(palette), model["draw"],
-                                  str(model["directions"]), str(model["steps"]), str(world),
-                                  str(model["follower"]), str(model["variant"])],
-                                 cwd=engine, capture_output=True, text=True, check=True, timeout=30)
-            raw = json.loads(run.stdout)
-            for pose in raw["poses"]:
-                pose["action"] = action
-                pose["guard"] = 0x3f <= type_id <= 0x4b or model["draw"] == "thief"
-                try:
-                    prepare_pose(pose)
-                except ValueError as error:
-                    raise ValueError(f"{name}, gfx {gfx:02x}, palette {palette}, direction {pose['direction']}, step {pose['step']}: {error}") from error
-                if model["directions"] == 1:
-                    pose["facing"] = "fixed"
-                elif model["draw"] in ("smithy", "bully"):
-                    pose["facing"] = ["west", "east"][pose["direction"]]
-                elif model["draw"] == "uncle":
-                    pose["facing"] = "fixed"
-                    pose["action"] = ["idle", "sword held", "sword extended", "fallen"][pose["direction"]]
-                elif model["draw"] == "ganon":
-                    pose["facing"] = ["west", "east"][pose["direction"]]
-                elif model.get("dungeon_palette"):
-                    pose["facing"] = ["east", "west", "south", "north"][pose["direction"]]
-                if model["draw"] == "armos-knight":
-                    pose["action"] = "blue knight" if pose["step"] < 2 else "red crusher"
-                pose["status"] = "modeled_unverified"
-            actors.append({"id": f"{model['key']}-{gfx:02x}-{palette:02x}-{world}", "name": name,
-                            "type_id": type_id, "gfx_index": gfx, "palette_index": palette,
-                            "draw_model": model, "world": world,
-                           "contexts": witnesses, "poses": raw["poses"],
-                            "graphics_inherited": False if model["draw"] == "link" else 0 in tilesets[gfx]})
+            sequences = player_sequences if model["draw"] == "link" else [dict(action=action, steps=model['steps'])]
+            raw = {"poses": []}
+            # Isolate equipment/palette variants, but retain actions together so
+            # the native browser can filter and author all catalogued actions.
+            equipment = [(0, 0, 0)] if model['draw'] != 'link' else [
+                (0, 0, 0), (1, 1, 0), (2, 2, 0), (3, 3, 0), (4, 3, 0),
+                (2, 2, 1), (2, 2, 2)]
+            for sword, shield, armor in equipment:
+                variant_poses = []
+                for sequence in sequences:
+                    state = sequence.get('adapter_state', 0)
+                    if model['draw'] == 'link' and not sword and state in (1, 2, 3, 4, 11):
+                        continue
+                    if model['draw'] == 'link' and sword and state == 5:
+                        continue  # Bunny has no equipment; do not invent equipped bunnies.
+                    command = [str(executable), str(type_id), str(gfx), str(palette), model["draw"],
+                               str(model["directions"]), str(sequence["steps"]), str(world),
+                               str(model["follower"]), str(model["variant"])]
+                    if model['draw'] == 'link':
+                        command += list(map(str, (state, sword, shield, armor)))
+                    run = subprocess.run(command, cwd=engine, capture_output=True, text=True, check=True, timeout=30)
+                    drawn = json.loads(run.stdout)['poses']
+                    if len(drawn) != model['directions'] * sequence['steps']:
+                        raise ValueError(f"Incomplete draw sequence: {name}, {sequence['action']}")
+                    for pose in drawn:
+                        pose['action'] = sequence['action']
+                        pose['evidence'] = sequence.get('evidence', 'Legacy bounded adapter; bounds need source review.')
+                        if model['draw'] == 'link':
+                            expected_action = [0, 39, 2, 3, 15, 33, 17, 5, 20, 29, 30, 36][state]
+                            if pose['draw_state']['oam_action'] != expected_action:
+                                raise ValueError(f"Link draw-state branch mismatch: {sequence['action']}")
+                    variant_poses.extend(drawn)
+                raw['poses'] = variant_poses
+                if model['draw'] == 'link':
+                    actors.append(dict(id=f"link-equipment-{sword}-{shield}-{armor}", name=name,
+                                       type_id=type_id, gfx_index=gfx, palette_index=palette, draw_model=model,
+                                       world=world, contexts=[f"Sword {sword}, shield {shield}, tunic {armor}; gloves 0"],
+                                       poses=variant_poses, graphics_inherited=False,
+                                       equipment=dict(sword=sword, shield=shield, armor=armor)))
+            # Non-Link actors have one variant here. Link variants were added above.
+            generated_actors = actors[-len(equipment):] if model['draw'] == 'link' else [dict(
+                id=f"{model['key']}-{gfx:02x}-{palette:02x}-{world}", name=name, type_id=type_id,
+                gfx_index=gfx, palette_index=palette, draw_model=model, world=world, contexts=witnesses,
+                poses=raw['poses'], graphics_inherited=0 in tilesets[gfx])]
+            for actor in generated_actors:
+                actor['coverage'] = dict(status='partial', exhaustive=False,
+                    gaps=(["Item-use, carrying/lifting, pits, stairs, swimming strokes, medallions, sleep/death and cutscenes remain unmodeled.",
+                           "Equipment combinations and gloves are sampled, not exhaustive; independent ancilla charge sparkles/effects are excluded.",
+                           "Draw-state vectors need gameplay assembly/palette parity verification."] if model['draw'] == 'link' else
+                          ["Legacy bounded frames: attack/recoil/death branches, independent facing/head states and dynamic contexts require source review."]))
+            if model['draw'] != 'link':
+                actors.extend(generated_actors)
+            for actor in generated_actors:
+                for pose in actor['poses']:
+                    pose["guard"] = 0x3f <= type_id <= 0x4b or model["draw"] == "thief"
+                    try:
+                        prepare_pose(pose)
+                    except ValueError as error:
+                        raise ValueError(f"{name}, gfx {gfx:02x}, palette {palette}, direction {pose['direction']}, step {pose['step']}: {error}") from error
+                    if model["directions"] == 1:
+                        pose["facing"] = "fixed"
+                    elif model["draw"] in ("smithy", "bully"):
+                        pose["facing"] = ["west", "east"][pose["direction"]]
+                    elif model["draw"] == "uncle":
+                        pose["facing"] = "fixed"
+                        pose["action"] = ["idle", "sword held", "sword extended", "fallen"][pose["direction"]]
+                    elif model["draw"] == "ganon":
+                        pose["facing"] = ["west", "east"][pose["direction"]]
+                    elif model.get("dungeon_palette"):
+                        pose["facing"] = ["east", "west", "south", "north"][pose["direction"]]
+                    if model["draw"] == "armos-knight":
+                        pose["action"] = "blue knight" if pose["step"] < 2 else "red crusher"
+                    pose["status"] = "modeled_unverified"
             if model["draw"] == "ganon":
                 actors[-1]["contexts"] = ["room 000 (room-header dungeon palette)"]
     actors.sort(key=lambda actor: (actor["name"].casefold(), actor["id"]))
@@ -190,9 +234,12 @@ def generate(engine: Path, atlas: Path, output: Path):
                                       "Draw-only poses are not gameplay reachability or Snes9x parity proof.",
                                        "Legacy character dungeon palettes remain provisional; new enemy models use room-header palettes. Zero/inherited graphics slots still need entry-state verification.",
                                        "Trinexx, remaining enemies, boss minions/projectiles and additional phases need bounded draw adapters; segmented boss histories are modeled straight travel, not captured gameplay trajectories.",
-                                       "Link equipment/actions beyond walking, Ganon attack effects, travel duck, Venus, Pikku, Ghostly Proprietor and background-composited Talking Tree need further draw/context adapters.",
+                                        "Link has bounded movement/sword/action adapters, not all player actions or equipment combinations. Ganon attack effects, travel duck, Venus, Pikku, Ghostly Proprietor and background-composited Talking Tree need further adapters.",
                                       "Crystal maidens share a visual family; individual rescue palettes and reachability remain unverified.",
                                       "Maple is GBA-only and absent from the supported SNES ROM."]}}
+    manifest['coverage']['inventory'] = build_coverage(engine, CATALOG, actors)
+    atomic_write(output / "coverage.json", json.dumps(manifest['coverage']['inventory'], indent=2)+'\n')
+    # Publish only after every bounded state and source inventory validates.
     atomic_write(output / "poses.json", json.dumps(manifest, separators=(",", ":")))
     validator = output / "alttp-profile-validate"
     subprocess.run(["c++", "-std=c++17", "-O2", str(Path(__file__).with_name("alttp_profile_validate.cpp")),
@@ -203,6 +250,20 @@ def generate(engine: Path, atlas: Path, output: Path):
 def all_placed_types(atlas):
     with sqlite3.connect(f"file:{atlas}?mode=ro", uri=True) as db:
         return [r[0] for r in db.execute("SELECT DISTINCT type_id FROM placed_sprite_type WHERE family != 'overlord'")]
+
+
+def audit_captures(output, captures):
+    executable = output / 'alttp-npc-capture-audit'
+    subprocess.run(['c++', '-std=c++17', '-O2', str(Path(__file__).with_name('alttp_npc_capture_audit.cpp')),
+                    '-o', str(executable)], check=True)
+    observed = subprocess.check_output([str(executable), *map(str, captures)], text=True)
+    manifest = json.loads((output / 'poses.json').read_text())
+    result = compare_observations(manifest, json.loads(observed))
+    atomic_write(output / 'capture-audit.json', json.dumps(result, indent=2)+'\n')
+    for capture in result['captures']:
+        print(f"{capture['capture']}: {capture['observed_tiles']} observed OBJ identities; "
+              f"{len(capture['absent_from_library'])} absent from library; "
+              f"{len(capture['missing_height'])} missing captured height, {len(capture['missing_normals'])} missing captured normals")
 
 
 def silhouette_defaults(pose: dict) -> dict:
@@ -454,6 +515,8 @@ def main():
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--profile", type=Path)
     parser.add_argument("--generate", action="store_true")
+    parser.add_argument("--audit-capture", type=Path, action="append", default=[],
+                        help="compare captured OBJ/animation artwork against library (repeatable, read-only)")
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--open", action="store_true")
     parser.add_argument("--port", type=int, default=8766)
@@ -464,8 +527,10 @@ def main():
         generate(args.engine.resolve(), args.atlas.resolve(), args.output.resolve())
     if args.serve or args.open:
         serve(args.output.resolve(), args.profile.resolve() if args.profile else None, args.port, args.open)
-    elif not args.generate:
+    elif not args.generate and not args.audit_capture:
         parser.error("choose --generate or --serve/--open")
+    if args.audit_capture:
+        audit_captures(args.output.resolve(), [p.resolve() for p in args.audit_capture])
 
 
 if __name__ == "__main__":
