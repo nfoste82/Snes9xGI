@@ -287,6 +287,10 @@ static void FinishBenchmarkFrame()
 volatile bool8		running             = false;
 volatile bool8		s9xthreadrunning    = false;
 
+// Enter before launching so an immediate quit also waits for a not-yet-started thread.
+static dispatch_group_t emulationThreadGroup = dispatch_group_create();
+static std::atomic<bool> emulationStopRequested{false};
+
 volatile bool8		windowExtend        = true;
 
 uint32				controlPad[MAC_MAX_PLAYERS];
@@ -1431,7 +1435,7 @@ static inline void EmulationLoop (void)
     }
     else
     {
-        while (running)
+        while (!emulationStopRequested.load() && running)
         {
             ProcessInput();
 
@@ -4614,6 +4618,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)start
 {
+	// A prior loop can have set StopEmulation just before its thread returns.
+	dispatch_group_wait(emulationThreadGroup, DISPATCH_TIME_FOREVER);
 #ifdef DEBUGGER
 	CPU.Flags |= DEBUG_MODE_FLAG;
 	S9xDoDebug();
@@ -4628,9 +4634,12 @@ void QuitWithFatalError ( NSString *message)
 
 	S9xInitDisplay(NULL, NULL);
 
+	emulationStopRequested.store(false);
+	dispatch_group_enter(emulationThreadGroup);
 	[NSThread detachNewThreadWithBlock:^
 	{
 		MacSnes9xThread(NULL);
+		dispatch_group_leave(emulationThreadGroup);
 	}];
 }
 
@@ -4638,6 +4647,11 @@ void QuitWithFatalError ( NSString *message)
 {
 	ClearRemasterDebugLightRedraw();
 	[s9xView cancelRemasterDebugLightGesture];
+	// Stop the producer before saving SRAM or allowing shared C++ state to die.
+	emulationStopRequested.store(true);
+	running = false;
+	dispatch_group_wait(emulationThreadGroup, DISPATCH_TIME_FOREVER);
+	S9xDeinitDisplay(); // Drains queued presentation and Metal completion handlers.
 	SNES9X_Quit();
     S9xExit();
 }
@@ -4766,14 +4780,17 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)quit
 {
-	ClearRemasterDebugLightRedraw();
-	[s9xView cancelRemasterDebugLightGesture];
-	SNES9X_Quit();
+	[self stop];
 	[self pause];
 }
 
 - (void)resume
 {
+	// Inspector edits update the retained preview without publishing every stroke
+	// to the core. Hand off all session edits before the first resumed frame;
+	// saving the profile to disk is deliberately not required.
+	if (running && remasterEditingProfileLoaded)
+		S9xRemasterSetProfile(remasterEditingProfile);
 	remasterCaptureSession.fetch_add(1);
 	remasterPausedCapturePending.store(false);
 	ClearRemasterDebugLightRedraw();
@@ -6246,6 +6263,10 @@ void QuitWithFatalError ( NSString *message)
 	else
 	{
 		text << "Tile        No tile selected\n";
+		if (S9xRemasterFrameBackdropGroundAt(remasterReplayFrame, offset))
+			text << "Surface     Outdoor backdrop through transparent tile pixels\n"
+				<< "Height      Provisional ground at 0; not authored geometry\n"
+				<< "Editing     No visible tile identity here; click opaque artwork to edit a tile\n";
 	}
 	remasterInspectorText.string = [NSString stringWithUTF8String:text.str().c_str()];
 	remasterVariants.clear();

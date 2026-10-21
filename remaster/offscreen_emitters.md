@@ -1,5 +1,26 @@
 # Completed-room emitter capture
 
+## October20 room012 north-pillar diagnosis (unrepaired)
+
+Own-input production replay of `frame_room012_008.s9xrmf`, profile serialized FNV
+`8cd9be1bf06a3123`, room0x012, module7/submodule0/construction0, scroll[1157,604],
+finds156 genuinely emitting placements:12 rejected unknown artwork bases,
+545 hidden source pixels and1599 visible emitting pixels on accepted placements.
+The12 rejected BG2 cells form two2x3 groups: x25..26 and37..38, y16..18,
+consistent with the reported north pillars. All12 `offsets` are255; four top-row
+cells have support-only base0 but no solved artwork base, and the other eight
+lack support too. Existing conservative rejection at `offscreen_emitters.h`
+therefore removes their sources as they leave the visible path. Emission exists;
+this is not missing emission painting or a light-distance cutoff.
+
+No room-height rule or fallback was changed. Support-under-art is not proof of
+artwork placement height. Required room-height-expert delegation failed to launch
+twice (unavailable configured `medium` variant). A reusable pillar-placement/base
+capability, failure-class tests, complete-room validation v2 and corpus audit remain
+needed; this source audit is NOT height-coverage approval. Local reproduction:
+`build/remaster-tests/room012-emitter-probe` with `ALTTP_EMITTER_PLACEMENTS=1`;
+artifact/log prefix `build/remaster-tests/room012-008-source-audit`.
+
 ## Held-lamp presentation
 
 Link's held lamp defaults to a forward offset of 10 source pixels (formerly 12).

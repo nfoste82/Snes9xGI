@@ -120,7 +120,9 @@ struct RemasterLightingFieldCache
 			const bool sub = !useScene && !main.instanceId && static_cast<uint8_t>(main.owner >> 24) == static_cast<uint8_t>(RemasterSourceType::Backdrop);
 			const auto &pixel = sub ? frame.subPixels[i] : main;
 			const bool valid = !hud && pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64;
-			const uint64_t key = valid ? (uint64_t(pixel.instanceId) << 8) | pixel.tilePixel : hud ? UINT64_MAX : 0;
+			const bool backdropGround = !hud && S9xRemasterFrameBackdropGroundAt(frame, i, useScene);
+			const uint64_t key = valid ? (uint64_t(pixel.instanceId) << 8) | pixel.tilePixel :
+				hud ? UINT64_MAX : backdropGround ? UINT64_MAX - 1 : 0;
 			const auto *m = valid ? instanceMetadata[pixel.instanceId-1] : nullptr;
 			// Sources animate independently of cached surface fields.
 			std::fill_n(emission.begin()+i*4, 4, 0);
@@ -136,6 +138,17 @@ struct RemasterLightingFieldCache
 			std::fill_n(surface.begin()+i*4, 4, 0.0f);
 			std::fill_n(reflectance.begin()+i*4, 4, 0.0f);
 			samples[i] = {};
+			if (backdropGround)
+			{
+				// Same provisional domain as unauthored BG ground at base zero.
+				// No tile identity, authored normal, material or emission is invented.
+				height[i*2+1] = 1;
+				occlusion[i*2] = occlusion[i*2+1] = 255;
+				surface[i*4+3] = 1;
+				samples[i].known = samples[i].sheet = samples[i].fallbackGround = true;
+				samples[i].coverage = 1;
+				samples[i].domain = uint64_t(3) << 48;
+			}
 			if (!valid) continue;
 			const auto &instance = frame.tileInstances[pixel.instanceId-1];
 			auto material = instance.material.empty() ? materials.end() : materials.find(instance.material);

@@ -687,6 +687,7 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.previousRoomIndex = Memory.RAM[0xa2] | (Memory.RAM[0xa3] << 8);
 				dungeonFloor.submodule = Memory.RAM[0x11];
 				dungeonFloor.module = Memory.RAM[0x10];
+				dungeonFloor.savedModule = Memory.RAM[0x10c];
 				dungeonFloor.constructionPhase = Memory.RAM[0xb0];
 				dungeonFloor.attributeConstructionState = Memory.RAM[0x200];
 				dungeonFloor.scrollDirection = Memory.RAM[0x418];
@@ -739,7 +740,7 @@ void S9xEndScreenRefresh (void)
 			}
 			RemasterHeldLampState heldLamp;
 			heldLamp.verifiedRom = dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors &&
-				S9xRemasterHeldLampDungeonContext(dungeonFloor.module, dungeonFloor.submodule, Memory.RAM[0x10c]);
+				S9xRemasterHeldLampDungeonContext(dungeonFloor.module, dungeonFloor.submodule, dungeonFloor.savedModule);
 			if (heldLamp.verifiedRom)
 			{
 				heldLamp.darkWithLantern = Memory.RAM[0x458] != 0;

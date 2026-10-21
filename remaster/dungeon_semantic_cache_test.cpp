@@ -28,7 +28,10 @@ int main() {
   key=s.dungeonGeometryProfileKey;epoch=s.runtimeDungeonHeightEpoch;frame();assert(s.runtimeDungeonHeightEpoch==epoch);
   assert(s.activeProfile.assets[id].height==profile.assets[id].height);
  }
- S9xRemasterSetProfile(profile);frame();assert(s.runtimeDungeonHeightEpoch==epoch); // identical reload
+ // Publication revokes validity even for an identical reload. It must rebuild
+ // before use, rather than skipping on the equal key and dropping all offsets.
+ S9xRemasterSetProfile(profile);frame();assert(s.runtimeDungeonHeightValid && s.runtimeDungeonHeightEpoch>epoch);
+ epoch=s.runtimeDungeonHeightEpoch;frame();assert(s.runtimeDungeonHeightEpoch==epoch);
  // Distinct signed local relief with identical low bytes must invalidate geometry.
  for(int height : {256,-256,512,-512}) {
   profile.assets[id].height.fill(static_cast<int16_t>(height));

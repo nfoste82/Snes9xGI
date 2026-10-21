@@ -1250,6 +1250,20 @@ material = "wet_stone"
 	assert(S9xRemasterState().activeProfile.originalSceneContribution == 0.75f);
 	assert(S9xRemasterState().activeProfile.assets.size() == profile.assets.size());
 	S9xRemasterEndFrame();
+	// Paused inspector metadata is independent of the active runtime profile.
+	// Resume publishes the unsaved session profile at the next frame boundary.
+	RemasterProfile resumedProfile = profile;
+	resumedProfile.assets[frameAsset.tileId].emissionDepth = 1;
+	S9xRemasterApplyProfileToFrame(resumedProfile, synchronizedFrame);
+	assert(S9xRemasterFrameMetadataForTile(synchronizedFrame, frameAsset.tileId)->emissionDepth == 1);
+	const float previousDepth = S9xRemasterState().activeProfile.assets.at(frameAsset.tileId).emissionDepth;
+	S9xRemasterSetProfile(resumedProfile);
+	assert(S9xRemasterState().activeProfile.assets.at(frameAsset.tileId).emissionDepth == previousDepth);
+	S9xRemasterBeginFrame(1, 1, 1, 1);
+	assert(S9xRemasterState().activeProfile.assets.at(frameAsset.tileId).emissionDepth == 1);
+	S9xRemasterApplyProfileToFrame(S9xRemasterState().activeProfile, synchronizedFrame);
+	assert(S9xRemasterFrameMetadataForTile(synchronizedFrame, frameAsset.tileId)->emissionDepth == 1);
+	S9xRemasterEndFrame();
 	S9xRemasterSetProfile(profile);
 
 	const std::string framePath = "/tmp/snes9x-remaster-frame-test.s9xrmf";

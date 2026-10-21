@@ -92,8 +92,10 @@ the actual per-receiver ray count can be lower after angular/facing rejection.
 ### Single-record sampled emission depth
 
 Production representative Direct additionally uses deterministic distance-adaptive
-depth quadrature: retain four strata when depth/distance is at least 0.05, otherwise
-use two midpoint strata with twice the quarter-stratum RGB and normalization area.
+depth quadrature: retain four strata when depth/distance is at least 0.05, two
+midpoint strata from 0.025 to 0.05, and one midpoint below 0.025. Retained strata
+receive four divided by sample-count times the quarter-stratum RGB and normalization
+area, conserving source power. All spatial/color representatives remain.
 All spatial/color representatives remain; this only reduces depth rays at each
 receiver. Expanded source records retain negative depth in `normal.w`; sampled
 collapsed records retain positive depth, with expanded sampled endpoints ignoring
@@ -102,6 +104,20 @@ the negative metadata. Diagnostics and unclustered reference transport remain fu
 This approximates distant depth shadows and can change shadow edges/animation
 transitions; it does not preserve every blocked ray exactly. The Direct Samples
 metric still counts prepared records, not the lower executed ray count.
+
+October 20 room012 follow-up: thin depth-1 emitters dominated captured Direct.
+The additional one-midpoint regime reduced standalone `_007` replay GPU median
+141.13 -> 65.01 ms (12 measured runs after five warmups each); representative1,
+directional disabled measured 50.46 -> 25.47 ms. These separate runs competed with
+a running emulator and used runtime-compiled shaders/shared diagnostic resources;
+they are NOT live timing predictions or an isolated directional-pass measurement.
+`_007` Direct RGB relative RMS difference was 0.000709, summed RGB +0.1624%, max
+absolute channel difference 0.03125. `_008` had identical half-float Direct output
+(no affected depth sources), 11.23 -> 10.73 ms, not a demonstrated speedup there.
+1393 Metal checks pass with adaptive depth enabled, including one/two/four-depth
+energy and opaque/fractional blocker fixtures, 456 visibility reference comparisons
+and 65,536 patch probes. Release arm64 app builds. Live moving shadow/penumbra
+appearance and clean same-settings GPU timing still require user review.
 
 Sampled Direct now prepares one base record per pixel/patch, including positive
 emission depth. Exhaustive Direct retains four quarter-energy depth records.

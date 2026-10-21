@@ -23,9 +23,17 @@ int main(int argc,char **argv){try {
  std::ostringstream hex;hex<<std::hex<<digest;check(text.find("\"profile_serialized_fnv1a64\":\""+hex.str()+"\"")!=std::string::npos,"profile pin");
  auto captured=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(path,*captured),"packet");
  RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=number("room");c.previousRoomIndex=number("previous_room");
-  c.submodule=number("submodule");c.collisionMode=number("collision_mode");check(!c.submodule && !c.collisionMode,"unsupported/unsettled state");
+  c.submodule=number("submodule");c.collisionMode=number("collision_mode");
   // Additive lifecycle attestations; historical sidecars did not retain these.
-  if(text.find("\"module\":")!=std::string::npos)c.module=number("module");
+   if(text.find("\"module\":")!=std::string::npos)c.module=number("module");
+   if(text.find("\"saved_module\":")!=std::string::npos)c.savedModule=number("saved_module");
+   const bool dialogAblation=std::getenv("ALTTP_DIALOG_HEIGHT_REGRESSION")!=nullptr;
+   check(!c.collisionMode && (!c.submodule || (dialogAblation && c.module==14 && c.submodule==2)),"unsupported/unsettled state");
+   if(dialogAblation && c.module==14 && c.savedModule==255) {
+    // Old room002 evidence omitted $010c. This is an explicit controlled
+    // lifecycle ablation, NOT a newly attested historical saved-module pin.
+    c.savedModule=7;std::cout<<"Legacy dialog saved_module=7 supplied for controlled ablation; not captured evidence\n";
+   }
   if(text.find("\"construction_phase\":")!=std::string::npos)c.constructionPhase=number("construction_phase");
   if(text.find("\"room_transition_flags\":")!=std::string::npos)c.roomTransitionFlags=number("room_transition_flags");
   if(text.find("\"attribute_construction_state\":")!=std::string::npos)c.attributeConstructionState=number("attribute_construction_state");
@@ -82,7 +90,7 @@ int main(int argc,char **argv){try {
   check(!frame->mainPixels.empty(),"EndFrame");
   // Captured production regression, not synthetic actor geometry. Own019 pins
   // the four missing intrinsic sources independently from the repaired base.
-  if(path.find("frame_room062_019.s9xrmf")!=std::string::npos) {
+   if(!dialogAblation && path.find("frame_room062_019.s9xrmf")!=std::string::npos) {
    const auto &a=c.terrainActors[15];const auto &o=c.terrainOam[12];
    check(a.state==10 && a.kind==2 && a.z==16 && o.flags==0x6c && o.size==2,"captured carried producer pin");
    size_t usages=0;std::set<uint64_t> children;
@@ -118,7 +126,21 @@ int main(int argc,char **argv){try {
     check(checked>500,"captured northwest pixel denominator");
    }
  };
-  run();const auto epoch=s.runtimeDungeonHeightEpoch;run();
+   run();auto epoch=s.runtimeDungeonHeightEpoch;run();
+   if(std::getenv("ALTTP_PROFILE_RESUME_REGRESSION")) {
+    std::vector<uint8_t> before;check(S9xSerializeRemasterFrame(*frame,before),"resume baseline");
+    const auto maps=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+    for(int repeat=0;repeat<3;repeat++) {
+     // S9xEngine.resume publishes editor metadata even without any edits.
+     S9xRemasterSetProfile(profile);run();
+     check(s.runtimeDungeonHeightValid,"profile resume leaves equal-key solve invalid");
+     std::vector<uint8_t> after;check(S9xSerializeRemasterFrame(*frame,after),"resume packet");
+     check(before==after,"profile resume drops effective frame geometry");
+     check(maps==dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap),"resume complete-map invariance");
+    }
+    std::cout<<"PASS repeated unchanged-profile resume: exact packets and complete BG maps\n";
+    epoch=s.runtimeDungeonHeightEpoch;
+   }
   if(const char *samples=std::getenv("ALTTP_PERF_GEOMETRY_MODES")) {
    const int count=std::max(10,std::atoi(samples));
    const auto original=c;
@@ -193,7 +215,29 @@ int main(int argc,char **argv){try {
    std::cout<<"PASS three ROM-proven DMA phases repeated: eight torch members base24, exact cached/full packets; own metadata unchanged\n";
    return 0;
   }
-  if(std::getenv("ALTTP_SUBTILE_HEIGHT_REGRESSION")) {
+   if(dialogAblation) {
+    // Compare placed room geometry, not module-specific actor/emitter policy.
+    auto geometry=[&]{std::ostringstream out;for(auto pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(const auto &px:*pixels)if(px.instanceId) {
+     const auto &i=frame->tileInstances[px.instanceId-1];if(i.source!=RemasterSourceType::Background || i.sourceIndex>1)continue;
+     out<<i.tileId.hash<<':'<<i.heightOffset<<':'<<i.hasPlacementHeight<<':';if(i.hasPlacementHeight)out<<i.placementHeight[px.tilePixel];out<<';';
+    }return out.str();};
+    const auto dialog=geometry();
+    const auto inventory=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
+    const auto epoch=s.runtimeDungeonHeightEpoch;
+    c.module=7;c.submodule=0;c.constructionPhase=0;run();
+    check(geometry()==dialog,"dialog/settled effective BG geometry differs");
+    check(inventory==dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap),"dialog/settled complete maps differ");
+    c.module=14;c.submodule=2;c.savedModule=7;run();
+    check(geometry()==dialog,"dialog reentry BG geometry differs");
+    check(s.runtimeDungeonHeightEpoch==epoch,"dialog re-solved exact input");
+    size_t adjusted=0;
+    for(auto pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(const auto &px:*pixels)if(px.instanceId) {
+     const auto &i=frame->tileInstances[px.instanceId-1];adjusted+=i.source==RemasterSourceType::Background && i.sourceIndex<2 && (i.heightOffset!=0 || i.hasPlacementHeight);
+    }
+    check(adjusted>0,"no actual placement heights applied");
+    std::cout<<"PASS dialog/settled/reentry exact effective BG geometry and complete two-BG maps; adjusted pixel usages="<<adjusted<<'\n';
+   }
+   if(std::getenv("ALTTP_SUBTILE_HEIGHT_REGRESSION")) {
    std::vector<uint8_t> settled;check(S9xSerializeRemasterFrame(*frame,settled),"settled packet");
    const auto inventory=dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap);
    for(int phase=0;phase<9;phase++) {
@@ -388,7 +432,8 @@ int main(int argc,char **argv){try {
     const int word=c.constructedMaps[address]|c.constructedMaps[address+1]<<8;
     diagnostic<<"{\"bg\":"<<bg<<",\"x\":"<<cell%64<<",\"y\":"<<cell/64<<",\"hash\":\""<<std::hex<<t.tileHash<<std::dec
      <<"\",\"word\":"<<word<<",\"surface\":"<<int(t.surface)<<",\"template\":"<<t.wallTemplateOffset
-     <<",\"terminal\":"<<t.terminalCorner<<",\"high_corner\":"<<t.highCornerFace<<",\"base\":"<<m.offsets[cell]
+      <<",\"has_height\":"<<t.hasHeight<<",\"authored_floor\":"<<t.diagnosticAuthoredFloor
+      <<",\"terminal\":"<<t.terminalCorner<<",\"high_corner\":"<<t.highCornerFace<<",\"base\":"<<m.offsets[cell]
      <<",\"planes\":["<<m.structuralPlaneOffsets[0][cell]<<','<<m.structuralPlaneOffsets[1][cell]
      <<"],\"attributes\":["<<int(c.collisionAttributes[cell])<<','<<int(c.collisionAttributes[4096+cell])<<"],\"height\":[";
     for(int p=0;p<64;p++){if(p)diagnostic<<',';diagnostic<<t.height[p];}diagnostic<<"]}\n";

@@ -360,6 +360,10 @@ inline void S9xRemasterRetireOutgoingGeometry(const RemasterDungeonFloorContext 
 inline void S9xRemasterObserveDungeonTransition(const RemasterDungeonFloorContext &c)
 {
 	auto &s=S9xRemasterState();auto &t=s.transitionSupport;
+	// Text suspends the dungeon without replacing its room. Discard a pending
+	// door observation, but retain an already consumed room-entry support anchor.
+	if(c.verifiedAlttpRom && c.indoors && c.module==14 && c.submodule==2 && c.savedModule==7 &&
+		!s.dungeonGeometryProfileDirty && c.romIdentity && s.dungeonObservedRomIdentity==c.romIdentity) {t={};return;}
 	if(!c.verifiedAlttpRom || !c.indoors || c.module!=7 || !c.romIdentity ||
 		s.dungeonGeometryProfileDirty || (t.valid && (t.rom!=c.romIdentity || t.session!=s.dungeonSession || t.profile!=s.dungeonGeometryProfileKey || t.rise!=s.activeProfile.upperFloorHeight))) {
 		t={};s.runtimeEntrySupport={};s.runtimeBg1EntrySupport={};s.runtimeEntryRoom=0xffff;return;
@@ -603,6 +607,7 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 		<< "\",\"room\":" << c.roomIndex << ",\"previous_room\":" << c.previousRoomIndex
 		<< ",\"submodule\":" << int(c.submodule) << ",\"collision_mode\":" << int(c.collisionMode)
 		<< ",\"module\":" << int(c.module) << ",\"construction_phase\":" << int(c.constructionPhase)
+		<< ",\"saved_module\":" << int(c.savedModule)
 		<< ",\"room_transition_flags\":" << int(c.roomTransitionFlags)
 		<< ",\"attribute_construction_state\":" << int(c.attributeConstructionState)
 		<< ",\"scroll_direction\":" << int(c.scrollDirection)
@@ -657,11 +662,15 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloorContext &context,
 	uint16_t publishedRoom)
 {
+	// Module0e/02 RenderText overlays the saved dungeon ($010c), not a room
+	// loader. Keep exact current map/attribute/VRAM invalidation active; never
+	// admit other interface modes or assume legacy evidence saved module7.
+	const bool dungeonDialog = context.module==14 && context.submodule==2 && context.savedModule==7;
 	return context.collisionAttributes && context.collisionMode == 0 &&
 		context.verifiedAlttpRom && context.indoors &&
-		context.module == 7 &&
+		(context.module == 7 || (dungeonDialog && context.constructedMaps && context.graphics)) &&
 		(context.stairCount != 0 || context.constructedMaps) &&
-		(context.constructedMaps ? (!context.submodule ||
+		(context.constructedMaps ? (dungeonDialog || !context.submodule ||
 			// Subtile transitions stay inside the same constructed 64x64 room.
 			// Shutters may change final words/attributes; use the ordinary exact
 			// invalidation, not a frozen solve or the raw-authored fallback.
@@ -2865,7 +2874,9 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			if (!reviewMap && runtimeInputsPublishable)
 			{
 				const uint64_t key = state.runtimeDungeonObservedInputKey;
-				if (key != state.runtimeDungeonHeightKey)
+				// Profile publication (including unchanged editor metadata on resume)
+				// revokes the solve. Equal input keys do not restore validity.
+				if (!state.runtimeDungeonHeightValid || key != state.runtimeDungeonHeightKey)
 				{
 					bool exactStateReuse=false;
 #ifndef ALTTP_TEST_DISABLE_GEOMETRY_REUSE

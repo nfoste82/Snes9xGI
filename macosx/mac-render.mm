@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <sys/time.h>
 #include <unordered_map>
@@ -374,6 +375,14 @@ static uint32_t remasterRandomSeed = 0;
 static int benchmarkLastResourceSlot = -1;
 // Serialize producers and lifecycle changes, not the drawable-waiting worker.
 static std::recursive_mutex renderMutex;
+// Drawable notifications can arrive after command-buffer completion. Capturing
+// this gate keeps late notifications away from destroyed process-global state.
+struct RemasterPresentationCallbackGate
+{
+	std::mutex mutex;
+	bool active = true;
+};
+static std::shared_ptr<RemasterPresentationCallbackGate> presentationCallbackGate;
 static dispatch_queue_t presentationQueue = dispatch_queue_create("org.snes9x.presentation", DISPATCH_QUEUE_SERIAL);
 static std::atomic<uint64_t> droppedRemasterPresentations { 0 };
 static std::mutex remasterResourceMutex;
@@ -654,6 +663,7 @@ static void S9xInitMetal (void)
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
 	if (metalCommandQueue)
 		S9xDeinitMetal();
+	presentationCallbackGate = std::make_shared<RemasterPresentationCallbackGate>();
     glScreenW = glScreenBounds.size.width;
     glScreenH = glScreenBounds.size.height;
 
@@ -738,6 +748,11 @@ static void S9xInitMetal (void)
 static void S9xDeinitMetal (void)
 {
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	if (presentationCallbackGate)
+	{
+		std::lock_guard<std::mutex> callbackLock(presentationCallbackGate->mutex);
+		presentationCallbackGate->active = false;
+	}
 	// No producer can reserve a slot while draining queued presentation and GPU work.
 	dispatch_sync(presentationQueue, ^{});
 	int acquiredSlots[remasterResourceSlotCount];
@@ -1807,6 +1822,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		const RemasterState::PerformanceMetrics benchmarkMetrics = benchmarkTag.measured || logFrameMetrics ?
 			S9xRemasterGetPerformanceMetrics() : RemasterState::PerformanceMetrics{};
 		const auto queuedAt = std::chrono::steady_clock::now();
+		const auto callbackGate = presentationCallbackGate;
 		bool (^present)(void) = ^bool {
 			@autoreleasepool {
 				RemasterResourceSlotGuard queuedGuard(waitForCompletion ? -1 : resourceSlot);
@@ -1914,6 +1930,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						if (@available(macOS 10.15.4, *))
 						{
 							[drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
+								std::lock_guard<std::mutex> callbackLock(callbackGate->mutex);
+								if (!callbackGate->active)
+									return;
 								const double presentedTime = presentedDrawable.presentedTime;
 								if (presentedTime <= 0.0)
 									return;

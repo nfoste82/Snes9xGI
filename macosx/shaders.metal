@@ -1297,7 +1297,10 @@ kernel void remasterIndirectBounce(
 					float3 base = preparedSample.position.xyz - axis * (float(stratum) + 0.5) / 4.0;
 					float3 center = base + axis * 0.5;
 					float ratioSquared = depth * depth / max(dot(center-receiverPosition, center-receiverPosition), 0.0001);
-					uint depthSamples = ratioSquared < 0.0025 ? 2u : 4u;
+					// A thin distant volume is effectively one midpoint source. Preserve
+					// its full radiance/area below, without dropping spatial representatives.
+					// Near-field depth/shadows retain the existing two/four strata.
+					uint depthSamples = ratioSquared < 0.000625 ? 1u : ratioSquared < 0.0025 ? 2u : 4u;
 					if (stratum >= depthSamples) continue;
 					float3 shift = axis * ((float(stratum)+0.5)/float(depthSamples) - (float(stratum)+0.5)/4.0);
 					preparedSample.position.xyz += shift;

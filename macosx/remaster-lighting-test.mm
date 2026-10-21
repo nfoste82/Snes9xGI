@@ -749,13 +749,15 @@ int main()
                 for (unsigned p = 0; p < width*height; p++) if (p != receiver) depthMesh[p].emissionDepth = 2;
                 denseExact = directTrial(dense, false, 1, 1, &depthMesh);
                 near("collapsed depth exact clamped denominator", directTrial(dense, true, 8, 19, &depthMesh), denseExact);
-				// Thin distant depth selects two midpoint strata in the production
-				// approximation; compare energy against full four-stratum transport.
+				// Distant depth selects one/two midpoint strata; nearer depth keeps
+				// four. Check unoccluded power and opaque/fractional blockers in each
+				// distance regime against the full four-stratum transport.
+				for(float testDepth : {0.1f, 0.8f, 2.0f}) {
 				Scene thin = scene();
 				depthMesh.assign(width*height, RemasterSurfaceMesh::Cell{});
 				for (unsigned p = 0; p < width*height; p++)
 					for (auto &corner : depthMesh[p].corners) corner = thin[Surface][p].x;
-				depthMesh[emitter].emissionDepth = 0.1f;
+				depthMesh[emitter].emissionDepth = testDepth;
 				depthPatches[0].count = 1; depthPatches[0].mode = 3;
 				auto thinFull = depthRun(thin, 1, nullptr, -1, false, false, false);
 				auto thinReduced = depthRun(thin, 1, &depthPatches, -1, false, false, false);
@@ -767,6 +769,7 @@ int main()
 				near("adaptive depth thick opaque wall", depthRun(thin, 1, &depthPatches, -1, false, false, false), {});
 				thin[Occlusion][receiver+8].x = 0.5f;
 				near("adaptive depth fractional wall", depthRun(thin, 1, &depthPatches, -1, false, false, false), thinReduced*0.5f);
+				}
             }
             Scene s = scene();
             {

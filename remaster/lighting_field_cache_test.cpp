@@ -17,6 +17,14 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 		if(S9xRemasterHeldLampHudPixel(f,i)){r.participation[i*2]=r.participation[i*2+1]=0;continue;}
 		const auto &main=scene?f.scenePixels[i]:f.mainPixels[i];
 		const auto &p=!scene && !main.instanceId && uint8_t(main.owner>>24)==uint8_t(RemasterSourceType::Backdrop)?f.subPixels[i]:main;
+		if ((f.area.id==320 || f.area.id==321) &&
+			f.profileRomSha256=="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb" &&
+			!main.instanceId && uint8_t(main.owner>>24)==uint8_t(RemasterSourceType::Backdrop) &&
+			!f.subPixels[i].instanceId) {
+			r.height[i*2+1]=1;r.occlusion[i*2]=r.occlusion[i*2+1]=255;r.surface[i*4+3]=1;
+			r.samples[i].known=r.samples[i].sheet=r.samples[i].fallbackGround=true;
+			r.samples[i].coverage=1;r.samples[i].domain=uint64_t(3)<<48;
+		}
 		if(!p.instanceId || p.instanceId>f.tileInstances.size() || p.tilePixel>=64)continue;
 		const auto &in=f.tileInstances[p.instanceId-1];
 		const auto *original=S9xRemasterFrameMetadataForTile(f,in.tileId);

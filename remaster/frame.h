@@ -525,6 +525,7 @@ struct RemasterDungeonFloorContext
 	uint16_t previousRoomIndex = 0xffff;
 	uint8_t submodule = 0;
 	uint8_t module = 7; // adapters default to settled dungeon module
+	uint8_t savedModule = 0xff; // USA $010c; unknown in legacy capture evidence
 	uint8_t constructionPhase = 0;
 	// USA $0200: selectable collision builder reaches 5 only after basic,
 	// object, door and crystal overrides. 255 means no adapter attestation.
@@ -4276,6 +4277,25 @@ inline bool S9xReadRemasterFrame (const std::string &path, RemasterFrame &frame)
 		return false;
 	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 	return (input.good() || input.eof()) && S9xDeserializeRemasterFrame(bytes, frame);
+}
+
+// ALTTP's outdoor color-zero backdrop is visible ground between transparent
+// foliage pixels. It has no decoded tile to author or select. Keep this a
+// provisional zero-base surface, never authored object/terrain coverage.
+inline bool S9xRemasterFrameBackdropGroundAt (
+	const RemasterFrame &frame, size_t offset, bool useScene = false)
+{
+	if ((frame.area.id != 320 && frame.area.id != 321) ||
+		frame.profileRomSha256 != "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb")
+		return false;
+	const auto &pixels = useScene ? frame.scenePixels : frame.mainPixels;
+	if (offset >= pixels.size()) return false;
+	const auto &pixel = pixels[offset];
+	if (pixel.instanceId || static_cast<uint8_t>(pixel.owner >> 24) !=
+		static_cast<uint8_t>(RemasterSourceType::Backdrop)) return false;
+	// A real subscreen contributor is not backdrop ground, including captures
+	// where the independent scene plane cannot identify its composition.
+	return offset >= frame.subPixels.size() || !frame.subPixels[offset].instanceId;
 }
 
 inline const RemasterFrameTileInstance *S9xRemasterFrameInstanceAt (

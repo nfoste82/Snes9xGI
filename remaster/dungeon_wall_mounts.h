@@ -71,5 +71,52 @@ inline void S9xRemasterAttachWallMounts(const RemasterDungeonFloorContext &c,
    }
   }
  }
+ // The north door's complete 4x3 outer frame contains a nonblocking middle
+ // jamb. Its collision byte describes passage, not the jamb artwork. Attach
+ // that terminal member only when BOTH solid end bands independently agree;
+ // never add a graph edge through the doorway or borrow its floor support.
+ for(int y=0;y<=61;y++)for(int x=0;x<=60;x++)for(int flip=0;flip<4;flip++) {
+  bool exact=true;
+  for(int xx=0;exact && xx<4;xx++)for(int yy=0;exact && yy<3;yy++) {
+   const int sx=flip&1?3-xx:xx,sy=flip&2?2-yy:yy;
+   const int n=0x1470+2*(sx*3+sy),i=(y+yy)*64+x+xx;
+   const int expected=(c.dungeonTemplateData[n]|c.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+   const int word=c.constructedMaps[i*2]|c.constructedMaps[i*2+1]<<8;
+   if((word&0xdfff)!=(expected&0xdfff))exact=false;
+  }
+  if(!exact)continue;
+  for(int side:{0,3}) {
+   const int a=y*64+x+side,i=a+64,b=i+64;
+   const auto &ta=c.placements[a],&t=c.placements[i],&tb=c.placements[b];
+   using S=RemasterDungeonFloorContext::Surface;
+   if(ta.surface!=S::Wall || t.surface!=S::Wall || tb.surface!=S::Wall ||
+    !ta.hasHeight || !t.hasHeight || !tb.hasHeight)continue;
+   auto sample=[](const RemasterDungeonFloorContext::Placement &v,int xx,int yy){return int(v.height[(v.vflip?7-yy:yy)*8+(v.hflip?7-xx:xx)]);};
+   int candidate=INT_MIN,owner=-1;bool conflict=false;
+   for(int p=0;p<2;p++) {
+    const auto solid=[](int attr){return attr==1 || attr==2 || attr==0x28 || attr==0x2a;};
+    if(!c.collisionAttributes || !solid(c.collisionAttributes[p*4096+a]) || !solid(c.collisionAttributes[p*4096+b]))continue;
+    const int ba=map.structuralPlaneOffsets[p][a],bb=map.structuralPlaneOffsets[p][b];
+    if(ba==255 || bb==255)continue;
+    int value=INT_MIN;bool compatible=true;
+    for(int k=0;k<8;k++) {
+     const int slope=sample(t,k,1)-sample(t,k,0);
+     for(int yy=1;yy<8;yy++)if(sample(t,k,yy)-sample(t,k,yy-1)!=slope)compatible=false;
+     if(std::abs(slope)!=1 || sample(ta,k,7)-sample(ta,k,6)!=slope ||
+      sample(tb,k,1)-sample(tb,k,0)!=slope)compatible=false;
+     const int top=ba+sample(ta,k,7)+slope-sample(t,k,0);
+     const int bottom=bb+sample(tb,k,0)-slope-sample(t,k,7);
+     if(top!=bottom || (value!=INT_MIN && value!=top))compatible=false;
+     value=top;
+    }
+    if(!compatible)continue;
+    if(candidate!=INT_MIN && candidate!=value)conflict=true;
+    candidate=value;owner=p;
+   }
+   if(conflict || owner<0 || candidate < -32767 || candidate>32767 || candidate==255)continue;
+   if(map.offsets[i]!=255 && map.offsets[i]!=candidate)continue;
+   map.offsets[i]=candidate;map.structuralPlaneOffsets[owner][i]=candidate;
+  }
+ }
 }
 #endif
