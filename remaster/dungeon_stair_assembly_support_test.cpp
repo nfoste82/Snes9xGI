@@ -29,6 +29,18 @@ int main(){try {
   build(north,rise);need(S9xRemasterBuildDungeonHeightMap(c,50,*map),"solve");
   need(map->configuredStairFallbacks==0 && map->authoredSupportRelations.size()==1 && map->authoredSupportRelations[0].rise==rise,"ROM rail signed rise");
   auto relation=map->authoredSupportRelations;
+  // An unrelated wall cycle on the same support poisons the structural solve,
+  // not the independent intact ROM stair measurement. Both walls disagree
+  // with their north/south floor contact while meeting tangentially.
+  const auto clean=*tiles;const auto cleanAttr=*attr;
+  for(int y=14;y<16;y++) {
+   const int i=y*64+12;auto &t=(*tiles)[i];t.surface=S::Wall;
+   for(int k=0;k<64;k++)t.height[k]=7-k%8;
+   (*attr)[i]=1;
+  }
+  need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->structuralConflicts>0,"unrelated cycle fixture");
+  need(map->authoredSupportRelations.size()==1 && map->authoredSupportRelations[0].rise==rise,"independent stair proof lost to wall cycle");
+  relation=map->authoredSupportRelations;*tiles=clean;*attr=cleanAttr;
   // BG2 overwrite removes the template, but exact endpoint components consume
   // the other BG's pre-datum signed relationship, never a copied base.
   words->fill(0);c.placementBackgroundIndex=1;c.supportRelations=&relation;

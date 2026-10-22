@@ -36,7 +36,8 @@ int main(int argc,char **argv){try {
    }
   if(text.find("\"construction_phase\":")!=std::string::npos)c.constructionPhase=number("construction_phase");
   if(text.find("\"room_transition_flags\":")!=std::string::npos)c.roomTransitionFlags=number("room_transition_flags");
-  if(text.find("\"attribute_construction_state\":")!=std::string::npos)c.attributeConstructionState=number("attribute_construction_state");
+   if(text.find("\"attribute_construction_state\":")!=std::string::npos)c.attributeConstructionState=number("attribute_construction_state");
+	 c.hasCompletedTransitionAttributes=text.find("\"completed_transition_attributes\":true")!=std::string::npos;
   if(text.find("\"scroll_direction\":")!=std::string::npos)c.scrollDirection=number("scroll_direction");
   if(text.find("\"destination_origin\":")!=std::string::npos){c.destinationOriginX=number("destination_origin");c.destinationOriginY=number("destination_origin",1);}
   c.hasDestinationOrigin=text.find("\"destination_origin_attested\":true")!=std::string::npos;
@@ -236,6 +237,31 @@ int main(int argc,char **argv){try {
     }
     check(adjusted>0,"no actual placement heights applied");
     std::cout<<"PASS dialog/settled/reentry exact effective BG geometry and complete two-BG maps; adjusted pixel usages="<<adjusted<<'\n';
+   }
+   if(std::getenv("ALTTP_DEPARTURE_HEIGHT_REGRESSION")) {
+    auto geometry=[&]{std::ostringstream out;for(auto pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(const auto &px:*pixels)if(px.instanceId){const auto &tile=frame->tileInstances.at(px.instanceId-1);if(tile.source!=RemasterSourceType::Background || tile.sourceIndex>1)continue;out<<tile.sourceIndex<<':'<<tile.tileId.hash<<':'<<tile.heightOffset<<':'<<tile.hasPlacementHeight<<':'<<(tile.hasPlacementHeight && px.tilePixel<64?tile.placementHeight[px.tilePixel]:0)<<';';}return out.str();};
+    const auto settled=geometry();
+    const auto bg2=dungeonMapInventory(s.runtimeDungeonHeightMap),bg1=dungeonMapInventory(s.runtimeDungeonBg1HeightMap);
+    c.submodule=2;c.constructionPhase=0;c.linkPlane^=1;
+    // Collision starts being overwritten before room/header bookkeeping settles.
+    std::fill(input.begin()+16392,input.begin()+24584,1);
+    for(int phase=0;phase<8;phase++) {
+     c.constructionPhase=phase;
+     if(phase>=2) {
+      const auto source=s.outgoingGeometry.room;
+      c.roomIndex=source+16;c.previousRoomIndex=c.roomIndex;
+      c.hasDestinationOrigin=true;c.scrollDirection=0;
+      c.destinationOriginX=c.backgroundScrollX&~511;
+      c.destinationOriginY=(c.backgroundScrollY&~511)+512;
+     }
+     run();
+     if(geometry()!=settled){std::ofstream(out+"-expected.txt")<<settled;std::ofstream(out+"-actual.txt")<<geometry();std::cerr<<"departure phase="<<phase<<'\n';}
+     check(geometry()==settled,"captured outgoing effective packet changed");
+     check(s.outgoingGeometry.valid,"captured outgoing snapshot expired");
+     check(bg2==dungeonMapInventory(s.previousRuntimeDungeonHeightMap) && bg1==dungeonMapInventory(s.previousRuntimeDungeonBg1HeightMap),"captured frozen complete maps changed");
+    }
+    std::cout<<"PASS own captured outgoing: exact per-pixel BG bases/local heights and complete both-BG geometry through phases0..7, plane/partial collision/A2 overwrite (controlled lifecycle ablation)\n";
+    return 0;
    }
    if(std::getenv("ALTTP_SUBTILE_HEIGHT_REGRESSION")) {
    std::vector<uint8_t> settled;check(S9xSerializeRemasterFrame(*frame,settled),"settled packet");

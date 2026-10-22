@@ -8,7 +8,7 @@
 		remasterNpcPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 848)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
 			backing:NSBackingStoreBuffered defer:NO];
-		remasterNpcPanel.title = @"Remaster NPC Poses";
+		remasterNpcPanel.title = @"NPC Poses";
 		remasterNpcPanel.releasedWhenClosed = NO;
 		remasterNpcPanel.hidesOnDeactivate = NO;
 		remasterNpcPanel.delegate = self;
@@ -89,6 +89,16 @@
 		remasterNpcOverwriteButton.autoresizingMask = NSViewMinYMargin;
 		remasterNpcOverwriteButton.toolTip = @"Unchecked: skip tiles with an existing per-pixel layer for this operation. Checked: replace that layer. Other layers are preserved.";
 		[content addSubview:remasterNpcOverwriteButton];
+		remasterNpcIgnoreDuplicatesButton = [[NSButton alloc] initWithFrame:NSMakeRect(510, 502, 234, 28)];
+		remasterNpcIgnoreDuplicatesButton.title = @"Ignore duplicate frames";
+		remasterNpcIgnoreDuplicatesButton.buttonType = NSButtonTypeSwitch;
+		remasterNpcIgnoreDuplicatesButton.font = [NSFont systemFontOfSize:12];
+		remasterNpcIgnoreDuplicatesButton.state = [NSUserDefaults.standardUserDefaults boolForKey:@"RemasterNpcIgnoreDuplicateFrames"] ? NSControlStateValueOn : NSControlStateValueOff;
+		remasterNpcIgnoreDuplicatesButton.target = self;
+		remasterNpcIgnoreDuplicatesButton.action = @selector(changeRemasterNpcDuplicateFilter:);
+		remasterNpcIgnoreDuplicatesButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
+		remasterNpcIgnoreDuplicatesButton.toolTip = @"Show only the first pose in each consecutive run of matching artwork, including effects. Original frame numbers are retained. Playback still plays every original frame at its original timing. Does not change the library or bulk authoring.";
+		[content addSubview:remasterNpcIgnoreDuplicatesButton];
 		remasterNpcNormalControls = [[NSView alloc] initWithFrame:NSMakeRect(16, 502, 210, 64)];
 		remasterNpcNormalControls.autoresizingMask = NSViewMinYMargin;
 		[content addSubview:remasterNpcNormalControls];
@@ -512,11 +522,29 @@
 		if (remasterNpcFacingSelector.indexOfSelectedItem > 0 &&
 			![pose[@"facing"] isEqual:remasterNpcFacingSelector.titleOfSelectedItem]) continue;
 		[filtered addObject:pose];
+	}
+	remasterNpcFilteredPoses = remasterNpcIgnoreDuplicatesButton.state == NSControlStateValueOn ?
+		RemasterNpcCollapseDuplicatePoses(filtered) : filtered;
+	for (NSDictionary *pose in remasterNpcFilteredPoses)
+	{
 		[remasterNpcPoseSelector addItemWithTitle:[NSString stringWithFormat:@"%@ · frame %ld · %@",
 			pose[@"facing"], (long)[pose[@"step"] integerValue] + 1, pose[@"action"]]];
 	}
-	remasterNpcFilteredPoses = filtered;
 	[self changeRemasterNpcPose:nil];
+}
+
+- (void)changeRemasterNpcDuplicateFilter:(id)sender
+{
+	NSDictionary *source = remasterNpcPose;
+	[NSUserDefaults.standardUserDefaults setBool:remasterNpcIgnoreDuplicatesButton.state == NSControlStateValueOn
+		forKey:@"RemasterNpcIgnoreDuplicateFrames"];
+	[self changeRemasterNpcFacing:nil];
+	NSUInteger index = RemasterNpcRepresentativePoseIndex(remasterNpcFilteredPoses, source);
+	if (index != NSNotFound)
+	{
+		[remasterNpcPoseSelector selectItemAtIndex:index];
+		[self changeRemasterNpcPose:nil];
+	}
 }
 
 - (void)changeRemasterNpcPose:(id)sender
@@ -546,20 +574,27 @@
 - (void)toggleRemasterNpcPlayback:(id)sender
 {
 	if (remasterNpcPlaying) { [self stopRemasterNpcPlayback]; return; }
-	if (remasterNpcFilteredPoses.count < 2) return;
+	NSArray *sequence = RemasterNpcPlaybackPoses(remasterNpcActor, remasterNpcPose);
+	if (sequence.count < 2) return;
+	__block NSUInteger frameIndex = [sequence indexOfObjectIdenticalTo:remasterNpcPose];
+	if (frameIndex == NSNotFound) return;
 	remasterNpcPlaying = true; remasterNpcPlayButton.title = @"Stop Animation";
 	__weak S9xEngine *weakSelf = self;
-	remasterNpcTimer = [NSTimer scheduledTimerWithTimeInterval:0.18 repeats:YES block:^(NSTimer *timer) {
+	__block double elapsed = 0;
+	remasterNpcTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer *timer) {
 		if (!remasterNpcPanel.visible) { [weakSelf stopRemasterNpcPlayback]; return; }
-		NSInteger current = remasterNpcPoseSelector.indexOfSelectedItem;
-		NSString *facing = remasterNpcPose[@"facing"];
-		for (NSUInteger n = 1; n <= remasterNpcFilteredPoses.count; n++)
-		{
-			NSUInteger next = (current + n) % remasterNpcFilteredPoses.count;
-			if ([remasterNpcFilteredPoses[next][@"facing"] isEqual:facing] &&
-				[remasterNpcFilteredPoses[next][@"action"] isEqual:remasterNpcPose[@"action"]])
-			{ [remasterNpcPoseSelector selectItemAtIndex:next]; [weakSelf changeRemasterNpcPose:nil]; break; }
-		}
+		elapsed += timer.timeInterval;
+		double duration = RemasterNpcPoseDuration(sequence[frameIndex]);
+		if (elapsed + 1e-6 < duration) return;
+		elapsed -= duration;
+		frameIndex = (frameIndex + 1) % sequence.count;
+		NSUInteger next = RemasterNpcRepresentativePoseIndex(remasterNpcFilteredPoses, sequence[frameIndex]);
+		if (next == NSNotFound) { [weakSelf stopRemasterNpcPlayback]; return; }
+		[remasterNpcPoseSelector selectItemAtIndex:next];
+		[weakSelf changeRemasterNpcPose:nil];
+		// The menu names the run's first pose; render the actual timeline frame.
+		remasterNpcPose = sequence[frameIndex];
+		RemasterNpcDecodePose(remasterNpcPose, remasterNpcRomHash, remasterNpcPreviewFrame, &remasterNpcCanvasBounds);
 	}];
 }
 
@@ -600,6 +635,9 @@
 	remasterNpcInspectorFrame = remasterNpcPreviewFrame;
 	remasterNpcInspectorActive = true;
 	remasterObstacleSelection.clear();
+	remasterSceneFrame.selectedObstacleInstances.clear();
+	remasterNpcInspectorFrame.selectedObstacleInstances.clear();
+	remasterNpcInspectorFrame.obstacleLocationSelection = false;
 	remasterHeightInstanceId = 0;
 	remasterMetadataNeedsSync = true;
 	SyncRemasterEditingMetadataToFrame();

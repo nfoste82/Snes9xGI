@@ -7,8 +7,54 @@ enum RemasterEditorLayer
 {
 	RemasterEditorArtwork, RemasterEditorMaterial, RemasterEditorOcclusion,
 	RemasterEditorHeight, RemasterEditorNormal, RemasterEditorEmission,
-	RemasterEditorMetadata, RemasterEditorDoorframe
+	RemasterEditorMetadata, RemasterEditorDoorframe, RemasterEditorObstacleGrouping
 };
+
+// Offset each selected authored layer once, retaining its own relief/sampling.
+// A named-context edit must never fall through to the shared asset geometry.
+inline bool S9xRemasterStepSelectedTileHeights(RemasterProfile &profile,
+	const std::vector<RemasterTileContentId> &tiles, int delta,
+	unsigned geometryFacing = 0, const std::string &contextName = {})
+{
+	if (delta != -8 && delta != -1 && delta != 1 && delta != 8) return false;
+	bool changed = false;
+	const std::set<RemasterTileContentId> unique(tiles.begin(), tiles.end());
+	for (const auto &tile : unique)
+	{
+		RemasterGeometryLayers *geometry = nullptr;
+		auto asset = profile.assets.find(tile);
+		if (!contextName.empty())
+		{
+			auto contexts = profile.tileContexts.find(tile);
+			if (contexts == profile.tileContexts.end()) continue;
+			auto context = contexts->second.find(contextName);
+			if (context == contexts->second.end()) continue;
+			geometry = &context->second;
+		}
+		else if (asset != profile.assets.end())
+			geometry = &S9xRemasterFlipGeometryForEditing(asset->second, geometryFacing);
+		auto height = geometry && geometry->hasHeight ? geometry->height : std::array<int16_t, 64>{};
+		bool tileChanged = false;
+		for (auto &sample : height)
+		{
+			const auto adjusted = static_cast<int16_t>(std::max(-32768, std::min(32767, int(sample) + delta)));
+			tileChanged |= sample != adjusted;
+			sample = adjusted;
+		}
+		if (!tileChanged) continue;
+		if (!geometry)
+		{
+			auto &metadata = profile.assets[tile]; metadata.tileId = tile;
+			geometry = &S9xRemasterFlipGeometryForEditing(metadata, geometryFacing);
+		}
+		if (!geometry->hasHeight) geometry->heightSampling = RemasterHeightSampling::Nearest;
+		geometry->height = height;
+		geometry->hasHeight = true;
+		changed = true;
+	}
+	if (changed) profile.schemaVersion = std::max<uint32_t>(profile.schemaVersion, 2);
+	return changed;
+}
 
 // Translate within one tile, without wrapping or reflecting vector components.
 // Newly exposed samples use the layer's neutral/default pixel.

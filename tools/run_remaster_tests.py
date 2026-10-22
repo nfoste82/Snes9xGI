@@ -22,6 +22,7 @@ PROFILE = "Profiles/ALttP/alttp-profile.toml"
 # Explicit curation, not discovery: new probes/capture-dependent tests must not
 # silently become part of the gate. All assertions remain enabled, including O2.
 QUICK = (
+    ("dungeon_transition_attributes", "Read-only pre-scroll complete collision, stairs, objects and doors"),
     ("dungeon_departure_geometry", "EndFrame outgoing snapshot, both BGs, local ramps, retirement/reset"),
     ("dungeon_transition_cache", "EndFrame partial construction, source retention, independent planes"),
     ("dungeon_geometry_cache", "EndFrame animation reuse versus full solve/maps/serialized packet"),
@@ -32,8 +33,16 @@ QUICK = (
     ("dungeon_disconnected_plane", "Unobserved overlapping planes stay unresolved; BG character bases"),
     ("offscreen_continuity", "Exact signed sources across camera edges, HUD recovery and hidden clusters"),
     ("held_lamp", "Lamp anchor/state and actual HUD ink versus transparent/world pixels"),
+    ("sprite_obstacle", "Progressive OBJ layers, support isolation, sparse interior-contact rejection"),
+    ("obstacle_group_editor", "Repeated OBJ occurrences, reviewed footprint completion and H/V/Z preservation"),
+    ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+    ("tile_type_overlay", "Authored metadata colors, unknown tiles, OBJ/HUD ownership and GI view cycle"),
+    ("dungeon_oriented_obstacle", "Horizontal footprint support direction and mirrored/V-symmetric ownership"),
+    ("link_stair_height", "Continuous Link assembly stair support, both orientations/planes and ambiguous landing rejection"),
+    ("dungeon_floor_continuity", "Cardinal same-BG floor relief bases, narrow strips, barriers and plane/level conflicts"),
+    ("door_opening_height", "Doorframe versus connected landing bases, signed heights, flips and plane ownership"),
     ("dungeon_placement_reuse", "EndFrame relation transport and placement-cache invalidation"),
     ("dungeon_semantic_cache", "EndFrame semantic activation, facing, context and door-mask invalidation"),
     ("dungeon_terrain_lifecycle", "Pickup/carried/thrown/landed support, OAM ownership and ambiguity"),
@@ -57,7 +66,7 @@ def test_specs(args):
                   flags=[], arguments=[], kind="portable") for n, d in QUICK]
     if args.suite == "full":
         specs += [dict(name=n, source=f"remaster/{n}_test.cpp", description=d,
-                       flags=[], arguments=[], kind="portable") for n, d in FULL_EXTRA]
+                       flags=["-I."] if n == "tile_type_overlay" else [], arguments=[], kind="portable") for n, d in FULL_EXTRA]
         for mode, flags in (("debug", ["-pthread"]),
                             ("optimized", ["-pthread", "-O2"])):
             specs.append(dict(name=f"dungeon_small_stack_{mode}",
@@ -89,6 +98,7 @@ def source_snapshot(spec):
         paths.add(ROOT / PROFILE)
     if spec["kind"] == "metal":
         paths.add(ROOT / "macosx/shaders.metal")
+        paths.add(ROOT / "macosx/remaster-debug-pixels-test.h")
     files = {str(p.relative_to(ROOT)): sha256(p) for p in sorted(paths)}
     digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     return {"sha256": digest, "files": files,

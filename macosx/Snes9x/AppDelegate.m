@@ -64,6 +64,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	debugItem.toolTip = @"Cycle Original, Surface Overlay, Surface IDs, Tile Types, Floors / Wall Distances. Floors: separate support colors. Walls: cyan arrow uphill, orange arrow downhill; number is tile distance from lower floor, ? unknown, ! conflict.";
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
+	NSMenuItem *tileTypesItem = [[NSMenuItem alloc] initWithTitle:@"Show Tile Metadata Types"
+		action:@selector(showRemasterTileTypes:) keyEquivalent:@""];
+	tileTypesItem.target = self;
+	tileTypesItem.toolTip = @"Metadata tint: floor green, wall blue, corner purple, obstacle orange, stair top cyan, stair bottom pink, door gold, particle pale lavender, other gray, untyped red. HUD preserved.";
+	[viewMenuItem.submenu addItem:tileTypesItem];
 	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
 	                                                      action:@selector(toggleRemasterLighting:)
 	                                               keyEquivalent:@"l"];
@@ -110,11 +115,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                                 keyEquivalent:@""];
 	tileEditorItem.target = self;
 	[windowMenu addItem:tileEditorItem];
-	NSMenuItem *npcBrowserItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster NPC Poses", nil)
+	NSMenuItem *npcBrowserItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"NPC Poses", nil)
 		action:@selector(showRemasterNpcBrowser:) keyEquivalent:@""];
 	npcBrowserItem.target = self;
 	[windowMenu addItem:npcBrowserItem];
-	NSMenuItem *profileSettingsItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Profile Settings", nil)
+	NSMenuItem *profileSettingsItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Profile Controls", nil)
 	                                                             action:@selector(showRemasterProfileSettings:)
 	                                                      keyEquivalent:@""];
 	profileSettingsItem.target = self;
@@ -671,7 +676,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
-	else if (action == @selector(cycleRemasterDebugMode:)) {
+	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(showRemasterTileTypes:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
 	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:)) {
@@ -798,6 +803,17 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 {
 	NSString *mode = [self.s9xEngine cycleRemasterDebugMode];
 	sender.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
+}
+
+- (IBAction)showRemasterTileTypes:(NSMenuItem *)sender
+{
+	NSString *mode = [self.s9xEngine showRemasterTileTypes];
+	for (NSMenuItem *item in sender.menu.itemArray)
+		if (item.action == @selector(cycleRemasterDebugMode:))
+		{
+			item.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
+			break;
+		}
 }
 
 - (IBAction)toggleRemasterLighting:(NSMenuItem *)sender

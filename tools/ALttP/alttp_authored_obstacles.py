@@ -18,8 +18,10 @@ def validate_groups(profile):
     if len(groups) > 4096:
         raise ValueError('too many obstacle groups')
     for gi, g in enumerate(groups):
-        if set(g) != {'name', 'members'}:
+        if set(g) not in ({'name', 'members'}, {'name', 'members', 'sprite_assembly'}):
             raise ValueError('invalid obstacle group keys')
+        if 'sprite_assembly' in g and (profile.get('schema_version', 22) < 30 or type(g['sprite_assembly']) is not bool):
+            raise ValueError('sprite_assembly requires schema30 and a boolean')
         name = g.get('name', '')
         if not name or any(not (c.isascii() and (c.isalnum() or c in '_-')) for c in name) or name in names:
             raise ValueError('invalid or duplicate obstacle group name')
@@ -101,8 +103,30 @@ def movement_components(attributes, plane, link_xy, stairs):
     return components
 
 
+def support_direction(group, flip=0):
+    contacts=[m for m in group['members'] if m['support_contact']]
+    body=[m for m in group['members'] if not m['support_contact']]
+    d=1
+    if contacts and body:
+        cx0,cx1=min(m['x'] for m in contacts),max(m['x'] for m in contacts)
+        cy0,cy1=min(m['y'] for m in contacts),max(m['y'] for m in contacts)
+        bx0,bx1=min(m['x'] for m in body),max(m['x'] for m in body)
+        by0,by1=min(m['y'] for m in body),max(m['y'] for m in body)
+        if cx0==cx1 and cy0<=by0 and cy1>=by1 and (cx0<bx0 or cx0>bx1):d=2 if cx0<bx0 else 3
+        elif cy0==cy1 and cx0<=bx0 and cx1>=bx1 and (cy0<by0 or cy0>by1):d=0 if cy0<by0 else 1
+    if d>=2 and flip&1:d=5-d
+    if d<2 and flip&2:d=1-d
+    return d
+
+
 def audit(snapshot, attributes, profile, solution, state=None, components=None):
     groups, identities = validate_groups(profile)
+    # Dynamic OBJ footprints never claim cells in complete BG room maps.
+    sprite_groups = sum(bool(g.get('sprite_assembly')) for g in groups)
+    # Keep original profile indexes, as native authoredObstacleGroup uses gi+1.
+    background_groups = [(gi, g) for gi, g in enumerate(groups) if not g.get('sprite_assembly')]
+    groups = [g for _, g in background_groups]
+    identities = {m['tile_hash'] for g in groups for m in g['members']}
     assets = {a['tile_hash']: a.get('height') for a in profile.get('assets', [])}
     floor_ids = {h for name in ('dungeon_floor', 'wall_tops') for h in profile.get('asset_groups', {}).get(name, {}).get('tile_hashes', [])}
     roles = {a['tile_hash']: a.get('tile_role', 'unknown') for a in profile.get('assets', [])}
@@ -118,7 +142,7 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
         if xy is None:
             raise ValueError('obstacle audit requires pinned Link state')
         components = [movement_components(attributes, p, (plane, *xy), stairs) if p in active else [-1]*4096 for p in range(2)]
-    report = dict(groups=len(groups), required_cells=0, solved_cells=0, missing_cells=0,
+    report = dict(groups=len(groups), sprite_groups_excluded=sprite_groups, required_cells=0, solved_cells=0, missing_cells=0,
                   conflicting_cells=0, per_layer=[], placements=[], assemblies=[], issues=[], mismatches=[])
     inventory = {(r['layer'], r['plane'], r['y']*64+r['x']): r for r in solution.get('directional_geometry', [])}
     for layer in (0, 1):
@@ -129,7 +153,7 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
         candidates, claims, seen = [], {}, set()
         # Missing local metadata does not erase identity denominator or matching
         # shape evidence. It is an explicit whole-footprint source blocker.
-        for gi, g in enumerate(groups):
+        for gi, g in background_groups:
             for flip in range(4):
                 for y in range(64):
                     for x in range(64):
@@ -145,7 +169,7 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
                             slots.append((i, m))
                         if len(slots) != len(g['members']):
                             continue
-                        signature = gi, tuple(sorted((i, m['z'], m['support_contact'], (flip & 2) if m['support_contact'] else 0) for i, m in slots))
+                        signature = gi, tuple(sorted((i, m['z'], m['support_contact'], support_direction(g,flip) if m['support_contact'] else 0) for i, m in slots))
                         if signature in seen:
                             continue
                         seen.add(signature); ci = len(candidates)
@@ -175,14 +199,57 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
                 for i, m in slots:
                     if not m['support_contact']:
                         continue
-                    outside_y = i//64 + (-1 if flip & 2 else 1)
-                    neighbors = [i] + ([outside_y*64+i%64] if 0 <= outside_y < 64 else [])
+                    d=support_direction(profile['obstacle_groups'][gi],flip)
+                    dx,dy=((0,-1),(0,1),(-1,0),(1,0))[d]
+                    outside_x,outside_y=i%64+dx,i//64+dy
+                    while 0<=outside_x<64 and 0<=outside_y<64 and outside_y*64+outside_x in positions:
+                        outside_x+=dx;outside_y+=dy
+                    neighbors = [i] + ([outside_y*64+outside_x] if 0 <= outside_x < 64 and 0 <= outside_y < 64 else [])
+                    local = assets.get(cells[i].tile_hash)
+                    direct_contact = any(components[p][j] >= 0 and (p, j) in bases
+                                         for p in active if body_plane is None or p == body_plane for j in neighbors)
+                    if not direct_contact and local is not None:
+                        for dx in (-1, 1):
+                            x = i%64+dx
+                            if not 0 <= x < 64:
+                                continue
+                            edge = 0 if dx < 0 else 7
+                            c = cells[i]
+                            if not all(local[(7-y if c.vflip else y)*8+(7-edge if c.hflip else edge)] == 0 for y in range(8)):
+                                continue
+                            j = i+dx
+                            if ((roles.get(cells[j].tile_hash) == 'floor' or
+                                 (roles.get(cells[j].tile_hash, 'unknown') == 'unknown' and cells[j].tile_hash in floor_ids)) and
+                                    assets.get(cells[j].tile_hash) == [0]*64):
+                                neighbors.append(j)
                     witnesses = []
                     for p in sorted(active):
                         if body_plane is not None and p != body_plane:
                             continue
                         for j in neighbors:
                             n = components[p][j]; b = bases.get((p, j))
+                            if n < 0 and j != i and b is not None:
+                                pending, visited, owners = [j], set(), set()
+                                while pending:
+                                    cell = pending.pop()
+                                    if cell in visited:
+                                        continue
+                                    visited.add(cell)
+                                    art = cells[cell]
+                                    if (attributes[p][cell] != 0 or art.tile_hash in identities or
+                                            not (roles.get(art.tile_hash) == 'floor' or
+                                                 (roles.get(art.tile_hash, 'unknown') == 'unknown' and art.tile_hash in floor_ids)) or
+                                            assets.get(art.tile_hash) != [0]*64 or bases.get((p, cell)) != b):
+                                        continue
+                                    owner = components[p][cell]
+                                    if owner >= 0:
+                                        owners.add(owner)
+                                        continue
+                                    for dx, dy in STEPS:
+                                        x, y = cell%64+dx, cell//64+dy
+                                        if 0 <= x < 64 and 0 <= y < 64:
+                                            pending.append(y*64+x)
+                                n = next(iter(owners)) if len(owners) == 1 else -1
                             if n >= 0 and b is not None:
                                 witnesses.append(dict(plane=p, cell=j, component=n, base=b)); votes.add((p, n, b))
                     record['contacts'].append(dict(cell=i, witnesses=witnesses))

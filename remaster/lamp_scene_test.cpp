@@ -50,6 +50,12 @@ int main(int argc, char **argv)
 	RemasterFrame f;
 	require(S9xRemasterFinalizeFrame(f, stock, 2, 2, 1), "finalize independent planes");
 	require(f.sceneRgb555[0] == 0x4210 && f.originalRgb555[0] == 0, "finalized colors");
+	s.sceneGeometryOnly = true;
+	require(S9xRemasterFinalizeFrame(f, stock, 2, 2, 1) &&
+		f.sceneRgb555 == f.originalRgb555 && f.scenePixels[0].instanceId == 1,
+		"geometry-only scene preserves exact stock artwork/color math with independent ownership");
+	s.sceneGeometryOnly = false;
+	require(S9xRemasterFinalizeFrame(f, stock, 2, 2, 1), "restore lamp scene colors");
 	std::vector<uint8_t> bytes;
 	require(S9xSerializeRemasterFrame(f, bytes), "serialize scene appendix");
 	RemasterFrame decoded;

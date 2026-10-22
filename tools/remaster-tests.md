@@ -20,10 +20,10 @@ stack cases in `full` also load the checked-in
 python3 tools/run_remaster_tests.py --list
 python3 tools/run_remaster_tests.py --suite full --metal --list
 
-# Ten essential lifecycle/ownership/height/source regressions (default).
+# Thirteen essential lifecycle/ownership/height/source regressions (default).
 python3 tools/run_remaster_tests.py --suite quick
 
-# Eighteen cases, including placement/semantic reuse, terrain and stack safety.
+# Twenty-three cases, including floor continuity, reuse, terrain and stack safety.
 python3 tools/run_remaster_tests.py --suite full
 
 # ASan + UBSan; findings terminate the test and fail the aggregate.
@@ -62,7 +62,12 @@ does not launch any benchmark, emulator, or parallel test workers.
 | quick | `dungeon_disconnected_plane` | Overlapping/disjoint unobserved planes remain explicit; distinct BG graphics bases and complete-input key dependencies |
 | quick | `offscreen_continuity` | Production exact-depth source generation and hidden sampling: partial/offscreen area and power, signed positions/HES2 roundtrip, flips/normals, deterministic representative clusters, HUD versus world coverage |
 | quick | `held_lamp` | Lamp state/facing/anchor; actual HUD/dialogue/UI ink, transparent HUD and world sprites; invalid-input rejection |
+| quick | `sprite_obstacle` | Progressive OBJ layers, independent floor support and rejection of sparse interior contacts |
+| quick | `obstacle_group_editor` | Repeated OBJ occurrences, reviewed footprint completion and H/V/Z preservation |
+| quick | `paused_obstacle` | Production EndFrame packet retention, same-frame sidecars, paused effective height/normal invariance and bulk Z refresh |
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
+| full adds | `dungeon_floor_continuity` | Same-BG cardinal floor base continuation despite local relief and narrow strips; preserve flips/local arrays, reject barriers/diagonals/plane and level conflicts without expanding movement |
+| full adds | `dungeon_oriented_obstacle` | Horizontal authored support ends mirror west/east, V-symmetric claims share ownership, missing outward support stays unknown |
 | full adds | `dungeon_semantic_cache` | `EndFrame`: semantic activation/facing/context/door-mask rebuild versus exact reload reuse |
 | full adds | `dungeon_terrain_lifecycle` | Pickup/break support, carried/thrown/landed object plane/Z, OAM transforms and ambiguous ownership rejection |
 | full adds | `dungeon_persistent_support_rejection` | Dual-owner footprint remains unresolved without merging components or corrupting constraints |

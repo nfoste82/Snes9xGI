@@ -32,6 +32,7 @@
 #include "remaster/sphere_samples.h"
 #include "remaster/hidden_emitter_samples.h"
 #include "remaster/room_debug_view.h"
+#include "remaster/tile_type_overlay.h"
 
 #include <algorithm>
 #include <atomic>
@@ -373,6 +374,7 @@ struct RemasterMetalResources
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
 static uint32_t remasterRandomSeed = 0;
 static int benchmarkLastResourceSlot = -1;
+static int debugLastResourceSlot = -1;
 // Serialize producers and lifecycle changes, not the drawable-waiting worker.
 static std::recursive_mutex renderMutex;
 // Drawable notifications can arrive after command-buffer completion. Capturing
@@ -445,6 +447,20 @@ bool SaveRemasterBenchmarkImage(const std::string &path)
 		fromRegion:MTLRegionMake2D(0, 0, texture.width, texture.height) mipmapLevel:0];
 	NSData *png = [image representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 	return [png writeToFile:[NSString stringWithUTF8String:path.c_str()] atomically:YES];
+}
+
+bool SaveRemasterDebugPixels(const std::string &path)
+{
+	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	if (debugLastResourceSlot < 0) return false;
+	id<MTLTexture> texture = remasterResources[debugLastResourceSlot].output;
+	if (!texture) return false;
+	std::vector<uint8_t> pixels(texture.width * texture.height * 4);
+	[texture getBytes:pixels.data() bytesPerRow:texture.width * 4
+		fromRegion:MTLRegionMake2D(0, 0, texture.width, texture.height) mipmapLevel:0];
+	std::ofstream out(path, std::ios::binary);
+	out.write(reinterpret_cast<const char *>(pixels.data()), pixels.size());
+	return bool(out);
 }
 
 struct RemasterResourceSlotGuard
@@ -575,7 +591,15 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		owners.push_back(pixel.owner);
 	static std::vector<uint8_t> highlights;
 	highlights.clear();
-	if (frame.contextLocationSelection || !frame.selectedContextInstances.empty()) {
+	if (frame.obstacleLocationSelection) {
+		highlights.assign(frame.mainPixels.size(), 0);
+		for (uint32_t y=0;y<frame.height;y++) for (uint32_t x=0;x<frame.width;x++) {
+			const auto *instance=S9xRemasterFrameVisibleInstanceAt(frame,x,y);
+			if (instance && frame.selectedObstacleInstances.count(uint32_t(instance-frame.tileInstances.data()+1)))
+				highlights[size_t(y)*frame.width+x]=1;
+		}
+	}
+	else if (frame.contextLocationSelection || !frame.selectedContextInstances.empty()) {
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (size_t i=0;i<scenePixels.size();i++) {
 			auto id=scenePixels[i].instanceId;
@@ -748,6 +772,7 @@ static void S9xInitMetal (void)
 static void S9xDeinitMetal (void)
 {
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	debugLastResourceSlot = -1;
 	if (presentationCallbackGate)
 	{
 		std::lock_guard<std::mutex> callbackLock(presentationCallbackGate->mutex);
@@ -986,17 +1011,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		(*cameraDirection)[2] } : vector_float3{ 0.0f, 0.0f, -1.0f };
 	normalizedCameraDirection = simd_normalize(normalizedCameraDirection);
 	const size_t requiredSize = static_cast<size_t>(width) * height * 4;
-	std::vector<RemasterTileRole> tileRoles;
-	if (debugMode == RemasterDebugMode::TileTypes && frame)
-	{
-		std::map<RemasterTileContentId, RemasterTileRole> roles;
-		for (const auto &metadata : frame->assetMetadata) roles[metadata.tileId] = metadata.tileRole;
-		for (const auto &instance : frame->tileInstances)
-		{
-			const auto found = roles.find(instance.tileId);
-			tileRoles.push_back(S9xRemasterResolveInstanceTileRole(found == roles.end() ? RemasterTileRole::Unknown : found->second, instance));
-		}
-	}
+	const std::vector<RemasterTileRole> tileRoles = debugMode == RemasterDebugMode::TileTypes && frame ?
+		S9xRemasterTileTypeOverlayRoles(*frame) : std::vector<RemasterTileRole>();
 
 	if (buffer_size != requiredSize)
 	{
@@ -1022,24 +1038,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 
 			if (debugMode == RemasterDebugMode::TileTypes)
 			{
-				const size_t index = y * width + x;
-				if (frame && index < frame->mainPixels.size())
-				{
-					const auto &main = frame->mainPixels[index];
-					const auto &pixel = !main.instanceId && index < frame->subPixels.size() ? frame->subPixels[index] : main;
-					if (pixel.instanceId && pixel.instanceId <= tileRoles.size())
-					{
-						const auto &instance = frame->tileInstances[pixel.instanceId - 1];
-						// Keep Link/sprites and the HUD readable over the classified room.
-						if (instance.source == RemasterSourceType::Background && instance.sourceIndex != 2)
-						{
-							const uint32_t color = S9xRemasterTileRoleColor(tileRoles[pixel.instanceId - 1]);
-							red = (red + 2 * ((color >> 16) & 255)) / 3;
-							green = (green + 2 * ((color >> 8) & 255)) / 3;
-							blue = (blue + 2 * (color & 255)) / 3;
-						}
-					}
-				}
+				if (frame) S9xRemasterTintTileTypePixel(*frame, tileRoles, y * width + x, red, green, blue);
 			}
 			else if (debugMode != RemasterDebugMode::Original && debugMode != RemasterDebugMode::FloorWalls)
 			{
@@ -1098,7 +1097,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		for (size_t i = 0; i < samples.size(); i++)
 		{
 			samples[i].height = surfaceField[i*4];
-			samples[i].known = heightField[i*2+1] != 0 && participation[i*2] != 0;
+			samples[i].known = meshSamples && i < meshSamples->size() ? (*meshSamples)[i].known :
+				heightField[i*2+1] != 0 && participation[i*2] != 0;
 			samples[i].coverage = occlusion[i*2]/255.f;
 			samples[i].fallbackGround = meshSamples && i < meshSamples->size() && (*meshSamples)[i].fallbackGround;
 		}
@@ -1737,7 +1737,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				if (lightingView == RemasterLightingView::Composite ||
 					visibilityView ||
 					lightingView == RemasterLightingView::DirectContribution ||
-					lightingView == RemasterLightingView::Difference ||
 					lightingView == RemasterLightingView::IndirectContribution ||
 					lightingView == RemasterLightingView::DirectAndIndirectContribution)
 				{
@@ -1975,6 +1974,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		if (!presented)
 			return false;
 		[commandBuffer waitUntilCompleted];
+		if (lighting && commandBuffer.status == MTLCommandBufferStatusCompleted) debugLastResourceSlot = resourceSlot;
 		if (wroteDirectSnapshot && commandBuffer.status == MTLCommandBufferStatusCompleted)
 		{
 			id<MTLTexture> direct = resources->directMean[0];

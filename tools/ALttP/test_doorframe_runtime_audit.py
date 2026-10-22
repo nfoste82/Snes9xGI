@@ -19,6 +19,13 @@ class DoorframeAudit(unittest.TestCase):
         self.assertEqual(result['solved_marked_placements'],1)
         self.assertFalse(result['issues'])
 
+        landed = {**r, 'opening_base': 50, 'effective_height': [37]+[v+50 for v in range(1,64)]}
+        solution = {'doorframe_attachments':[landed], 'cells_plane_x_y_base':[[0,x,13,50] for x in range(10,14)]}
+        self.assertFalse(audit_doorframes(solution,Snapshot(),profile,words)['issues'])
+        solution['cells_plane_x_y_base'][0][3]=0
+        self.assertEqual(audit_doorframes(solution,Snapshot(),profile,words)['issues'][0]['reason'],
+                         'opening_landing_mismatch')
+
         hidden = {**r, 'plane': 1, 'visible': False, 'frame_base': -19,
                   'effective_height': [-19]+list(range(1,64))}
         result=audit_doorframes({'doorframe_attachments':[r,hidden]},Snapshot(),profile,words)

@@ -263,6 +263,8 @@ struct RemasterProfileRule
 
 // One authored example footprint; identities may repeat within it, never in a
 // second obstacle group. Placement Z remains contextual, not asset metadata.
+// Background Z is a missing-local fallback; sprite Z is an explicit additive
+// assembly-member offset. Neither changes canonical authored height arrays.
 struct RemasterObstacleMember
 {
 	RemasterTileContentId tileId;
@@ -273,7 +275,26 @@ struct RemasterObstacleGroup
 {
 	std::string name;
 	std::vector<RemasterObstacleMember> members;
+	bool spriteAssembly = false; // dynamic OBJ footprint, never a BG room constraint
 };
+
+// Authored contacts identify the supporting end of the example footprint.
+// Preserve the legacy south convention when the layout has no unique axis.
+// Direction order: north, south, west, east (matching room contact offsets).
+inline uint8_t S9xRemasterObstacleSupportDirection(const RemasterObstacleGroup &group, uint8_t flip=0)
+{
+	int cx0=64,cx1=-64,cy0=64,cy1=-64,bx0=64,bx1=-64,by0=64,by1=-64;
+	for(const auto &m:group.members) {
+		if(m.supportContact){cx0=std::min(cx0,m.x);cx1=std::max(cx1,m.x);cy0=std::min(cy0,m.y);cy1=std::max(cy1,m.y);}
+		else {bx0=std::min(bx0,m.x);bx1=std::max(bx1,m.x);by0=std::min(by0,m.y);by1=std::max(by1,m.y);}
+	}
+	uint8_t direction=1;
+	if(bx0<=bx1 && cx0==cx1 && cy0<=by0 && cy1>=by1 && (cx0<bx0 || cx0>bx1))direction=cx0<bx0?2:3;
+	else if(by0<=by1 && cy0==cy1 && cx0<=bx0 && cx1>=bx1 && (cy0<by0 || cy0>by1))direction=cy0<by0?0:1;
+	if(direction>=2 && (flip&1))direction=5-direction;
+	if(direction<2 && (flip&2))direction=1-direction;
+	return direction;
+}
 
 // Direction is the direction rays travel, in source-pixel XYZ (+Z toward camera).
 struct RemasterDirectionalLight
@@ -998,7 +1019,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			break;
 		}
 		case Section::ObstacleGroup:
-			if(key!="name" || !ParseString(value,parsed.obstacleGroups[obstacleIndex-1].name))fail(lineNumber,"invalid obstacle group key/value");
+			if(key=="name")valid=ParseString(value,parsed.obstacleGroups[obstacleIndex-1].name);
+			else if(key=="sprite_assembly")valid=ParseBool(value,parsed.obstacleGroups[obstacleIndex-1].spriteAssembly);
+			else valid=false;
+			if(!valid)fail(lineNumber,"invalid obstacle group key/value");
 			break;
 		case Section::ObstacleMember:
 			if(!obstacleMember) { fail(lineNumber,"missing obstacle member");break; }
@@ -1415,8 +1439,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 29)
-		fail(0, "schema_version must be an integer in [1, 29]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 30)
+		fail(0, "schema_version must be an integer in [1, 30]");
 	for (const auto &c : contexts)
 	{
 		if (parsed.schemaVersion < 28) fail(0, "tile contexts require schema_version 28");
@@ -1435,6 +1459,9 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	for (const auto &entry : parsed.areaLights)
 		if (!S9xRemasterValidDirectionalLight(entry.second)) fail(0, "invalid directional light: " + entry.first);
 	if(!parsed.obstacleGroups.empty() && parsed.schemaVersion<22)fail(0,"obstacle_groups requires schema_version 22");
+	for(size_t g=0;g<parsed.obstacleGroups.size();g++)
+		if(parsed.schemaVersion<30 && seenKeys[std::to_string(int(Section::ObstacleGroup))+":"+std::to_string(g+1)].count("sprite_assembly"))
+			fail(0,"sprite_assembly requires schema_version 30");
 	S9xRemasterValidateObstacleGroups(parsed.obstacleGroups,diagnostics);
 	for(size_t g=0;g<parsed.obstacleGroups.size();g++)for(size_t m=0;m<parsed.obstacleGroups[g].members.size();m++) {
 		const auto &keys=seenKeys[std::to_string(int(Section::ObstacleMember))+":"+std::to_string(g+1)+":"+std::to_string(m+1)];
@@ -1711,7 +1738,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		return wide(entry.second) || std::any_of(entry.second.facingGeometry.begin(), entry.second.facingGeometry.end(), wide) ||
 			std::any_of(entry.second.flipGeometry.begin(), entry.second.flipGeometry.end(), wide);
 	});
-	const uint32_t requiredSchema = std::max<uint32_t>(!profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const bool hasSpriteAssembly = std::any_of(profile.obstacleGroups.begin(),profile.obstacleGroups.end(),[](const auto &g){return g.spriteAssembly;});
+	const uint32_t requiredSchema = std::max<uint32_t>(hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -1777,6 +1805,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	}
 	for(const auto &group:profile.obstacleGroups) {
 		output << "\n[[obstacle_groups]]\nname = " << Quote(group.name) << "\n";
+		if(group.spriteAssembly)output << "sprite_assembly = true\n";
 		for(const auto &m:group.members)output << "\n[[obstacle_groups.members]]\ntile_hash = " << Quote(TileId(m.tileId))
 			<< "\nx = " << m.x << "\ny = " << m.y << "\nz = " << m.z
 			<< "\nhflip = " << (m.hflip?"true":"false") << "\nvflip = " << (m.vflip?"true":"false")

@@ -12,6 +12,7 @@ int main(){using C=RemasterDungeonFloorContext;using S=C::Surface;
   door.doorAssembly=oy*64+ox+1;door.doorDirection=d;door.doorTemplateOffset=d<2?(d==0?0x2716:0x29f0):(d==2?0x2c6a:0x2e6a);door.hflip=flip&1;door.vflip=flip&2;
   for(int py=0;py<8;py++)for(int px=0;px<8;px++){int k=(door.vflip?7-py:py)*8+(door.hflip?7-px:px);door.height[k]=dx?(dx>0?7-px:px):(dy>0?7-py:py);}
   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));assert(m->doorframeAttachments.size()==1 && m->doorframeAttachments[0].base==0 && m->doorframeAttachments[0].visible);
+  assert(m->doorframeAttachments[0].openingBase==0);
   auto saved=door;door.doorAssembly++;assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
   // Axial origin changes cannot match the innermost foot part.
   door=saved;if(d<2)door.doorAssembly+=64;else door.doorAssembly++;

@@ -65,6 +65,34 @@ emission depth must never override a newer feature's required schema version.
 
 ## Rendering
 
+### Overworld HUD shadow continuity (October 21, 2026)
+
+BG3 HUD ink previously removed the underlying tree pixels from the occlusion
+field. Oblique rays then leaked through letter-shaped holes (rather than the
+letters themselves casting shadows). Verified USA ALTTP settled overworld and
+overworld dialogue frames now rasterize an independent main-screen ownership
+plane with BG3 disabled. Main layer enables, clipping, priority, transparency,
+scroll and tile transforms remain authoritative. This is not the previously
+reverted union-main/sub ordinary-dungeon pass: stock RGB/color math is retained
+exactly, and ordinary indoor rendering is unchanged.
+
+The existing optional SCN1 plane carries this ownership and stock presentation
+RGB. HUD pixels remain zero-participation receivers/sources, but an evidenced
+world pixel behind them supplies its normal mesh/occlusion geometry. Mesh debug
+uses that same geometry. No authored heights or normals are generated or changed.
+Legacy captures without underlying ownership still lack that information and
+need recapture; no neighbor interpolation or guessed geometry fills their holes.
+
+Validation: `hud_shadow_test.cpp` checks identical hidden/uncovered world meshes,
+HUD participation changes under cached identities, legacy fallback, BG3 rejection
+and provisional ground. Lamp scene tests verify stock-color preservation and
+existing lamp lifecycle/wire behavior. Field-cache mutation/full-preparation
+equivalence passes on `frame_overworld_x0759_y04bc.s9xrmf`. Production Metal suite
+passes 1393/1393, plus directional assertions that a non-participating covered
+world blocker still casts a shadow and missing geometry reproduces the leak.
+Release app builds. Fresh live screenshot, scrolling/dialogue review and extra
+raster-pass performance remain unverified.
+
 One GPU pass adds Lambertian reflected directional radiance after emissive
 direct transport/reduction, before indirect transport. It is independent of
 emitter counts and batch sizes, works with no emissive tiles, honors receiver

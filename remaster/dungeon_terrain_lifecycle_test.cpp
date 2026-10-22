@@ -20,7 +20,14 @@ int main(){
  // Both halves/four children get the ONE owner offset, not individual visible
  // bottoms. Link plane differs deliberately from thrown object's own plane.
  c->hasTerrainActors=true;c->groundedEvidence=true;c->linkPlane=0;c->linkX=80;c->linkY=80;c->terrainActors[4]={80,85,10,2,16,0};c->terrainOam[20]={80,69,0x46,0x2c,2};
- map->planeOffsets[0].fill(24);map->planeOffsets[1].fill(-8);map->hasPlaneOffsets=true;
+  map->planeOffsets[0].fill(24);map->planeOffsets[1].fill(-8);map->hasPlaneOffsets=true;
+	// The unrelated screen-space actor below stands on a real movement floor.
+	// Structural plane offsets alone no longer qualify as walkable support.
+	auto screenFloor=std::make_shared<RemasterRoomDiagnostics>(*map->roomDiagnostics);
+	const int screenCell=64+1; // lone unrelated pixel at screen(15,15)
+	screenFloor->cells[screenCell].floorId=0;screenFloor->cells[screenCell].floorBase=24;
+	screenFloor->cells[screenCell].planeObserved=true;screenFloor->cells[screenCell].wall=false;
+	screenFloor->cells[screenCell].heightConflict=false;map->roomDiagnostics=screenFloor;
   auto run=[&](int expected,bool overwritten=false){
   auto f=std::make_unique<RemasterFrame>();f->width=16;f->height=16;f->mainPixels.resize(256);
    for(int n=0;n<4;n++){RemasterFrameTileInstance i;i.source=RemasterSourceType::Object;i.sourceIndex=20;i.tileNumber=0x46+(n&1)+(n/2)*16;i.palette=6;i.heightOffset=3;i.hFlip=bool(c->terrainOam[20].flags&0x40);i.vFlip=bool(c->terrainOam[20].flags&0x80);f->tileInstances.push_back(i);}
@@ -54,11 +61,18 @@ int main(){
  auto &state=S9xRemasterState();state.activeProfile.romSha256="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
  if(const char *path=std::getenv("ALTTP_TERRAIN_TEST_EVIDENCE")) {
   std::vector<RemasterProfileDiagnostic> errors;assert(S9xRemasterLoadProfile("Profiles/ALttP/alttp-profile.toml",state.activeProfile,errors));
+  c->hasObstacleActors=true;c->obstacleActors[0]={778,2595,0xee,9,0,0,16,2,0,true};
   auto pinned=S9xRemasterPinDungeonCaptureEvidence(c.get(),state.activeProfile,nullptr,0,0,false);
   c->terrainActors[4].z=91;
+  c->obstacleActors[0].plane=1;c->obstacleActors[0].x=999;
   S9xRemasterWriteDungeonCaptureEvidence(path,pinned->context,pinned->profile,nullptr,0,0,false);
   C restored;assert(S9xRemasterReadTerrainEvidence(std::string(path)+".terrain-input.bin",restored));
   assert(restored.terrainActors[4].z==0 && restored.hasTerrainActors);
+  assert(S9xRemasterReadSpriteObstacleEvidence(std::string(path)+".sprite-input.bin",restored));
+  assert(restored.hasObstacleActors && restored.obstacleActors[0].plane==0 && restored.obstacleActors[0].x==778);
+  assert(restored.obstacleActors[0].hasMotion && restored.obstacleActors[0].xSubpixel==16 && restored.obstacleActors[0].xVelocity==2);
+  std::ifstream evidence(std::string(path)+".sprite-input.bin",std::ios::binary|std::ios::ate);
+  assert(evidence.tellg()==204);
  }
  std::cout<<"terrain support / carried / thrown / landed / ambiguous / reset PASS\n";
 }

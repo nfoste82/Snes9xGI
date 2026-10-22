@@ -73,6 +73,8 @@ static float halfToFloat(uint16_t bits)
     return half;
 }
 
+#include "remaster-debug-pixels-test.h"
+
 int main()
 {
     @autoreleasepool
@@ -168,6 +170,7 @@ int main()
             require(highlight != nil, error.localizedDescription);
             id<MTLCommandQueue> queue = [device newCommandQueue];
             require(queue != nil, @"Could not create Metal command queue");
+            TestRemasterDebugPixels(device,library,queue);
             std::printf("Device: %s; runtime shaders: macosx/shaders.metal; RGBA32Float and production RGBA16Float\n",
                 device.name.UTF8String);
 
@@ -576,6 +579,10 @@ int main()
 				require(parallelTrial(input).x > 1.89, @"Parallel oblique ray reaches viewport boundary");
 				blocker(input,12,1,true,8);
 				require(parallelTrial(input).x == 0, @"Parallel ray is blocked by authored mesh");
+				input[Participation][receiver+12] = {}; // HUD covers the world blocker
+				require(parallelTrial(input).x == 0, @"World beneath HUD still blocks parallel light without receiving GI");
+				input[Occlusion][receiver+12] = {};
+				require(parallelTrial(input).x > 1.89, @"Missing HUD-covered geometry reproduces directional light leak");
 				light.enabled = false;
 				require(parallelTrial(input).x == 0, @"Disabled parallel light contributes nothing");
 			}

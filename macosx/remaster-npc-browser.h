@@ -1,4 +1,59 @@
 // Included by mac-os.mm: native pose artwork/picking, no renderer or emulation.
+static double RemasterNpcPoseDuration(NSDictionary *pose)
+{
+	double frames = [pose[@"duration_frames"] doubleValue];
+	return frames > 0 ? frames / 60.0 : 0.18;
+}
+
+// Compare artwork and assembly, not timing, frame number or OAM allocation.
+// Keep part order: it determines which overlapping artwork wins.
+static NSArray *RemasterNpcPoseArtworkSignature(NSDictionary *pose)
+{
+	NSMutableArray *parts = [NSMutableArray new];
+	for (NSDictionary *part in pose[@"parts"])
+		[parts addObject:@[part[@"x"], part[@"y"], part[@"hflip"], part[@"vflip"],
+			part[@"tile_hash"], part[@"indices"], part[@"colors"]]];
+	return parts;
+}
+
+static NSArray *RemasterNpcCollapseDuplicatePoses(NSArray *poses)
+{
+	NSMutableArray *result = [NSMutableArray new];
+	NSMutableDictionary *previous = [NSMutableDictionary new];
+	for (NSDictionary *pose in poses)
+	{
+		NSArray *sequence = @[pose[@"facing"], pose[@"action"]];
+		NSArray *signature = RemasterNpcPoseArtworkSignature(pose);
+		if (![previous[sequence] isEqual:signature]) [result addObject:pose];
+		previous[sequence] = signature;
+	}
+	return result;
+}
+
+// A hidden timing repeat selects the first frame of its run when toggled on.
+static NSUInteger RemasterNpcRepresentativePoseIndex(NSArray *poses, NSDictionary *source)
+{
+	NSUInteger result = NSNotFound;
+	for (NSUInteger i = 0; i < poses.count; i++)
+	{
+		NSDictionary *pose = poses[i];
+		if (pose == source) return i;
+		if ([pose[@"facing"] isEqual:source[@"facing"]] && [pose[@"action"] isEqual:source[@"action"]] &&
+			[pose[@"step"] integerValue] <= [source[@"step"] integerValue]) result = i;
+	}
+	return result;
+}
+
+// Playback always uses the original timeline, independently of menu filtering.
+static NSArray *RemasterNpcPlaybackPoses(NSDictionary *actor, NSDictionary *source)
+{
+	NSMutableArray *result = [NSMutableArray new];
+	for (NSDictionary *pose in actor[@"poses"])
+		if ([pose[@"facing"] isEqual:source[@"facing"]] && [pose[@"action"] isEqual:source[@"action"]])
+			[result addObject:pose];
+	return result;
+}
+
 static NSArray *RemasterNpcContextSignature(NSDictionary *actor)
 {
 	NSMutableArray *poses = [NSMutableArray new];
@@ -10,7 +65,7 @@ static NSArray *RemasterNpcContextSignature(NSDictionary *actor)
 			// palettes (including hidden pixels), placement and inspector provenance.
 			[parts addObject:@[part[@"x"], part[@"y"], part[@"slot"], part[@"hflip"], part[@"vflip"],
 				part[@"tile_hash"], part[@"indices"], part[@"colors"]]];
-		[poses addObject:@[pose[@"facing"], pose[@"action"], pose[@"step"], [parts copy]]];
+		[poses addObject:@[pose[@"facing"], pose[@"action"], pose[@"step"], pose[@"duration_frames"] ?: @0, [parts copy]]];
 	}
 	return [poses copy];
 }

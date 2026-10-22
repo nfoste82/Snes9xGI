@@ -29,6 +29,9 @@ int main(int argc, char **argv)
 		NSData *data = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
 		NSDictionary *document = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
 		unsigned poses = 0, picks = 0;
+		if (RemasterNpcPoseDuration(@{}) != 0.18 ||
+			RemasterNpcPoseDuration(@{@"duration_frames": @1}) != 1.0 / 60.0 ||
+			RemasterNpcPoseDuration(@{@"duration_frames": @6}) != 0.1) return 1;
 		NSDictionary *part0 = @{@"slot": @0}, *part1 = @{@"slot": @1};
 		NSDictionary *phase0 = @{@"facing": @"south", @"action": @"walk", @"step": @0,
 			@"parts": @[part0, part0, part0, part0, part1]};
@@ -90,6 +93,75 @@ int main(int argc, char **argv)
 		NSArray *combined = RemasterNpcGroupActors(@[original, duplicate]);
 		if ([combined[0][@"actors"] count] != 1 || [combined[0][@"actors"][0][@"sourceContextIds"] count] != 2) return 1;
 		NSArray *baseline = RemasterNpcContextSignature(duplicate);
+		// Collapse runs, not all recurring artwork; retain original dictionaries
+		// and frame numbers, with independent action/facing sequence boundaries.
+		NSMutableDictionary *a0 = [original[@"poses"][0] mutableCopy];
+		a0[@"step"] = @0;
+		NSMutableDictionary *a1 = [a0 mutableCopy]; a1[@"step"] = @1;
+		NSMutableDictionary *a2 = [a0 mutableCopy]; a2[@"step"] = @2;
+		NSMutableDictionary *b3 = [a0 mutableCopy]; b3[@"step"] = @3;
+		NSMutableArray *changedParts = [a0[@"parts"] mutableCopy];
+		NSMutableDictionary *changedPart = [changedParts[0] mutableCopy];
+		changedPart[@"x"] = @([changedPart[@"x"] intValue] + 1);
+		changedParts[0] = changedPart; b3[@"parts"] = changedParts;
+		NSMutableDictionary *b4 = [b3 mutableCopy]; b4[@"step"] = @4;
+		NSMutableDictionary *a5 = [a0 mutableCopy]; a5[@"step"] = @5;
+		NSMutableDictionary *otherSequence = [a0 mutableCopy]; otherSequence[@"action"] = @"other";
+		NSArray *collapsed = RemasterNpcCollapseDuplicatePoses(@[a0, a1, a2, b3, b4, a5, otherSequence]);
+		if (![collapsed isEqual:@[a0, b3, a5, otherSequence]] ||
+			RemasterNpcRepresentativePoseIndex(collapsed, a2) != 0 ||
+			RemasterNpcRepresentativePoseIndex(collapsed, b4) != 1 ||
+			RemasterNpcRepresentativePoseIndex(collapsed, a5) != 2) return 1;
+		NSArray *timeline = RemasterNpcPlaybackPoses(@{@"poses": @[a0, a1, a2, b3, b4, a5, otherSequence]}, a0);
+		if (![timeline isEqual:@[a0, a1, a2, b3, b4, a5]]) return 1;
+		NSArray *expectedMenuIndices = @[@0, @0, @0, @1, @1, @2];
+		double fullDuration = 0;
+		for (NSUInteger tick = 0; tick < timeline.count; tick++)
+		{
+			if (RemasterNpcRepresentativePoseIndex(collapsed, timeline[tick]) != [expectedMenuIndices[tick] unsignedIntegerValue]) return 1;
+			fullDuration += RemasterNpcPoseDuration(timeline[tick]);
+		}
+		if (std::abs(fullDuration - 6 * 0.18) > 1e-6) return 1;
+		for (NSString *key in @[@"x", @"y", @"hflip", @"vflip", @"tile_hash", @"colors"])
+		{
+			NSMutableDictionary *modified = [lastPart mutableCopy];
+			if ([key isEqual:@"tile_hash"]) modified[key] = @"changed";
+			else if ([key isEqual:@"colors"])
+			{
+				NSMutableArray *colors = [modified[key] mutableCopy]; colors[0] = @(([colors[0] intValue] + 1) % 32768);
+				modified[key] = colors;
+			}
+			else modified[key] = @([modified[key] intValue] + 1);
+			NSMutableArray *parts = [lastParts mutableCopy]; parts[0] = modified;
+			NSMutableDictionary *pose = [lastPose mutableCopy]; pose[@"parts"] = parts;
+			if ([RemasterNpcCollapseDuplicatePoses(@[lastPose, pose]) count] != 2) return 1;
+		}
+		NSMutableDictionary *effectPose = [a0 mutableCopy];
+		NSMutableArray *effectParts = [a0[@"parts"] mutableCopy]; [effectParts addObject:changedPart];
+		effectPose[@"parts"] = effectParts;
+		if ([RemasterNpcCollapseDuplicatePoses(@[a0, effectPose]) count] != 2) return 1;
+		NSMutableDictionary *north = [a0 mutableCopy]; north[@"facing"] = @"another facing";
+		if ([RemasterNpcCollapseDuplicatePoses(@[a0, north, a1]) count] != 2) return 1;
+		for (NSDictionary *actor in document[@"actors"])
+		{
+			NSArray *reduced = RemasterNpcCollapseDuplicatePoses(actor[@"poses"]);
+			for (NSDictionary *pose in actor[@"poses"])
+			{
+				NSUInteger representative = RemasterNpcRepresentativePoseIndex(reduced, pose);
+				if (representative == NSNotFound ||
+					![RemasterNpcPoseArtworkSignature(reduced[representative]) isEqual:RemasterNpcPoseArtworkSignature(pose)]) return 1;
+			}
+			if ([actor[@"id"] isEqual:@"link-equipment-2-2-0"])
+			{
+				NSUInteger charge = 0;
+				for (NSDictionary *pose in reduced)
+					if ([pose[@"action"] isEqual:@"sword charge / charged movement"] && [pose[@"facing"] isEqual:@"south"]) charge++;
+				std::cout << "Link south charge: 64 frames -> " << charge << " consecutive artwork changes\n";
+			}
+		}
+		lastPose[@"duration_frames"] = @6;
+		if ([RemasterNpcContextSignature(duplicate) isEqual:baseline]) return 1;
+		[lastPose removeObjectForKey:@"duration_frames"];
 		for (NSString *key in @[@"x", @"y", @"slot", @"hflip", @"vflip", @"tile_hash", @"colors"])
 		{
 			id value = lastPart[key];

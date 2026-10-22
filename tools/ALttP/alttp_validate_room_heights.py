@@ -84,13 +84,13 @@ def grounded_floor_hashes(profile):
     # Explicit role overrides a stale generated structural group at runtime.
     result.difference_update(a['tile_hash'] for a in profile.get('assets',[])
                              if a.get('tile_role') in ('wall','wall_corner','obstacle','door'))
-    result.difference_update(m['tile_hash'] for g in profile.get('obstacle_groups', []) for m in g['members'])
+    result.difference_update(m['tile_hash'] for g in profile.get('obstacle_groups', []) if not g.get('sprite_assembly') for m in g['members'])
     return result
 
 
 def audit_authored_obstacle_capability(report, profile, solution=None, snapshot=None, attributes=None, state=None):
     """Rebuild ownership and contacts independently; preserve other gate failures."""
-    if not profile.get('obstacle_groups'):
+    if not any(not g.get('sprite_assembly') for g in profile.get('obstacle_groups', [])):
         return
     if snapshot is None or attributes is None or solution is None:
         report['authored_obstacle_groups'] = {'status': 'missing_complete_inputs'}
@@ -111,7 +111,7 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
     if not isinstance(planes, list) or len(planes) != 2 or not isinstance(elevation, dict):
         raise ValueError("graph must contain two planes and an elevation solution")
     assets, wall_hashes = _profile(profile)
-    authored_group_hashes = {m['tile_hash'] for g in profile.get('obstacle_groups', []) for m in g['members']}
+    authored_group_hashes = {m['tile_hash'] for g in profile.get('obstacle_groups', []) if not g.get('sprite_assembly') for m in g['members']}
     wall_hashes -= authored_group_hashes
     groups = profile.get('asset_groups', {})
     forbidden_template_hashes = set()
@@ -854,6 +854,41 @@ def validate(graph: dict, rise: int, height_map: list[int] | None = None,
             "compiled_map_missing": map_missing, "compiled_map_mismatches": map_mismatches}
 
 
+def audit_authored_floor_placements(solution, snapshot, attributes, profile):
+    """Enumerate complete-room floor relief separately from actor reachability.
+
+    Bases are runtime claims, local sources are independently pinned profile /
+    placement data. This inventory is not an independent support-owner proof.
+    Include unobserved planes as explicit missing, never infer their heights.
+    """
+    assets = {a['tile_hash']: a for a in profile.get('assets', [])}
+    placements = []
+    counts = [[dict(required=0, solved=0, missing=0) for _ in range(2)] for _ in range(2)]
+    for r in solution.get('directional_geometry', []):
+        layer, plane, x, y = (r[k] for k in ('layer', 'plane', 'x', 'y'))
+        cell = snapshot.cell(layer, x, y)
+        asset = assets.get(cell.tile_hash, {})
+        if asset.get('tile_role') != 'floor' or attributes[plane][y * SIZE + x] != 0:
+            continue
+        local, base = asset.get('height'), r.get('base', UNKNOWN)
+        valid_local = isinstance(local, list) and len(local) == 64
+        solved = base != UNKNOWN and valid_local
+        counts[layer][plane]['required'] += 1
+        counts[layer][plane]['solved' if solved else 'missing'] += 1
+        placements.append(dict(layer=layer, plane=plane, x=x, y=y, tile_hash=cell.tile_hash,
+                               floor_base=base, local_source='authored_asset' if valid_local else 'missing',
+                               local_min=min(local) if valid_local else None,
+                               local_max=max(local) if valid_local else None,
+                               effective_min=base + min(local) if solved else None,
+                               effective_max=base + max(local) if solved else None,
+                               fallback_directions=r.get('fallback_directions', 0),
+                               hflip=bool(cell.word & 0x4000), vflip=bool(cell.word & 0x8000),
+                               status='solved_runtime_base' if solved else 'missing'))
+    return dict(scope='both complete BG layers and gameplay planes; authored floor role with ordinary collision',
+                evidence='runtime base claims plus independent pinned local sources; not movement or independent ownership approval; conflicts retained in main report',
+                per_layer_plane=counts, placements=placements)
+
+
 def diagnostic_svg(report: dict, path: Path) -> None:
     cells = {(p["x"], p["y"]): "#36b37e" if p["kind"] == "walkable_support" else "#f5a623"
              for p in report["placements"]}
@@ -876,8 +911,8 @@ def diagnostic_svg(report: dict, path: Path) -> None:
 def audit_doorframes(solution, snapshot, profile, template_data):
     """Inventory all marked placements, independently reject template/mask drift.
 
-    Region offsets are not compiled tile-wide map entries. False pixels must
-    remain precisely authored; no floor/threshold offset is admissible there.
+    Region offsets are not compiled tile-wide map entries. Unmarked pixels
+    retain authored relief relative to the connected room-facing landing.
     """
     assets = {a['tile_hash']: a for a in profile.get('assets', [])}
     required = {}
@@ -961,7 +996,9 @@ def audit_doorframes(solution, snapshot, profile, template_data):
             issues.append(dict(reason='ambiguous_visible_frame_plane', record=r)); continue
         mask = int(a['doorframe_mask'], 16)
         local = a.get('height', [])
-        expected = [v + (r['frame_base'] if mask >> k & 1 else 0) for k, v in enumerate(local)]
+        opening = r.get('opening_base', 255)
+        expected = [v + (r['frame_base'] if mask >> k & 1 else opening if opening != 255 else 0)
+                    for k, v in enumerate(local)]
         if len(local) != 64 or int(r['mask'], 16) != mask or r['effective_height'] != expected:
             issues.append(dict(reason='frame_mask_or_opening_preservation', record=r)); continue
         off = r['template_offset']
@@ -983,11 +1020,31 @@ def audit_doorframes(solution, snapshot, profile, template_data):
                                  for xx in range(w) for yy in range(h))
         if not exact:
             issues.append(dict(reason='missing_intact_rom_door_template', record=r)); continue
+        if opening != 255:
+            # Independently check the claimed datum against complete-room floor
+            # support at the room-facing edge, not the frame's wall-band base.
+            floor_records = solution.get('cells_plane_x_y_base' if c.layer == 1 else 'bg1_cells_plane_x_y_base', [])
+            floors = {(p,x,y): b for p,x,y,b in floor_records}
+            landing = set()
+            for oy in range(max(0,c.y-h+1), min(c.y,64-h)+1):
+                for ox in range(max(0,c.x-w+1), min(c.x,64-w)+1):
+                    if not all((snapshot.cell(owner_layer(xx,yy),ox+xx,oy+yy).word & 0xdfff) ==
+                               (int.from_bytes(template_data[off+2*(xx*h+yy):off+2*(xx*h+yy)+2], 'little') & 0xdfff)
+                               for xx in range(w) for yy in range(h)):
+                        continue
+                    for k in range(4):
+                        x = ox + (k if direction < 2 else 3 if direction == 2 else -1)
+                        y = oy + (k if direction >= 2 else 3 if direction == 0 else -1)
+                        base = floors.get((r['plane'],x,y))
+                        if base is not None:
+                            landing.add(base)
+            if landing != {opening}:
+                issues.append(dict(reason='opening_landing_mismatch', record=r)); continue
         if r.get('visible', True):
             accepted.add(key)
     return dict(required_marked_placements=len(required), solved_marked_placements=len(accepted),
                 missing_marked_placements=[list(k) for k in sorted(required.keys()-accepted)], issues=issues,
-                region_source='placement_rom_doorframe_seam', opening_contract='unmarked_pixels_exactly_authored')
+                region_source='placement_rom_doorframe_seam', opening_contract='authored_relief_at_connected_landing')
 
 
 def main() -> int:
@@ -1097,6 +1154,7 @@ def main() -> int:
         # validate() independently reconstructs terminal footprint ownership /
         # collision-body contacts instead of trusting runtime assembly claims.
         if args.runtime_solution:
+            report['authored_floor_coverage'] = audit_authored_floor_placements(solution, snapshot, attributes, profile)
             report['diagonal_sources'] = [dict(layer=l,x=x,y=y,**proof)
                                           for l, layer_proofs in enumerate(proofs)
                                           for (x,y),proof in sorted(layer_proofs.items())]

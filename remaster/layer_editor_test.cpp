@@ -83,5 +83,56 @@ int main()
 	require(!S9xRemasterShiftMetadataLayer(source,RemasterEditorHeight,1,1),"diagonal shifts rejected");
 	require(!S9xRemasterFlipMetadataLayer(empty, RemasterEditorHeight, true) && !empty.hasHeight, "missing layers remain missing");
 	require(!S9xRemasterFlipMetadataLayer(source, RemasterEditorArtwork, true) && !S9xRemasterFlipMetadataLayer(source, RemasterEditorMetadata, false), "nonpixel layers unavailable");
-	std::cout << "Layer flips and shifts: axes, normals, channels, signed heights, edge defaults, isolation and missing data passed\n";
+	// The production Tile +/- action operates on the full selection, not focus.
+	for (int delta : {-8,-1,1,8})
+	{
+		RemasterProfile profile;
+		profile.gameTitle="Selected height steps"; profile.romSha256=std::string(64,'0');
+		const RemasterTileContentId a{101,1,4}, b{102,1,4}, c{103,1,4}, missing{104,1,4};
+		for (const auto &id : {a,b,c}) { profile.assets[id]=source; profile.assets[id].tileId=id; }
+		profile.assets[b].height.fill(-100);
+		profile.assets[a].height[0]=32767; profile.assets[a].height[1]=-32768;
+		const auto before=profile;
+		require(S9xRemasterStepSelectedTileHeights(profile,{a,b,a,missing},delta),"selected heights change");
+		for (int p=0;p<64;p++) {
+			require(profile.assets[a].height[p]==std::max(-32768,std::min(32767,int(before.assets.at(a).height[p])+delta)),"all samples adjusted once with signed clamping");
+			require(profile.assets[b].height[p]==-100+delta,"second selected tile uses its own heights");
+			require(profile.assets[missing].height[p]==delta,"missing height starts at zero");
+		}
+		require(profile.assets[c].height==before.assets.at(c).height,"unselected heights preserved");
+		require(profile.assets[a].normalXyz==source.normalXyz && profile.assets[a].occlusion==source.occlusion && profile.assets[a].heightSampling==source.heightSampling,"other layers and sampling preserved");
+		require(profile.assets[missing].hasHeight && profile.assets[missing].tileId==missing,"new layer has identity and authored flag");
+		const auto edited=profile;
+		std::string saved; std::vector<RemasterProfileDiagnostic> diagnostics; RemasterProfile reloaded;
+		auto savedProfile=profile;
+		// The flip/shift fixture's synthetic material selectors have no definitions.
+		for (auto &entry : savedProfile.assets) {
+			entry.second.hasMaterialSelectors=false; entry.second.materialSelectors={};
+			entry.second.hasDoorframeMask=false; entry.second.doorframeMask=0;
+		}
+		const bool roundtrip=S9xRemasterSerializeProfile(savedProfile,saved,diagnostics) && S9xRemasterParseProfile(saved,reloaded,diagnostics);
+		if (!roundtrip) for (const auto &diagnostic : diagnostics) std::cerr << diagnostic.message << '\n';
+		require(roundtrip,"bulk height profile save/reload");
+		require(reloaded.assets.at(a).height==profile.assets.at(a).height && reloaded.assets.at(b).height==profile.assets.at(b).height && reloaded.assets.at(missing).height==profile.assets.at(missing).height,"save retains every selected height layer");
+		require(!S9xRemasterStepSelectedTileHeights(profile,{a,b},2),"unsupported step rejected");
+		require(profile.assets[a].height==edited.assets.at(a).height,"invalid step leaves selection unchanged");
+		profile=before; // Same whole-profile snapshot used by native Undo.
+		require(profile.assets[a].height==before.assets.at(a).height && profile.assets[b].height==before.assets.at(b).height && !profile.assets.count(missing),"undo restores full selection and removes new layer");
+		profile.assets[a].geometryByFlip=true;
+		profile.assets[a].flipGeometry[1]=source;
+		require(S9xRemasterStepSelectedTileHeights(profile,{a,b},delta,2),"mixed flip-specific and ordinary selection");
+		require(profile.assets[a].height==before.assets.at(a).height && profile.assets[a].flipGeometry[1].height[10]==10+delta && !profile.assets[a].flipGeometry[0].hasHeight,"only selected geometry variant edited");
+		profile=before;
+		profile.tileContexts[a]["local"].height.fill(50);
+		profile.tileContexts[a]["local"].hasHeight=true;
+		profile.tileContexts[b]["local"].height.fill(-50);
+		profile.tileContexts[b]["local"].hasHeight=true;
+		profile.tileContexts[a]["other"].height.fill(99);
+		require(S9xRemasterStepSelectedTileHeights(profile,{a,b,c,missing},delta,0,"local"),"context selection edits all available contexts");
+		require(profile.tileContexts[a]["local"].height[63]==50+delta && profile.tileContexts[b]["local"].height[63]==-50+delta,"all selected contexts updated");
+		require(profile.assets[a].height==before.assets.at(a).height && profile.assets[c].height==before.assets.at(c).height && !profile.assets.count(missing) && profile.tileContexts[a]["other"].height[0]==99,"context edits never fall through or change other contexts");
+		profile.assets[a].height.fill(delta>0 ? 32767 : -32768);
+		require(!S9xRemasterStepSelectedTileHeights(profile,{a},delta),"fully saturated selection is a no-op");
+	}
+	std::cout << "Layer flips, shifts and selected height steps: signed clamping, deduplication, variants, contexts, isolation and undo passed\n";
 }

@@ -21,7 +21,7 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  v(m.disconnectedPlaneCandidates);v(m.planeRelationshipUnresolved);
  v(m.geometryConflicts.size());for(auto &r:m.geometryConflicts){v(r.node);v(r.other);v(r.expected);v(r.actual);}
  v(m.cornerBranches.size());for(auto &r:m.cornerBranches){v(r.corner);v(r.plane);v(r.branch);v(r.base);v(r.support);v(r.rise);}
- v(m.doorframeAttachments.size());for(auto &r:m.doorframeAttachments){v(r.cell);v(r.plane);v(r.base);v(r.mask);v(r.source);v(r.visible);}
+ v(m.doorframeAttachments.size());for(auto &r:m.doorframeAttachments){v(r.cell);v(r.plane);v(r.base);v(r.mask);v(r.source);v(r.visible);v(r.openingBase);}
  v(m.localHeightPreviews.size());for(auto &r:m.localHeightPreviews){v(r.cell);array(r.height);}
  v(m.unknownDoorframeCells);v(m.conflictingDoorframeCells);
  v(m.geometryIssuePlacements.size());for(auto &r:m.geometryIssuePlacements)array(r);

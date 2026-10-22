@@ -94,10 +94,12 @@ int main(int argc, char **argv)
 		session.materials["stone"].roughness = 0.25f;
 		disk.assetGroups["walls"].tileIds.push_back(b);
 		disk.obstacleGroups[0].members[0].z = -8;
+		disk.obstacleGroups[0].spriteAssembly = true;
 		merge(structured, session, disk);
 		check(result.conflicts.empty() && result.saved.materials.at("stone").roughness == 0.25f &&
 			result.saved.assetGroups.at("walls").tileIds.size() == 2 && result.saved.obstacleGroups[0].members[0].z == -8 &&
-			result.saved.rules.size() == 1, "materials, groups, obstacle members and rules preserved");
+			result.saved.rules.size() == 1 && result.saved.obstacleGroups[0].spriteAssembly && result.saved.schemaVersion>=30,
+			"materials, groups, sprite assembly discriminator, obstacle members and rules preserved");
 		session = structured; disk = structured;
 		session.rules[0].material = "missing";
 		check(!S9xRemasterMergeProfiles(structured, session, disk, {}, false, result, errors), "invalid merged references rejected");

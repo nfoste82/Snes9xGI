@@ -19,6 +19,75 @@ def member(h, x, y, z=0, hf=False, vf=False, contact=False):
 
 
 class AuthoredObstacles(unittest.TestCase):
+    def test_horizontal_mirrored_pillar_layout_owns_correct_support_side(self):
+        floor='v1:4bpp:3333333333333333'
+        for flip in range(4):
+            s=Snapshot();members=[]
+            hashes=[f'v1:4bpp:{n:016x}' for n in range(1,5)]
+            for y in range(2):
+                for x,h in enumerate(hashes):members.append(member(h,x,y,vf=bool(y),contact=x==3))
+            p=dict(obstacle_groups=[dict(name='wall',members=members)],
+                   assets=[dict(tile_hash=h,height=[7]*64) for h in hashes]+[dict(tile_hash=floor,tile_role='floor',height=[0]*64)])
+            components=[[-1]*4096 for _ in range(2)];sol=dict(plane=0,stairs=[],cells_plane_x_y_base=[])
+            for m in members:
+                x=20+(-m['x'] if flip&1 else m['x']);y=20+(-m['y'] if flip&2 else m['y'])
+                s.cells[1][y*64+x]=SimpleNamespace(tile_hash=m['tile_hash'],hflip=bool(flip&1),vflip=m['vflip']^bool(flip&2))
+                if m['support_contact']:
+                    x+=-1 if flip&1 else 1;j=y*64+x
+                    s.cells[1][j]=SimpleNamespace(tile_hash=floor,hflip=False,vflip=False)
+                    components[0][j]=0;sol['cells_plane_x_y_base'].append([0,x,y,24])
+            r=audit(s,(bytes(4096),)*2,p,sol,components=components)
+            self.assertEqual((r['solved_cells'],r['conflicting_cells']),(8,0))
+            self.assertEqual({v['floor_base'] for v in r['placements']},{24})
+
+    def test_declared_contact_zero_side_edge(self):
+        floor='v1:4bpp:3333333333333333'
+        for flip in range(4):
+            s,p,c,sol=self.fixture([member(A,0,0),member(B,0,1,contact=True)])
+            if flip&2:
+                s.cells[1][9*64+10]=s.cells[1][11*64+10]
+                s.cells[1][11*64+10]=SimpleNamespace(tile_hash='empty',hflip=False,vflip=False)
+            foot=(9 if flip&2 else 11)*64+10
+            for i in (10*64+10,foot):
+                s.cells[1][i].hflip=bool(flip&1);s.cells[1][i].vflip=bool(flip&2)
+            local=[7]*64
+            for y in range(8):local[y*8+7]=0
+            p['assets'][1]['height']=local
+            p['assets'].append(dict(tile_hash=floor,tile_role='floor',height=[0]*64))
+            j=foot+(-1 if flip&1 else 1)
+            s.cells[1][j]=SimpleNamespace(tile_hash=floor,hflip=False,vflip=False)
+            c[0]=[-1]*4096;c[0][j]=0
+            sol['cells_plane_x_y_base']=[[0,j%64,j//64,24]]
+            r=audit(s,(bytes(4096),)*2,p,sol,components=c)
+            self.assertEqual(r['solved_cells'],2)
+            self.assertEqual({v['floor_base'] for v in r['placements']},{24})
+            p['assets'][1]['height']=[7]*64
+            self.assertEqual(audit(s,(bytes(4096),)*2,p,sol,components=c)['missing_cells'],2)
+
+    def test_sprite_groups_are_not_background_constraints(self):
+        s, p, c, sol = self.fixture()
+        p['schema_version'] = 30
+        p['obstacle_groups'][0]['sprite_assembly'] = True
+        self.assertEqual(len(validate_groups(p)[0]), 1)
+        r = audit(s, (bytes(4096), bytes(4096)), p, sol, components=c)
+        self.assertEqual(r['required_cells'], 0)
+        self.assertEqual(r['sprite_groups_excluded'], 1)
+        p['schema_version'] = 29
+        with self.assertRaises(ValueError):
+            validate_groups(p)
+
+    def test_mixed_source_groups_retain_runtime_indexes(self):
+        s, p, c, sol = self.fixture()
+        p['schema_version'] = 30
+        sprite = dict(name='moving', sprite_assembly=True,
+                      members=[member('v1:4bpp:4444444444444444', 0, 0, contact=True)])
+        p['obstacle_groups'].insert(0, sprite)
+        r = audit(s, (bytes(4096), bytes(4096)), p, sol, components=c)
+        self.assertEqual(r['groups'], 1)
+        self.assertEqual(r['sprite_groups_excluded'], 1)
+        self.assertTrue(r['assemblies'])
+        self.assertEqual({a['group'] for a in r['assemblies']}, {2})
+
     def test_distinct_lower_floor_is_not_upper_obstacle_owner(self):
         floor = 'v1:4bpp:3333333333333333'
         for flip in range(4):

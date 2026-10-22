@@ -22,14 +22,16 @@ class SemanticProfileTests(unittest.TestCase):
                  f'[[obstacle_groups.members]]\ntile_hash = "{a}"\nx = 1\ny = 0\nz = 2\n'
                  'hflip = false\nvflip = true\nsupport_contact = true\n')
         assets = [f'\n[[assets]]\ntile_hash = "{h}"\nheight = '+json.dumps([7]*64)+'\n' for h in (a, b)]
-        for at in range(3):
-            parts = assets.copy(); parts.insert(at, group)
-            source = 'schema_version = 22\n'+''.join(parts)
-            rendered = _render_profile(source, {h: dict(tile_hash=h, height=[7]*64) for h in (a,b)}, {})
-            self.assertEqual(tomllib.loads(rendered), tomllib.loads(source))
-            self.assertIn(group.strip(), rendered)
+        for schema in (22, 30):
+            assembly = group if schema == 22 else group.replace('name = "example"\n', 'name = "example"\nsprite_assembly = true\n')
+            for at in range(3):
+                parts = assets.copy(); parts.insert(at, assembly)
+                source = f'schema_version = {schema}\n'+''.join(parts)
+                rendered = _render_profile(source, {h: dict(tile_hash=h, height=[7]*64) for h in (a,b)}, {})
+                self.assertEqual(tomllib.loads(rendered), tomllib.loads(source))
+                self.assertIn(assembly.strip(), rendered)
         with self.assertRaisesRegex(ValueError, 'schema_version22'):
-            _render_profile(source.replace('schema_version = 22', 'schema_version = 21'), {}, {})
+            _render_profile(source.replace('schema_version = 30', 'schema_version = 21'), {}, {})
 
     def test_compiler_preserves_group_layers_and_missing_source(self):
         ids = ['v1:4bpp:'+f'{i:016x}' for i in (1,2)]

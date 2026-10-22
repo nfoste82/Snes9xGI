@@ -14,7 +14,10 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 	r.participation.assign(n*2,255);r.opposite.assign(n,0);r.authoredNormals.assign(n,0);
 	r.surface.assign(n*4,0);r.reflectance.assign(n*4,0);r.depths.assign(n,0);r.omnidirectional.assign(n,0);r.samples.resize(n);
 	for(size_t i=0;i<n;i++) {
-		if(S9xRemasterHeldLampHudPixel(f,i)){r.participation[i*2]=r.participation[i*2+1]=0;continue;}
+		const bool hud=S9xRemasterHeldLampHudPixel(f,i);
+		if(hud){r.participation[i*2]=r.participation[i*2+1]=0;
+			if(!scene || f.scenePixels[i].owner==f.mainPixels[i].owner ||
+				(uint8_t(f.scenePixels[i].owner>>24)==uint8_t(RemasterSourceType::Background) && ((f.scenePixels[i].owner>>16)&255)==2))continue;}
 		const auto &main=scene?f.scenePixels[i]:f.mainPixels[i];
 		const auto &p=!scene && !main.instanceId && uint8_t(main.owner>>24)==uint8_t(RemasterSourceType::Backdrop)?f.subPixels[i]:main;
 		if ((f.area.id==320 || f.area.id==321) &&
@@ -41,11 +44,11 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 		else if(mat && !mat->receivesGi)r.participation[i*2+1]=0;
 		if(mat && mat->hasDiffuseReflectance){std::copy(mat->diffuseReflectance.begin(),mat->diffuseReflectance.end(),r.reflectance.begin()+i*4);r.reflectance[i*4+3]=1;}
 		const bool unresolved=S9xRemasterInstanceGeometryUnresolved(in);
-		const bool fallback=!unresolved && in.source==RemasterSourceType::Background && r.participation[i*2]!=0 && !m->hasHeight;
+		const bool fallback=!unresolved && in.source==RemasterSourceType::Background && (r.participation[i*2]!=0 || hud) && !m->hasHeight;
 		if(fallback){r.samples[i].fallbackGround=true;r.samples[i].sheet=true;r.samples[i].solidWall=false;r.samples[i].domain=(uint64_t(3)<<48)|uint32_t(in.heightOffset);}
 		r.occlusion[i*2]=unresolved?0:m->hasOcclusion?m->occlusion[p.tilePixel]:255;r.occlusion[i*2+1]=unresolved?0:255;
 		r.opposite[i]=m && m->directLightingOppositeFacing?255:0;
-		if(m && m->hasEmission)std::copy_n(m->emissionRgba.begin()+p.tilePixel*4,4,r.emission.begin()+i*4);
+		if(!hud && m && m->hasEmission)std::copy_n(m->emissionRgba.begin()+p.tilePixel*4,4,r.emission.begin()+i*4);
 		if(!unresolved && (m->hasHeight||in.heightOffset||fallback)){const auto local=m->hasHeight?m->height[p.tilePixel]:0;r.height[i*2]=S9xRemasterSignedHeightField(in.heightOffset,local);r.height[i*2+1]=1;}
 		r.surface[i*4]=r.height[i*2]*f.lightingCoordinateScale;
 		if(fallback)r.surface[i*4+3]=1;
@@ -53,7 +56,7 @@ static RemasterLightingFieldCache reference(const RemasterFrame &f, bool scene)
 			if(S9xRemasterContinuedDiagonalNormalMask(in,m)&(UINT64_C(1)<<p.tilePixel))x=y=z=1;
 			S9xRemasterTransformNormalForTileInstance(in,x,y,z,m->normalIgnoreTileTransform);float length=std::sqrt(x*x+y*y+z*z);
 			r.surface[i*4+1]=length>0.0001f?x/length:0;r.surface[i*4+2]=length>0.0001f?y/length:0;r.surface[i*4+3]=length>0.0001f?z/length:1;}
-		r.samples[i].height=r.surface[i*4];r.samples[i].known=r.height[i*2+1]!=0 && r.participation[i*2]!=0;r.samples[i].coverage=r.occlusion[i*2]/255.0f;
+		r.samples[i].height=r.surface[i*4];r.samples[i].known=r.height[i*2+1]!=0 && (r.participation[i*2]!=0 || hud);r.samples[i].coverage=r.occlusion[i*2]/255.0f;
 	}
 	return r;
 }

@@ -105,4 +105,5 @@ int main(int argc,char **argv){try {
   <<",\"reuse_ms\":"<<reuseMs<<",\"full_ms\":"<<fullMs<<",\"complete_maps_diagnostics_packet_equal\":true,\"missing\":["
   <<s.runtimeDungeonHeightMap.unknownPlaneCells[0]<<','<<s.runtimeDungeonHeightMap.unknownPlaneCells[1]<<"],\"unknown_walls\":"
   <<s.runtimeDungeonHeightMap.unknownWallCells<<",\"conflicts\":"<<s.runtimeDungeonHeightMap.structuralConflicts<<"}\n";
+ return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

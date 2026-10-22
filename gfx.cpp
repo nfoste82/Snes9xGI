@@ -15,6 +15,7 @@
 #include "display.h"
 #include "memmap.h"
 #include "remaster/remaster.h"
+#include "remaster/dungeon_transition_attributes.h"
 
 #include <cstring>
 
@@ -588,6 +589,34 @@ static void S9xApplyMidLineRaster (void)
 	IPPU.CurrentLine  = savedCur;
 }
 
+// Producer RAM can advance to the NEXT game's camera/OAM during visible lines.
+// Pin actor observations at the same boundary as the PPU frame they describe.
+static RemasterDungeonFloorContext remasterFrameActors;
+static void S9xRemasterSnapshotFrameActors()
+{
+	auto &c=remasterFrameActors;
+	c.actorScrollX=Memory.RAM[0xe2] | Memory.RAM[0xe3]<<8;
+	c.actorScrollY=Memory.RAM[0xe8] | Memory.RAM[0xe9]<<8;
+	for(int k=0;k<16;k++) {
+		auto &a=c.obstacleActors[k];
+		a.x=Memory.RAM[0xd10+k] | Memory.RAM[0xd30+k]<<8;
+		a.y=Memory.RAM[0xd00+k] | Memory.RAM[0xd20+k]<<8;
+		a.type=Memory.RAM[0xe20+k];a.state=Memory.RAM[0xdd0+k];
+		a.z=Memory.RAM[0xf70+k];a.plane=Memory.RAM[0xf20+k];
+		a.xSubpixel=Memory.RAM[0xd70+k];a.xVelocity=Memory.RAM[0xd50+k];
+		a.yVelocity=Memory.RAM[0xd40+k];a.hasMotion=true;
+		auto &t=c.terrainActors[k];t={};
+		if(a.type==0xec)t={a.x,a.y,a.state,Memory.RAM[0xdb0+k],a.z,static_cast<uint8_t>(a.plane&1)};
+	}
+	for(int k=0;k<128;k++) {
+		// DMA has latched these entries; the game may already have cleared its
+		// staging buffer to y=240. Only the PPU entries describe this frame.
+		const auto &o=PPU.OBJ[k];
+		const uint8_t flags=((o.Name>>8)&1)|(o.Palette<<1)|(o.Priority<<4)|(o.HFlip?64:0)|(o.VFlip?128:0);
+		c.terrainOam[k]={static_cast<uint16_t>(o.HPos&511),static_cast<uint8_t>(o.VPos),static_cast<uint8_t>(o.Name),flags,static_cast<uint8_t>(o.Size?2:0)};
+	}
+}
+
 void S9xStartScreenRefresh (void)
 {
 	if (S9xRemasterPerformanceMetricsEnabled())
@@ -627,6 +656,7 @@ void S9xStartScreenRefresh (void)
 
 		memset(GFX.ZBuffer, 0, GFX.ScreenSize);
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
+		S9xRemasterSnapshotFrameActors();
 		S9xRemasterBeginFrame(GFX.ScreenSize, GFX.RealPPL,
 			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight,
 			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampDungeonContext(
@@ -669,6 +699,9 @@ void S9xEndScreenRefresh (void)
 				0xcb, 0x36, 0x1f, 0x73, 0x16, 0x00, 0x9c, 0xfb
 			};
 			RemasterDungeonFloorContext dungeonFloor;
+			static std::unique_ptr<std::array<uint8_t,8192>> completedTransitionAttributes;
+			static uint16_t completedTransitionRoom=0xffff;
+			static uint64_t completedTransitionSession=0;
 			dungeonFloor.verifiedAlttpRom =
 				std::memcmp(Memory.ROMSHA256, alttpUsSha256, sizeof(alttpUsSha256)) == 0;
 			if (dungeonFloor.verifiedAlttpRom)
@@ -705,25 +738,20 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
 				dungeonFloor.hasTerrainActors = true;
 				dungeonFloor.linkZ = static_cast<int16_t>(Memory.RAM[0x24] | Memory.RAM[0x25]<<8);
-				dungeonFloor.actorScrollX = Memory.RAM[0xe2] | Memory.RAM[0xe3]<<8;
-				dungeonFloor.actorScrollY = Memory.RAM[0xe8] | Memory.RAM[0xe9]<<8;
-				for(int k=0;k<16;k++) if(Memory.RAM[0xe20+k]==0xec) {
-					auto &a=dungeonFloor.terrainActors[k];
-					a.x=Memory.RAM[0xd10+k] | Memory.RAM[0xd30+k]<<8;
-					a.y=Memory.RAM[0xd00+k] | Memory.RAM[0xd20+k]<<8;
-					a.state=Memory.RAM[0xdd0+k];a.kind=Memory.RAM[0xdb0+k];
-					a.z=Memory.RAM[0xf70+k];a.plane=Memory.RAM[0xf20+k]&1;
-				}
+				dungeonFloor.hasObstacleActors = true;
+				dungeonFloor.actorScrollX=remasterFrameActors.actorScrollX;
+				dungeonFloor.actorScrollY=remasterFrameActors.actorScrollY;
+				dungeonFloor.obstacleActors=remasterFrameActors.obstacleActors;
+				dungeonFloor.terrainActors=remasterFrameActors.terrainActors;
 				for(int k=0;k<128;k++) {
-					const auto *o=Memory.RAM+0x800+k*4;
-					const uint8_t ext=Memory.RAM[0xa20+k];
-					dungeonFloor.terrainOam[k]={static_cast<uint16_t>(o[0]|(ext&1)<<8),o[1],o[2],o[3],static_cast<uint8_t>(ext&2)};
-					// WRAM producer buffer alone is not final PPU identity. Reject a
-					// stale DMA/overwritten slot instead of matching same artwork.
-					if((PPU.OBJ[k].HPos&511)!=dungeonFloor.terrainOam[k].x ||
-						uint8_t(PPU.OBJ[k].VPos)!=o[1] || PPU.OBJ[k].Name!=(o[2]|(o[3]&1)<<8) ||
-						PPU.OBJ[k].HFlip!=bool(o[3]&0x40) || PPU.OBJ[k].VFlip!=bool(o[3]&0x80) ||
-						PPU.OBJ[k].Palette!=((o[3]>>1)&7) || !PPU.OBJ[k].Size)
+					dungeonFloor.terrainOam[k]=remasterFrameActors.terrainOam[k];
+					// Reject a slot changed since the frame-start observation, rather
+					// than accepting same artwork from a different PPU producer.
+					const auto &draw=dungeonFloor.terrainOam[k];
+					if((PPU.OBJ[k].HPos&511)!=draw.x ||
+						uint8_t(PPU.OBJ[k].VPos)!=draw.y || PPU.OBJ[k].Name!=(draw.name|(draw.flags&1)<<8) ||
+						PPU.OBJ[k].HFlip!=bool(draw.flags&0x40) || PPU.OBJ[k].VFlip!=bool(draw.flags&0x80) ||
+						PPU.OBJ[k].Palette!=((draw.flags>>1)&7) || !PPU.OBJ[k].Size)
 						dungeonFloor.terrainOam[k].size=0;
 				}
 				dungeonFloor.graphicsBase = PPU.BG[1].NameBase << 1;
@@ -736,6 +764,29 @@ void S9xEndScreenRefresh (void)
 				// Decode the completed handler overrides, not cumulative endpoints:
 				// e.g. $49c=2, $49e=0 is one south plane-changing stair,
 				// not an empty table. Wet ladders without this signature stay unknown.
+				const bool preparingRoom=dungeonFloor.indoors && dungeonFloor.module==7 && dungeonFloor.submodule==2;
+				if(!preparingRoom || dungeonFloor.constructionPhase<2 ||
+					completedTransitionRoom!=dungeonFloor.roomIndex || completedTransitionSession!=S9xRemasterState().dungeonSession) {
+					completedTransitionAttributes.reset();completedTransitionRoom=0xffff;
+				}
+				if(preparingRoom &&
+					dungeonFloor.constructionPhase>=2 && dungeonFloor.constructionPhase<=15 &&
+					dungeonFloor.attributeConstructionState!=5) {
+					// The real builder consumes torch/chest counters. Complete once,
+					// before those destructive scratch updates; never rerun on them.
+					if(!completedTransitionAttributes) {
+						auto candidate=std::make_unique<std::array<uint8_t,8192>>();
+						if(S9xRemasterCompleteDungeonAttributes(Memory.RAM,*candidate)) {
+							completedTransitionAttributes=std::move(candidate);
+							completedTransitionRoom=dungeonFloor.roomIndex;
+							completedTransitionSession=S9xRemasterState().dungeonSession;
+						}
+					}
+					if(completedTransitionAttributes) {
+						dungeonFloor.collisionAttributes=completedTransitionAttributes->data();
+						dungeonFloor.hasCompletedTransitionAttributes=true;
+					}
+				}
 				S9xRemasterDungeonStairsFromAttributes(dungeonFloor);
 			}
 			RemasterHeldLampState heldLamp;
@@ -1009,20 +1060,26 @@ static inline void RenderScreen (bool8 sub)
 		auto &state = S9xRemasterState();
 		GFX.S = state.sceneRgb.data();
 		GFX.DB = state.sceneDepth.data();
-		BGActive = (Memory.FillRAM[0x212c] | Memory.FillRAM[0x212d]) & 0x16 & ~Settings.BG_Forced;
-		for (auto &clip : sceneClip)
+		if (state.sceneGeometryOnly)
+			// Keep main-screen composition/windows; remove only the BG3 overlay.
+			BGActive &= ~0x04;
+		else
 		{
-			clip = {};
-			clip.Count = raster_span_count ? raster_span_count : 1;
-			for (int i = 0; i < clip.Count; i++)
+			BGActive = (Memory.FillRAM[0x212c] | Memory.FillRAM[0x212d]) & 0x16 & ~Settings.BG_Forced;
+			for (auto &clip : sceneClip)
 			{
-				clip.Left[i] = raster_span_count ? raster_span_l[i] : 0;
-				clip.Right[i] = raster_span_count ? raster_span_r[i] : 256;
-				clip.DrawMode[i] = 1;
+				clip = {};
+				clip.Count = raster_span_count ? raster_span_count : 1;
+				for (int i = 0; i < clip.Count; i++)
+				{
+					clip.Left[i] = raster_span_count ? raster_span_l[i] : 0;
+					clip.Right[i] = raster_span_count ? raster_span_r[i] : 256;
+					clip.DrawMode[i] = 1;
+				}
 			}
+			GFX.Clip = sceneClip;
+			D = 32;
 		}
-		GFX.Clip = sceneClip;
-		D = 32;
 	}
 
 	if (BGActive & 0x10)
@@ -1196,19 +1253,24 @@ void S9xUpdateScreen (void)
 
 		RenderScreen(FALSE);
 
-		// Verified ALTTP lamp scene: bounded Mode-1 ordinary-width rerender of
-		// BG2 + BG3 + OBJ, without scrolled BG1 cone or dark color math/windows.
+		// Verified ALTTP independent scene: cone-free lamp colors indoors, or
+		// HUD-free world ownership outdoors with stock presentation colors.
 		static const uint8 alttpUsSha256[32] = {
 			0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,
 			0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
+		const bool overworldGeometry = !Memory.RAM[0x1b] &&
+			((Memory.RAM[0x10] == 9 && !Memory.RAM[0x11] && !Memory.RAM[0xb0]) ||
+			 (Memory.RAM[0x10] == 14 && Memory.RAM[0x11] == 2 && Memory.RAM[0x10c] == 9));
 		if (S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
 			!IPPU.DoubleWidthPixels && !IPPU.Interlace && !IPPU.PseudoHires &&
-			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2])) &&
-			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampSceneContext(
-				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]) &&
+			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2] &&
+				(!overworldGeometry || !PPU.BGMosaic[0]))) &&
+			(overworldGeometry || (Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampSceneContext(
+				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]))) &&
 			!std::memcmp(Memory.ROMSHA256, alttpUsSha256, 32))
 		{
 			auto &state = S9xRemasterState();
+			state.sceneGeometryOnly = overworldGeometry;
 			if (state.sceneRgb.empty())
 			{
 				state.sceneRgb.assign(GFX.ScreenSize, 0);

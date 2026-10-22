@@ -674,8 +674,6 @@ kernel void remasterDirectLighting(
 	}
 	else if (uniforms.view == 3 || uniforms.view == 8)
 		output.write(float4(remasterCompositeToDisplay(direct + remasterEmissionAppearance(selfEmission)), 1.0), pixel);
-	else if (uniforms.view == 4)
-		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
 	else if (uniforms.view == 6)
 		output.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
 	else if (uniforms.view == 7)
@@ -1537,8 +1535,6 @@ kernel void remasterCompositeLighting(
 		output.write(float4(float3(0.0, 0.85, 1.0) * direct.r, 1.0), pixel);
 	else if (uniforms.view == 3)
 		output.write(float4(remasterCompositeToDisplay(direct + remasterEmissionAppearance(emission)), 1.0), pixel);
-	else if (uniforms.view == 4)
-		output.write(float4(saturate(remasterToDisplay(abs(composite - remasterToLinear(original))) * 3.0), 1.0), pixel);
 	else if (uniforms.view == 6)
 		output.write(float4(remasterToDisplay(indirect * 4.0), 1.0), pixel);
 	else if (uniforms.view == 8)

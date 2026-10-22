@@ -1,6 +1,6 @@
 import unittest
 
-from alttp_validate_room_heights import validate, directional_seams, audit_authored_obstacle_capability
+from alttp_validate_room_heights import validate, directional_seams, audit_authored_obstacle_capability, audit_authored_floor_placements
 
 
 class Cell:
@@ -37,6 +37,22 @@ SOLVED = [[0, 1, 2, 1], [0, 2, 2, 1], [1, 1, 2, 0]]
 
 
 class RoomHeightValidationTests(unittest.TestCase):
+    def test_authored_floor_inventory_includes_nonreachable_relief_and_missing_planes(self):
+        snapshot=Snapshot()
+        snapshot.cells[0]=[Cell(x,y) for y in range(64) for x in range(64)]
+        for layer in snapshot.cells:
+            for cell in layer:cell.word=0xc000
+        profile={'assets':[dict(tile_hash='floor',tile_role='floor',height=[0]*63+[1])]}
+        records=[dict(layer=bg,plane=p,x=1,y=2,base=50 if p==0 else 255,fallback_directions=0)
+                 for bg in range(2) for p in range(2)]
+        result=audit_authored_floor_placements({'directional_geometry':records},snapshot,attrs(),profile)
+        self.assertEqual(len(result['placements']),4)
+        for bg in range(2):
+            self.assertEqual(result['per_layer_plane'][bg][0]['solved'],1)
+            self.assertEqual(result['per_layer_plane'][bg][1]['missing'],1)
+        self.assertEqual(result['placements'][0]['effective_max'],51)
+        self.assertTrue(result['placements'][0]['hflip'] and result['placements'][0]['vflip'])
+
     def test_wall_mount_requires_complete_footprint_and_both_backing_sections(self):
         snapshot=Snapshot()
         for c in snapshot.cells[1]:c.word=0xffff

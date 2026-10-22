@@ -1,5 +1,6 @@
 /* Offline draw-only harness for a local, ROM-backed snesrev/zelda3 engine.
- * No AI/state mutation in the emulator; each pose starts from the same RAM.
+ * No live emulator mutation; each pose starts from the same RAM. Sword effects
+ * replay bounded reference timers offline, without room updates or actor AI.
  * Usage: alttp-npc-poses TYPE GFX PALETTE DRAW DIRECTIONS STEPS WORLD FOLLOWER VARIANT
  *        [LINK_ACTION SWORD SHIELD ARMOR]
  */
@@ -13,6 +14,7 @@
 #include "src/misc.h"
 #include "src/player_oam.h"
 #include "src/player.h"
+#include "src/ancilla.h"
 
 /* Existing local engine objects may contain the room inspection hooks. */
 void AlttpCaptureLine(Ppu *ppu, unsigned line) { (void)ppu; (void)line; }
@@ -26,6 +28,58 @@ static uint8 checkpoint[sizeof(g_ram)];
 static uint16 vram_checkpoint[0x8000];
 static const char *draw;
 static int variant;
+
+static void ResetPoseOam(void) {
+  memset(oam_buf, 0, 512);
+  memset(bytewise_extended_oam, 0, 128);
+  for (int i = 0; i < 128; i++) oam_buf[i].y = 0xf0;
+  Oam_ResetRegionBases();
+  oam_cur_ptr = 0x800;
+  oam_ext_cur_ptr = 0xa20;
+}
+
+/* Reference player.c tables, checked by link_sequences before generation. */
+static const uint8 spin[48] = {10,11,10,6,7,8,9,2,3,4,5,10, 0,1,0,2,3,4,5,6,7,8,9,0,
+                             12,13,12,4,5,6,7,8,9,2,3,12, 14,15,14,8,9,2,3,4,5,6,7,14};
+static const uint8 spin_delays[12] = {1,5,1,1,1,1,1,1,1,1,1,5};
+
+/* Replay only the bounded sword/effect state, never collision, AI or room
+ * updates. Sprite_Main executes ancilla before the player's update. Replaying
+ * from the checkpoint for each tick makes browsing order irrelevant, including
+ * the RNG used by charging sparkles. Keep the last tick's OAM for assembly. */
+static void DrawLinkSwordEffects(int action, int dir, int tick) {
+  memset(ancilla_type, 0, 10);
+  link_spin_attack_step_counter = 0;
+  set_when_damaging_enemies = bitmask_of_dragstate = 0;
+  link_speed_setting = 0;
+  link_cant_change_direction = 0;
+  link_is_on_lower_level_mirror = 0;
+  byte_7E0FA1 = 0; /* Fixed seed for repeatable sampled sparkle positions. */
+  int phase = 0, delay = 2; /* Init delay 3, decremented by activation update. */
+  int warmup = action == 4 ? 64 : 0;
+  for (int frame = -warmup; frame <= tick; frame++) {
+    ResetPoseOam();
+    frame_counter = frame + warmup;
+    oam_priority_value = 0x2000;
+    Ancilla_ExecuteAll();
+    if (action == 2 || frame < 0) {
+      link_animation_steps = ((frame + warmup) / 8) % 6;
+      Player_Sword_SpinAttackJerks_HoldDown();
+    } else {
+      if (frame == 0) AncillaAdd_SpinAttackInitSpark(0x2a, 0, 0);
+      else if (phase < 12 && --delay < 0) {
+        phase++;
+        if (phase < 12) delay = spin_delays[phase];
+      }
+      step_counter_for_spin_attack = phase < 12 ? phase : 0;
+      state_for_spin_attack = phase < 12 ? spin[dir * 12 + phase] : 0;
+      link_player_handler_state = phase < 12 ? kPlayerState_SpinAttacking : kPlayerState_Ground;
+      button_b_frames = phase < 12 ? 144 : 0;
+      button_mask_b_y = phase < 12 ? 0x80 : 0;
+      link_animation_steps = 0;
+    }
+  }
+}
 
 static void Draw(int type) {
   #define DRAW(name, call) if (!strcmp(draw, name)) { call; return; }
@@ -146,7 +200,7 @@ int main(int argc, char **argv) {
   int shield = argc == 14 ? atoi(argv[12]) : 0;
   int armor = argc == 14 ? atoi(argv[13]) : 0;
   if (link_action < 0 || link_action > 11 || sword < 0 || sword > 4 || shield < 0 || shield > 3 || armor < 0 || armor > 2) return 2;
-  if (directions < 1 || directions > 4 || steps < 1 || steps > 32 || follower < 0 || follower > 13) return 2;
+  if (directions < 1 || directions > 4 || steps < 1 || steps > 64 || follower < 0 || follower > 13) return 2;
   if (type < 0 || type >= 243 || gfx < 0 || gfx >= 144 || pal < 0 || pal >= 256) return 2;
   ParseConfigFile(NULL);
   LoadAssets();
@@ -192,12 +246,7 @@ int main(int argc, char **argv) {
   for (int dir = 0; dir < directions; dir++) for (int step = 0; step < steps; step++) {
     memcpy(g_ram, checkpoint, sizeof(g_ram));
     memcpy(g_zenv.vram, vram_checkpoint, sizeof(vram_checkpoint));
-    memset(oam_buf, 0, 512);
-    memset(bytewise_extended_oam, 0, 128);
-    for (int i = 0; i < 128; i++) oam_buf[i].y = 0xf0;
-    Oam_ResetRegionBases();
-    oam_cur_ptr = 0x800;
-    oam_ext_cur_ptr = 0xa20;
+    ResetPoseOam();
     sprite_type[0] = type;
     SpritePrep_LoadProperties(0);
     sprite_state[0] = 9;
@@ -325,11 +374,7 @@ int main(int argc, char **argv) {
       case 2: button_mask_b_y = 0x80; button_b_frames = 9; break;
       case 3: button_mask_b_y = 0x80; button_b_frames = 10 + step; link_animation_steps = 0; break;
       case 4: {
-        /* Chronological sequence from player.c; guarded by Python source audit. */
-        static const uint8 spin[48] = {10,11,10,6,7,8,9,2,3,4,5,10, 0,1,0,2,3,4,5,6,7,8,9,0,
-                                     12,13,12,4,5,6,7,8,9,2,3,12, 14,15,14,8,9,2,3,4,5,6,7,14};
         link_player_handler_state = kPlayerState_SpinAttacking;
-        state_for_spin_attack = spin[dir * 12 + step];
         button_mask_b_y = 0x80; button_b_frames = 144; break;
       }
       case 5: link_is_bunny_mirror = 1; break;
@@ -340,7 +385,11 @@ int main(int argc, char **argv) {
       case 10: link_pose_for_item = 2; break;
       case 11: link_force_hold_sword_up = 1; break;
       }
+      if (link_action == 2 || link_action == 4) DrawLinkSwordEffects(link_action, dir, step);
     }
+    uint8 effect_slots[128] = {0};
+    if (!strcmp(draw, "link") && (link_action == 2 || link_action == 4))
+      for (int slot = 0; slot < 128; slot++) effect_slots[slot] = oam_buf[slot].y != 0xf0;
     Draw(type);
     if (!strcmp(draw, "link")) {
       /* Same six body/small-part DMA transfers as NMI_DoUpdates. */
@@ -375,9 +424,10 @@ int main(int argc, char **argv) {
     }
     printf("%s{\"direction\":%d,\"step\":%d,\"graphics\":%d,", first_pose ? "" : ",", dir, step, sprite_graphics[0]);
     if (!strcmp(draw, "link"))
-      printf("\"draw_state\":{\"action\":%d,\"oam_action\":%u,\"animation\":%u,\"body_dma_index\":%u,\"button_b_frames\":%u,\"handler\":%u,\"spin_frame\":%u},",
+      printf("\"draw_state\":{\"action\":%d,\"oam_action\":%u,\"animation\":%u,\"body_dma_index\":%u,\"button_b_frames\":%u,\"handler\":%u,\"spin_frame\":%u,\"spin_step\":%u,\"charge_timer\":%u},",
              link_action, value_computed_for_player_oam, link_animation_steps, link_dma_graphics_index,
-             button_b_frames, link_player_handler_state, state_for_spin_attack);
+             button_b_frames, link_player_handler_state, state_for_spin_attack,
+             step_counter_for_spin_attack, link_spin_attack_step_counter);
     printf("\"parts\":[");
     first_pose = 0;
     int first_part = 1;
@@ -398,10 +448,10 @@ int main(int argc, char **argv) {
         int hf = !!(oam->flags & 0x40), vf = !!(oam->flags & 0x80);
         unsigned tile = oam->charnum + tx + 16 * ty;
         unsigned address = ((oam->flags & 1) ? 0x5000 : 0x4000) + (tile & 255) * 16;
-        printf("%s{\"x\":%d,\"y\":%d,\"slot\":%d,\"address\":%u,\"hflip\":%s,\"vflip\":%s,", first_part ? "" : ",",
+        printf("%s{\"x\":%d,\"y\":%d,\"slot\":%d,\"address\":%u,\"hflip\":%s,\"vflip\":%s,\"effect\":%s,", first_part ? "" : ",",
                oam->x - 96 + (hf ? size / 8 - 1 - tx : tx) * 8,
                oam->y - 96 + (vf ? size / 8 - 1 - ty : ty) * 8, slot, address,
-               hf ? "true" : "false", vf ? "true" : "false");
+               hf ? "true" : "false", vf ? "true" : "false", effect_slots[slot] ? "true" : "false");
         first_part = 0;
         WriteTile(address, oam->flags >> 1 & 7);
         printf("}");

@@ -17,7 +17,11 @@ class RunnerTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(runner.main(["--list", "--suite", "full", "--metal"]), 0)
-            self.assertIn("19 selected; no tests executed", output.getvalue())
+            self.assertIn("28 selected; no tests executed", output.getvalue())
+            self.assertIn("dungeon_oriented_obstacle", output.getvalue())
+            self.assertIn("dungeon_floor_continuity", output.getvalue())
+            self.assertIn("sprite_obstacle", output.getvalue())
+            self.assertIn("obstacle_group_editor", output.getvalue())
             self.assertIn("dungeon_small_stack_optimized", output.getvalue())
             self.assertNotIn("legacy_remaster_smoke", output.getvalue())
             command.assert_not_called()

@@ -56,7 +56,7 @@ int main(int argc,char **argv) {try {
 	    <<int(t.diagonalPreviewRow)<<' '<<int(t.diagonalPreviewFoot)<<' '<<t.diagonalIntercept<<' '
 	    <<int(t.diagonalMinimum)<<' '<<int(t.diagonalMaximum)<<' '<<t.semanticSoutheastWall<<' '<<t.semanticBoundaryKnown<<' '<<int(t.removableSupportPlanes)
      <<' '<<t.obstacleAssembly<<' '<<t.obstacleTemplate<<' '<<int(t.obstacleAssemblyHeight)<<' '<<int(t.obstacleAssemblyFlip)
-     <<' '<<t.authoredObstacle<<' '<<t.authoredObstacleAssembly<<' '<<t.authoredObstacleGroup<<' '<<t.authoredObstacleZ<<' '<<int(t.authoredObstacleFlip)<<' '<<t.authoredObstacleContact;
+     <<' '<<t.authoredObstacle<<' '<<t.authoredObstacleAssembly<<' '<<t.authoredObstacleGroup<<' '<<t.authoredObstacleZ<<' '<<int(t.authoredObstacleFlip)<<' '<<t.authoredObstacleContact<<' '<<int(t.authoredObstacleDirection);
    for(auto h:t.height)std::cout<<' '<<int(h);std::cout<<'\n';
   }
  }

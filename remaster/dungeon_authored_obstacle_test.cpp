@@ -55,6 +55,11 @@ int main(){try {
   }
   S9xRemasterDungeonPlacements(c,p,*tiles);c.placements=tiles->data();
  };
+ // Even exact shared artwork must never turn a movable OBJ group into a BG
+ // room footprint or floor constraint.
+ p.obstacleGroups[0].spriteAssembly=true;build(0);
+ for(const auto &t:*tiles)need(!t.authoredObstacle && !t.authoredObstacleAssembly,"sprite assembly claimed background cells");
+ p.obstacleGroups[0].spriteAssembly=false;
  for(int flip=0;flip<4;flip++) {
   build(flip);need(S9xRemasterBuildDungeonHeightMap(c,50,*map),"solve");
   need(!map->structuralConflicts && map->solvedAuthoredObstacleCells==8,"terminal arbitrary footprints");
@@ -153,7 +158,36 @@ int main(){try {
    p.assets[ids[0]].height[0]=0;
   }
   p.assetGroups["dungeon_floor"].tileIds={ids[0]};
-  c.stairs[0].changesPlane=false;
+   c.stairs[0].changesPlane=false;
+  // Interior contacts share the exact assembly's ground edge. A one-cell-deep
+  // floor strip below furniture is solved geometry, not full-body occupancy.
+  // Its explicit zero-local floor path must reach ONE independent component.
+  p.obstacleGroups[0].members[1].supportContact=true;
+  build(0);
+  for(int y=18;y<20;y++)for(int x=12;x<=17;x++)(*attrs)[y*64+x]=1;
+  S9xRemasterDungeonPlacements(c,p,*tiles);c.placements=tiles->data();
+  S9xRemasterBuildDungeonHeightMap(c,50,*map);
+  need(map->offsets[14*64+14]==50 && map->authoredObstacleEvidence[0].witnessedContacts==3,"interior/narrow floor contact lost");
+  // A missing contact cannot be rescued through unknown artwork at the edge.
+  (*tiles)[17*64+14].surface=C::Surface::Unknown;
+  S9xRemasterBuildDungeonHeightMap(c,50,*map);
+  need(map->offsets[14*64+14]==255,"unknown strip promoted to floor support");
+  p.obstacleGroups[0].members[1].supportContact=false;
+  // Declared pillar feet may contact ordinary floor on a zero-height SIDE,
+  // even when the outward bottom is covered by a platform border. Body/head
+  // proximity and raised/nonzero edges are not support evidence.
+  const auto savedGroups=p.obstacleGroups;const auto savedHeight=p.assets[ids[1]].height;
+  p.obstacleGroups[0].members={{ids[1],0,0,0,false,false,true}};
+  for(int flip=0;flip<4;flip++) {
+   build(flip);const int cell=14*64+14;
+   auto &t=(*tiles)[cell];t.height.fill(7);
+   for(int y=0;y<8;y++)t.height[y*8+7]=0;
+   const int step=flip&2?-1:1;(*attrs)[(14+step)*64+14]=1;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->offsets[cell]==50,"declared zero-edge side foot");
+   t.height.fill(7);
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->offsets[cell]==255,"nonzero side edge borrowed floor");
+  }
+  p.obstacleGroups=savedGroups;p.assets[ids[1]].height=savedHeight;
  // Overlapping exact A,A,A runs imply two owners for a two-member example.
  p.obstacleGroups[0].members={{ids[1],0,0,0,false,false,true},{ids[1],1,0,1,false,false,false}};
  words->fill(0);attrs->fill(1);for(int x=10;x<13;x++)put(14*64+x,1,false,false);

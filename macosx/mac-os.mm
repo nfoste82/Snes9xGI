@@ -40,6 +40,8 @@
 #import "remaster/remaster.h"
 #include "remaster/emitter_groups.h"
 #include "remaster/obstacle_group_editor.h"
+#include "remaster/sprite_obstacle_replay.h"
+#include "remaster/lighting_field_cache.h"
 #include "remaster/emission_appearance.h"
 #include "remaster/inspector_height.h"
 #include "remaster/profile_merge.h"
@@ -165,6 +167,8 @@ static void BeginBenchmarkCase()
 	settings.indirectBounceCount = benchmarkBounces[benchmarkCase];
 	S9xRemasterSetSceneSettings(settings);
 	SetLiveRemasterPresentation(true, benchmarkViews[benchmarkCase]);
+	if (const char *view=getenv("S9X_REMASTER_DEBUG_PROBE_LIVE_VIEW"))
+		SetLiveRemasterPresentation(true,std::string(view)=="height"?RemasterLightingView::Height:RemasterLightingView::Normal);
 	benchmarkCaseStarted = [NSProcessInfo processInfo].systemUptime;
 	benchmarkMeasurementStarted = benchmarkCaseStarted;
 	NSLog(@"Benchmark case: %s", benchmarkNames[benchmarkCase]);
@@ -173,6 +177,20 @@ static void BeginBenchmarkCase()
 static void FinishBenchmarkFrame()
 {
 	if (!RemasterBenchmarkActive()) return;
+	if (getenv("S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION")) {
+		const auto *frame=S9xRemasterCompletedFrame();
+		if(!frame || !frame->spriteObstacleSupport)FailBenchmark(@"Movement frame lacks pinned sprite support");
+		RemasterSpriteObstacleDiagnostics diagnostics;auto refreshed=*frame;
+		S9xRemasterApplySpriteObstacles(refreshed,S9xRemasterState().activeProfile,nullptr,nullptr,&diagnostics);
+		if(!diagnostics.matchedAssemblies || diagnostics.matchedAssemblies!=diagnostics.resolvedAssemblies ||
+			diagnostics.unclaimedInstances)FailBenchmark(@"Movement frame lost verified sprite ownership/support");
+		RemasterLightingFieldCache before,after;before.update(*frame,false);after.update(refreshed,false);
+		if(before.height!=after.height || before.surface!=after.surface)FailBenchmark(@"Movement paused refresh changed effective geometry");
+		for(size_t i=0;i<frame->tileInstances.size();i++)if(frame->tileInstances[i].placementTileRole==RemasterTileRole::Obstacle &&
+			frame->tileInstances[i].source==RemasterSourceType::Object &&
+			(frame->tileInstances[i].heightOffset!=refreshed.tileInstances[i].heightOffset ||
+			 S9xRemasterInstanceGeometryUnresolved(frame->tileInstances[i])))FailBenchmark(@"Movement frame contains unresolved sprite heights");
+	}
 	if (!benchmarkInitialRgbHash)
 	{
 		const RemasterFrame *initial = S9xRemasterCompletedFrame();
@@ -180,6 +198,8 @@ static void FinishBenchmarkFrame()
 			length:initial->originalRgb555.size() * sizeof(uint16_t)]);
 	}
 	benchmarkFrame++;
+	if (getenv("S9X_REMASTER_DEBUG_PROBE_LIVE_VIEW") && benchmarkFrame+1==benchmarkWarmupFrames+benchmarkMeasureFrames)
+		S9xRemasterRequestFrameCapture([benchmarkOutputPath stringByAppendingPathComponent:@"live-evidence.s9xrmf"].fileSystemRepresentation);
 	if (benchmarkFrame == benchmarkWarmupFrames)
 	{
 		DrainRemasterPresentation();
@@ -255,6 +275,24 @@ static void FinishBenchmarkFrame()
 	if (!S9xWriteRemasterFrame(*frame, [benchmarkOutputPath stringByAppendingPathComponent:capture].fileSystemRepresentation))
 		FailBenchmark(@"Could not write benchmark frame capture");
 	result[@"capture"] = capture;
+	if (getenv("S9X_REMASTER_DEBUG_PROBE_LIVE_VIEW") &&
+		!SaveRemasterDebugPixels([benchmarkOutputPath stringByAppendingPathComponent:@"live.rgba"].fileSystemRepresentation))
+		FailBenchmark(@"Could not read back live debug pixels");
+	if (getenv("S9X_REMASTER_DEBUG_PROBE_PAUSED_HANDOFF")) {
+		// Opt-in same-packet regression on the producer, using the real renderer.
+		// Never publish to editor globals or change disk profile/save states.
+		auto paused=std::make_shared<RemasterFrame>(*frame);
+		RemasterLightingFieldCache before,after;before.update(*frame,false);
+		S9xRemasterApplyProfileToFrame(S9xRemasterState().activeProfile,*paused);
+		S9xRemasterApplySpriteObstacles(*paused,S9xRemasterState().activeProfile,nullptr,nullptr);
+		after.update(*paused,false);
+		if(before.height!=after.height || before.surface!=after.surface)
+			FailBenchmark(@"Paused packet effective fields changed");
+		const std::string path=[benchmarkOutputPath stringByAppendingPathComponent:@"paused.rgba"].fileSystemRepresentation;
+		if(!DrawRemasterFrame(*paused,RemasterDebugMode::Original,nullptr,true,RemasterLightingView::Height) || !SaveRemasterDebugPixels(path))
+			FailBenchmark(@"Paused packet height readback failed");
+		NSLog(@"Paused same-packet handoff: effective heights/normals unchanged; production Metal Height readback saved");
+	}
 	result[@"width"] = @(frame->width);
 	result[@"height"] = @(frame->height);
 	result[@"original_rgb555_sha256"] = BenchmarkSha256([NSData dataWithBytes:frame->originalRgb555.data()
@@ -278,6 +316,9 @@ static void FinishBenchmarkFrame()
 		WriteBenchmarkReport();
 		NSLog(@"Benchmark complete: %@", benchmarkOutputPath);
 		// Standalone benchmark process: avoid saving benchmark-driven SRAM or UI settings.
+		// The movement driver has no AppDelegate shutdown owner. Presentation was
+		// drained above; do not destruct framework statics under its live thread.
+		if(getenv("S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION"))std::_Exit(0);
 		exit(0);
 	}
 }
@@ -548,6 +589,7 @@ static RemasterNpcPoseBounds remasterNpcCanvasBounds;
 static bool remasterNpcPicking = false;
 static bool remasterNpcPlaying = false;
 static NSButton *remasterNpcPlayButton;
+static NSButton *remasterNpcIgnoreDuplicatesButton;
 static NSButton *remasterNpcSaveButton;
 static NSButton *remasterNpcHeightRampButton, *remasterNpcHeightAllPosesButton;
 static NSButton *remasterNpcOverwriteButton, *remasterNpcNormalApplyButton;
@@ -612,6 +654,13 @@ static bool			remasterSelectionValid = false;
 static RemasterTileContentId remasterSelectedTile;
 static std::vector<RemasterTileContentId> remasterSelectedTiles;
 static std::vector<RemasterObstacleEditorCell> remasterObstacleSelection;
+static bool remasterObstacleGroupingActive = false;
+static NSTextField *remasterContextLabel;
+// Scene occurrences and authored footprint selection are different domains.
+// The dropdown explicitly switches to one authored member; Cmd footprint clicks
+// extend that selection without ever expanding a repeated tile hash globally.
+static bool remasterObstacleExplicitMembers = false;
+static std::vector<size_t> remasterObstacleSelectedMembers;
 static NSView *remasterObstacleView;
 static NSTextField *remasterObstacleName, *remasterObstacleZ, *remasterObstacleStatus;
 static NSPopUpButton *remasterObstacleMembers;
@@ -622,6 +671,7 @@ static NSInteger remasterObstacleGroupIndex = -1, remasterObstacleMemberIndex = 
 static std::string remasterObstacleFocusedGroup;
 static NSPanel			*remasterInspectorPanel;
 static NSPanel			*remasterProfileSettingsPanel;
+static NSTextField		*remasterLoadedProfileLabel;
 static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
@@ -1192,7 +1242,6 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::Occlusion: return @"Occlusion";
 	case RemasterLightingView::Visibility: return @"Visibility";
 	case RemasterLightingView::DirectContribution: return @"Direct Light";
-	case RemasterLightingView::Difference: return @"Difference";
 	case RemasterLightingView::Height: return @"Height";
 	case RemasterLightingView::IndirectContribution: return @"Indirect Light";
 	case RemasterLightingView::Normal: return @"Normals";
@@ -1333,6 +1382,9 @@ static bool SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterR
 		}
 		S9xRemasterApplyProfileToFrame(preview, frame);
 	}
+	// Reevaluate authored OBJ layers against this packet's retained floor evidence.
+	// Never use the live session map: a replay can be a different room/state.
+	S9xRemasterApplySpriteObstacles(frame, remasterEditingProfile, nullptr, nullptr);
 	if (&frame == &remasterReplayFrame)
 		remasterMetadataNeedsSync = false;
 	return true;
@@ -1470,6 +1522,7 @@ static inline void EmulationLoop (void)
 					const RemasterFrame *frame = S9xRemasterCompletedFrame();
 					std::string written;
 					std::vector<uint8_t> bytes;
+					std::shared_ptr<RemasterFrame> pausedPacket;
 					bool success = false;
 					if (!frzselecting && frame && frame->width && frame->height)
 					{
@@ -1481,6 +1534,14 @@ static inline void EmulationLoop (void)
 							std::memcmp(Memory.ROMSHA256, alttpHash, 32) == 0, Memory.RAM[0x1b] != 0,
 							word(0xa0), word(0x22), word(0x20));
 						success = S9xSerializeRemasterFrame(*frame, bytes) && S9xRemasterWriteUniqueCapture(bytes, located, written);
+						if (success)
+						{
+							pausedPacket = std::make_shared<RemasterFrame>(*frame);
+							const auto &e = S9xRemasterState().completedDungeonEvidence;
+							const auto &p = S9xRemasterState().completedEvidenceProfile;
+							if (e && p) S9xRemasterWriteDungeonCaptureEvidence(written,e->context,*p,
+								e->map.get(),e->key,e->epoch,e->publishable);
+						}
 					}
 					NSString *savedPath = success ? [NSString stringWithUTF8String:written.c_str()] : nil;
 					dispatch_async(dispatch_get_main_queue(), ^{
@@ -1490,7 +1551,7 @@ static inline void EmulationLoop (void)
 						if (select)
 						{
 							ClearRemasterDebugLightRedraw();
-							NSString *error = [(S9xEngine *)s9xView.emulationDelegate openRemasterFrame:[NSURL fileURLWithPath:savedPath]];
+							NSString *error = [(S9xEngine *)s9xView.emulationDelegate openRemasterFrame:[NSURL fileURLWithPath:savedPath] retainedPacket:pausedPacket];
 							if (error.length) { NSBeep(); NSLog(@"%@", error); return; }
 							[(S9xEngine *)s9xView.emulationDelegate selectRemasterPixelAtViewPoint:point extendingSelection:NO];
 						}
@@ -4397,6 +4458,8 @@ void QuitWithFatalError ( NSString *message)
 - (void)combineRemasterEmitters:(id)sender;
 - (void)createRemasterObstacleGroup:(id)sender;
 - (void)selectRemasterObstacleMember:(id)sender;
+- (void)changeRemasterObstacleContact:(id)sender;
+- (BOOL)remasterObstacleContactMembers:(std::vector<size_t> &)members error:(std::string &)error;
 - (void)applyRemasterObstacleMember:(id)sender;
 - (void)deleteRemasterObstacleGroup:(id)sender;
 - (void)showRemasterObstacleGroup:(id)sender;
@@ -4439,7 +4502,13 @@ void QuitWithFatalError ( NSString *message)
 - (BOOL)confirmDiscardingRemasterChanges;
 @end
 
+#include "remaster-normal-picker.h"
+
 @implementation S9xRemasterTileView
+{
+	NSPoint normalDragLastPoint;
+	NSPoint normalDragDirection;
+}
 
 - (void)drawRect:(NSRect)dirtyRect
 {
@@ -4498,6 +4567,8 @@ void QuitWithFatalError ( NSString *message)
 			return;
 		[self.window makeFirstResponder:nil];
 		self.trackingNormal = YES;
+		normalDragLastPoint = point;
+		normalDragDirection = NSMakePoint(self.normalX, self.normalY);
 		[self mouseDragged:event];
 		return;
 	}
@@ -4511,6 +4582,7 @@ void QuitWithFatalError ( NSString *message)
 		if (!self.trackingNormal)
 			return;
 		const NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+		const bool back = (self.areaDirection ? remasterAreaBack : remasterNormalBackButton).state == NSControlStateValueOn;
 		float x = (point.x - NSMidX(self.bounds)) / 24.0;
 		float y = (NSMidY(self.bounds) - point.y) / 24.0;
 		const float radius = std::hypot(x, y);
@@ -4520,8 +4592,36 @@ void QuitWithFatalError ( NSString *message)
 			y /= radius;
 		}
 		// A unit hemisphere supplies Z, so dragging selects all three components.
-		const float z = std::sqrt(std::max(0.0f, 1.0f - x * x - y * y)) *
-			((self.areaDirection ? remasterAreaBack : remasterNormalBackButton).state == NSControlStateValueOn ? -1.0f : 1.0f);
+		float z = std::sqrt(std::max(0.0f, 1.0f - x * x - y * y)) * (back ? -1.0f : 1.0f);
+		if (event.modifierFlags & NSEventModifierFlagCommand)
+		{
+			// Relative vertical motion avoids snapping on Cmd-click or when Cmd
+			// is pressed mid-drag. Horizontal motion cannot change the azimuth.
+			const float delta = (point.y - normalDragLastPoint.y) * (self.isFlipped ? -1.0f : 1.0f) / 24.0f;
+			const auto normal = RemasterNormalPickerTilt(normalDragDirection.x, normalDragDirection.y,
+				self.normalZ, delta, back);
+			x = normal[0];
+			y = normal[1];
+			z = normal[2];
+		}
+		else
+		{
+			const bool lockX = event.modifierFlags & NSEventModifierFlagShift;
+			const bool lockY = event.modifierFlags & NSEventModifierFlagOption;
+			if (lockX || lockY)
+			{
+				// Relative motion preserves the vector on modified mouse-down.
+				const auto normal = RemasterNormalPickerAxisLock(self.normalX, self.normalY,
+					(point.x - normalDragLastPoint.x) / 24.0f,
+					(normalDragLastPoint.y - point.y) / 24.0f, lockX, lockY, back);
+				x = normal[0];
+				y = normal[1];
+				z = normal[2];
+			}
+			if (std::hypot(x, y) > 0.0f)
+				normalDragDirection = NSMakePoint(x, y);
+		}
+		normalDragLastPoint = point;
 		self.normalX = x;
 		self.normalY = y;
 		self.normalZ = z;
@@ -4801,6 +4901,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterHeightInstanceId = 0;
 	remasterSelectedTiles.clear();
 	remasterObstacleSelection.clear();
+	remasterObstacleExplicitMembers = false;
+	remasterObstacleSelectedMembers.clear();
 	remasterVariants.clear();
 	remasterReplayFrame = RemasterFrame();
 	remasterSelectedContextInstances.clear();
@@ -4945,6 +5047,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterEditingProfileDirty = false;
 		remasterFramePresenting = false;
 		remasterNpcInspectorActive = false;
+		remasterObstacleSelection.clear();
+		remasterSceneFrame.selectedObstacleInstances.clear();
+		remasterSceneFrame.obstacleLocationSelection = false;
 		[remasterInspectorPanel orderOut:nil];
 		[remasterProfileSettingsPanel orderOut:nil];
 		workspaceSceneOpen = NO;
@@ -4972,6 +5077,35 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)startRemasterBenchmarkIfRequested
 {
+	// Opt-in native regression: the actual DrawRemasterFrame/Metal upload and
+	// compiled application shaders, not a second resolver-only implementation.
+	if (const char *capture = std::getenv("S9X_REMASTER_DEBUG_PROBE_CAPTURE")) {
+		const char *profilePath = std::getenv("S9X_REMASTER_DEBUG_PROBE_PROFILE");
+		const char *output = std::getenv("S9X_REMASTER_DEBUG_PROBE_OUTPUT");
+		RemasterFrame frame; RemasterProfile profile; std::vector<RemasterProfileDiagnostic> errors;
+		if (!profilePath || !output || !S9xReadRemasterFrame(capture,frame) ||
+			!S9xRemasterLoadProfile(profilePath,profile,errors)) std::exit(2);
+		S9xRemasterRestoreSpriteObstacleSupport(capture,frame,profile);
+		if (getenv("S9X_REMASTER_DEBUG_PROBE_COMPLETE")) for (auto &group:profile.obstacleGroups) {
+			RemasterObstacleGroup completed;
+			if (S9xRemasterObstacleEditorCompleteSpriteFootprint(frame,group,completed)) group=std::move(completed);
+		}
+		S9xRemasterApplyProfileToFrame(profile,frame);
+		RemasterSpriteObstacleDiagnostics diagnostics;
+		S9xRemasterApplySpriteObstacles(frame,profile,nullptr,nullptr,&diagnostics);
+		[self recreateS9xView];
+		[s9xView.window makeKeyAndOrderFront:nil];
+		SetRemasterHeightPreviewRange(0,64);
+		bool ok=true;
+		for (const auto view : {RemasterLightingView::Normal,RemasterLightingView::Height,RemasterLightingView::Normal}) {
+			const std::string path=std::string(output)+(view==RemasterLightingView::Normal?".normals.rgba":".height.rgba");
+			ok &= DrawRemasterFrame(frame,RemasterDebugMode::Original,nullptr,true,view) && SaveRemasterDebugPixels(path);
+		}
+		NSLog(@"Native debug probe: %ux%u observed=%u matched=%u claimed=%u unclaimed=%u output=%s success=%d",
+			frame.width,frame.height,diagnostics.observedTiles,diagnostics.matchedAssemblies,
+			diagnostics.claimedInstances,diagnostics.unclaimedInstances,output,ok);
+		std::exit(ok?0:2);
+	}
 	NSArray<NSString *> *arguments = [NSProcessInfo processInfo].arguments;
 	if (![arguments containsObject:@"--remaster-benchmark"]) return;
 	NSMutableDictionary<NSString *, NSString *> *options = [NSMutableDictionary dictionary];
@@ -5115,6 +5249,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterEditingProfileDirty = false;
 		remasterFramePresenting = false;
 		remasterNpcInspectorActive = false;
+		remasterObstacleSelection.clear();
+		remasterSceneFrame.selectedObstacleInstances.clear();
+		remasterSceneFrame.obstacleLocationSelection = false;
 		[remasterInspectorPanel orderOut:nil];
 		[remasterProfileSettingsPanel orderOut:nil];
 		workspaceSceneOpen = NO;
@@ -5148,6 +5285,17 @@ void QuitWithFatalError ( NSString *message)
 - (NSString *)cycleRemasterDebugMode
 {
 	const RemasterDebugMode mode = S9xRemasterCycleDebugMode();
+	return [self presentRemasterDebugMode:mode];
+}
+
+- (NSString *)showRemasterTileTypes
+{
+	S9xRemasterSetDebugMode(RemasterDebugMode::TileTypes);
+	return [self presentRemasterDebugMode:RemasterDebugMode::TileTypes];
+}
+
+- (NSString *)presentRemasterDebugMode:(RemasterDebugMode)mode
+{
 	remasterReplayDebugMode = mode;
 	if (remasterFramePresenting)
 		DrawRemasterFrame(remasterSceneFrame, mode,
@@ -5187,9 +5335,7 @@ void QuitWithFatalError ( NSString *message)
 - (NSString *)cycleRemasterLightingView
 {
 	ClearRemasterDebugLightRedraw();
-	const uint32_t next = (static_cast<uint32_t>(remasterLightingView) + 1) %
-		static_cast<uint32_t>(RemasterLightingView::Count);
-	remasterLightingView = static_cast<RemasterLightingView>(next);
+	remasterLightingView = NextRemasterLightingView(remasterLightingView);
 	remasterLightingEnabled = true;
 	SetLiveRemasterPresentation(running && remasterEditingProfileLoaded, remasterLightingView);
 	[s9xView updateRemasterDebugOverlay];
@@ -5252,13 +5398,19 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSString *)openRemasterFrame:(NSURL *)fileURL
 {
+	return [self openRemasterFrame:fileURL retainedPacket:nullptr];
+}
+
+- (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket
+{
 	if (running && !pauseEmulation)
 		return @"Pause emulation before opening a remaster frame.";
 	if (!running && s9xthreadrunning)
 		return @"Wait for emulation to stop before opening a remaster frame.";
 
 	RemasterFrame frame;
-	if (!S9xReadRemasterFrame(fileURL.path.UTF8String, frame))
+	if (retainedPacket) frame = *retainedPacket;
+	else if (!S9xReadRemasterFrame(fileURL.path.UTF8String, frame))
 		return @"The file is not a valid supported remaster frame capture.";
 	if (frame.width > MAX_SNES_WIDTH || frame.height > MAX_SNES_HEIGHT)
 		return @"The captured frame dimensions are not supported by this renderer.";
@@ -5292,7 +5444,11 @@ void QuitWithFatalError ( NSString *message)
 	if (incompatibleProfile && ![self confirmDiscardingRemasterChanges])
 		return @"";
 	if (!incompatibleProfile && !self.openingAreaReviewFrame)
+	{
+		if (!retainedPacket)
+			S9xRemasterRestoreSpriteObstacleSupport(fileURL.path.fileSystemRepresentation, frame, remasterEditingProfile);
 		SyncRemasterEditingMetadataToFrame(frame);
+	}
 	const std::pair<int, int> heightRange = S9xRemasterFrameHeightRange(frame);
 	remasterHeightPreviewMin = heightRange.first;
 	remasterHeightPreviewMax = heightRange.second;
@@ -5329,6 +5485,10 @@ void QuitWithFatalError ( NSString *message)
 	remasterNpcInspectorActive = false;
 	remasterNpcInspectorFrame = RemasterFrame();
 	remasterSceneFrame = std::move(frame);
+	remasterSceneFrame.obstacleLocationSelection = remasterObstacleGroupingActive;
+	remasterObstacleSelection.clear();
+	remasterSelectedContextInstances.clear();
+	remasterSelectedTiles.clear();
 	remasterHeightInstanceId = 0;
 	remasterMetadataNeedsSync = false;
 	remasterReplayDebugMode = RemasterDebugMode::Original;
@@ -5544,6 +5704,9 @@ void QuitWithFatalError ( NSString *message)
 	if (!remasterNpcPicking && remasterNpcInspectorActive)
 	{
 		remasterNpcInspectorActive = false;
+		remasterObstacleSelection.clear();
+		remasterSceneFrame.selectedObstacleInstances.clear();
+		remasterSceneFrame.obstacleLocationSelection = remasterObstacleGroupingActive;
 		remasterSelectionValid = false;
 		remasterSelectedTiles.clear();
 		remasterVariants.clear();
@@ -5583,18 +5746,25 @@ void QuitWithFatalError ( NSString *message)
 	const RemasterFrameTileInstance *instance = S9xRemasterFrameVisibleInstanceAt(remasterReplayFrame, x, y,
 		&instanceFromSubscreen);
 	remasterHeightInstanceId = instance ? static_cast<uint32_t>(instance - remasterReplayFrame.tileInstances.data() + 1) : 0;
-	const bool selectingObstacle = !remasterNpcPicking && remasterLayerSelector && remasterLayerSelector.indexOfSelectedItem == RemasterEditorMetadata;
-	if (!extendingSelection) remasterObstacleSelection.clear();
+	const bool selectingObstacle = !remasterNpcPicking && remasterLayerSelector &&
+		remasterLayerSelector.indexOfSelectedItem == RemasterEditorObstacleGrouping;
+	remasterObstacleExplicitMembers = false;
+	remasterObstacleSelectedMembers.clear();
 	RemasterObstacleEditorCell obstacleCell;
-	if (S9xRemasterObstacleEditorCellAt(remasterReplayFrame,x,y,obstacleCell))
-	{
-		auto selected = std::find_if(remasterObstacleSelection.begin(),remasterObstacleSelection.end(),
-			[&](const auto &cell){ return cell.x==obstacleCell.x && cell.y==obstacleCell.y && cell.background==obstacleCell.background; });
-		if (selected==remasterObstacleSelection.end()) remasterObstacleSelection.push_back(obstacleCell);
-		else if (extendingSelection) remasterObstacleSelection.erase(selected);
-	}
+	const bool pickedObstacle = !remasterNpcPicking && S9xRemasterObstacleEditorCellAt(remasterReplayFrame,x,y,obstacleCell);
+	S9xRemasterObstacleEditorPick(remasterObstacleSelection,pickedObstacle ? &obstacleCell : nullptr,extendingSelection);
 
-	if (remasterSelectLocations && !remasterNpcPicking)
+	if (selectingObstacle)
+	{
+		remasterSelectedTiles.clear();
+		for (const auto &cell : remasterObstacleSelection)
+			if (std::find(remasterSelectedTiles.begin(),remasterSelectedTiles.end(),cell.tileId)==remasterSelectedTiles.end())
+				remasterSelectedTiles.push_back(cell.tileId);
+		remasterReplayFrame.obstacleLocationSelection = true;
+		S9xRemasterObstacleEditorSelectionInstances(remasterReplayFrame,remasterObstacleSelection,
+			remasterReplayFrame.selectedObstacleInstances);
+	}
+	else if (remasterSelectLocations && !remasterNpcPicking)
 	{
 		for(auto selected=remasterSelectedContextInstances.begin();selected!=remasterSelectedContextInstances.end();)
 			if(*selected>remasterReplayFrame.tileInstances.size() || !remasterReplayFrame.contextLocations.count(*selected))selected=remasterSelectedContextInstances.erase(selected);else ++selected;
@@ -5618,13 +5788,6 @@ void QuitWithFatalError ( NSString *message)
 				if(binding!=remasterEditingProfile.contextBindings.end() && binding->second.tile==instance->tileId)remasterTileContextName=binding->second.name;
 			}
 		}
-	}
-	else if (selectingObstacle)
-	{
-		remasterSelectedTiles.clear();
-		for (const auto &cell : remasterObstacleSelection)
-			if (std::find(remasterSelectedTiles.begin(),remasterSelectedTiles.end(),cell.tileId)==remasterSelectedTiles.end())
-				remasterSelectedTiles.push_back(cell.tileId);
 	}
 	else if (instance)
 	{
@@ -5669,11 +5832,12 @@ void QuitWithFatalError ( NSString *message)
 		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 646)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
-		remasterInspectorPanel.title = @"Remaster Pixel Inspector";
+		remasterInspectorPanel.title = @"Tile and Pixel Inspector";
 		remasterInspectorPanel.releasedWhenClosed = NO;
 		remasterInspectorPanel.hidesOnDeactivate = YES;
 		NSView *contentView = remasterInspectorPanel.contentView;
 		NSTextField *contextLabel = [NSTextField labelWithString:@"Context:"];
+		remasterContextLabel = contextLabel;
 		contextLabel.frame = NSMakeRect(20, 570, 62, 22);
 		[contentView addSubview:contextLabel];
 		remasterTileContextInput = [[NSTextField alloc] initWithFrame:NSMakeRect(85, 568, 250, 24)];
@@ -5748,7 +5912,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterNextVariantButton.action = @selector(nextRemasterVariant:);
 		[contentView addSubview:remasterNextVariantButton];
 		remasterLayerSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 87, 128, 28) pullsDown:NO];
-		[remasterLayerSelector addItemsWithTitles:@[@"Artwork", @"Material", @"Occlusion", @"Height", @"Normal", @"Emission", @"Metadata"]];
+		[remasterLayerSelector addItemsWithTitles:@[@"Artwork", @"Material", @"Occlusion", @"Height", @"Normal", @"Emission", @"Metadata", @"Doorframe", @"Obstacle Grouping"]];
 		remasterLayerSelector.target = self;
 		remasterLayerSelector.action = @selector(changeRemasterLayer:);
 		[contentView addSubview:remasterLayerSelector];
@@ -5797,54 +5961,61 @@ void QuitWithFatalError ( NSString *message)
 		[remasterSemanticsView addSubview:apply];
 		remasterSemanticsView.hidden = YES;
 		remasterObstacleView = [[NSView alloc] initWithFrame:NSMakeRect(168,20,570,207)];
-		remasterObstacleView.bounds = NSMakeRect(0, 0, 570, 242);
+		// Keep native control sizes and fit below the shared tile row (y=232).
+		// A taller bounds rect scales text/controls and lets the group header
+		// collide with the pixel-shift row; that row is hidden in Metadata mode.
 		[contentView addSubview:remasterObstacleView];
-		remasterObstacleName = [[NSTextField alloc] initWithFrame:NSMakeRect(0,210,240,26)];
+		remasterObstacleName = [[NSTextField alloc] initWithFrame:NSMakeRect(0,175,240,26)];
 		remasterObstacleName.placeholderString = @"Group name (e.g. stone_statue)";
 		[remasterObstacleView addSubview:remasterObstacleName];
-		remasterObstacleCreate = [[NSButton alloc] initWithFrame:NSMakeRect(245,210,185,28)];
+		remasterObstacleCreate = [[NSButton alloc] initWithFrame:NSMakeRect(245,175,185,28)];
 		remasterObstacleCreate.title = @"Create Obstacle Group";
 		remasterObstacleCreate.bezelStyle = NSBezelStyleRounded;
 		remasterObstacleCreate.target = self;
 		remasterObstacleCreate.action = @selector(createRemasterObstacleGroup:);
 		[remasterObstacleView addSubview:remasterObstacleCreate];
-		remasterObstacleDelete = [[NSButton alloc] initWithFrame:NSMakeRect(435,210,130,28)];
+		remasterObstacleDelete = [[NSButton alloc] initWithFrame:NSMakeRect(435,175,130,28)];
 		remasterObstacleDelete.title = @"Delete Group";
 		remasterObstacleDelete.bezelStyle = NSBezelStyleRounded;
 		remasterObstacleDelete.target = self;
 		remasterObstacleDelete.action = @selector(deleteRemasterObstacleGroup:);
 		[remasterObstacleView addSubview:remasterObstacleDelete];
-		remasterObstacleFootprint = [[NSView alloc] initWithFrame:NSMakeRect(0,45,155,155)];
+		remasterObstacleFootprint = [[NSView alloc] initWithFrame:NSMakeRect(0,45,128,128)];
 		[remasterObstacleView addSubview:remasterObstacleFootprint];
-		remasterObstacleMembers = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(165,172,395,28) pullsDown:NO];
+		remasterObstacleMembers = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(165,140,395,28) pullsDown:NO];
 		remasterObstacleMembers.target = self;
 		remasterObstacleMembers.action = @selector(selectRemasterObstacleMember:);
 		[remasterObstacleView addSubview:remasterObstacleMembers];
 		NSTextField *zLabel = [NSTextField labelWithString:@"Member Z (tile units × 8):"];
-		zLabel.frame = NSMakeRect(165,139,235,20);
+		zLabel.frame = NSMakeRect(165,109,235,20);
 		[remasterObstacleView addSubview:zLabel];
-		remasterObstacleZ = [[NSTextField alloc] initWithFrame:NSMakeRect(405,135,80,26)];
+		remasterObstacleZ = [[NSTextField alloc] initWithFrame:NSMakeRect(405,105,80,26)];
 		remasterObstacleZ.stringValue = @"0";
 		[remasterObstacleView addSubview:remasterObstacleZ];
-		remasterObstacleContact = [[NSButton alloc] initWithFrame:NSMakeRect(165,100,390,26)];
+		remasterObstacleContact = [[NSButton alloc] initWithFrame:NSMakeRect(165,75,390,26)];
 		remasterObstacleContact.buttonType = NSButtonTypeSwitch;
+		remasterObstacleContact.allowsMixedState = YES;
+		remasterObstacleContact.target = self;
+		remasterObstacleContact.action = @selector(changeRemasterObstacleContact:);
 		remasterObstacleContact.title = @"Support contact (cell or south underside)";
-		remasterObstacleContact.toolTip = @"This member establishes the group's supporting floor. Whole-group vertical mirrors use the north edge. Authored relief is preserved.";
+		remasterObstacleContact.toolTip = @"Immediately sets contacts for all selected occurrences (Cmd-click scene or footprint). Mixed first click enables all. At least one contact must remain. Dropdown selects one member. Z and authored relief are preserved.";
 		[remasterObstacleView addSubview:remasterObstacleContact];
-		remasterObstacleApply = [[NSButton alloc] initWithFrame:NSMakeRect(165,65,210,28)];
-		remasterObstacleApply.title = @"Apply Member / Group Name";
+		remasterObstacleApply = [[NSButton alloc] initWithFrame:NSMakeRect(165,45,210,28)];
+		remasterObstacleApply.title = @"Apply Selected Z / Name";
+		remasterObstacleApply.toolTip = @"Applies Z to every selected exact scene or footprint member, and updates the group name in one undo step. Mixed Z is blank until entered. Contacts and unselected members are preserved.";
 		remasterObstacleApply.bezelStyle = NSBezelStyleRounded;
 		remasterObstacleApply.target = self;
 		remasterObstacleApply.action = @selector(applyRemasterObstacleMember:);
 		[remasterObstacleView addSubview:remasterObstacleApply];
-		remasterObstacleShow = [[NSButton alloc] initWithFrame:NSMakeRect(380,65,180,28)];
+		remasterObstacleShow = [[NSButton alloc] initWithFrame:NSMakeRect(380,45,180,28)];
 		remasterObstacleShow.title = @"Show Entire Group";
+		remasterObstacleShow.toolTip = @"Show saved tile types only; this does not select scene occurrences. Cmd-click one object's cells to edit its exact scene selection. Footprint completion, when offered, requires separate confirmation.";
 		remasterObstacleShow.bezelStyle = NSBezelStyleRounded;
 		remasterObstacleShow.target = self;
 		remasterObstacleShow.action = @selector(showRemasterObstacleGroup:);
 		[remasterObstacleView addSubview:remasterObstacleShow];
 		remasterObstacleStatus = [NSTextField wrappingLabelWithString:@""];
-		remasterObstacleStatus.frame = NSMakeRect(0,0,560,42);
+		remasterObstacleStatus.frame = NSMakeRect(0,0,560,38);
 		remasterObstacleStatus.font = [NSFont systemFontOfSize:11];
 		[remasterObstacleView addSubview:remasterObstacleStatus];
 		remasterObstacleView.hidden = YES;
@@ -5955,7 +6126,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightDecreaseTileLargeButton.tag = -8;
 		remasterHeightDecreaseTileLargeButton.target = self;
 		remasterHeightDecreaseTileLargeButton.action = @selector(stepRemasterTileHeight:);
-		remasterHeightDecreaseTileLargeButton.toolTip = @"Decrease every height sample on this tile by eight, clamped at -32768.";
+		remasterHeightDecreaseTileLargeButton.toolTip = @"Decrease every height sample on all selected tiles by eight, clamped at -32768.";
 		[contentView addSubview:remasterHeightDecreaseTileLargeButton];
 		remasterHeightDecreaseTileButton = [[NSButton alloc] initWithFrame:NSMakeRect(532, 307, 64, 28)];
 		remasterHeightDecreaseTileButton.title = @"Tile -1";
@@ -5963,7 +6134,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightDecreaseTileButton.tag = -1;
 		remasterHeightDecreaseTileButton.target = self;
 		remasterHeightDecreaseTileButton.action = @selector(stepRemasterTileHeight:);
-		remasterHeightDecreaseTileButton.toolTip = @"Decrease every height sample on this tile by one, clamped at -32768.";
+		remasterHeightDecreaseTileButton.toolTip = @"Decrease every height sample on all selected tiles by one, clamped at -32768.";
 		[contentView addSubview:remasterHeightDecreaseTileButton];
 		remasterHeightIncreaseTileButton = [[NSButton alloc] initWithFrame:NSMakeRect(600, 307, 64, 28)];
 		remasterHeightIncreaseTileButton.title = @"Tile +1";
@@ -5971,7 +6142,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightIncreaseTileButton.tag = 1;
 		remasterHeightIncreaseTileButton.target = self;
 		remasterHeightIncreaseTileButton.action = @selector(stepRemasterTileHeight:);
-		remasterHeightIncreaseTileButton.toolTip = @"Increase every height sample on this tile by one, clamped at 32767.";
+		remasterHeightIncreaseTileButton.toolTip = @"Increase every height sample on all selected tiles by one, clamped at 32767.";
 		[contentView addSubview:remasterHeightIncreaseTileButton];
 		remasterHeightIncreaseTileLargeButton = [[NSButton alloc] initWithFrame:NSMakeRect(668, 307, 68, 28)];
 		remasterHeightIncreaseTileLargeButton.title = @"Tile +8";
@@ -5979,7 +6150,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightIncreaseTileLargeButton.tag = 8;
 		remasterHeightIncreaseTileLargeButton.target = self;
 		remasterHeightIncreaseTileLargeButton.action = @selector(stepRemasterTileHeight:);
-		remasterHeightIncreaseTileLargeButton.toolTip = @"Increase every height sample on this tile by eight, clamped at 32767.";
+		remasterHeightIncreaseTileLargeButton.toolTip = @"Increase every height sample on all selected tiles by eight, clamped at 32767.";
 		[contentView addSubview:remasterHeightIncreaseTileLargeButton];
 		remasterNormalPreset = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(244, 377, 90, 28) pullsDown:NO];
 		[remasterNormalPreset addItemsWithTitles:@[@"+Z (Front)", @"-Z (Back)", @"+X (Right)", @"-X (Left)", @"+Y (Down)", @"-Y (Up)", @"Custom"]];
@@ -6092,7 +6263,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterCombineEmittersButton.bezelStyle = NSBezelStyleRounded;
 		remasterCombineEmittersButton.target = self;
 		remasterCombineEmittersButton.action = @selector(combineRemasterEmitters:);
-		remasterCombineEmittersButton.toolTip = @"Cmd-click another tile type to select a connected shape. Combines all known animation frames; enable Representative Emitters in Scene Controls. Only cardinally adjacent, explicitly linked tiles combine at runtime.";
+		remasterCombineEmittersButton.toolTip = @"Cmd-click another tile type to select a connected shape. Combines all known animation frames; enable Representative Emitters in Profile Controls. Only cardinally adjacent, explicitly linked tiles combine at runtime.";
 		[contentView addSubview:remasterCombineEmittersButton];
 		remasterOmnidirectionalEmissionButton = [[NSButton alloc] initWithFrame:NSMakeRect(168, 432, 260, 28)];
 		remasterOmnidirectionalEmissionButton.title = @"Omnidirectional Emission";
@@ -6456,9 +6627,10 @@ void QuitWithFatalError ( NSString *message)
 	remasterVariantIndex = index;
 	const RemasterTileContentId previousFocusedTile = remasterSelectedTile;
 	remasterSelectedTile = remasterVariants[index];
-	remasterSelectionValid = true;
+	const bool grouping = remasterLayerSelector.indexOfSelectedItem == RemasterEditorObstacleGrouping;
+	remasterSelectionValid = grouping ? !remasterSelectedTiles.empty() : true;
 	auto selected = std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), previousFocusedTile);
-	if (selected != remasterSelectedTiles.end())
+	if (!grouping && selected != remasterSelectedTiles.end())
 	{
 		auto replacement = std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), remasterSelectedTile);
 		if (replacement != remasterSelectedTiles.end() && replacement != selected)
@@ -6466,7 +6638,7 @@ void QuitWithFatalError ( NSString *message)
 		else
 			*selected = remasterSelectedTile;
 	}
-	else if (std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), remasterSelectedTile) == remasterSelectedTiles.end())
+	else if (!grouping && std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), remasterSelectedTile) == remasterSelectedTiles.end())
 		remasterSelectedTiles.push_back(remasterSelectedTile);
 	const bool metadataChanged = remasterStrokeDragging ? false : SyncRemasterEditingMetadataToFrame();
 	if (!remasterStrokeDragging && (metadataChanged || previousSelection != remasterSelectedTiles))
@@ -6483,16 +6655,12 @@ void QuitWithFatalError ( NSString *message)
 			editableMetadata = &found->second;
 	}
 	const auto doorMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
-	if (doorMetadata.tileRole == RemasterTileRole::Door)
-	{
-		if (remasterLayerSelector.numberOfItems == RemasterEditorDoorframe)
-			[remasterLayerSelector addItemWithTitle:@"Doorframe"];
-	}
-	else if (remasterLayerSelector.numberOfItems > RemasterEditorDoorframe)
+	// Keep stable enum indices, including the appended grouping layer.
+	[remasterLayerSelector itemAtIndex:RemasterEditorDoorframe].hidden = doorMetadata.tileRole != RemasterTileRole::Door;
+	if (doorMetadata.tileRole != RemasterTileRole::Door)
 	{
 		if (remasterLayerSelector.indexOfSelectedItem == RemasterEditorDoorframe)
 			[remasterLayerSelector selectItemAtIndex:RemasterEditorMetadata];
-		[remasterLayerSelector removeItemAtIndex:RemasterEditorDoorframe];
 	}
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	const bool hasMaterials = (editableMetadata && editableMetadata->hasMaterialSelectors) ||
@@ -6828,6 +6996,30 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterLayer:(id)sender
 {
+	const bool grouping = remasterLayerSelector.indexOfSelectedItem == RemasterEditorObstacleGrouping;
+	if (grouping != remasterObstacleGroupingActive)
+	{
+		remasterObstacleGroupingActive = grouping;
+		remasterReplayFrame.obstacleLocationSelection = grouping && !remasterNpcInspectorActive;
+		remasterReplayFrame.selectedObstacleInstances.clear();
+		if (grouping && !S9xRemasterObstacleEditorSelectionInstances(remasterReplayFrame,remasterObstacleSelection,
+			remasterReplayFrame.selectedObstacleInstances))
+			remasterObstacleSelection.clear(); // Never reuse coordinates from another packet.
+		if (grouping && !remasterObstacleSelection.empty())
+		{
+			// Identity toggling in other layers may have removed a repeated hash.
+			// The independent occurrence picks, not that lossy list, are authoritative.
+			remasterSelectedTiles.clear();
+			for (const auto &cell : remasterObstacleSelection)
+				if (std::find(remasterSelectedTiles.begin(),remasterSelectedTiles.end(),cell.tileId)==remasterSelectedTiles.end())
+					remasterSelectedTiles.push_back(cell.tileId);
+			remasterSelectionValid = true;
+		}
+		[remasterContextSelectionMode selectItemAtIndex:grouping ? 1 : (remasterSelectLocations ? 1 : 0)];
+		// No context-mode action here: it clears the user's selection.
+		DrawRemasterFrame(remasterReplayFrame,remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr,remasterLightingEnabled,remasterLightingView);
+	}
 	if (remasterLayerSelector.indexOfSelectedItem == RemasterEditorEmission && !remasterTilePixelSelected)
 	{
 		remasterValueBrush.integerValue = 25;
@@ -6835,6 +7027,8 @@ void QuitWithFatalError ( NSString *message)
 	}
 	if (!remasterVariants.empty())
 		[self showRemasterVariantAtIndex:remasterVariantIndex];
+	else
+		[self refreshRemasterEditingControls];
 }
 
 - (void)updateRemasterSemantics:(id)sender
@@ -6890,6 +7084,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resetRemasterLayer:(id)sender
 {
+	if (remasterObstacleGroupingActive) return;
 	if (!remasterTileContextName.empty() && (remasterLayerSelector.indexOfSelectedItem == RemasterEditorHeight || remasterLayerSelector.indexOfSelectedItem == RemasterEditorNormal)) {
 		std::string before; std::vector<RemasterProfileDiagnostic> diagnostics;
 		if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
@@ -7056,6 +7251,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)copyRemasterLayer:(id)sender
 {
+	if (remasterObstacleGroupingActive) return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (remasterVariants.empty() || layer == RemasterEditorArtwork)
 		return;
@@ -7086,6 +7282,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)pasteRemasterLayer:(id)sender
 {
+	if (remasterObstacleGroupingActive) return;
 	if (RemasterEffectiveHeightPreview()) return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty() || !RemasterClipboardAvailable(layer))
@@ -7134,6 +7331,9 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterContextSelection:(id)sender
 {
+	if (remasterObstacleGroupingActive) return;
+	// Context-mode toggling may clear its own selection, but must not erase
+	// independent scene-click evidence needed when entering Obstacle Grouping.
 	remasterSelectLocations=remasterContextSelectionMode.indexOfSelectedItem==1;
 	remasterReplayFrame.contextLocationSelection=remasterSelectLocations;
 	remasterSelectedContextInstances.clear();remasterReplayFrame.selectedContextInstances.clear();
@@ -7603,7 +7803,7 @@ void QuitWithFatalError ( NSString *message)
 		alert.informativeText = [NSString stringWithUTF8String:error.c_str()]; [alert runModal]; return;
 	}
 	auto candidate = remasterEditingProfile;
-	candidate.schemaVersion = std::max(candidate.schemaVersion,22u);
+	candidate.schemaVersion = std::max(candidate.schemaVersion,group.spriteAssembly ? 30u : 22u);
 	candidate.obstacleGroups.push_back(group);
 	remasterObstacleFocusedGroup = group.name;
 	remasterObstacleMemberIndex = 0;
@@ -7612,10 +7812,23 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)selectRemasterObstacleMember:(id)sender
 {
+	const bool extending = [sender isKindOfClass:[NSButton class]] &&
+		(NSApp.currentEvent.modifierFlags & NSEventModifierFlagCommand);
 	remasterObstacleMemberIndex = [sender isKindOfClass:[NSButton class]] ? [sender tag] : remasterObstacleMembers.indexOfSelectedItem;
 	if (remasterObstacleGroupIndex < 0 || size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size()) return;
 	const auto &group = remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex];
 	if (remasterObstacleMemberIndex < 0 || size_t(remasterObstacleMemberIndex)>=group.members.size()) return;
+	if (!extending) remasterObstacleSelectedMembers.clear();
+	else if (!remasterObstacleExplicitMembers) {
+		std::string error;
+		S9xRemasterObstacleEditorResolveSelection(remasterReplayFrame,group,remasterObstacleSelection,
+			remasterObstacleSelectedMembers,error);
+	}
+	remasterObstacleExplicitMembers = true;
+	const size_t index = size_t(remasterObstacleMemberIndex);
+	auto selected = std::find(remasterObstacleSelectedMembers.begin(),remasterObstacleSelectedMembers.end(),index);
+	if (extending && selected!=remasterObstacleSelectedMembers.end()) remasterObstacleSelectedMembers.erase(selected);
+	else if (selected==remasterObstacleSelectedMembers.end()) remasterObstacleSelectedMembers.push_back(index);
 	const auto &member = group.members[remasterObstacleMemberIndex];
 	remasterSelectedTile = member.tileId;
 	remasterVariants = S9xRemasterFrameAnimationVariants(remasterReplayFrame,member.tileId,"");
@@ -7624,21 +7837,102 @@ void QuitWithFatalError ( NSString *message)
 	[self refreshRemasterObstacleControls];
 }
 
+- (BOOL)remasterObstacleContactMembers:(std::vector<size_t> &)members error:(std::string &)error
+{
+	if (remasterObstacleGroupIndex<0 || size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size()) return NO;
+	if (remasterObstacleExplicitMembers) {
+		members = remasterObstacleSelectedMembers;
+		if (members.empty()) { error="Select at least one obstacle member."; return NO; }
+		return YES;
+	}
+	// Reject a selection spanning groups/sources rather than silently editing
+	// only the currently focused group's subset. No changes occur on failure.
+	return S9xRemasterObstacleEditorResolveSelection(remasterReplayFrame,
+		remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex],remasterObstacleSelection,members,error);
+}
+
+- (void)changeRemasterObstacleContact:(id)sender
+{
+	if (!remasterEditingProfileLoaded) return;
+	std::vector<size_t> members; std::string error;
+	bool valid = [self remasterObstacleContactMembers:members error:error];
+	auto candidate = remasterEditingProfile;
+	bool needsCompletion=false;
+	if (!valid && !remasterObstacleExplicitMembers && remasterObstacleGroupIndex>=0 &&
+		size_t(remasterObstacleGroupIndex)<candidate.obstacleGroups.size()) {
+		auto &group=candidate.obstacleGroups[remasterObstacleGroupIndex];
+		RemasterObstacleGroup prepared;
+		valid=S9xRemasterObstacleEditorPrepareContactSelection(remasterReplayFrame,group,
+			remasterObstacleSelection,prepared,members,needsCompletion,error);
+		if (valid) group=std::move(prepared);
+	}
+	if (valid) {
+		auto &group = candidate.obstacleGroups[remasterObstacleGroupIndex];
+		bool anyOn=false, anyOff=false;
+		for (auto i : members) {
+			if (i>=group.members.size()) { valid=false; error="The obstacle member selection is stale."; break; }
+			(group.members[i].supportContact ? anyOn : anyOff)=true;
+		}
+		// AppKit's three-state cycle may go Mixed -> Off. Our mixed click is
+		// intentionally On for every member, independent of that cycle.
+		const bool contact = (anyOn && anyOff) || [sender state]==NSControlStateValueOn;
+		if (valid) valid=S9xRemasterObstacleEditorSetContacts(group,members,contact,error);
+	}
+	if (valid && needsCompletion) {
+		const auto &old=remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex];
+		const auto &completed=candidate.obstacleGroups[remasterObstacleGroupIndex];
+		NSAlert *alert=[NSAlert new]; alert.messageText=@"Selected repeats are missing from the saved footprint";
+		alert.informativeText=[NSString stringWithFormat:@"The captured sprite motif matches uniquely. Add %lu missing occurrences (%lu → %lu members) and set support contacts for the %lu selected cells? Existing member Z, unselected contacts, and all authored geometry are preserved. Other added cells start without contacts. This does not infer floor support. Save Profile remains a separate action.",completed.members.size()-old.members.size(),old.members.size(),completed.members.size(),members.size()];
+		[alert addButtonWithTitle:@"Add Missing Occurrences and Set Contacts"];
+		[alert addButtonWithTitle:@"Cancel"];
+		if ([alert runModal]!=NSAlertFirstButtonReturn) { [self refreshRemasterObstacleControls]; return; }
+	}
+	if (!valid) {
+		NSAlert *alert=[NSAlert new]; alert.messageText=@"Cannot change support contacts";
+		alert.informativeText=error.empty()?@"Select obstacle members first.":@(error.c_str());
+		[alert runModal];
+	} else [self commitRemasterObstacleProfile:candidate action:@"Change Obstacle Support Contacts"];
+	// Also restore the checkbox after rejected last-contact/ambiguous edits.
+	[self refreshRemasterObstacleControls];
+}
+
 - (void)applyRemasterObstacleMember:(id)sender
 {
 	if (!remasterEditingProfileLoaded || remasterObstacleGroupIndex<0 || remasterObstacleMemberIndex<0) return;
+	const bool preserveMixedZ = remasterObstacleZ.stringValue.length==0 &&
+		[remasterObstacleZ.placeholderString isEqualToString:@"Mixed"];
 	NSInteger z = 0; NSScanner *scanner = [NSScanner scannerWithString:remasterObstacleZ.stringValue];
-	if (![scanner scanInteger:&z] || !scanner.isAtEnd || z < -4095 || z > 4095)
+	if (!preserveMixedZ && (![scanner scanInteger:&z] || !scanner.isAtEnd || z < -4095 || z > 4095))
 	{ NSBeep(); return; }
 	auto candidate = remasterEditingProfile;
 	if (size_t(remasterObstacleGroupIndex)>=candidate.obstacleGroups.size()) return;
 	auto &group = candidate.obstacleGroups[remasterObstacleGroupIndex];
-	if (size_t(remasterObstacleMemberIndex)>=group.members.size()) return;
-	group.name = remasterObstacleName.stringValue.UTF8String ?: "";
-	group.members[remasterObstacleMemberIndex].z = int(z);
-	group.members[remasterObstacleMemberIndex].supportContact = remasterObstacleContact.state == NSControlStateValueOn;
+	std::vector<size_t> members; std::string error;
+	bool valid = [self remasterObstacleContactMembers:members error:error];
+	bool needsCompletion=false;
+	if (!valid && !remasterObstacleExplicitMembers) {
+		RemasterObstacleGroup prepared;
+		valid=S9xRemasterObstacleEditorPrepareContactSelection(remasterReplayFrame,group,
+			remasterObstacleSelection,prepared,members,needsCompletion,error);
+		if (valid) group=std::move(prepared);
+	}
+	if (valid) {
+		if (preserveMixedZ) group.name=remasterObstacleName.stringValue.UTF8String ?: "";
+		else valid=S9xRemasterObstacleEditorSetMemberZ(group,members,int(z),
+			remasterObstacleName.stringValue.UTF8String ?: "",error);
+	}
+	if (!valid) {
+		NSAlert *alert=[NSAlert new]; alert.messageText=@"Cannot change member Z";
+		alert.informativeText=@(error.c_str()); [alert runModal]; return;
+	}
+	if (needsCompletion) {
+		NSAlert *alert=[NSAlert new]; alert.messageText=@"Selected repeats are missing from the saved footprint";
+		alert.informativeText=[NSString stringWithFormat:@"Add %lu missing occurrences and apply Z=%ld to the %lu selected cells? Existing contacts, unselected Z, flips and authored layers are preserved. Other new cells start without contacts. Save Profile remains separate.",group.members.size()-remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex].members.size(),long(z),members.size()];
+		[alert addButtonWithTitle:@"Add Missing Occurrences and Set Z"]; [alert addButtonWithTitle:@"Cancel"];
+		if ([alert runModal]!=NSAlertFirstButtonReturn) return;
+	}
 	const std::string focus = group.name;
-	if ([self commitRemasterObstacleProfile:candidate action:@"Edit Obstacle Member"])
+	if ([self commitRemasterObstacleProfile:candidate action:@"Edit Selected Obstacle Z / Name"])
 	{ remasterObstacleFocusedGroup = focus; [self refreshRemasterObstacleControls]; }
 }
 
@@ -7654,6 +7948,19 @@ void QuitWithFatalError ( NSString *message)
 - (void)showRemasterObstacleGroup:(id)sender
 {
 	if (remasterObstacleGroupIndex<0 || size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size()) return;
+	const auto &group=remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex];
+	RemasterObstacleGroup completed;
+	if (S9xRemasterObstacleEditorCompleteSpriteFootprint(remasterReplayFrame,group,completed)) {
+		NSAlert *alert=[NSAlert new];alert.messageText=@"Complete repeated sprite occurrences?";
+		alert.informativeText=[NSString stringWithFormat:@"The captured motif matches uniquely. Add %lu repeated occurrences (%lu → %lu members) and reset support contacts to the completed south boundary. Existing coordinates, flips, member Z, and all authored height/normal arrays are preserved. Review the footprint before Save Profile. This does not prove floor support.",
+			completed.members.size()-group.members.size(),group.members.size(),completed.members.size()];
+		[alert addButtonWithTitle:@"Complete Footprint"];[alert addButtonWithTitle:@"Cancel"];
+		if ([alert runModal]!=NSAlertFirstButtonReturn) return;
+		auto candidate=remasterEditingProfile;candidate.obstacleGroups[remasterObstacleGroupIndex]=completed;
+		[self commitRemasterObstacleProfile:candidate action:@"Complete Sprite Footprint"];
+	}
+	remasterObstacleSelection.clear(); // Group identities are not picked scene locations.
+	remasterReplayFrame.selectedObstacleInstances.clear();
 	remasterSelectedTiles.clear();
 	for (const auto &member : remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex].members)
 		if (std::find(remasterSelectedTiles.begin(),remasterSelectedTiles.end(),member.tileId)==remasterSelectedTiles.end())
@@ -7671,6 +7978,8 @@ void QuitWithFatalError ( NSString *message)
 	if (groupIndex!=remasterObstacleGroupIndex || (groupIndex>=0 &&
 		remasterObstacleFocusedGroup!=remasterEditingProfile.obstacleGroups[groupIndex].name))
 	{
+		remasterObstacleExplicitMembers = false;
+		remasterObstacleSelectedMembers.clear();
 		remasterObstacleMemberIndex = -1;
 		if (groupIndex>=0) for (size_t m=0;m<remasterEditingProfile.obstacleGroups[groupIndex].members.size();m++)
 			if (remasterEditingProfile.obstacleGroups[groupIndex].members[m].tileId==remasterSelectedTile)
@@ -7687,40 +7996,94 @@ void QuitWithFatalError ( NSString *message)
 	{
 		if (!remasterObstacleFocusedGroup.empty()) remasterObstacleName.stringValue = @"";
 		remasterObstacleFocusedGroup.clear();
-		remasterObstacleStatus.stringValue = [NSString stringWithFormat:@"%lu occurrence tiles selected. In Metadata mode, Cmd-click each tile in ONE example. New groups start at Z=0 with editable south-boundary contacts.",static_cast<unsigned long>(remasterObstacleSelection.size())];
+		remasterObstacleStatus.stringValue = remasterObstacleSelection.empty() && !remasterSelectedTiles.empty() ?
+			@"Selected tile types have no exact scene locations. Cmd-click occurrences in one object; matching artwork and adjacent objects are not selected automatically." :
+			[NSString stringWithFormat:@"%lu exact occurrence tiles selected. Cmd-click each 8×8 tile in ONE background obstacle or sprite assembly, including repeats. New groups start at Z=0 with south-boundary contacts.",static_cast<unsigned long>(remasterObstacleSelection.size())];
 		return;
 	}
 	const auto &group = remasterEditingProfile.obstacleGroups[groupIndex];
+	uint8_t placementFlip=0;std::vector<size_t> layoutMembers;std::string layoutError;
+	const bool occurrenceLayout=S9xRemasterObstacleEditorResolveSelection(remasterReplayFrame,group,
+		remasterObstacleSelection,layoutMembers,layoutError,&placementFlip);
+	const auto layout=S9xRemasterObstacleEditorDisplayLayout(group,occurrenceLayout?placementFlip:0);
 	remasterObstacleFocusedGroup = group.name;
 	remasterObstacleName.stringValue = [NSString stringWithUTF8String:group.name.c_str()];
+	std::vector<size_t> contactMembers; std::string contactError;
+	bool contactSelectionValid = [self remasterObstacleContactMembers:contactMembers error:contactError];
+	RemasterObstacleGroup contactProposal=group; bool contactNeedsCompletion=false;
+	if (!contactSelectionValid && !remasterObstacleExplicitMembers)
+		contactSelectionValid=S9xRemasterObstacleEditorPrepareContactSelection(remasterReplayFrame,group,
+			remasterObstacleSelection,contactProposal,contactMembers,contactNeedsCompletion,contactError);
+	// Keep an invalid scene selection actionable so its explicit diagnostic can
+	// explain ambiguity/cross-group rejection; never silently fall back to focus.
+	remasterObstacleContact.enabled = remasterEditingProfileLoaded &&
+		(!remasterObstacleExplicitMembers || !contactMembers.empty());
+	if (!remasterObstacleExplicitMembers && contactSelectionValid && !contactMembers.empty() &&
+		std::find(contactMembers.begin(),contactMembers.end(),size_t(remasterObstacleMemberIndex))==contactMembers.end())
+		remasterObstacleMemberIndex=NSInteger(contactMembers.front());
 	int minX=63,minY=63,maxX=-63,maxY=-63;
-	for (const auto &member : group.members) { minX=std::min(minX,member.x); minY=std::min(minY,member.y); maxX=std::max(maxX,member.x); maxY=std::max(maxY,member.y); }
-	const CGFloat size = std::min<CGFloat>(36,std::min(150.0/(maxX-minX+1),150.0/(maxY-minY+1)));
+	for (const auto &member : layout.members) { minX=std::min(minX,member.x); minY=std::min(minY,member.y); maxX=std::max(maxX,member.x); maxY=std::max(maxY,member.y); }
+	const CGFloat footprintWidth = NSWidth(remasterObstacleFootprint.bounds);
+	const CGFloat footprintHeight = NSHeight(remasterObstacleFootprint.bounds);
+	const CGFloat size = std::min<CGFloat>(36,std::min(footprintWidth/(maxX-minX+1),footprintHeight/(maxY-minY+1)));
 	bool missingHeight = false;
 	for (size_t m=0;m<group.members.size();m++)
 	{
 		const auto &member = group.members[m];
+		const auto &displayMember = layout.members[m];
 		const auto asset = remasterEditingProfile.assets.find(member.tileId);
 		missingHeight |= asset==remasterEditingProfile.assets.end() || !asset->second.hasHeight;
-		[remasterObstacleMembers addItemWithTitle:[NSString stringWithFormat:@"(%d,%d) Z=%d %@  %016llx",member.x,member.y,member.z,member.supportContact?@"[support]":@"",static_cast<unsigned long long>(member.tileId.hash)]];
-		NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect((member.x-minX)*size,150-(member.y-minY+1)*size,size,size)];
+		[remasterObstacleMembers addItemWithTitle:[NSString stringWithFormat:@"(%d,%d) Z=%d %@  %016llx",displayMember.x,displayMember.y,member.z,member.supportContact?@"[support]":@"",static_cast<unsigned long long>(member.tileId.hash)]];
+		NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect((displayMember.x-minX)*size,footprintHeight-(displayMember.y-minY+1)*size,size,size)];
 		button.title = [NSString stringWithFormat:@"%d%@",member.z,member.supportContact?@"*":@""];
 		button.font = [NSFont systemFontOfSize:std::max<CGFloat>(7,std::min<CGFloat>(11,size/3))];
 		button.bezelStyle = NSBezelStyleRegularSquare;
 		button.buttonType = NSButtonTypeToggle;
-		button.state = NSInteger(m)==remasterObstacleMemberIndex ? NSControlStateValueOn : NSControlStateValueOff;
+		button.state = std::find(contactMembers.begin(),contactMembers.end(),m)!=contactMembers.end() ? NSControlStateValueOn : NSControlStateValueOff;
 		button.tag = NSInteger(m); button.target = self; button.action = @selector(selectRemasterObstacleMember:);
-		button.toolTip = [NSString stringWithFormat:@"Member (%d,%d), Z=%d (+%d units), %@",member.x,member.y,member.z,member.z*8,member.supportContact?@"support contact":@"not a contact"];
+		button.toolTip = [NSString stringWithFormat:@"Member (%d,%d), Z=%d (+%d units), %@",displayMember.x,displayMember.y,member.z,member.z*8,member.supportContact?@"support contact":@"not a contact"];
 		[remasterObstacleFootprint addSubview:button];
 	}
 	if (remasterObstacleMemberIndex<0 || size_t(remasterObstacleMemberIndex)>=group.members.size()) remasterObstacleMemberIndex=0;
 	[remasterObstacleMembers selectItemAtIndex:remasterObstacleMemberIndex];
 	const auto &member = group.members[remasterObstacleMemberIndex];
-	remasterObstacleZ.integerValue = member.z;
-	remasterObstacleContact.state = member.supportContact ? NSControlStateValueOn : NSControlStateValueOff;
-	remasterObstacleZ.toolTip = @"Z×8 applies only to members without authored heights. Authored members retain their entire local shape and receive only the shared floor base.";
-	remasterObstacleStatus.stringValue = missingHeight ? @"Missing-height members use bottom0/top7 + Z×8 + floor base. Authored members add only floor base. * marks contacts; support is evaluated on the next gameplay frame." :
-		@"Authored heights preserved; all members add the shared floor base only. Z is used if a member has no height data. * marks contacts; support is evaluated on the next gameplay frame.";
+	bool mixedZ=false;
+	const int selectedZ=contactMembers.empty()?member.z:contactProposal.members[contactMembers.front()].z;
+	for (auto i : contactMembers) mixedZ |= contactProposal.members[i].z!=selectedZ;
+	remasterObstacleZ.stringValue = mixedZ ? @"" : [NSString stringWithFormat:@"%d",selectedZ];
+	remasterObstacleZ.placeholderString = mixedZ ? @"Mixed" : @"Z";
+	remasterObstacleApply.title = [NSString stringWithFormat:@"Apply Z (%lu) / Name",contactMembers.size()];
+	bool anyContact=false, anyNonContact=false;
+	for (auto i : contactMembers) if (i<contactProposal.members.size())
+		(contactProposal.members[i].supportContact ? anyContact : anyNonContact)=true;
+	remasterObstacleContact.state = anyContact && anyNonContact ? NSControlStateValueMixed :
+		anyContact ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterObstacleContact.title = contactSelectionValid ?
+		[NSString stringWithFormat:@"Support contact (%lu selected%@)",contactMembers.size(),contactNeedsCompletion?@"; add missing repeats…":@""] : @"Support contact (selection needs review)";
+	if(group.spriteAssembly) {
+		remasterObstacleZ.toolTip = @"Sprite members add Z×8 and one shared contact-floor base to your authored local heights. Leave Z at zero if your height arrays already describe the entire object's relief.";
+		RemasterObstacleGroup completed;
+		const bool canComplete=S9xRemasterObstacleEditorCompleteSpriteFootprint(remasterReplayFrame,group,completed);
+		remasterObstacleShow.title=canComplete?@"Complete Footprint…":@"Show Group Types";
+		auto probe=remasterReplayFrame;RemasterSpriteObstacleDiagnostics diagnostics;
+		S9xRemasterApplySpriteObstacles(probe,remasterEditingProfile,nullptr,nullptr,&diagnostics);
+		const RemasterSpriteObstacleDiagnostics::Assembly *assembly=nullptr;
+		for (const auto &a:diagnostics.assemblies) if (a.group==group.name) {assembly=&a;break;}
+		NSString *support=assembly && assembly->status==RemasterOccurrenceGeometryStatus::Resolved?
+			[NSString stringWithFormat:@"floor base %d / plane %d",assembly->base,assembly->plane]:
+			assembly && assembly->status==RemasterOccurrenceGeometryStatus::Conflict?@"conflicting support":
+			!probe.spriteObstacleSupport?@"no captured floor evidence":@"unproven contacts / producer";
+		remasterObstacleStatus.stringValue=[NSString stringWithFormat:@"%lu saved occurrences%@; %@. %@ Normals remain local; Height requires proven support.",group.members.size(),
+			canComplete?[NSString stringWithFormat:@"; +%lu repeats available",completed.members.size()-group.members.size()]:@"",support,
+			missingHeight?@"Some local height layers missing.":@""];
+	} else {
+		remasterObstacleShow.title=@"Show Group Types";
+		remasterObstacleZ.toolTip = @"Z×8 applies only to members without authored heights. Authored members retain their entire local shape and receive only the shared floor base.";
+		remasterObstacleStatus.stringValue = missingHeight ? @"Missing-height members use bottom0/top7 + Z×8 + floor base. Authored members add only floor base. * marks contacts; support is evaluated on the next gameplay frame." :
+			@"Authored heights preserved; all members add the shared floor base only. Z is used if a member has no height data. * marks contacts; support is evaluated on the next gameplay frame.";
+	}
+	remasterObstacleStatus.stringValue=[NSString stringWithFormat:@"%@ %@",occurrenceLayout ?
+		@"Layout follows selected tile locations." : @"Saved layout (select one occurrence to orient).",remasterObstacleStatus.stringValue];
 }
 
 - (void)refreshRemasterEditingControls
@@ -7735,15 +8098,23 @@ void QuitWithFatalError ( NSString *message)
 	remasterAddContextButton.enabled = contextEditable;
 	remasterPreviousContextButton.enabled = remasterNextContextButton.enabled = contextEditable && contexts != remasterEditingProfile.tileContexts.end() && !contexts->second.empty();
 	const NSInteger layer = remasterLayerSelector ? remasterLayerSelector.indexOfSelectedItem : 0;
+	const bool grouping = layer == RemasterEditorObstacleGrouping;
+	remasterContextSelectionMode.enabled = !grouping;
+	[remasterContextSelectionMode selectItemAtIndex:grouping ? 1 : (remasterSelectLocations ? 1 : 0)];
+	remasterContextSelectionMode.toolTip = grouping ? @"Obstacle Grouping selects exact BG and OBJ occurrences. Other layers' location mode binds background contexts only." : @"Tile Locations selects background context-binding locations, not sprite parts. Use Obstacle Grouping for BG or OBJ footprints.";
+	remasterContextLabel.hidden = grouping;
+	for (NSView *view in @[remasterTileContextInput,remasterAddContextButton,remasterRemoveContextButton,
+		remasterPreviousContextButton,remasterNextContextButton,remasterAssignContextButton]) view.hidden = grouping;
 	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview() &&
+		!grouping &&
 		(remasterTileContextName.empty() || std::all_of(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), [](const auto &tile) { return RemasterSelectedContext(tile) != nullptr; }));
 	remasterHeightDomainSelector.hidden = remasterHeightOccurrenceSelector.hidden = remasterHeightReport.hidden = layer != RemasterEditorHeight;
 	remasterHeightOccurrenceSelector.enabled = !remasterHeightOccurrences.empty();
 	remasterHeightDomainSelector.enabled = !remasterNpcInspectorActive;
 	remasterSemanticsView.hidden = layer != RemasterEditorMetadata;
-	remasterObstacleView.hidden = layer != RemasterEditorMetadata || remasterNpcInspectorActive;
-	remasterInspectorScrollView.hidden = layer == RemasterEditorMetadata;
-	if (layer == RemasterEditorMetadata) [self refreshRemasterObstacleControls];
+	remasterObstacleView.hidden = !grouping || remasterNpcInspectorActive;
+	remasterInspectorScrollView.hidden = layer == RemasterEditorMetadata || grouping;
+	if (grouping) [self refreshRemasterObstacleControls];
 	if (layer == RemasterEditorMetadata)
 	{
 		auto metadata = EffectiveRemasterMetadata(remasterSelectedTile);
@@ -7799,7 +8170,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterValueInput.hidden = remasterValueBrush.hidden;
 	remasterValueDownButton.hidden = remasterValueBrush.hidden;
 	remasterValueUpButton.hidden = remasterValueBrush.hidden;
-	remasterValueLabel.hidden = layer == RemasterEditorArtwork || layer == RemasterEditorMetadata;
+	remasterValueLabel.hidden = layer == RemasterEditorArtwork || layer == RemasterEditorMetadata || grouping;
 	// Emission's color and paint-mode controls need more room before the shared value controls.
 	const bool emissionLayer = layer == RemasterEditorEmission;
 	remasterValueDownButton.frame = NSMakeRect(emissionLayer ? 380 : 342, 377, 30, 28);
@@ -7928,6 +8299,11 @@ void QuitWithFatalError ( NSString *message)
 	remasterResetLayerButton.enabled = editable && remasterEditingProfile.assets.count(remasterSelectedTile);
 	remasterResetTileButton.enabled = editable && remasterEditingProfile.assets.count(remasterSelectedTile);
 	remasterCopyLayerButton.enabled = !remasterVariants.empty() && layer != RemasterEditorArtwork;
+	remasterCopyLayerButton.hidden = remasterPasteLayerButton.hidden = grouping;
+	remasterResetLayerButton.hidden = remasterResetLayerButton.hidden || grouping;
+	remasterResetTileButton.hidden = grouping;
+	remasterCopyTileButton.hidden = remasterPasteTileButton.hidden = remasterApplyTileToVariantsButton.hidden = grouping;
+	remasterFlipLayerHorizontalButton.hidden = remasterFlipLayerVerticalButton.hidden = grouping;
 	remasterPasteLayerButton.enabled = editable && layer != RemasterEditorArtwork && RemasterClipboardAvailable(layer);
 	bool canFlip = false;
 	if (editable)
@@ -7943,7 +8319,11 @@ void QuitWithFatalError ( NSString *message)
 				canFlip |= S9xRemasterFlipMetadataLayer(metadata, static_cast<int>(layer), true);
 		}
 	remasterFlipLayerHorizontalButton.enabled = remasterFlipLayerVerticalButton.enabled = canFlip;
-	for (NSButton *button in remasterShiftLayerButtons) button.enabled = canFlip;
+	for (NSButton *button in remasterShiftLayerButtons)
+	{
+		button.hidden = layer == RemasterEditorMetadata || grouping;
+		button.enabled = canFlip;
+	}
 	remasterCopyTileButton.enabled = !remasterVariants.empty();
 	remasterPasteTileButton.enabled = editable && RemasterClipboardAvailable(-1);
 	remasterApplyTileToVariantsButton.enabled = editable && remasterVariants.size() > 1 &&
@@ -8138,7 +8518,7 @@ void QuitWithFatalError ( NSString *message)
 		// Byte encoding cannot represent exact zero; keep the chosen hemisphere at the rim.
 		if (std::fabs(z) > 0.005f)
 			remasterNormalBackButton.state = z < 0.0f ? NSControlStateValueOn : NSControlStateValueOff;
-		remasterNormalAxesView.toolTip = @"Drag inside the circle: center = Z, rim = XY, between = XYZ tilt. Release to apply. Back (-Z) selects the rear hemisphere. +X right, +Y down.";
+		remasterNormalAxesView.toolTip = @"Drag inside the circle: center = Z, rim = XY, between = XYZ tilt. Cmd-drag up/down adjusts Z tilt while locking the XY direction (up = more Z). Shift-drag locks X; Option-drag locks Y. Cmd takes precedence. Release to apply. Back (-Z) selects the rear hemisphere. +X right, +Y down.";
 	}
 	else
 		remasterNormalAxesView.toolTip = nil;
@@ -8163,7 +8543,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)beginRemasterTileStrokeAtPoint:(NSPoint)point
 {
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
-	if (remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata)
+	if (remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata || layer == RemasterEditorObstacleGrouping)
 		return;
 	remasterStrokeSnapshot = nil;
 	remasterStrokeVisited = 0;
@@ -8202,7 +8582,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (RemasterEffectiveHeightPreview()) return;
-	if (!remasterEditingProfileLoaded || remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata)
+	if (!remasterEditingProfileLoaded || remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata || layer == RemasterEditorObstacleGrouping)
 		return;
 	size_t pixel;
 	if (![self remasterTilePixelAtPoint:point pixel:&pixel])
@@ -8709,33 +9089,15 @@ void QuitWithFatalError ( NSString *message)
 - (void)stepRemasterTileHeight:(NSButton *)sender
 {
 	if (RemasterEffectiveHeightPreview()) return;
-	if (!remasterEditingProfileLoaded || remasterVariants.empty() ||
+	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty() ||
 		(sender.tag != -8 && sender.tag != -1 && sender.tag != 1 && sender.tag != 8))
 		return;
 	std::string before;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
-	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
-	auto existing = remasterEditingProfile.assets.find(remasterSelectedTile);
-	const bool hadHeight = existing != remasterEditingProfile.assets.end() && RemasterEditingGeometry(existing->second).hasHeight;
-	std::array<int16_t, 64> height = hadHeight ? RemasterEditingGeometry(existing->second).height : std::array<int16_t, 64>{};
-	RemasterHeightSampling sampling = hadHeight ? RemasterEditingGeometry(existing->second).heightSampling : RemasterHeightSampling::Nearest;
-	bool changed = false;
-	for (int16_t &sample : height)
-	{
-		const int16_t adjusted = static_cast<int16_t>(std::max(-32768, std::min(32767,
-			static_cast<int>(sample) + static_cast<int>(sender.tag))));
-		changed |= sample != adjusted;
-		sample = adjusted;
-	}
-	if (!changed)
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	if (!S9xRemasterStepSelectedTileHeights(remasterEditingProfile, remasterSelectedTiles,
+		static_cast<int>(sender.tag), remasterGeometryFacing, remasterTileContextName))
 		return;
-	RemasterAssetMetadata &metadata = remasterEditingProfile.assets[remasterSelectedTile];
-	metadata.tileId = remasterSelectedTile;
-	auto &g = RemasterEditingGeometry(metadata);
-	g.height = height;
-	g.hasHeight = true;
-	g.heightSampling = sampling;
-	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 2);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:before.c_str()]];
 	[remasterUndoManager setActionName:[NSString stringWithFormat:@"%@ Tile Height by %ld",
@@ -9217,12 +9579,15 @@ void QuitWithFatalError ( NSString *message)
 	[self savePreviousWorkspace];
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1124)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1160)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
-		remasterProfileSettingsPanel.title = @"Remaster Scene Controls";
+		remasterProfileSettingsPanel.title = @"Profile Controls";
 		remasterProfileSettingsPanel.releasedWhenClosed = NO;
-		remasterProfileSettingsPanel.hidesOnDeactivate = YES;
+		// Keep ordinary window ordering when another app becomes active, without floating above it.
+		remasterProfileSettingsPanel.hidesOnDeactivate = NO;
+		remasterProfileSettingsPanel.floatingPanel = NO;
+		remasterProfileSettingsPanel.level = NSNormalWindowLevel;
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
 		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 930, 300, 24)];
@@ -9272,7 +9637,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMultiplierInput.action = @selector(changeRemasterHeightPreviewMultiplier:);
 		[content addSubview:remasterHeightPreviewMultiplierInput];
 		NSTextField *heightMinTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 749, 110, 24)];
-		heightMinTitle.stringValue = @"Height range min";
+		heightMinTitle.stringValue = @"Min height";
 		heightMinTitle.editable = NO;
 		heightMinTitle.bezeled = NO;
 		heightMinTitle.drawsBackground = NO;
@@ -9284,7 +9649,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMinInput.action = @selector(changeRemasterHeightPreviewRange:);
 		[content addSubview:remasterHeightPreviewMinInput];
 		NSTextField *heightMaxTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(220, 749, 110, 24)];
-		heightMaxTitle.stringValue = @"Height range max";
+		heightMaxTitle.stringValue = @"Max height";
 		heightMaxTitle.editable = NO;
 		heightMaxTitle.bezeled = NO;
 		heightMaxTitle.drawsBackground = NO;
@@ -9491,16 +9856,33 @@ void QuitWithFatalError ( NSString *message)
 		remasterSettingsSaveButton.action = @selector(saveRemasterProfile:);
 		[content addSubview:remasterSettingsSaveButton];
 		// Reserve enough height for all metrics lines, including separate
-		// directional timing, without drawing over the metrics checkbox.
+		// directional timing, with a 12-point gap below the metrics checkbox.
 		for (NSView *view in content.subviews)
 		{
 			NSRect rect = view.frame;
-			if (view == remasterMetricsText) rect.size.height += 80;
+			if (view == remasterMetricsText) rect.size.height += 56;
 			else if (view != remasterSettingsSaveButton) rect.origin.y += 80;
 			view.frame = rect;
 		}
+		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1110, 390, 24)];
+		remasterLoadedProfileLabel.editable = NO;
+		remasterLoadedProfileLabel.selectable = YES;
+		remasterLoadedProfileLabel.bezeled = NO;
+		remasterLoadedProfileLabel.drawsBackground = NO;
+		remasterLoadedProfileLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+		[content addSubview:remasterLoadedProfileLabel];
+		// This fixed-layout panel may have grown since its position was saved.
+		// Restore the position, but not an obsolete size that clips the heading.
+		const NSSize layoutSize = remasterProfileSettingsPanel.frame.size;
 		S9xInitializeWindowPlacement(remasterProfileSettingsPanel, @"RemasterSceneControls");
+		NSRect restoredFrame = remasterProfileSettingsPanel.frame;
+		restoredFrame.origin.y += restoredFrame.size.height - layoutSize.height;
+		restoredFrame.size = layoutSize;
+		[remasterProfileSettingsPanel setFrame:restoredFrame display:NO];
 	}
+	remasterLoadedProfileLabel.stringValue = [@"Profile: " stringByAppendingString:
+		remasterEditingProfileURL.lastPathComponent ?: @"(unknown)"];
+	remasterLoadedProfileLabel.toolTip = remasterEditingProfileURL.path;
 	remasterBounceSlider.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.lightingCoordinateScale];
@@ -9541,7 +9923,10 @@ void QuitWithFatalError ( NSString *message)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
 		remasterAreaPanel.title = @"Area Settings";
 		remasterAreaPanel.releasedWhenClosed = NO;
-		remasterAreaPanel.hidesOnDeactivate = YES;
+		// Match Profile Controls: stay visible, but let other apps overlap normally.
+		remasterAreaPanel.hidesOnDeactivate = NO;
+		remasterAreaPanel.floatingPanel = NO;
+		remasterAreaPanel.level = NSNormalWindowLevel;
 		NSView *content = remasterAreaPanel.contentView;
 		auto label = [&](NSString *text, NSRect rect) {
 			NSTextField *field = [[NSTextField alloc] initWithFrame:rect];
@@ -9558,7 +9943,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterAreaAxes.imageFrameStyle = NSImageFrameNone;
 		remasterAreaAxes.showsNormalAxes = YES; remasterAreaAxes.areaDirection = YES;
 		remasterAreaAxes.editor = self;
-		remasterAreaAxes.toolTip = @"Drag: center = Z, rim = XY, between = XYZ tilt. Release to apply. Back (-Z) selects rays into the screen.";
+		remasterAreaAxes.toolTip = @"Drag: center = Z, rim = XY, between = XYZ tilt. Cmd-drag up/down adjusts Z tilt while locking the XY direction (up = more Z). Shift-drag locks X; Option-drag locks Y. Cmd takes precedence. Release to apply. Back (-Z) selects rays into the screen.";
 		[content addSubview:remasterAreaAxes];
 		remasterAreaBack = [[NSButton alloc] initWithFrame:NSMakeRect(125, 224, 180, 24)];
 		[remasterAreaBack setButtonType:NSSwitchButton]; remasterAreaBack.title = @"Back (-Z)";
@@ -10245,8 +10630,8 @@ void QuitWithFatalError ( NSString *message)
 	}
 	[self showRemasterProfileSettings];
 	remasterProfileSettingsPanel.title = running && reviewMapCount ?
-		[NSString stringWithFormat:@"Remaster Scene Controls — Geometry Review (%lu rooms)",
-			static_cast<unsigned long>(reviewMapCount)] : @"Remaster Scene Controls";
+		[NSString stringWithFormat:@"Profile Controls — Geometry Review (%lu rooms)",
+			static_cast<unsigned long>(reviewMapCount)] : @"Profile Controls";
 	if (remasterNpcPanel.visible) [self changeRemasterNpcPose:nil];
 	return nil;
 }

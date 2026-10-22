@@ -326,15 +326,17 @@ int main(int argc, char **argv)
 					const auto &applied=frame.tileInstances[pixel.instanceId-1];
 					const int effective=applied.heightOffset+(applied.hasPlacementHeight?applied.placementHeight[pixel.tilePixel]:t.height[pixel.tilePixel]);
 					int base=255;for(const auto &region:map.doorframeAttachments)if(region.cell==a.cell && region.visible) {
-						if(base!=255 && base!=region.base){base=255;break;}base=region.base;
+						const int value=(region.mask&(UINT64_C(1)<<pixel.tilePixel))?region.base:region.openingBase;
+						if(value==255)continue;
+						if(base!=255 && base!=value){base=255;break;}base=value;
 					}
-					const int expected=t.height[pixel.tilePixel]+((base!=255 && (a.mask&(UINT64_C(1)<<pixel.tilePixel)))?base:0);
+					const int expected=t.height[pixel.tilePixel]+(base!=255?base:0);
 					if(effective!=expected || frame.assetMetadata[0].height!=t.height)throw std::runtime_error("doorframe runtime application disagrees with complete-room reconstruction");
 				}
 				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<a.plane<<",\"x\":"<<a.cell%64<<",\"y\":"<<a.cell/64
-					<<",\"frame_base\":"<<a.base<<",\"visible\":"<<(a.visible?"true":"false")<<",\"split_dispatch\":"<<(t.splitDoorPart?"true":"false")<<",\"template_offset\":"<<a.source<<",\"mask\":\""<<std::hex<<a.mask<<std::dec
+					<<",\"frame_base\":"<<a.base<<",\"opening_base\":"<<a.openingBase<<",\"visible\":"<<(a.visible?"true":"false")<<",\"split_dispatch\":"<<(t.splitDoorPart?"true":"false")<<",\"template_offset\":"<<a.source<<",\"mask\":\""<<std::hex<<a.mask<<std::dec
 					<<"\",\"local_source\":\"placement_rom_doorframe_seam\",\"effective_height\":[";
-				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(t.height[k])+((a.mask&(UINT64_C(1)<<k))?a.base:0);}std::cout<<"]}";
+				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(t.height[k])+((a.mask&(UINT64_C(1)<<k))?a.base:a.openingBase==255?0:a.openingBase);}std::cout<<"]}";
 			}
 		}
 		std::cout << "],\"doorframe_ownership\":[";first=true;

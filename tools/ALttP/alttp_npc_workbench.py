@@ -169,8 +169,12 @@ def generate(engine: Path, atlas: Path, output: Path):
                     for pose in drawn:
                         pose['action'] = sequence['action']
                         pose['evidence'] = sequence.get('evidence', 'Legacy bounded adapter; bounds need source review.')
+                        if model['draw'] == 'link' and state in (2, 4):
+                            pose['duration_frames'] = 1
                         if model['draw'] == 'link':
                             expected_action = [0, 39, 2, 3, 15, 33, 17, 5, 20, 29, 30, 36][state]
+                            if state == 4 and pose['draw_state']['handler'] == 0:
+                                expected_action = 0  # Body rests while the sparkle tail finishes.
                             if pose['draw_state']['oam_action'] != expected_action:
                                 raise ValueError(f"Link draw-state branch mismatch: {sequence['action']}")
                     variant_poses.extend(drawn)
@@ -189,7 +193,7 @@ def generate(engine: Path, atlas: Path, output: Path):
             for actor in generated_actors:
                 actor['coverage'] = dict(status='partial', exhaustive=False,
                     gaps=(["Item-use, carrying/lifting, pits, stairs, swimming strokes, medallions, sleep/death and cutscenes remain unmodeled.",
-                           "Equipment combinations and gloves are sampled, not exhaustive; independent ancilla charge sparkles/effects are excluded.",
+                           "Equipment combinations and gloves are sampled, not exhaustive. Charge and spin-release effects are included; other independent effects remain unmodeled.",
                            "Draw-state vectors need gameplay assembly/palette parity verification."] if model['draw'] == 'link' else
                           ["Legacy bounded frames: attack/recoil/death branches, independent facing/head states and dynamic contexts require source review."]))
             if model['draw'] != 'link':
@@ -224,6 +228,7 @@ def generate(engine: Path, atlas: Path, output: Path):
                  "reference_draw_source_sha256": hashlib.sha256((engine / "src/sprite_main.c").read_bytes()).hexdigest(),
                   "reference_graphics_source_sha256": hashlib.sha256((engine / "src/load_gfx.c").read_bytes()).hexdigest(),
                   "reference_player_draw_source_sha256": hashlib.sha256((engine / "src/player_oam.c").read_bytes()).hexdigest(),
+                  "reference_effect_source_sha256": hashlib.sha256((engine / "src/ancilla.c").read_bytes()).hexdigest(),
                   "pose_adapter_source_sha256": hashlib.sha256(Path(__file__).with_name("alttp_npc_pose_adapter.c").read_bytes()).hexdigest(),
                  "catalog_source_sha256": hashlib.sha256(Path(__file__).with_name("alttp_npc_catalog.py").read_bytes()).hexdigest(),
                 "coverage": {"modeled_types": sorted({a["type_id"] for a in actors}),

@@ -26,6 +26,19 @@ steps are retained even when two steps repeat artwork. For example, Blue Guard's
 26 source contexts × 16 poses become **two variants and 32 browsable poses**,
 with 19 source contexts in one variant and seven in the other.
 
+**Ignore duplicate frames** (off by default, remembered across sessions) shows
+only the first pose in each consecutive run of matching artwork within an
+action/facing. Original frame numbers are retained; a pose that returns after
+different artwork is retained again. Comparison includes body/effects, tile
+identities, palettes, positions, flips and overlap order, not timing or OAM slot
+allocation. Turning it on while viewing a repeat selects the start of that run.
+This filters only the Pose menu: **Play Animation still plays every original
+frame at its original timing**, with the menu displaying the run's first frame
+number while duplicates play. Bulk authoring and the library remain unchanged.
+Native regression checks cover run boundaries, frame-number preservation,
+selection mapping and the unfiltered playback timeline across the 5,468-pose
+corpus. Sample master-sword Link south charge reduces from 64 to 29 menu entries.
+
 Playback cycles frames of the current facing. Click an opaque tile to stop
 playback and inspect it. Both preview panes use one fixed canvas covering every
 tile placement in all variants, facings and animation steps of the selected NPC,
@@ -251,6 +264,42 @@ state is reconstructed.
 
 ## Coverage boundary
 
+### Synchronized Link sword effects (2026-10-21)
+
+Link's **sword charge / charged movement** and **spin attack / charged release**
+actions now include their independent ancilla effects in the assembled pose.
+Click the visible sparkles just like body/sword tiles to author them in the native
+Pixel Inspector, including emission. No gameplay capture is required. Metadata
+remains tile-identity-based: sparkle artwork is shared with other game effects,
+so editing it can affect those uses too. The source profile is never modified by
+library generation.
+
+Charging contains 64 chronological ticks, with sampled six-step body movement,
+random-position charge sparkles and the full-charge flash. Release contains 41
+ticks, covering all 12 timed body phases, the initial flash, rotating trail and
+ending. A 64-tick charge warmup preserves residual charging effects at release.
+Both sequences run the reference's actual ancilla dispatcher/timers and draw
+routines; body spin timing follows the checked player tables without running
+collision/room/AI logic. Every pose restores RAM/VRAM; charge RNG uses a fixed
+seed. This is one reproducible charge trajectory, not all random positions or
+every movement/charge timing combination. Other independent Link effects (e.g.
+ordinary sword-swing sparkles, wall-hit sparks, item-use effects) remain unmodeled.
+
+Native and HTML playback honor `duration_frames` (one 60 Hz tick here), retaining
+the legacy 180 ms delay for older/un-timed poses. Body repeats are intentional:
+effects continue moving between body transitions. The manifest pins `ancilla.c`
+alongside the player sources and marks effect parts with `effect: true` for audit.
+Coverage remains partial/modelled-unverified until compared with state-pinned
+gameplay. The regenerated library contains 242 contexts and 5,468 poses.
+
+Validation: 14 Python tests including ROM-backed timeline/equipment/RNG/effect
+artwork checks; native decoder, counterpart and selection corpus over all 5,468
+poses / 1,918,414 opaque picks; portable pose assembly; profile export/preservation
+check (2,403 existing assets preserved in a separate candidate); Debug and Release
+app builds; `git diff --check`. Reviewed the four-facing release contact sheet at
+`build/remaster-geometry/npc-workbench/link-spin-effects.png`. Interactive native
+playback, clicking/painting sparkles and state-pinned live parity remain pending.
+
 ### Source inventory and action expansion (2026-10-19)
 
 Generation now writes `coverage.json` and embeds the same inventory in
@@ -270,7 +319,8 @@ movement (4), swimming idle (2), recoil, electrocution, one/two-handed item hold
 and sword held overhead. Sword/shield and item DMA are applied independently of
 body DMA; body shadows are excluded. Three tunics and all sword/shield levels
 are sampled, **not every equipment combination or glove variant**. Independent
-charge sparkles are ancilla and are not part of the body draw adapter.
+charge/spin sparkles were originally excluded; the synchronized extension above
+adds those effects and supersedes the historical action counts here.
 
 `alttp_npc_coverage.py` pins the reference source digests, checks the movement
 bound and compares the adapter's chronological spin table with `player.c`.

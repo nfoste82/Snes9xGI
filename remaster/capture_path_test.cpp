@@ -21,6 +21,11 @@ int main()
 	std::ifstream input(base, std::ios::binary);
 	std::vector<uint8_t> preserved((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 	assert(preserved == first);
+	const auto orphan=std::string(directory)+"/orphan.s9xrmf";
+	{std::ofstream evidence(orphan+".sprite-input.bin");evidence<<"do not replace";}
+	assert(S9xRemasterWriteUniqueCapture(first,orphan,written));
+	assert(written==std::string(directory)+"/orphan_001.s9xrmf");
+	std::remove(written.c_str());std::remove((orphan+".sprite-input.bin").c_str());
 	for (const char *name : {"frame_room061.s9xrmf", "frame_room061_001.s9xrmf", "frame_room061_002.s9xrmf"})
 		std::remove((std::string(directory) + "/" + name).c_str());
 	rmdir(directory);

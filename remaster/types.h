@@ -21,19 +21,19 @@ enum class RemasterDebugMode : uint8_t
 
 enum class RemasterTileRole : uint8_t
 {
-	Unknown, Floor, Wall, WallCorner, Obstacle, StairTop, StairBottom, Other, Door, Count
+	Unknown, Floor, Wall, WallCorner, Obstacle, StairTop, StairBottom, Other, Door, Particle, Count
 };
 
 inline const char *S9xRemasterTileRoleName (RemasterTileRole role)
 {
-	static const char *names[] = {"unknown", "floor", "wall", "wall_corner", "obstacle", "stair_top", "stair_bottom", "other", "door"};
+	static const char *names[] = {"unknown", "floor", "wall", "wall_corner", "obstacle", "stair_top", "stair_bottom", "other", "door", "particle"};
 	return static_cast<unsigned>(role) < static_cast<unsigned>(RemasterTileRole::Count) ? names[static_cast<unsigned>(role)] : "unknown";
 }
 
 inline uint32_t S9xRemasterTileRoleColor (RemasterTileRole role)
 {
 	// RGB colors; unknown deliberately remains bright red.
-	static const uint32_t colors[] = {0xff3030, 0x40d878, 0x408cff, 0xb060ff, 0xffa030, 0x30dddd, 0xff70bd, 0xaaaaaa, 0xe8ce60};
+	static const uint32_t colors[] = {0xff3030, 0x40d878, 0x408cff, 0xb060ff, 0xffa030, 0x30dddd, 0xff70bd, 0xaaaaaa, 0xe8ce60, 0xf0f0ff};
 	return colors[static_cast<unsigned>(role) < static_cast<unsigned>(RemasterTileRole::Count) ? static_cast<unsigned>(role) : 0];
 }
 

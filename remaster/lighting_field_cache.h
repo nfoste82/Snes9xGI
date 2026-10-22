@@ -119,14 +119,19 @@ struct RemasterLightingFieldCache
 			const auto &main = pixels[i];
 			const bool sub = !useScene && !main.instanceId && static_cast<uint8_t>(main.owner >> 24) == static_cast<uint8_t>(RemasterSourceType::Backdrop);
 			const auto &pixel = sub ? frame.subPixels[i] : main;
-			const bool valid = !hud && pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64;
+			// A HUD overlay is not world geometry. A separately rasterized world
+			// pixel beneath it still casts shadows, but never receives/presents GI.
+			const bool worldBehindHud = hud && useScene && pixel.owner != frame.mainPixels[i].owner &&
+				!(static_cast<RemasterSourceType>(pixel.owner >> 24) == RemasterSourceType::Background &&
+				  ((pixel.owner >> 16) & 255u) == 2);
+			const bool valid = (!hud || worldBehindHud) && pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64;
 			const bool backdropGround = !hud && S9xRemasterFrameBackdropGroundAt(frame, i, useScene);
-			const uint64_t key = valid ? (uint64_t(pixel.instanceId) << 8) | pixel.tilePixel :
+			const uint64_t key = valid ? (uint64_t(hud) << 63) | (uint64_t(pixel.instanceId) << 8) | pixel.tilePixel :
 				hud ? UINT64_MAX : backdropGround ? UINT64_MAX - 1 : 0;
 			const auto *m = valid ? instanceMetadata[pixel.instanceId-1] : nullptr;
 			// Sources animate independently of cached surface fields.
 			std::fill_n(emission.begin()+i*4, 4, 0);
-			if (m && m->hasEmission) std::copy_n(m->emissionRgba.begin()+pixel.tilePixel*4, 4, emission.begin()+i*4);
+			if (!hud && m && m->hasEmission) std::copy_n(m->emissionRgba.begin()+pixel.tilePixel*4, 4, emission.begin()+i*4);
 			depths[i] = m ? m->emissionDepth : 0;
 			omnidirectional[i] = m && m->emissionOmnidirectional ? 1.0f : 0.0f;
 			if (!full && key == keys_[i] && (!valid || !dirty[pixel.instanceId-1])) continue;
@@ -170,7 +175,7 @@ struct RemasterLightingFieldCache
 			// Explicit unresolved placements and UI remain absent. A placement base
 			// alone is not relief: use a flat sheet there rather than a prop shell.
 			const bool fallbackGround = !unresolved && instance.source == RemasterSourceType::Background &&
-				participation[i*2] != 0 && !(m && m->hasHeight);
+				(participation[i*2] != 0 || worldBehindHud) && !(m && m->hasHeight);
 			if (fallbackGround)
 			{
 				samples[i].fallbackGround = true;
@@ -182,7 +187,12 @@ struct RemasterLightingFieldCache
 			occlusion[i*2] = unresolved ? 0 : m && m->hasOcclusion ? m->occlusion[pixel.tilePixel] : 255;
 			occlusion[i*2+1] = unresolved ? 0 : 255;
 			opposite[i] = m && m->directLightingOppositeFacing ? 255 : 0;
-			if (!unresolved && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
+			// A grounded OBJ assembly may be authored progressively. Its support
+			// datum is not a local flat surface for members without height arrays.
+			const bool missingSpriteRelief = instance.source == RemasterSourceType::Object &&
+				instance.geometryStatus == RemasterOccurrenceGeometryStatus::Resolved &&
+				instance.placementTileRole == RemasterTileRole::Obstacle && !(m && m->hasHeight);
+			if (!unresolved && !missingSpriteRelief && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
 			{
 				const int local = m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
 				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
@@ -200,7 +210,7 @@ struct RemasterLightingFieldCache
 				surface[i*4+2] = length > 0.0001f ? ny/length : 0;
 				surface[i*4+3] = length > 0.0001f ? nz/length : 1;
 			}
-			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && participation[i*2] != 0;
+			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && (participation[i*2] != 0 || worldBehindHud);
 			samples[i].coverage = occlusion[i*2]/255.0f;
 		}
 		instances_ = frame.tileInstances; normalMasks_ = std::move(normalMasks);

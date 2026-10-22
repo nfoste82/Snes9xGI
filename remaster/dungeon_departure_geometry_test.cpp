@@ -27,9 +27,17 @@ int main(){try {
  need(s.runtimeDungeonHeightEpoch==epoch,"partial source was re-solved");
  frame(true);need(output.tileInstances[output.mainPixels[0].instanceId-1].heightOffset==0,"changed producer reused source");
  frame(2);need(output.tileInstances[output.mainPixels[0].instanceId-1].heightOffset==0 && !output.tileInstances[output.mainPixels[0].instanceId-1].hasPlacementHeight,"same hash different placement word reused source");
- c.roomIndex=0x60;c.previousRoomIndex=0x61;c.hasDestinationOrigin=true;c.destinationOriginX=0;c.destinationOriginY=3072;c.scrollDirection=3;c.backgroundScrollX=592;c.constructionPhase=3;
- frame();verify();need(s.previousRuntimeDungeonHeightMap.offsets[cell]==40,"destination erased frozen source");
- c.constructionPhase=8;c.attributeConstructionState=5;frame();verify();need(s.runtimeDungeonHeightMap.roomIndex==0x60,"destination solve absent");
+  c.roomIndex=0x60;c.previousRoomIndex=c.roomIndex;c.hasDestinationOrigin=true;c.destinationOriginX=0;c.destinationOriginY=3072;c.scrollDirection=3;c.backgroundScrollX=592;c.constructionPhase=3;
+  frame();verify();need(s.previousRuntimeDungeonHeightMap.offsets[cell]==40,"destination erased frozen source");
+	// USA LoadNextRoom replaces A2 with CURRENT while source is still visible.
+	c.previousRoomIndex=c.roomIndex;frame();verify();
+	need(s.outgoingGeometry.valid,"loader scratch update discarded outgoing geometry");
+	// Read-only completed attributes permit the incoming solve at phase2,
+	// independently of the game's much later incremental collision completion.
+	c.constructionPhase=2;c.hasCompletedTransitionAttributes=true;frame();verify();
+	need(s.runtimeDungeonHeightMap.roomIndex==0x60,"destination not ready before scroll");
+	c.hasCompletedTransitionAttributes=false;
+  c.constructionPhase=8;c.attributeConstructionState=5;frame();verify();need(s.runtimeDungeonHeightMap.roomIndex==0x60,"destination solve absent");
  // Scroll finishes; viewport is entirely destination. Retire once, no revival
  // while lingering in handler2. Same asset identity must use destination base.
  c.backgroundScrollX=80;c.constructionPhase=14;frame();need(!s.outgoingGeometry.valid && s.outgoingGeometry.retired,"offscreen source retained");

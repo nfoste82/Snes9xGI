@@ -12,6 +12,12 @@ profile save retain signed samples. The numeric field permits an intermediate
 minus sign while typing. Local grayscale previews expand their range for
 negative/wide layers; NPC height display ranges also accept signed values.
 
+**Tile −1 / −8 / +1 / +8** adjusts all 64 samples on every selected tile,
+using each tile's own height layer rather than copying the focused tile. Repeated
+identities are adjusted once. The active flip-specific layer or named context is
+respected; absent named contexts never fall through to shared geometry. One Undo
+restores the entire selection. Fully saturated selections create no undo entry.
+
 ## Units and formats
 
 Physical height remains `(placement base + local sample) / 255 * coordinate_scale`.

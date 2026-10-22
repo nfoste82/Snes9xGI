@@ -31,6 +31,13 @@ inline bool S9xRemasterWriteUniqueCapture (const std::vector<uint8_t> &bytes,
 		char number[32] = {};
 		if (index) std::snprintf(number, sizeof(number), "_%03u", index);
 		const std::string candidate = stem + number + suffix;
+		bool orphanEvidence=false;
+		for (const char *sidecar : {".profile.toml",".dungeon.json",".dungeon-input.bin",
+			".dungeon-templates.bin",".terrain-input.bin",".sprite-input.bin"})
+			if (FILE *existing=std::fopen((candidate+sidecar).c_str(),"rb")) {
+				std::fclose(existing);orphanEvidence=true;break;
+			}
+		if (orphanEvidence) { if(index!=~0u)continue; return false; }
 		FILE *output = std::fopen(candidate.c_str(), "wbx");
 		if (!output)
 		{

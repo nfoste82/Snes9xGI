@@ -30,8 +30,8 @@ enum class RemasterLightingView : uint32_t
 	Occlusion,
 	Visibility,
 	DirectContribution,
-	Difference,
-	Height,
+	// Value 4 was Difference. Keep the remaining Metal shader IDs stable.
+	Height = 5,
 	IndirectContribution,
 	Normal,
 	DirectAndIndirectContribution,
@@ -39,6 +39,12 @@ enum class RemasterLightingView : uint32_t
 	Mesh,
 	Count
 };
+
+inline RemasterLightingView NextRemasterLightingView(RemasterLightingView view)
+{
+	const uint32_t next = (static_cast<uint32_t>(view) + 1) % static_cast<uint32_t>(RemasterLightingView::Count);
+	return next == 4 ? RemasterLightingView::Height : static_cast<RemasterLightingView>(next);
+}
 
 void InitGraphics (void);
 void DeinitGraphics (void);
@@ -48,6 +54,8 @@ bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
 	RemasterLightingView = RemasterLightingView::Composite, bool asynchronous = false);
 void SetLiveRemasterPresentation (bool, RemasterLightingView);
 void SetRemasterHeightPreviewRange (int32_t minimum, int32_t maximum);
+// Diagnostic readback of the last synchronous lighting draw, before selection tint.
+bool SaveRemasterDebugPixels (const std::string &path);
 // Session-only light. XY is normalized to the scene; radius and height use source pixels.
 struct RemasterDebugLight
 {

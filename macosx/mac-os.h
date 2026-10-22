@@ -28,6 +28,10 @@
 #import <os/lock.h>
 
 #import "mac-controls.h"
+#ifdef __cplusplus
+#include <memory>
+struct RemasterFrame;
+#endif
 
 enum
 {
@@ -263,11 +267,15 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)setMacFrameSkip:(int)_macFrameSkip;
 - (void)setShowFPS:(BOOL)showFPS;
 - (NSString *)cycleRemasterDebugMode;
+- (NSString *)showRemasterTileTypes;
 - (BOOL)toggleRemasterLighting;
 - (NSString *)cycleRemasterLightingView;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;
+#ifdef __cplusplus
+- (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket;
+#endif
 - (void)chooseRemasterAreaReview;
 - (NSString *)openRemasterAreaReview:(NSURL *)fileURL;
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL;

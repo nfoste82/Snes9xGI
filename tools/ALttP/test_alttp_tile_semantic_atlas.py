@@ -50,6 +50,18 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    def test_particle_semantic_save_and_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'annotations.json'
+            store = AnnotationStore(path, ROM_SHA256)
+            annotation = dict(role='particle', note='Floating spark')
+            store.save_group(['v1:4bpp:0123456789abcdef'], annotation, store.refresh())
+            reloaded = AnnotationStore(path, ROM_SHA256)
+            self.assertEqual(reloaded.tiles['v1:4bpp:0123456789abcdef'],
+                             validate_annotation(annotation))
+            with self.assertRaises(AtlasError):
+                validate_annotation(dict(role='particle', normals=['north']))
+
     def test_door_semantic_save_preserves_independent_masks_unless_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

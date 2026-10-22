@@ -44,15 +44,17 @@ def link_sequences(engine):
     adapter = Path(__file__).with_name('alttp_npc_pose_adapter.c').read_text()
     if integer_table(adapter, 'spin') != spin:
         raise ValueError('Link adapter spin sequence does not match reference player.c')
+    if integer_table(adapter, 'spin_delays') != integer_table(player, 'kLinkSpinDelays'):
+        raise ValueError('Link adapter spin timing does not match reference player.c')
     offsets = integer_table(oam, 'kPlayerOamOtherOffs')
     if len(offsets) != 160:
         raise ValueError('Re-audit Link OAM action table')
     definitions = [
         ('walking', 9, 0, 'Link_HandleMovingAnimation_StartWithDash / Link_HandleMovingAnimation_Dash'),
         ('sword swing', 9, 1, 'LinkItem_Sword: button_b_frames 0..8'),
-        ('sword charge / charged movement', 6, 2, 'Player_Sword_SpinAttackJerks_HoldDown: button_b_frames=9; six-step movement'),
+        ('sword charge / charged movement', 64, 2, 'Player_Sword_SpinAttackJerks_HoldDown + Ancilla_ExecuteAll: 64 chronological ticks, sampled six-step movement'),
         ('sword wall tap', 3, 3, 'Player_Sword_SpinAttackJerks_HoldDown: button_b_frames 10..12'),
-        ('spin attack / charged release', 12, 4, 'LinkState_SpinAttack / kLinkSpinGraphicsByDir: 12 chronological steps per facing'),
+        ('spin attack / charged release', 41, 4, 'LinkState_SpinAttack / kLinkSpinGraphicsByDir / kLinkSpinDelays + Ancilla_ExecuteAll: 41 ticks including effect tail'),
         ('bunny movement', 4, 5, 'LinkOam_Main: link_is_bunny_mirror; animation & 3'),
         ('swimming idle', 2, 6, 'LinkOam_Main: Swimming; animation & 1'),
         ('recoil', 1, 7, 'LinkOam_Main: link_auxiliary_state=1; action 5, step 0'),
@@ -118,7 +120,7 @@ def build_coverage(engine, catalog, actors):
                 boundary='Source inventory and bounded adapters; no exhaustive draw-branch or gameplay reachability claim.',
                 sprite_dispatch_count=len(types), sprite_types=types, families=families,
                 source_sha256={name: hashlib.sha256(files[name].encode()).hexdigest()
-                               for name in ('sprite_main.c', 'player.c', 'player_oam.c', 'nmi.c')},
+                               for name in ('sprite_main.c', 'player.c', 'player_oam.c', 'nmi.c', 'ancilla.c') if name in files},
                 other_actor_systems=['player', 'followers', 'ancilla/projectiles', 'garnish/effects',
                                      'overlords/dynamic spawners', 'background-composited actors', 'cutscenes'])
 
