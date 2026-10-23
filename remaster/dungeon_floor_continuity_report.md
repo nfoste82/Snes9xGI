@@ -94,11 +94,11 @@ this repair is not full-room/game-wide approval.
 ## Reproduction
 
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_floor_continuity_probe.cpp -o build/room051035-floor-probe
+c++ -std=c++17 -O2 remaster/tests/dungeon_floor_continuity_probe.cpp -o build/room051035-floor-probe
 build/room051035-floor-probe "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_035.s9xrmf" build/room051035-floor-after
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o build/room051035-solver
-python3 -B tools/ALttP/alttp_replay_live_height_evidence.py "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_035.s9xrmf" --solver build/room051035-solver --output build/room051035-validation-after --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-python3 -B remaster/sprite_obstacle_gate.py --capture "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_035.s9xrmf" --output build/room051035-validation-after --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o build/room051035-solver
+python3 -B remaster/tools/ALttP/alttp_replay_live_height_evidence.py "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_035.s9xrmf" --solver build/room051035-solver --output build/room051035-validation-after --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+python3 -B remaster/tests/sprite_obstacle_gate.py --capture "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_035.s9xrmf" --output build/room051035-validation-after --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
 ```
 
 Create output directories first. No authored file/capture was overwritten.

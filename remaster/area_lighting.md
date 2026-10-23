@@ -163,7 +163,7 @@ needs gameplay review.
 
 ## Verification (October 13, 2026)
 
-- `remaster/area_lighting_test.cpp`: defaults, area isolation, strict schema,
+- `remaster/tests/area_lighting_test.cpp`: defaults, area isolation, strict schema,
   TOML/capture round trips, legacy capture fallback, and frame-boundary updates.
 - Production Metal suite: **1377/1377** checks passed on Apple M3 Max, including
   emitter-free lighting, RGB/brightness, reverse direction, HUD exclusion,
@@ -194,7 +194,7 @@ Release benchmarks on this M3 Max did not reproduce that directional delta:
   hits. None demonstrated a reliable speedup; all were removed. No quality/sample
   reduction is enabled. Existing emitter transport remains the bottleneck.
 
-`tools/run_remaster_benchmark.py --directional-light off` now supplies a
+`remaster/tools/run_remaster_benchmark.py --directional-light off` now supplies a
 benchmark-only pass-disable override while retaining the same input profile;
 `directional_disabled_override` is pinned in reports. The default `profile`
 clears inherited overrides. Run comparisons sequentially, never concurrently.

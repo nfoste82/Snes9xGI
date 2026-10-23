@@ -27,7 +27,7 @@ invent a decoded tile at a transparent pixel.
 
 ## Validation
 
-Compile `remaster/backdrop_ground_test.cpp` with C++17, both `-O0 -g` and
+Compile `remaster/tests/backdrop_ground_test.cpp` with C++17, both `-O0 -g` and
 `-O2 -DNDEBUG -Wall -Wextra -pedantic`; optional arguments accept captures.
 Checks stay active in Release. Synthetic checks cover cache reuse and area/ROM
 changes, both worlds, unsupported ownership, subscreen precedence, independent
@@ -37,7 +37,7 @@ All four church captures pass: 2,009 backdrop pixels gain provisional ground;
 40,518 visible authored height pixels in the original and 44,098 in each later
 capture retain exactly their effective signed values.
 
-`remaster/lighting_field_cache_test.cpp`, built `-O2` with assertions enabled,
+`remaster/tests/lighting_field_cache_test.cpp`, built `-O2` with assertions enabled,
 passes mutation/full-field and mesh equivalence on the original capture. Its
 independent preparation oracle includes the backdrop rule. `git diff --check`
 passes. Inspector height separation checks and macOS arm64 Debug/Release builds

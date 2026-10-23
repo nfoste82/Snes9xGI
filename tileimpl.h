@@ -10,7 +10,7 @@
 #include "snes9x.h"
 #include "ppu.h"
 #include "tile.h"
-#include "remaster/remaster.h"
+#include "remaster/runtime/remaster.h"
 
 extern struct SLineMatrixData	LineMatrixData[240];
 

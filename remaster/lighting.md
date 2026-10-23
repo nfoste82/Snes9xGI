@@ -283,8 +283,8 @@ synchronously; it is intended for paused inspection, not performance measurement
 `surface_mesh_capture_probe.cpp` exports the same view and a per-pixel mesh CSV:
 
 ```sh
-clang++ -std=c++17 -O2 remaster/surface_mesh_capture_probe.cpp -o build/remaster-tests/surface-mesh-capture-probe
-build/remaster-tests/surface-mesh-capture-probe capture.s9xrmf Profiles/ALttP/alttp-profile.toml build/remaster-tests/scene
+clang++ -std=c++17 -O2 remaster/tests/surface_mesh_capture_probe.cpp -o build/remaster-tests/surface-mesh-capture-probe
+build/remaster-tests/surface-mesh-capture-probe capture.s9xrmf remaster/profiles/ALttP/alttp-profile.toml build/remaster-tests/scene
 ```
 
 Courtyard capture `frame_overworld_x0868_y0715.s9xrmf` (schema35, scale200)
@@ -347,7 +347,7 @@ oracle passes on that capture;39/39 mesh checks and occurrence-geometry tests
 pass. Debug and Release apps build. Offline fallback mesh export was visually
 inspected; live lighting appearance has not been interactively validated.
 
-Visibility now intersects triangles. `remaster/surface_mesh.h` constructs a
+Visibility now intersects triangles. `remaster/runtime/surface_mesh.h` constructs a
 compact 48-byte patch per screen pixel; Metal expands its corner heights into
 four triangles meeting at the authored pixel center. Shading positions remain
 on the mesh and silhouettes retain full pixel footprints. The pixel grid and
@@ -390,7 +390,7 @@ toward the exterior geometric normal, independently from artwork shading normals
 Side closure uses the surface's opacity and participates in acceleration envelopes.
 
 Solidity is classified by material and placement, never by authored shading
-normals. `remaster/surface_mesh_material.h` shares this classification between
+normals. `remaster/runtime/surface_mesh_material.h` shares this classification between
 the renderer and regression tests. Unclassified elevated bars retain finite
 shells even when touching a structural wall. A previous normal-driven frontier
 incorrectly closed the jail crossbar `v1:4bpp:c43a8c5e3814af21` down to the floor
@@ -497,7 +497,7 @@ intervals still require individual voxel intersection tests.
 
 ## Validation
 
-- `remaster/indirect_lighting_reference_test.cpp` provides a portable CPU oracle
+- `remaster/tests/indirect_lighting_reference_test.cpp` provides a portable CPU oracle
   for finite voxels, ascending/descending rays, tangencies, fractional coverage,
   missing heights, endpoint exclusion, and world-unit thickness.
 - `macosx/remaster-lighting-test.mm` tests the production shaders in float and

@@ -1,8 +1,8 @@
 # Live application lighting benchmark
 
 For the repeatable correctness suite and freeze-based performance regression gate,
-start with [tools/remaster-regressions.md](../tools/remaster-regressions.md).
-`tools/remaster_performance.py` records/checks three-run baselines, verifies fixture
+start with [tools/remaster-regressions.md](../remaster/tools/remaster-regressions.md).
+`remaster/tools/remaster_performance.py` records/checks three-run baselines, verifies fixture
 and hardware/settings identity, and returns nonzero on measured regressions.
 
 The next direct-only 60 FPS milestone and end-to-end timing/acceptance plan are
@@ -22,9 +22,9 @@ deterministic frames, 117 have 848 emitting pixels/108 prepared direct samples;
 has depth 2 and no combination links, whereas peers `9943c286d5e45726` and
 `73caad274b5bb270` have depth 0 and links. Four depth strata and separated fixtures
 explain the animation-dependent workload. Inspect with
-`tools/inspect_emitter_sources.cpp`.
+`remaster/tools/inspect_emitter_sources.cpp`.
 
-`tools/expand_emitter_animation_links.cpp` takes an animation capture, input
+`remaster/tools/expand_emitter_animation_links.cpp` takes an animation capture, input
 profile and new output profile. It expands existing links through captured
 tracks without copying emission/height/normal metadata or replacing the original.
 Using `frame_room061_001.s9xrmf` adds 38 links; heavy frames then have 240 prepared
@@ -71,7 +71,7 @@ each case, and ignores physical controller/keyboard input during the benchmark.
 It exits automatically with status 0 on completion, 2 on app-side failure.
 
 ```sh
-python3 tools/run_remaster_benchmark.py \
+python3 remaster/tools/run_remaster_benchmark.py \
   --app "$HOME/Library/Developer/Xcode/DerivedData/snes9x-atcnlahonwpbthgwbglgovfsrdlq/Build/Products/Release/Snes9x.app" \
   --output build/benchmark-slot004-right \
   --move right --seconds 3
@@ -79,7 +79,7 @@ python3 tools/run_remaster_benchmark.py \
 
 Defaults use `~/Downloads/Zelda_ALTTP.zip`,
 `~/Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.004.frz`, and the
-repository's `Profiles/ALttP/alttp-profile.toml`. Override with `--rom`, `--state`, `--profile`.
+repository's `remaster/profiles/ALttP/alttp-profile.toml`. Override with `--rom`, `--state`, `--profile`.
 The output directory must be new. `--connections` overrides the profile setting.
 
 Cases: Direct lighting only; Direct + Indirect at 0/1/8 bounces; Composite at
@@ -192,7 +192,7 @@ visibility/counter follow-up below is currently uncommitted. Inspect `git status
 and diff before continuing, and preserve the current working tree.
 
 Relevant code:
-- `tools/run_remaster_benchmark.py`: launch/setup and report summary.
+- `remaster/tools/run_remaster_benchmark.py`: launch/setup and report summary.
 - `macosx/mac-os.mm`: benchmark state machine, save-state reset, input sequence,
   report output, and automatic audio mute.
 - `macosx/remaster-benchmark.h`: producing-frame tags and completion sample ABI.
@@ -260,7 +260,7 @@ Retained changes:
   The reference macro retains the original array expansion.
 - Benchmark-only stage-boundary Metal timestamp counters; each producing frame
   owns its sample buffer through GPU completion.
-- `tools/compare_remaster_benchmarks.py` checks input identity, final RAM, original
+- `remaster/tools/compare_remaster_benchmarks.py` checks input identity, final RAM, original
   pixels, measured counts, PNG byte identity, and prints median/stage comparisons.
 
 Short screening runs (6 warmup + 15 right-moving measurement frames): original
@@ -310,11 +310,11 @@ Raw full reports/captures are in the local temporary parent listed above:
 
 Compare two completed sequences:
 ```sh
-python3 tools/compare_remaster_benchmarks.py BEFORE_OUTPUT AFTER_OUTPUT
+python3 remaster/tools/compare_remaster_benchmarks.py BEFORE_OUTPUT AFTER_OUTPUT
 ```
 
 Optional benchmark-only execution-layout experiment:
-`S9X_REMASTER_TRANSPORT_THREADS=8x4 python3 tools/run_remaster_benchmark.py ...`.
+`S9X_REMASTER_TRANSPORT_THREADS=8x4 python3 remaster/tools/run_remaster_benchmark.py ...`.
 The report records the requested override; shader/source enumeration is unchanged.
 
 Final-build repeat (including the independent array-based reference and 512-entry
@@ -406,8 +406,8 @@ Verification and comparisons:
 ```sh
 S9X_REMASTER_TEST_BATCHED=1 /path/to/remaster-lighting-test
 S9X_REMASTER_TEST_BATCHED=1 /path/to/remaster-lighting-benchmark --direct
-python3 tools/compare_remaster_benchmarks.py BEFORE_OUTPUT AFTER_OUTPUT
-swift tools/compare_remaster_images.swift BEFORE_OUTPUT AFTER_OUTPUT
+python3 remaster/tools/compare_remaster_benchmarks.py BEFORE_OUTPUT AFTER_OUTPUT
+swift remaster/tools/compare_remaster_images.swift BEFORE_OUTPUT AFTER_OUTPUT
 ```
 `S9X_REMASTER_SERIAL_DIRECT=1` / `S9X_REMASTER_SERIAL_INDIRECT=1` force serial
 transport for controlled A/B. Reports record these overrides. Changes remain
@@ -509,7 +509,7 @@ triangle arithmetic branches. The approximately 5 ms total goal remains unmet.
 
 ## Profiling findings (October 1, 2026)
 
-Added `tools/analyze_remaster_profile.py` (stdlib-only report and xctrace XML
+Added `remaster/tools/analyze_remaster_profile.py` (stdlib-only report and xctrace XML
 summaries), stage-counter disable override, submission-to-GPU and driver intervals.
 Lighting output and execution defaults are unchanged. All seven deterministic
 PNG outputs match between counter-on/off runs, with matching end-state RAM.
@@ -591,7 +591,7 @@ xcrun xctrace record --template 'Time Profiler' --time-limit 8s --output cpu.tra
 xcrun xctrace record --template 'Metal System Trace' --time-limit 8s --output metal.trace --attach PID
 xcrun xctrace export --input cpu.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' --output cpu.xml
 xcrun xctrace export --input metal.trace --xpath '/trace-toc/run[@number="1"]/data/table[@schema="metal-gpu-intervals"]' --output metal.xml
-python3 tools/analyze_remaster_profile.py OUTPUT_DIRECTORY cpu.xml metal.xml
+python3 remaster/tools/analyze_remaster_profile.py OUTPUT_DIRECTORY cpu.xml metal.xml
 ```
 Analysis uses Python's conventional median; benchmark summaries select sorted
 percentile samples, so even-sized medians can differ slightly. Next priorities:
@@ -629,7 +629,7 @@ cases and report output. This is an unresolved capture-layer teardown issue;
 that run is not a successful benchmark and the document has not been replay-
 validated in Xcode. Ordinary snapshot run exits successfully.
 
-`tools/profile_remaster_direct.mm` loads the snapshot and rebuilds production
+`remaster/tools/profile_remaster_direct.mm` loads the snapshot and rebuilds production
 seed, 4x4 envelopes and prepared samples, then measures transport alone. Shader
 source is compiled at runtime; diagnostic scratch is shared for readback rather
 than production private. It builds isolated instrumented copies of visibility
@@ -682,7 +682,7 @@ inspection of the captured document or a supported custom counter template.
 
 Reproduce snapshot with stage counters disabled, then (no app benchmark running):
 ```sh
-xcrun clang++ -std=c++17 -O2 -fobjc-arc -Wall -Wextra tools/profile_remaster_direct.mm \
+xcrun clang++ -std=c++17 -O2 -fobjc-arc -Wall -Wextra remaster/tools/profile_remaster_direct.mm \
   -framework Foundation -framework Metal -o /temporary/path/profile-remaster-direct
 /temporary/path/profile-remaster-direct /path/to/snapshot
 /temporary/path/profile-remaster-direct /path/to/snapshot 32x1
@@ -876,7 +876,7 @@ reserved for compatibility. These measurements describe the former implementatio
 Added default2 maximum emitter footprint with Scene Controls integer slider1..5,
 numeric input, undo/live preview/profile persistence and captured replay setting.
 Size1 is unclustered comparison. Profile schema15/frame22; old files default2.
-`remaster/emitter_patches.h` partitions same-instance/tile-local-bin full emitting
+`remaster/runtime/emitter_patches.h` partitions same-instance/tile-local-bin full emitting
 rectangles, preserving color fragments, summed RGB and quarter-stratum depth area.
 See lighting contract for compatibility and approximation. Room-height-expert
 identified stepped-endpoint and exclusion-normal hazards; final rules require
@@ -1062,7 +1062,7 @@ Interactive button/alert and combined-torch visual review remain pending.
 ## Room 061 offscreen-sphere performance repair (October 6, 2026)
 
 Reproduced with root `alttp-profile_backup.toml`, slot002, Composite0, debug
-sphere disabled. The profile in `Profiles/ALttP/alttp-profile.toml` did not reproduce
+sphere disabled. The profile in `remaster/profiles/ALttP/alttp-profile.toml` did not reproduce
 the workload. Zero visible emitters/prepared samples hid **16–20 physical scene
 spheres**, originally 2048–2560 quadrature samples per receiver. Eight-source
 partials exceeded the 64 MiB limit, causing serial transport. Adaptive batch
@@ -1096,7 +1096,7 @@ over larger batches and was removed. No height metadata changed in this work.
 
 Artifacts under the standard session temporary directory: `room061-backup-before/`,
 `room061-backup-adaptive/`, `room061-final-full-spheres/`, `room061-final-adaptive/`,
-`room061-final-live/`. Reproduce with `tools/run_remaster_benchmark.py`,
+`room061-final-live/`. Reproduce with `remaster/tools/run_remaster_benchmark.py`,
 `--state "$HOME/Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.002.frz"`,
 `--profile alttp-profile_backup.toml --composite-only --move none`,
 `S9X_REMASTER_DISABLE_STAGE_COUNTERS=1`; compare override on/off. Image comparison

@@ -19,7 +19,7 @@ The supplied screenshot and user identify the blue surface as Link's upper
 terrace and the green courtyard as lower ground. These are fixture expectations;
 color is not a generator input for assigning elevation.
 
-Read-only inspection with `tools/remaster_frame_summary.cpp` established:
+Read-only inspection with `remaster/tools/remaster_frame_summary.cpp` established:
 
 - The packet decodes as schema 35, 256x224, with 2,124 tile instances.
 - The captured profile ROM SHA-256 is
@@ -177,7 +177,7 @@ authoring workaround.
 ### 1. Export a reproducible complete overworld input
 
 Extend the existing ROM-backed overworld decoder,
-`tools/ALttP/alttp_atlas_overworld.py`, which already retains
+`remaster/tools/ALttP/alttp_atlas_overworld.py`, which already retains
 Map32 -> Map16 -> Map8 placement identities. Add a runtime/state adapter that
 records overlays and later writers, final map words, collision behavior,
 graphics identity, and transforms. Base ROM quadrants currently omit gameplay
@@ -238,7 +238,7 @@ per-placement source and effective height, for the complete declared castle scop
 ### 4. Apply outdoors at runtime and in replay
 
 Integrate the outdoor adapter at the frame lifecycle in `gfx.cpp` and placement
-application in `remaster/remaster.h` / `remaster/frame.h`. Use canonical area/map
+application in `remaster/runtime/remaster.h` / `remaster/runtime/frame.h`. Use canonical area/map
 coordinates and each BG's actual PPU mapping, including scrolling/wrapping.
 Grounded Link, actors, and attached emitters inherit their resolved support base;
 airborne displacement remains separate from surface elevation.

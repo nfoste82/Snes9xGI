@@ -26,7 +26,7 @@ inferred solely from settled captures025/026 (both restore1518 pixels correctly)
 - `macosx/mac-os.mm` opt-in `S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION=1` validates
   every actual completed movement frame: complete resolved claims, no unclaimed
   members, and exact effective height/normal fields after paused refresh.
-- `remaster/sprite_obstacle.h` opt-in `S9X_REMASTER_SPRITE_OBSTACLE_TRACE=PATH`
+- `remaster/runtime/sprite_obstacle.h` opt-in `S9X_REMASTER_SPRITE_OBSTACLE_TRACE=PATH`
   records assembly and producer/camera/OAM evidence without changing matching.
 - `macosx/sprite-obstacle-movement-probe.mm` drives the existing native benchmark
   through the built framework, avoiding AppDelegate workspace restoration. Only
@@ -45,7 +45,7 @@ clang++ -std=c++17 -fobjc-arc -framework Cocoa \
 S9X_REMASTER_DEBUG_PROBE_LIVE_VIEW=height \
 S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION=1 \
 S9X_REMASTER_SPRITE_OBSTACLE_TRACE="$PWD/build/movement-trace.txt" \
-python3 tools/run_remaster_benchmark.py --app build/sprite-obstacle-movement-probe \
+python3 remaster/tools/run_remaster_benchmark.py --app build/sprite-obstacle-movement-probe \
   --state "$HOME/Library/Application Support/Snes9x/Freezes/Zelda_ALTTP.005.frz" \
   --output build/new-movement-run --seconds 0.6 --warmup-seconds 0.1 \
   --move left --composite-only
@@ -57,7 +57,7 @@ Build each configuration before running its framework. Outputs include the
 complete benchmark report, final packet, PNG and production Height `live.rgba`.
 
 ```sh
-c++ -std=c++17 -O2 remaster/sprite_obstacle_movement_test.cpp \
+c++ -std=c++17 -O2 remaster/tests/sprite_obstacle_movement_test.cpp \
   -o build/sprite-obstacle-movement-test
 build/sprite-obstacle-movement-test build/new-movement-run/case-05.s9xrmf \
   build/new-movement-run/live.rgba

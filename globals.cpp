@@ -12,7 +12,7 @@
 #include "fxemu.h"
 #include "srtc.h"
 #include "cheats.h"
-#include "remaster/remaster.h"
+#include "remaster/runtime/remaster.h"
 #ifdef NETPLAY_SUPPORT
 #include "netplay.h"
 #endif

@@ -25,8 +25,8 @@ Products `build/release/Snes9x.app` / `build/debug/Snes9x.app`.
 Running user app untouched; interactive editor workflow/gameplay confirmation
 remains pending. No user obstacle definitions were automatically authored.
 
-Native additions: `remaster/obstacle_group_editor.h`,
-`remaster/obstacle_group_editor_test.cpp`, `macosx/mac-os.mm`.
+Native additions: `remaster/runtime/obstacle_group_editor.h`,
+`remaster/tests/obstacle_group_editor_test.cpp`, `macosx/mac-os.mm`.
 
 ## Compiler / HTML preservation and reference-corpus follow-up
 
@@ -83,15 +83,15 @@ were preserved rather than treating cache equivalence as geometry approval.
 Commands (repeat with example050 and reference346-statue.json for statue):
 
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/authored-reference-probe"
-python3 -B tools/ALttP/alttp_audit_authored_reference_corpus.py \
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/authored-reference-probe"
+python3 -B remaster/tools/ALttP/alttp_audit_authored_reference_corpus.py \
   --manifest "$ROOT/room061-057-review/corpus-after.json" \
   --profile "$ROOT/authored-obstacle-review/example061/temporary-example.toml" \
   --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc \
   --probe "$ROOT/authored-reference-probe" \
   --output "$ROOT/authored-obstacle-review/reference346.json"
-python3 -B -m unittest discover -s tools/ALttP -p test_alttp_atlas_profile.py
-python3 -B -m unittest discover -s tools/ALttP -p test_alttp_tile_semantic_atlas.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_alttp_atlas_profile.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_alttp_tile_semantic_atlas.py
 ```
 
 Whole-room gates still have the unrelated failures documented below; no runtime
@@ -100,7 +100,7 @@ parent build/UI verification, then user-authored reviewed groups and fresh captu
 
 ## Independent-proof follow-up (supersedes the historical blanket-gate limitation below)
 
-Implemented `tools/ALttP/alttp_authored_obstacles.py` and integrated its independent
+Implemented `remaster/tools/ALttP/alttp_authored_obstacles.py` and integrated its independent
 proof into validation-v2. New group profiles are **not blanket refused**. The
 Python proof reconstructs exact full footprints, transformed expected artwork,
 safe same-group semantic symmetry, overlapping claims, required contacts and
@@ -158,9 +158,9 @@ independent-proof JSON, manifests/summary and room validator logs/results.
 Commands:
 
 ```sh
-python3 -B -m unittest discover -s tools/ALttP -p test_authored_obstacles.py
-python3 -B -m unittest discover -s tools/ALttP -p test_alttp_validate_room_heights.py
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/authored-obstacle-solver"
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_authored_obstacles.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_alttp_validate_room_heights.py
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/authored-obstacle-solver"
 ```
 
 **8/8 new Python failure-class tests**, **24/24 existing validator tests** pass.
@@ -258,7 +258,7 @@ Runtime JSON records these and all placed BG/plane group/Z/contact fields.
 Add `\n[[obstacle_groups]]` to `RemasterNonSceneProfileOffset` in mac-os.mm, and
 include groups in undo/copy/reset/save/profile sync. Current asset-only undo
 snapshots cannot preserve group edits. The web semantic atlas is generated in
-`tools/ALttP/alttp_tile_semantic_atlas.py`; it currently authors intrinsic roles,
+`remaster/tools/ALttP/alttp_tile_semantic_atlas.py`; it currently authors intrinsic roles,
 not this profile-backed example footprint. No frontend files were touched.
 
 ## Verification
@@ -267,7 +267,7 @@ Portable command (outputs under preapproved `$ROOT` temp directory):
 
 ```sh
 c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
-  remaster/dungeon_authored_obstacle_test.cpp -o "$ROOT/authored-obstacle-test"
+  remaster/tests/dungeon_authored_obstacle_test.cpp -o "$ROOT/authored-obstacle-test"
 "$ROOT/authored-obstacle-test"
 ```
 

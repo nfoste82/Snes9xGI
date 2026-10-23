@@ -192,7 +192,7 @@ authored stair relation24; plane arrays remain independent. No room approval.
 ## Reproduction / smallest next action
 
 ```
-c++ -std=c++17 -O2 remaster/dungeon_authored_wall_audit.cpp -o build/room051-wall-audit
+c++ -std=c++17 -O2 remaster/tests/dungeon_authored_wall_audit.cpp -o build/room051-wall-audit
 build/room051-wall-audit /path/to/frame_room051_039.s9xrmf --require-authored-wall-fields
 ```
 

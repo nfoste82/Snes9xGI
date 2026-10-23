@@ -22,7 +22,7 @@
 #ifndef _mac_render_h_
 #define _mac_render_h_
 
-#include "remaster/frame.h"
+#include "remaster/runtime/frame.h"
 
 enum class RemasterLightingView : uint32_t
 {

@@ -134,7 +134,7 @@ Artifacts: `build/transition-lifecycle-route/` (ignored).
 
 ```sh
 mkdir -p build/transition-lifecycle-route
-python3 tools/ALttP/alttp_build_route_adapter.py \
+python3 remaster/tools/ALttP/alttp_build_route_adapter.py \
   --engine build/remaster-geometry/room-preview-engine \
   --output build/transition-lifecycle-route
 # Run with the engine directory as cwd (absolute binary/output paths):
@@ -143,7 +143,7 @@ ALTTP_ROUTE_RUNTIME=<absolute-output>/runtime.bin \
   <absolute-output>/route-renderer --linked 0x61 <absolute-output>/actual.raw \
   4 0 0 0 N400,S400
 c++ -std=c++17 -O2 -DNDEBUG -pthread \
-  remaster/dungeon_straight_stair_route_test.cpp \
+  remaster/tests/dungeon_straight_stair_route_test.cpp \
   -o build/transition-lifecycle-route/test
 build/transition-lifecycle-route/test \
   build/transition-lifecycle-route/runtime.bin \

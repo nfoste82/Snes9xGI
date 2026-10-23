@@ -37,15 +37,15 @@
 #import "snapshot.h"
 #import "display.h"
 #import "blit.h"
-#import "remaster/remaster.h"
-#include "remaster/emitter_groups.h"
-#include "remaster/obstacle_group_editor.h"
-#include "remaster/sprite_obstacle_replay.h"
-#include "remaster/lighting_field_cache.h"
-#include "remaster/emission_appearance.h"
-#include "remaster/inspector_height.h"
-#include "remaster/profile_merge.h"
-#include "remaster/npc_pose.h"
+#import "remaster/runtime/remaster.h"
+#include "remaster/runtime/emitter_groups.h"
+#include "remaster/runtime/obstacle_group_editor.h"
+#include "remaster/runtime/sprite_obstacle_replay.h"
+#include "remaster/runtime/lighting_field_cache.h"
+#include "remaster/runtime/emission_appearance.h"
+#include "remaster/runtime/inspector_height.h"
+#include "remaster/runtime/profile_merge.h"
+#include "remaster/runtime/npc_pose.h"
 
 #ifdef DEBUGGER
 #import "debug.h"
@@ -169,6 +169,12 @@ static void BeginBenchmarkCase()
 	SetLiveRemasterPresentation(true, benchmarkViews[benchmarkCase]);
 	if (const char *view=getenv("S9X_REMASTER_DEBUG_PROBE_LIVE_VIEW"))
 		SetLiveRemasterPresentation(true,std::string(view)=="height"?RemasterLightingView::Height:RemasterLightingView::Normal);
+	if (const char *layer = getenv("S9X_REMASTER_LAYER_INSPECTION_TEST"))
+	{
+		const int view = std::atoi(layer);
+		if (view < 0 || view > 2) FailBenchmark(@"Invalid inspection test layer");
+		S9xRemasterState().requestedLayerView.store(view);
+	}
 	benchmarkCaseStarted = [NSProcessInfo processInfo].systemUptime;
 	benchmarkMeasurementStarted = benchmarkCaseStarted;
 	NSLog(@"Benchmark case: %s", benchmarkNames[benchmarkCase]);
@@ -271,6 +277,27 @@ static void FinishBenchmarkFrame()
 	if (benchmarkDeterministicPresentation && raw.count != benchmarkMeasureFrames) FailBenchmark(@"Deterministic benchmark did not render every measured frame");
 	const RemasterFrame *frame = S9xRemasterCompletedFrame();
 	if (!frame) FailBenchmark(@"No remaster frame produced");
+	if (const char *layer = getenv("S9X_REMASTER_LAYER_INSPECTION_TEST"))
+	{
+		const int view = std::atoi(layer);
+		if (view)
+		{
+			if (!frame->scenePixels.empty()) FailBenchmark(@"Inspection retained stale world scene");
+			size_t pixels = 0;
+			for (const auto &p : frame->mainPixels)
+			{
+				if (!p.instanceId) continue;
+				const auto &i = frame->tileInstances.at(p.instanceId - 1);
+				if (i.source != RemasterSourceType::Background || i.sourceIndex != view - 1)
+					FailBenchmark(@"Isolated main-screen ownership contains another layer");
+				++pixels;
+			}
+			if (!pixels) FailBenchmark(@"No selectable inspection background pixels");
+			for (const auto &p : frame->subPixels)
+				if (p.instanceId) FailBenchmark(@"Inspection subscreen contains hidden contributors");
+			NSLog(@"Inspection BG%d production raster ownership: %zu pixels", view, pixels);
+		}
+	}
 	NSString *capture = [NSString stringWithFormat:@"case-%02d.s9xrmf", benchmarkCase + 1];
 	if (!S9xWriteRemasterFrame(*frame, [benchmarkOutputPath stringByAppendingPathComponent:capture].fileSystemRepresentation))
 		FailBenchmark(@"Could not write benchmark frame capture");
@@ -600,6 +627,7 @@ static NSTextField *remasterNpcHeightMinInput, *remasterNpcHeightMaxInput;
 static double remasterNpcHeightDisplayMin = 0, remasterNpcHeightDisplayMax = 32;
 static NSTimer *remasterNpcTimer;
 static NSButton *remasterFlipLayerHorizontalButton, *remasterFlipLayerVerticalButton;
+static NSButton *remasterRotateLayerClockwiseButton, *remasterRotateLayerCounterclockwiseButton;
 static NSArray<NSButton *> *remasterShiftLayerButtons;
 
 static bool PresentRemasterInspectionFrame(const RemasterFrame &frame, RemasterDebugMode mode,
@@ -626,6 +654,9 @@ static NSColorWell		*remasterDebugLightColor;
 static std::atomic<uint32_t> remasterDebugLightRedraw { 0 };
 static std::mutex remasterDebugLightRedrawMutex;
 static std::atomic<bool> remasterPausedCapturePending { false };
+static std::atomic<bool> remasterLayerRefreshPending { false };
+static uint8_t remasterLayerView = 0;
+static bool remasterSceneFromLivePacket = false;
 static std::mutex remasterPausedCaptureMutex;
 static NSString *remasterPausedCapturePath;
 static NSPoint remasterPausedCapturePoint;
@@ -873,7 +904,7 @@ static bool remasterNormalComponentMixed[3] = {};
 static NSString *const RemasterLastProfilePathKey = @"RemasterLastProfilePath";
 static NSArray<NSString *> *workspaceGamePaths;
 static NSString *workspaceProfilePath;
-static BOOL workspaceSceneOpen = NO, workspaceNpcOpen = NO, restoringWorkspace = NO;
+static BOOL workspaceSceneOpen = NO, workspaceNpcOpen = NO, workspaceAreaOpen = NO, restoringWorkspace = NO;
 static NSString *const PreviousWorkspaceKey = @"S9xPreviousWorkspace";
 static std::atomic<bool> workspaceStartPaused {false};
 static NSString *const RemasterTileClipboardType = @"org.snes9x.remaster.tile-metadata";
@@ -899,7 +930,7 @@ static RemasterTileContext *RemasterSelectedContext(const RemasterTileContentId 
 	return context == found->second.end() ? nullptr : &context->second;
 }
 
-#include "../remaster/layer_editor.h"
+#include "../remaster/runtime/layer_editor.h"
 
 static bool RemasterEffectiveHeightPreview ()
 {
@@ -1508,10 +1539,23 @@ static inline void EmulationLoop (void)
             {
                 ClearRemasterDebugLightRedraw();
                 S9xMainLoop();
+				if (S9xRemasterState().activeLayerView == S9xRemasterState().requestedLayerView.load())
+					remasterLayerRefreshPending.store(false);
 				FinishBenchmarkFrame();
             }
             else
             {
+                // Consume on the producer: change the rendered layers even while
+                // paused, then let the ordinary capture/pick path use that frame.
+                if (remasterLayerRefreshPending.load() && !frzselecting)
+                {
+                    macFrameSkip = 1;
+                    skipFrames = 1;
+                    S9xMainLoop();
+                    macFrameSkip = storedMacFrameSkip;
+					if (S9xRemasterState().activeLayerView == S9xRemasterState().requestedLayerView.load())
+						remasterLayerRefreshPending.store(false);
+                }
                 if (frameAdvance)
                 {
                     macFrameSkip = 1;
@@ -4372,9 +4416,11 @@ void QuitWithFatalError ( NSString *message)
 - (void)updateRemasterDebugOverlay
 {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		remasterDebugOverlay.stringValue = [NSString stringWithFormat:@"GI Debug: %@",
-			RemasterLightingViewName(remasterLightingView)];
-		remasterDebugOverlay.hidden = !remasterLightingEnabled;
+		remasterDebugOverlay.stringValue = remasterLayerView ?
+			[NSString stringWithFormat:@"Inspect Layers: %@ · %@", remasterLayerView == 1 ? @"BG1 only" : @"BG2 only",
+				remasterLightingEnabled ? [@"GI Debug: " stringByAppendingString:RemasterLightingViewName(remasterLightingView)] : @"Lighting off"] :
+			[NSString stringWithFormat:@"GI Debug: %@", RemasterLightingViewName(remasterLightingView)];
+		remasterDebugOverlay.hidden = !remasterLayerView && !remasterLightingEnabled;
 	});
 }
 
@@ -4487,6 +4533,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)flipRemasterLayerHorizontal:(id)sender;
 - (void)flipRemasterLayerVertical:(id)sender;
 - (void)flipRemasterLayer:(BOOL)horizontal;
+- (void)rotateRemasterLayer:(id)sender;
 - (void)shiftRemasterLayer:(id)sender;
 - (void)copyRemasterTile:(id)sender;
 - (void)pasteRemasterTile:(id)sender;
@@ -4834,7 +4881,7 @@ void QuitWithFatalError ( NSString *message)
 	if (restoringWorkspace || !running || !workspaceGamePaths.count) return;
 	NSMutableDictionary *saved = [@{@"games": workspaceGamePaths,
 		@"paused": @(pauseEmulation), @"sceneControls": @(workspaceSceneOpen),
-		@"npcPoses": @(workspaceNpcOpen)} mutableCopy];
+		@"npcPoses": @(workspaceNpcOpen), @"areaSettings": @(workspaceAreaOpen)} mutableCopy];
 	if (workspaceProfilePath.length) saved[@"profile"] = workspaceProfilePath;
 	[NSUserDefaults.standardUserDefaults setObject:saved forKey:PreviousWorkspaceKey];
 }
@@ -4876,7 +4923,11 @@ void QuitWithFatalError ( NSString *message)
 	}
 	workspaceSceneOpen = [saved[@"sceneControls"] boolValue];
 	workspaceNpcOpen = [saved[@"npcPoses"] boolValue];
-	if (!workspaceSceneOpen) [remasterProfileSettingsPanel orderOut:nil];
+	workspaceAreaOpen = [saved[@"areaSettings"] boolValue];
+	if (workspaceSceneOpen) [self showRemasterProfileSettings];
+	else [remasterProfileSettingsPanel orderOut:nil];
+	if (workspaceAreaOpen) [self showRemasterAreaSettings];
+	else [remasterAreaPanel orderOut:nil];
 	if (workspaceNpcOpen) [self showRemasterNpcBrowser];
 	else [remasterNpcPanel orderOut:nil];
 	if ([saved[@"paused"] boolValue]) [self pause];
@@ -5058,6 +5109,7 @@ void QuitWithFatalError ( NSString *message)
 
     if ( SNES9X_OpenCart(fileURL) )
     {
+		[self resetRemasterLayerView];
 		remasterEditingProfileLoaded = false;
 		remasterEditingProfileDirty = false;
 		remasterFramePresenting = false;
@@ -5068,6 +5120,8 @@ void QuitWithFatalError ( NSString *message)
 		[remasterInspectorPanel orderOut:nil];
 		[remasterProfileSettingsPanel orderOut:nil];
 		workspaceSceneOpen = NO;
+		[remasterAreaPanel orderOut:nil];
+		workspaceAreaOpen = NO;
 		[self.emulationDelegate gameLoaded];
 		
         SNES9X_Go();
@@ -5258,6 +5312,7 @@ void QuitWithFatalError ( NSString *message)
 
 	if (SNES9X_OpenMultiCart(fileURLs.firstObject, fileURLs.lastObject))
 	{
+		[self resetRemasterLayerView];
 		S9xRemasterClearProfile();
 		remasterEditingProfileLoaded = false;
 		remasterEditingProfileDirty = false;
@@ -5269,6 +5324,8 @@ void QuitWithFatalError ( NSString *message)
 		[remasterInspectorPanel orderOut:nil];
 		[remasterProfileSettingsPanel orderOut:nil];
 		workspaceSceneOpen = NO;
+		[remasterAreaPanel orderOut:nil];
+		workspaceAreaOpen = NO;
 		[self.emulationDelegate gameLoaded];
 
 		SNES9X_Go();
@@ -5300,6 +5357,52 @@ void QuitWithFatalError ( NSString *message)
 {
 	const RemasterDebugMode mode = S9xRemasterCycleDebugMode();
 	return [self presentRemasterDebugMode:mode];
+}
+
+- (NSString *)cycleRemasterLayerView
+{
+	if (![self canCycleRemasterLayerView]) { NSBeep(); return [self remasterLayerViewName]; }
+	ClearRemasterDebugLightRedraw();
+	// Publish in-memory edits before generating another producer-owned packet.
+	if (remasterEditingProfileLoaded) S9xRemasterSetProfile(remasterEditingProfile);
+	remasterLayerView = (remasterLayerView + 1) % 3;
+	S9xRemasterState().requestedLayerView.store(remasterLayerView);
+	// Visibility and diagnostics are independent: retain Height/Normals/etc.
+	SetLiveRemasterPresentation(running && remasterLightingEnabled && remasterEditingProfileLoaded, remasterLightingView);
+	remasterCaptureSession.fetch_add(1); // discard any queued old-layer handoff
+	remasterPausedCapturePending.store(false);
+	remasterFramePresenting = false;
+	remasterNpcInspectorActive = false;
+	remasterSelectionValid = false;
+	remasterSelectedTiles.clear();
+	remasterSelectedContextInstances.clear();
+	remasterObstacleSelection.clear();
+	remasterHeightInstanceId = 0;
+	[remasterInspectorPanel orderOut:nil];
+	remasterLayerRefreshPending.store(true);
+	[s9xView updatePauseOverlay];
+	[s9xView updateRemasterDebugOverlay];
+	return [self remasterLayerViewName];
+}
+
+- (NSString *)remasterLayerViewName
+{
+	return remasterLayerView == 1 ? @"BG1 only" : remasterLayerView == 2 ? @"BG2 only" : @"All layers";
+}
+
+- (BOOL)canCycleRemasterLayerView
+{
+	// A file replay may not describe the running game's current PPU state.
+	return running && !frzselecting && !remasterNpcInspectorActive &&
+		(!remasterFramePresenting || remasterSceneFromLivePacket);
+}
+
+- (void)resetRemasterLayerView
+{
+	remasterLayerView = 0;
+	S9xRemasterState().requestedLayerView.store(0);
+	remasterLayerRefreshPending.store(false);
+	[s9xView updateRemasterDebugOverlay];
 }
 
 - (NSString *)showRemasterTileTypes
@@ -5482,7 +5585,8 @@ void QuitWithFatalError ( NSString *message)
 	ClearRemasterDebugLightRedraw();
 	if (!self.openingAreaReviewFrame)
 		SetRemasterDebugLight(RemasterDebugLight());
-	if (!DrawRemasterFrame(frame, RemasterDebugMode::Original, nullptr, remasterLightingEnabled, remasterLightingView))
+	const auto inspectionDebugMode = retainedPacket ? remasterReplayDebugMode : RemasterDebugMode::Original;
+	if (!DrawRemasterFrame(frame, inspectionDebugMode, nullptr, remasterLightingEnabled, remasterLightingView))
 	{
 		SetRemasterDebugLight(previousLight);
 		return @"The captured frame could not be presented.";
@@ -5504,13 +5608,14 @@ void QuitWithFatalError ( NSString *message)
 	remasterNpcInspectorActive = false;
 	remasterNpcInspectorFrame = RemasterFrame();
 	remasterSceneFrame = std::move(frame);
+	remasterSceneFromLivePacket = retainedPacket != nullptr;
 	remasterSceneFrame.obstacleLocationSelection = remasterObstacleGroupingActive;
 	remasterObstacleSelection.clear();
 	remasterSelectedContextInstances.clear();
 	remasterSelectedTiles.clear();
 	remasterHeightInstanceId = 0;
 	remasterMetadataNeedsSync = false;
-	remasterReplayDebugMode = RemasterDebugMode::Original;
+	remasterReplayDebugMode = inspectionDebugMode;
 	remasterFramePresenting = true;
 	remasterSelectionValid = false;
 	remasterVariants.clear();
@@ -5712,6 +5817,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (notification.object == remasterNpcPanel) workspaceNpcOpen = NO;
 	if (notification.object == remasterProfileSettingsPanel) workspaceSceneOpen = NO;
+	if (notification.object == remasterAreaPanel) workspaceAreaOpen = NO;
 	[self savePreviousWorkspace];
 	if (notification.object == remasterNpcPanel) [self stopRemasterNpcPlayback];
 	if (notification.object == remasterDebugLightPanel)
@@ -5720,6 +5826,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)selectRemasterPixelAtViewPoint:(NSPoint)point extendingSelection:(BOOL)extendingSelection
 {
+	// A pending layer redraw must not select the previous composite's winner.
+	if (!remasterNpcPicking && remasterLayerRefreshPending.load()) return YES;
 	if (!remasterNpcPicking && remasterNpcInspectorActive)
 	{
 		remasterNpcInspectorActive = false;
@@ -6016,7 +6124,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterObstacleContact.allowsMixedState = YES;
 		remasterObstacleContact.target = self;
 		remasterObstacleContact.action = @selector(changeRemasterObstacleContact:);
-		remasterObstacleContact.title = @"Support contact (cell or south underside)";
+		remasterObstacleContact.title = @"Support contact";
 		remasterObstacleContact.toolTip = @"Immediately sets contacts for all selected occurrences (Cmd-click scene or footprint). Mixed first click enables all. At least one contact must remain. Dropdown selects one member. Z and authored relief are preserved.";
 		[remasterObstacleView addSubview:remasterObstacleContact];
 		remasterObstacleApply = [[NSButton alloc] initWithFrame:NSMakeRect(165,45,210,28)];
@@ -6330,12 +6438,14 @@ void QuitWithFatalError ( NSString *message)
 		remasterResetTileButton.target = self;
 		remasterResetTileButton.action = @selector(resetRemasterTile:);
 		[contentView addSubview:remasterResetTileButton];
-		NSArray<NSString *> *clipboardTitles = @[@"Copy Layer", @"Paste Layer", @"Copy Tile", @"Paste Tile", @"Flip Layer Horiz.", @"Flip Layer Vert."];
+		NSArray<NSString *> *clipboardTitles = @[@"Copy Layer", @"Paste Layer", @"Copy Tile", @"Paste Tile", @"Flip Horiz.", @"Flip Vert.", @"Rotate 90° ↺", @"Rotate 90° ↻"];
 		SEL clipboardActions[] = { @selector(copyRemasterLayer:), @selector(pasteRemasterLayer:),
-			@selector(copyRemasterTile:), @selector(pasteRemasterTile:), @selector(flipRemasterLayerHorizontal:), @selector(flipRemasterLayerVertical:) };
+			@selector(copyRemasterTile:), @selector(pasteRemasterTile:), @selector(flipRemasterLayerHorizontal:), @selector(flipRemasterLayerVertical:),
+			@selector(rotateRemasterLayer:), @selector(rotateRemasterLayer:) };
 		const NSRect buttonFrames[] = {NSMakeRect(168, 267, 90, 28), NSMakeRect(264, 267, 90, 28),
-			NSMakeRect(168, 232, 90, 28), NSMakeRect(264, 232, 90, 28), NSMakeRect(360, 267, 132, 28), NSMakeRect(498, 267, 132, 28)};
-		for (size_t buttonIndex = 0; buttonIndex < 6; buttonIndex++)
+			NSMakeRect(168, 232, 90, 28), NSMakeRect(264, 232, 90, 28), NSMakeRect(360, 267, 90, 28), NSMakeRect(456, 267, 90, 28),
+			NSMakeRect(552, 267, 90, 28), NSMakeRect(648, 267, 90, 28)};
+		for (size_t buttonIndex = 0; buttonIndex < clipboardTitles.count; buttonIndex++)
 		{
 			NSButton *button = [[NSButton alloc] initWithFrame:buttonFrames[buttonIndex]];
 			button.title = clipboardTitles[buttonIndex];
@@ -6354,10 +6464,19 @@ void QuitWithFatalError ( NSString *message)
 				remasterPasteTileButton = button;
 			else if (buttonIndex == 4)
 				remasterFlipLayerHorizontalButton = button;
-			else
+			else if (buttonIndex == 5)
 				remasterFlipLayerVerticalButton = button;
+			else if (buttonIndex == 6)
+				remasterRotateLayerCounterclockwiseButton = button;
+			else
+			{
+				remasterRotateLayerClockwiseButton = button;
+				button.tag = 1;
+			}
 		}
 		remasterFlipLayerHorizontalButton.toolTip = remasterFlipLayerVerticalButton.toolTip = @"Mirror the current 8×8 layer on each selected tile. Normals also reflect their X direction horizontally or Y direction vertically. Emission channels retain their values. Supports Undo.";
+		remasterRotateLayerCounterclockwiseButton.toolTip = @"Rotate the current 8×8 layer 90° counterclockwise on each selected tile. Normal directions rotate too; emission channels retain their values. Supports Undo.";
+		remasterRotateLayerClockwiseButton.toolTip = @"Rotate the current 8×8 layer 90° clockwise on each selected tile. Normal directions rotate too; emission channels retain their values. Supports Undo.";
 		NSMutableArray<NSButton *> *shiftButtons = [NSMutableArray new];
 		NSArray<NSString *> *shiftTitles = @[@"Shift ↑", @"Shift ↓", @"Shift ←", @"Shift →"];
 		for (NSUInteger direction=0;direction<4;direction++) {
@@ -6443,6 +6562,19 @@ void QuitWithFatalError ( NSString *message)
 		text << "Tile hash   v" << unsigned(instance->tileId.hashVersion) << ':' << unsigned(instance->tileId.bitDepth)
 			<< "bpp:" << std::hex << std::setw(16) << instance->tileId.hash << std::dec << "\n";
 		text << "Source      " << source << " / " << unsigned(instance->sourceIndex) << "\n";
+		if (!remasterNpcPicking && instance->source == RemasterSourceType::Background && instance->sourceIndex <= 1)
+		{
+			const uint32_t id = static_cast<uint32_t>(instance - remasterReplayFrame.tileInstances.data() + 1);
+			const auto location = remasterReplayFrame.contextLocations.find(id);
+			if (location != remasterReplayFrame.contextLocations.end())
+			{
+				const auto &at = location->second;
+				text << (at.area < 320 ? "Room tile   (" : "World tile  (") << at.x << ", " << at.y
+					<< ")  BG" << unsigned(at.background + 1) << "  [0-based, 8px tiles]\n";
+			}
+			else
+				text << "Tile coords Unavailable (no captured location)\n";
+		}
 		text << "Tile        $" << std::hex << std::setw(4) << instance->tileNumber
 			<< "  palette " << std::dec << unsigned(instance->palette) << "  VRAM $" << std::hex
 			<< std::setw(4) << instance->vramAddress << std::dec << "\n";
@@ -6559,7 +6691,7 @@ void QuitWithFatalError ( NSString *message)
 {
 	NSFileManager *files = [NSFileManager defaultManager];
 	auto validRoot = [&] (NSString *root) {
-		return root && [files fileExistsAtPath:[root stringByAppendingPathComponent:@"tools/ALttP/alttp_tile_semantic_atlas.py"]] &&
+		return root && [files fileExistsAtPath:[root stringByAppendingPathComponent:@"remaster/tools/ALttP/alttp_tile_semantic_atlas.py"]] &&
 			[files fileExistsAtPath:[root stringByAppendingPathComponent:@"build/remaster-geometry/alttp-atlas.sqlite"]];
 	};
 	NSString *root = [[NSUserDefaults standardUserDefaults] stringForKey:@"RemasterMetadataToolProjectPath"];
@@ -6569,7 +6701,7 @@ void QuitWithFatalError ( NSString *message)
 	{
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
 		panel.title = @"Locate Metadata Tool Project";
-		panel.message = @"Choose the Snes9xGI folder containing tools/ALttP/alttp_tile_semantic_atlas.py and build/remaster-geometry/alttp-atlas.sqlite. This location will be remembered.";
+		panel.message = @"Choose the Snes9xGI folder containing remaster/tools/ALttP/alttp_tile_semantic_atlas.py and build/remaster-geometry/alttp-atlas.sqlite. This location will be remembered.";
 		panel.canChooseDirectories = YES;
 		panel.canChooseFiles = NO;
 		panel.allowsMultipleSelection = NO;
@@ -6593,9 +6725,9 @@ void QuitWithFatalError ( NSString *message)
 		@"#!/bin/zsh\n# Keep the server in the foreground so closing this Terminal session stops it.\n"
 		"print -r -- 'Snes9x HTML Metadata Tool — Control-C or close this Terminal session to stop.'\n"
 		"exec %@ -B %@ --atlas %@ --annotations %@ --room-index %@ --room-renderer %@ --room-images %@ --port 8765\n",
-		quote(python), quote([root stringByAppendingPathComponent:@"tools/ALttP/alttp_tile_semantic_atlas.py"]),
+		quote(python), quote([root stringByAppendingPathComponent:@"remaster/tools/ALttP/alttp_tile_semantic_atlas.py"]),
 		quote([root stringByAppendingPathComponent:@"build/remaster-geometry/alttp-atlas.sqlite"]),
-		quote([root stringByAppendingPathComponent:@"tools/ALttP/alttp-tile-semantics-v1.json"]),
+		quote([root stringByAppendingPathComponent:@"remaster/tools/ALttP/alttp-tile-semantics-v1.json"]),
 		quote([root stringByAppendingPathComponent:@"build/remaster-geometry/tile-room-occurrences.sqlite"]),
 		quote([root stringByAppendingPathComponent:@"build/remaster-geometry/room-preview-engine-v21/alttp-room-preview"]),
 		quote([root stringByAppendingPathComponent:@"build/remaster-geometry/room-gallery-room-local/images"])];
@@ -7529,6 +7661,48 @@ void QuitWithFatalError ( NSString *message)
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
 
+- (void)rotateRemasterLayer:(id)sender
+{
+	if (RemasterEffectiveHeightPreview() || remasterObstacleGroupingActive || !remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
+	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	const bool clockwise = [sender tag] == 1;
+	std::string before;
+	std::vector<RemasterProfileDiagnostic> diagnostics;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics)) return;
+	const std::set<RemasterTileContentId> unique(remasterSelectedTiles.begin(), remasterSelectedTiles.end());
+	for (const auto &tileId : unique)
+	{
+		auto rotated = EffectiveRemasterMetadata(tileId);
+		if (!remasterTileContextName.empty() && !RemasterSelectedContext(tileId)) continue;
+		if (S9xRemasterHasGeometryVariants(rotated) && (layer == RemasterEditorHeight || layer == RemasterEditorNormal))
+		{
+			auto &g = RemasterEditingGeometry(rotated);
+			const unsigned previewFlip = rotated.geometryByFlip && remasterGeometryFacing >= 1 && remasterGeometryFacing <= 4 ? remasterGeometryFacing - 1 : 0;
+			if (layer == RemasterEditorHeight)
+			{
+				if (!g.hasHeight) continue;
+				S9xRemasterRotateLayerPixels(g.height, clockwise != (bool(previewFlip & 1) != bool(previewFlip & 2)));
+			}
+			else
+			{
+				if (!g.hasNormals) continue;
+				S9xRemasterRotateNormalLayer(g.normalXyz, clockwise, previewFlip);
+			}
+		}
+		else if (!S9xRemasterRotateMetadataLayer(rotated, static_cast<int>(layer), clockwise)) continue;
+		auto &destination = remasterEditingProfile.assets[tileId]; destination.tileId = tileId;
+		CopyRemasterMetadataLayer(rotated, destination, layer);
+		remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, RemasterMetadataSchemaVersion(destination));
+	}
+	std::string current;
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile, current, diagnostics) || current == before) return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
+		object:[NSString stringWithUTF8String:before.c_str()]];
+	[remasterUndoManager setActionName:clockwise ? @"Rotate Layer Clockwise" : @"Rotate Layer Counterclockwise"];
+	UpdateRemasterEditingProfileDirty(current);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)shiftRemasterLayer:(id)sender
 {
 	if (RemasterEffectiveHeightPreview() || !remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
@@ -7774,8 +7948,8 @@ void QuitWithFatalError ( NSString *message)
 {
 	std::string before, after;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
-	if (!S9xRemasterSerializeProfile(remasterEditingProfile,before,diagnostics)) return NO;
-	if (!S9xRemasterSerializeProfile(candidate,after,diagnostics))
+	if (!S9xRemasterSerializeProfile(remasterEditingProfile,before,diagnostics) ||
+		!S9xRemasterSerializeProfile(candidate,after,diagnostics))
 	{
 		NSAlert *alert = [NSAlert new]; alert.messageText = @"Cannot save obstacle group";
 		alert.informativeText = diagnostics.empty() ? @"Invalid group definition." :
@@ -7841,11 +8015,21 @@ void QuitWithFatalError ( NSString *message)
 
 - (BOOL)remasterObstacleContactMembers:(std::vector<size_t> &)members error:(std::string &)error
 {
-	if (remasterObstacleGroupIndex<0 || size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size()) return NO;
+	members.clear();
+	if (!remasterEditingProfileLoaded) { error="Load an editable profile before changing support contacts."; return NO; }
+	if (remasterObstacleGroupIndex<0 || size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size()) {
+		error=remasterObstacleGroupIndex==-2 ?
+			"The selection is ambiguous or stale. Reselect a distinguishing scene occurrence, then select members in its footprint." :
+			"No saved obstacle group is selected. Select an existing object's scene occurrence, or create a group first.";
+		return NO;
+	}
+	if (remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex].name!=remasterObstacleFocusedGroup) {
+		error="The focused obstacle group changed. Reselect the group and its members before editing."; return NO;
+	}
 	if (remasterObstacleExplicitMembers) {
 		members = remasterObstacleSelectedMembers;
-		if (members.empty()) { error="Select at least one obstacle member."; return NO; }
-		return YES;
+		bool contact;
+		return S9xRemasterObstacleEditorContactIntent(remasterEditingProfile.obstacleGroups[remasterObstacleGroupIndex],members,contact,error);
 	}
 	// Reject a selection spanning groups/sources rather than silently editing
 	// only the currently focused group's subset. No changes occur on failure.
@@ -7855,13 +8039,13 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)changeRemasterObstacleContact:(id)sender
 {
-	if (!remasterEditingProfileLoaded) return;
 	std::vector<size_t> members; std::string error;
 	bool valid = [self remasterObstacleContactMembers:members error:error];
 	auto candidate = remasterEditingProfile;
 	bool needsCompletion=false;
-	if (!valid && !remasterObstacleExplicitMembers && remasterObstacleGroupIndex>=0 &&
-		size_t(remasterObstacleGroupIndex)<candidate.obstacleGroups.size()) {
+	if (!valid && remasterEditingProfileLoaded && !remasterObstacleExplicitMembers && remasterObstacleGroupIndex>=0 &&
+		size_t(remasterObstacleGroupIndex)<candidate.obstacleGroups.size() &&
+		candidate.obstacleGroups[remasterObstacleGroupIndex].name==remasterObstacleFocusedGroup) {
 		auto &group=candidate.obstacleGroups[remasterObstacleGroupIndex];
 		RemasterObstacleGroup prepared;
 		valid=S9xRemasterObstacleEditorPrepareContactSelection(remasterReplayFrame,group,
@@ -7870,14 +8054,8 @@ void QuitWithFatalError ( NSString *message)
 	}
 	if (valid) {
 		auto &group = candidate.obstacleGroups[remasterObstacleGroupIndex];
-		bool anyOn=false, anyOff=false;
-		for (auto i : members) {
-			if (i>=group.members.size()) { valid=false; error="The obstacle member selection is stale."; break; }
-			(group.members[i].supportContact ? anyOn : anyOff)=true;
-		}
-		// AppKit's three-state cycle may go Mixed -> Off. Our mixed click is
-		// intentionally On for every member, independent of that cycle.
-		const bool contact = (anyOn && anyOff) || [sender state]==NSControlStateValueOn;
+		bool contact=false;
+		valid=S9xRemasterObstacleEditorContactIntent(group,members,contact,error);
 		if (valid) valid=S9xRemasterObstacleEditorSetContacts(group,members,contact,error);
 	}
 	if (valid && needsCompletion) {
@@ -7890,9 +8068,14 @@ void QuitWithFatalError ( NSString *message)
 		if ([alert runModal]!=NSAlertFirstButtonReturn) { [self refreshRemasterObstacleControls]; return; }
 	}
 	if (!valid) {
+		// Refresh first to restore saved state, then leave the actionable reason
+		// visible as well as presenting it. A refresh must not erase the failure.
+		[self refreshRemasterObstacleControls];
+		remasterObstacleStatus.stringValue=@(error.c_str());
+		remasterObstacleStatus.toolTip=@(error.c_str());
 		NSAlert *alert=[NSAlert new]; alert.messageText=@"Cannot change support contacts";
 		alert.informativeText=error.empty()?@"Select obstacle members first.":@(error.c_str());
-		[alert runModal];
+		[alert runModal]; return;
 	} else [self commitRemasterObstacleProfile:candidate action:@"Change Obstacle Support Contacts"];
 	// Also restore the checkbox after rejected last-contact/ambiguous edits.
 	[self refreshRemasterObstacleControls];
@@ -7974,10 +8157,23 @@ void QuitWithFatalError ( NSString *message)
 - (void)refreshRemasterObstacleControls
 {
 	NSInteger groupIndex = -1;
-	for (size_t g=0;g<remasterEditingProfile.obstacleGroups.size();g++)
-		for (const auto &member : remasterEditingProfile.obstacleGroups[g].members)
-			if (member.tileId==remasterSelectedTile) groupIndex = NSInteger(g);
-	if (groupIndex!=remasterObstacleGroupIndex || (groupIndex>=0 &&
+	if (remasterObstacleExplicitMembers) {
+		// Profile Undo/merge can reorder groups. Explicit member indexes belong
+		// to the named group, never whichever group inherited its vector slot.
+		for (size_t g=0;g<remasterEditingProfile.obstacleGroups.size();g++)
+			if (remasterEditingProfile.obstacleGroups[g].name==remasterObstacleFocusedGroup) groupIndex=NSInteger(g);
+	}
+	else if (!remasterObstacleSelection.empty())
+		groupIndex=S9xRemasterObstacleEditorFindGroup(remasterReplayFrame,
+			remasterEditingProfile.obstacleGroups,remasterObstacleSelection);
+	else for (size_t g=0;g<remasterEditingProfile.obstacleGroups.size();g++) {
+		const auto &group=remasterEditingProfile.obstacleGroups[g];
+		if (std::any_of(group.members.begin(),group.members.end(),[&](const auto &m){return m.tileId==remasterSelectedTile;})) {
+			if (groupIndex>=0) {groupIndex=-2;break;}
+			groupIndex=NSInteger(g);
+		}
+	}
+	if ((!remasterObstacleExplicitMembers && groupIndex!=remasterObstacleGroupIndex) || groupIndex<0 || (groupIndex>=0 &&
 		remasterObstacleFocusedGroup!=remasterEditingProfile.obstacleGroups[groupIndex].name))
 	{
 		remasterObstacleExplicitMembers = false;
@@ -7991,16 +8187,27 @@ void QuitWithFatalError ( NSString *message)
 	[remasterObstacleMembers removeAllItems];
 	for (NSView *view in [remasterObstacleFootprint.subviews copy]) [view removeFromSuperview];
 	const bool hasGroup = groupIndex>=0;
-	remasterObstacleCreate.enabled = remasterEditingProfileLoaded && !remasterObstacleSelection.empty() && !hasGroup;
+	remasterObstacleCreate.enabled = remasterEditingProfileLoaded && !remasterObstacleSelection.empty() && groupIndex==-1;
 	for (NSControl *control in @[remasterObstacleMembers,remasterObstacleZ,remasterObstacleContact,
 		remasterObstacleApply,remasterObstacleDelete,remasterObstacleShow]) control.enabled = remasterEditingProfileLoaded && hasGroup;
 	if (!hasGroup)
 	{
+		remasterObstacleStatus.toolTip=nil;
+		remasterObstacleContact.state=NSControlStateValueOff;
+		remasterObstacleContact.title=@"Support contact (select a saved group first)";
 		if (!remasterObstacleFocusedGroup.empty()) remasterObstacleName.stringValue = @"";
 		remasterObstacleFocusedGroup.clear();
+		if (groupIndex==-2) {
+			remasterObstacleStatus.stringValue = @"Ambiguous shared artwork or stale selection. Reselect a distinguishing occurrence or a complete, nonoverlapping footprint. No group was chosen.";
+			remasterObstacleContact.toolTip=remasterObstacleStatus.stringValue;
+			remasterObstacleStatus.toolTip=remasterObstacleStatus.stringValue;
+			return;
+		}
 		remasterObstacleStatus.stringValue = remasterObstacleSelection.empty() && !remasterSelectedTiles.empty() ?
 			@"Selected tile types have no exact scene locations. Cmd-click occurrences in one object; matching artwork and adjacent objects are not selected automatically." :
 			[NSString stringWithFormat:@"%lu exact occurrence tiles selected. Cmd-click each 8×8 tile in ONE background obstacle or sprite assembly, including repeats. New groups start at Z=0 with south-boundary contacts.",static_cast<unsigned long>(remasterObstacleSelection.size())];
+		remasterObstacleContact.toolTip=remasterObstacleStatus.stringValue;
+		remasterObstacleStatus.toolTip=remasterObstacleStatus.stringValue;
 		return;
 	}
 	const auto &group = remasterEditingProfile.obstacleGroups[groupIndex];
@@ -8016,6 +8223,7 @@ void QuitWithFatalError ( NSString *message)
 	if (!contactSelectionValid && !remasterObstacleExplicitMembers)
 		contactSelectionValid=S9xRemasterObstacleEditorPrepareContactSelection(remasterReplayFrame,group,
 			remasterObstacleSelection,contactProposal,contactMembers,contactNeedsCompletion,contactError);
+	if (!contactSelectionValid) contactMembers.clear(); // Never index a stale explicit member while drawing.
 	// Keep an invalid scene selection actionable so its explicit diagnostic can
 	// explain ambiguity/cross-group rejection; never silently fall back to focus.
 	remasterObstacleContact.enabled = remasterEditingProfileLoaded &&
@@ -8062,6 +8270,8 @@ void QuitWithFatalError ( NSString *message)
 		anyContact ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterObstacleContact.title = contactSelectionValid ?
 		[NSString stringWithFormat:@"Support contact (%lu selected%@)",contactMembers.size(),contactNeedsCompletion?@"; add missing repeats…":@""] : @"Support contact (selection needs review)";
+	remasterObstacleContact.toolTip=contactSelectionValid ?
+		@"Click enables all selected noncontacts or mixed members; when all are contacts, click disables them. At least one contact must remain. Footprint buttons and dropdown edit exact saved members, not all uses of their artwork." : @(contactError.c_str());
 	if(group.spriteAssembly) {
 		remasterObstacleZ.toolTip = @"Sprite members add Z×8 and one shared contact-floor base to your authored local heights. Leave Z at zero if your height arrays already describe the entire object's relief.";
 		RemasterObstacleGroup completed;
@@ -8086,10 +8296,15 @@ void QuitWithFatalError ( NSString *message)
 	}
 	remasterObstacleStatus.stringValue=[NSString stringWithFormat:@"%@ %@",occurrenceLayout ?
 		@"Layout follows selected tile locations." : @"Saved layout (select one occurrence to orient).",remasterObstacleStatus.stringValue];
+	if (!contactSelectionValid) remasterObstacleStatus.stringValue=@(contactError.c_str());
+	remasterObstacleStatus.toolTip=remasterObstacleStatus.stringValue;
 }
 
 - (void)refreshRemasterEditingControls
 {
+	// Profiles can load before the first tile selection creates the inspector.
+	// Messaging nil controls is safe, but array literals containing them are not.
+	if (!remasterInspectorPanel) return;
 	const auto contexts = remasterEditingProfile.tileContexts.find(remasterSelectedTile);
 	if (!remasterTileContextName.empty() && !RemasterSelectedContext(remasterSelectedTile)) remasterTileContextName.clear();
 	const bool contextEditable = remasterEditingProfileLoaded && !remasterSelectedTiles.empty();
@@ -8122,7 +8337,7 @@ void QuitWithFatalError ( NSString *message)
 		auto metadata = EffectiveRemasterMetadata(remasterSelectedTile);
 		if (!metadata.hasTileSemantics)
 		{
-			NSData *data = [NSData dataWithContentsOfFile:[RemasterMetadataProjectRoot() stringByAppendingPathComponent:@"tools/ALttP/alttp-tile-semantics-v1.json"]];
+			NSData *data = [NSData dataWithContentsOfFile:[RemasterMetadataProjectRoot() stringByAppendingPathComponent:@"remaster/tools/ALttP/alttp-tile-semantics-v1.json"]];
 			NSDictionary *document = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
 			NSString *hash = [NSString stringWithUTF8String:RemasterProfileSerialization::TileId(remasterSelectedTile).c_str()];
 			NSDictionary *annotation = document[@"tiles"][hash];
@@ -8306,6 +8521,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterResetTileButton.hidden = grouping;
 	remasterCopyTileButton.hidden = remasterPasteTileButton.hidden = remasterApplyTileToVariantsButton.hidden = grouping;
 	remasterFlipLayerHorizontalButton.hidden = remasterFlipLayerVerticalButton.hidden = grouping;
+	remasterRotateLayerClockwiseButton.hidden = remasterRotateLayerCounterclockwiseButton.hidden = grouping;
 	remasterPasteLayerButton.enabled = editable && layer != RemasterEditorArtwork && RemasterClipboardAvailable(layer);
 	bool canFlip = false;
 	if (editable)
@@ -8321,6 +8537,7 @@ void QuitWithFatalError ( NSString *message)
 				canFlip |= S9xRemasterFlipMetadataLayer(metadata, static_cast<int>(layer), true);
 		}
 	remasterFlipLayerHorizontalButton.enabled = remasterFlipLayerVerticalButton.enabled = canFlip;
+	remasterRotateLayerClockwiseButton.enabled = remasterRotateLayerCounterclockwiseButton.enabled = canFlip;
 	for (NSButton *button in remasterShiftLayerButtons)
 	{
 		button.hidden = layer == RemasterEditorMetadata || grouping;
@@ -9934,12 +10151,15 @@ void QuitWithFatalError ( NSString *message)
 - (void)showRemasterAreaSettings
 {
 	if (!remasterEditingProfileLoaded) return;
+	workspaceAreaOpen = YES;
+	[self savePreviousWorkspace];
 	if (!remasterAreaPanel)
 	{
 		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 570)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
 		remasterAreaPanel.title = @"Area Settings";
 		remasterAreaPanel.releasedWhenClosed = NO;
+		remasterAreaPanel.delegate = self;
 		// Match Profile Controls: stay visible, but let other apps overlap normally.
 		remasterAreaPanel.hidesOnDeactivate = NO;
 		remasterAreaPanel.floatingPanel = NO;

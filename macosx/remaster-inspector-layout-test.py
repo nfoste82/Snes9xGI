@@ -23,6 +23,78 @@ def intersects(a, b):
 
 
 class MetadataLayoutTests(unittest.TestCase):
+    def test_layer_visibility_preserves_debug_view_and_lighting(self):
+        cycle = SOURCE.split('- (NSString *)cycleRemasterLayerView\n', 1)[1].split('- (NSString *)remasterLayerViewName', 1)[0]
+        self.assertNotIn('remasterLightingEnabled =', cycle)
+        self.assertNotIn('S9xRemasterSetDebugMode(', cycle)
+        self.assertNotIn('remasterReplayDebugMode =', cycle)
+        toggle = SOURCE.split('- (BOOL)toggleRemasterLighting\n', 1)[1].split('- (NSString *)cycleRemasterLightingView', 1)[0]
+        gi = SOURCE.split('- (NSString *)cycleRemasterLightingView\n', 1)[1].split('- (NSString *)captureRemasterTileInventory', 1)[0]
+        self.assertNotIn('if (remasterLayerView)', toggle)
+        self.assertNotIn('if (remasterLayerView)', gi)
+        self.assertIn('retainedPacket ? remasterReplayDebugMode : RemasterDebugMode::Original', SOURCE)
+        self.assertIn('DrawRemasterFrame(frame, inspectionDebugMode, nullptr, remasterLightingEnabled, remasterLightingView)', SOURCE)
+        self.assertIn('remasterReplayDebugMode = inspectionDebugMode', SOURCE)
+
+    def test_layer_shortcuts_and_fresh_frame_picking(self):
+        menu = Path(__file__).with_name("Snes9x").joinpath("AppDelegate.m").read_text()
+        self.assertRegex(menu, r'action:@selector\(toggleRemasterLighting:\)\s+keyEquivalent:@"s"')
+        self.assertRegex(menu, r'action:@selector\(cycleRemasterLayerView:\) keyEquivalent:@"k"')
+        self.assertRegex(menu, r'action:@selector\(cycleRemasterDebugMode:\)\s+keyEquivalent:@""')
+        action = SOURCE.split('- (NSString *)cycleRemasterLayerView\n', 1)[1].split('- (NSString *)showRemasterTileTypes', 1)[0]
+        self.assertIn('requestedLayerView.store(remasterLayerView)', action)
+        self.assertIn('remasterFramePresenting = false', action)
+        self.assertIn('remasterSelectedContextInstances.clear()', action)
+        self.assertIn('remasterLayerRefreshPending.store(true)', action)
+        self.assertIn('S9xRemasterSetProfile(remasterEditingProfile)', action)
+        self.assertIn('remasterCaptureSession.fetch_add(1)', action)
+        self.assertIn('remasterPausedCapturePending.store(false)', action)
+        pick = SOURCE.split('- (BOOL)selectRemasterPixelAtViewPoint:', 1)[1]
+        self.assertIn('remasterLayerRefreshPending.load()) return YES', pick)
+        renderer = Path(__file__).parents[1].joinpath("gfx.cpp").read_text()
+        self.assertIn('S9xRemasterInspectionLayers(Memory.FillRAM[0x212c]', renderer)
+        self.assertIn('!S9xRemasterState().activeLayerView && S9xRemasterFramePacketActive()', renderer)
+        runtime = Path(__file__).parents[1].joinpath("remaster/runtime/remaster.h").read_text()
+        self.assertIn('!state.activeLayerView && frame.scenePixels.empty() && heldLamp', runtime)
+
+    def test_inspector_reports_exact_occurrence_tile_coordinates(self):
+        section = SOURCE.split('text << "Tile hash   v"', 1)[1].split('text << "Match       "', 1)[0]
+        self.assertIn('!remasterNpcPicking', section)
+        self.assertIn('instance->source == RemasterSourceType::Background', section)
+        self.assertIn('instance->sourceIndex <= 1', section)
+        self.assertIn('instance - remasterReplayFrame.tileInstances.data() + 1', section)
+        self.assertIn('remasterReplayFrame.contextLocations.find(id)', section)
+        self.assertIn('location != remasterReplayFrame.contextLocations.end()', section)
+        self.assertIn('at.area < 320 ? "Room tile   (" : "World tile  ("', section)
+        self.assertIn('at.x << ", " << at.y', section)
+        self.assertIn('unsigned(at.background + 1)', section)
+        self.assertIn('[0-based, 8px tiles]', section)
+        self.assertIn('Unavailable (no captured location)', section)
+
+    def test_rotation_buttons_fit_and_use_single_undo(self):
+        controls = SOURCE.split('NSArray<NSString *> *clipboardTitles =', 1)[1].split('NSMutableArray<NSButton *> *shiftButtons', 1)[0]
+        frames = rects(controls)
+        self.assertEqual(len(frames), 8)
+        for i, frame in enumerate(frames):
+            self.assertLessEqual(frame[0] + frame[2], 740)
+            for other in frames[i + 1:]:
+                self.assertFalse(intersects(frame, other))
+        self.assertEqual(controls.count('@selector(rotateRemasterLayer:)'), 2)
+        self.assertIn('button.tag = 1;', controls)
+        action = SOURCE.split('- (void)rotateRemasterLayer:(id)sender\n', 1)[1].split('- (void)shiftRemasterLayer:', 1)[0]
+        self.assertIn('RemasterEffectiveHeightPreview()', action)
+        self.assertIn('remasterObstacleGroupingActive', action)
+        self.assertIn('std::set<RemasterTileContentId> unique', action)
+        self.assertIn('!RemasterSelectedContext(tileId)', action)
+        self.assertIn('CopyRemasterMetadataLayer(rotated, destination, layer)', action)
+        self.assertIn('S9xRemasterRotateNormalLayer(g.normalXyz, clockwise, previewFlip)', action)
+        self.assertEqual(action.count('registerUndoWithTarget:'), 1)
+        self.assertIn('UpdateRemasterEditingProfileDirty(current)', action)
+        self.assertIn('showRemasterVariantAtIndex:', action)
+        refresh = SOURCE.split('- (void)refreshRemasterEditingControls\n', 1)[1]
+        self.assertIn('remasterRotateLayerClockwiseButton.hidden = remasterRotateLayerCounterclockwiseButton.hidden = grouping;', refresh)
+        self.assertIn('remasterRotateLayerClockwiseButton.enabled = remasterRotateLayerCounterclockwiseButton.enabled = canFlip;', refresh)
+
     def test_tile_height_buttons_edit_full_selection_with_one_undo(self):
         action = SOURCE.split("- (void)stepRemasterTileHeight:(NSButton *)sender\n", 1)[1].split("- (void)applyRemasterHeightToAnimation:", 1)[0]
         self.assertIn("RemasterEffectiveHeightPreview()", action)
@@ -65,6 +137,15 @@ class MetadataLayoutTests(unittest.TestCase):
         self.assertIn("footprintHeight-(displayMember.y-minY+1)*size", refresh)
         self.assertIn("S9xRemasterObstacleEditorDisplayLayout", refresh)
         self.assertIn("&placementFlip", refresh)
+
+    def test_group_focus_uses_exact_footprints_not_last_hash(self):
+        refresh = SOURCE.split("- (void)refreshRemasterObstacleControls\n", 1)[1]
+        refresh = refresh.split("- (void)refreshRemasterEditingControls", 1)[0]
+        self.assertIn("S9xRemasterObstacleEditorFindGroup(remasterReplayFrame", refresh)
+        self.assertIn("!remasterObstacleSelection.empty() && groupIndex==-1", refresh)
+        self.assertIn("if (groupIndex==-2)", refresh)
+        self.assertIn("if (remasterObstacleExplicitMembers)", refresh)
+        self.assertIn("remasterEditingProfile.obstacleGroups[g].name==remasterObstacleFocusedGroup", refresh)
 
     def test_sprite_metadata_keeps_occurrences_and_source_kind(self):
         picking = SOURCE.split("- (BOOL)selectRemasterPixelAtViewPoint:", 1)[1]
@@ -131,7 +212,8 @@ class MetadataLayoutTests(unittest.TestCase):
         action = action.split("- (void)applyRemasterObstacleMember:", 1)[0]
         self.assertIn("[self remasterObstacleContactMembers:members error:error]", action)
         self.assertIn("S9xRemasterObstacleEditorSetContacts(group,members,contact,error)", action)
-        self.assertIn("(anyOn && anyOff) || [sender state]==NSControlStateValueOn", action)
+        self.assertIn("S9xRemasterObstacleEditorContactIntent(group,members,contact,error)", action)
+        self.assertNotIn("[sender state]", action)
         self.assertIn("Cannot change support contacts", action)
         self.assertIn("commitRemasterObstacleProfile:candidate", action)
         self.assertIn("[self refreshRemasterObstacleControls]", action)
@@ -180,7 +262,7 @@ class MetadataLayoutTests(unittest.TestCase):
     def test_missing_repeats_require_confirmation_before_single_commit(self):
         action = SOURCE.split("- (void)changeRemasterObstacleContact:(id)sender\n", 1)[1]
         action = action.split("- (void)applyRemasterObstacleMember:", 1)[0]
-        self.assertIn("!valid && !remasterObstacleExplicitMembers", action)
+        self.assertIn("!valid && remasterEditingProfileLoaded && !remasterObstacleExplicitMembers", action)
         self.assertIn("S9xRemasterObstacleEditorPrepareContactSelection", action)
         self.assertIn("Add Missing Occurrences and Set Contacts", action)
         self.assertIn("if ([alert runModal]!=NSAlertFirstButtonReturn) { [self refreshRemasterObstacleControls]; return; }", action)
@@ -191,6 +273,20 @@ class MetadataLayoutTests(unittest.TestCase):
         refresh = SOURCE.split("- (void)refreshRemasterObstacleControls\n", 1)[1]
         self.assertIn("contactProposal.members[i].supportContact", refresh)
         self.assertIn("add missing repeats…", refresh)
+
+    def test_contact_rejection_is_visible_and_restores_saved_checkbox(self):
+        action = SOURCE.split("- (void)changeRemasterObstacleContact:(id)sender\n", 1)[1].split("- (void)applyRemasterObstacleMember:", 1)[0]
+        rejection = action.split("if (!valid) {", 1)[1].split("} else", 1)[0]
+        self.assertLess(rejection.index("refreshRemasterObstacleControls"), rejection.index("remasterObstacleStatus.stringValue"))
+        self.assertIn("remasterObstacleStatus.toolTip", rejection)
+        self.assertIn("[alert runModal]; return;", rejection)
+        resolve = SOURCE.split("- (BOOL)remasterObstacleContactMembers:", 2)[-1].split("- (void)changeRemasterObstacleContact:", 1)[0]
+        for message in ("Load an editable profile", "No saved obstacle group", "ambiguous or stale", "focused obstacle group changed"):
+            self.assertIn(message, resolve)
+        refresh = SOURCE.split("- (void)refreshRemasterObstacleControls\n", 1)[1].split("- (void)refreshRemasterEditingControls", 1)[0]
+        self.assertIn("remasterObstacleContact.state=NSControlStateValueOff", refresh)
+        self.assertIn("if (!contactSelectionValid) remasterObstacleStatus.stringValue=@(contactError.c_str())", refresh)
+        self.assertIn("remasterEditingProfile.obstacleGroups[g].name==remasterObstacleFocusedGroup", refresh)
 
 
 if __name__ == "__main__":

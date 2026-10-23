@@ -103,27 +103,27 @@ Currentconcurrentlydirtyprofile untouched;schema30/eightstatecache preserved.
 ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode,
 CAP="$HOME/Library/Application Support/Snes9x/Remaster",OUT="$ROOT/room061-057-review".
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_symmetric_column_test.cpp -o "$ROOT/column057-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_symmetric_column_test.cpp -o "$ROOT/column057-test"
 "$ROOT/column057-test"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_symmetric_column_test.cpp -o "$ROOT/column057-san-final"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_symmetric_column_test.cpp -o "$ROOT/column057-san-final"
 "$ROOT/column057-san-final"
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY remaster/dungeon_obstacle057_probe.cpp -o "$ROOT/column057-before"
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY remaster/tests/dungeon_obstacle057_probe.cpp -o "$ROOT/column057-before"
 "$ROOT/column057-before" "$CAP/frame_room061_057.s9xrmf" "$OUT/ablation-before"
-c++ -std=c++17 -O2 remaster/dungeon_obstacle057_probe.cpp -o "$ROOT/column057-after"
+c++ -std=c++17 -O2 remaster/tests/dungeon_obstacle057_probe.cpp -o "$ROOT/column057-after"
 "$ROOT/column057-after" "$CAP/frame_room061_057.s9xrmf" "$OUT/after"
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/column057-solver"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room061_057.s9xrmf" --solver "$ROOT/column057-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_capture_complete_gate.py --capture "$CAP/frame_room061_057.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixture build/remaster-geometry/surface-audit-room-local/room-061-doorway-graph.json
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/column057-corpus-before"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/column057-corpus-after"
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/column057-solver"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room061_057.s9xrmf" --solver "$ROOT/column057-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_capture_complete_gate.py --capture "$CAP/frame_room061_057.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixture build/remaster-geometry/surface-audit-room-local/room-061-doorway-graph.json
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/column057-corpus-before"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/column057-corpus-after"
 # Run both modes with sameOWN057profile:
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_057.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/column057-corpus-before" --output "$OUT/corpus-before.json"
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_057.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/column057-corpus-after" --output "$OUT/corpus-after.json"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_obstacle057_evidence.py --capture "$CAP/frame_room061_057.s9xrmf" --review "$OUT" --reference "$ROOT/diagonal-sets-priority/room-061-entrance-4.raw"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_057.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/column057-corpus-before" --output "$OUT/corpus-before.json"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_057.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/column057-corpus-after" --output "$OUT/corpus-after.json"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_obstacle057_evidence.py --capture "$CAP/frame_room061_057.s9xrmf" --review "$OUT" --reference "$ROOT/diagonal-sets-priority/room-061-entrance-4.raw"
 git diff --check
 ```
 Changedthissliceonly:remaster.h symmetryrule;newdungeon_symmetric_column_test.cpp,
-dungeon_obstacle057_probe.cpp,tools/ALttP/alttp_obstacle057_evidence.py,
+dungeon_obstacle057_probe.cpp,remaster/tools/ALttP/alttp_obstacle057_evidence.py,
 alttp_capture_complete_gate.py,thisreport. Existingconcurrentchangespreserved.
 ArtifactsOUTbefore/afterproductionpackets,mapinventories,parts/effectiveJSON,
 target-writer-evidence.json,corpus-before/after/summary.json,completeownreplayraw/

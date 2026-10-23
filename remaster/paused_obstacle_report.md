@@ -24,19 +24,19 @@ six contacts and all member Z=0 in `ThroneRoomDoorBlocker`.
 - `macosx/mac-os.mm` / `macosx/mac-os.h`: dispatch a shared, value-owned copy of
   the exact producer packet. The private open overload accepts that packet and
   skips disk reconstruction; metadata sync consumes its retained support.
-- `remaster/remaster.h`: pin complete room/attribute/graphics/template and actor
+- `remaster/runtime/remaster.h`: pin complete room/attribute/graphics/template and actor
   inputs at the same EndFrame as the completed live packet. Save these on paused
   capture, not newer RAM. Profile copies are cached once per profile/settings
   revision and shared; no per-frame serialization or solver-map copy is added.
   Per-frame inputs are 102,988 bytes plus bounded value-only context. Solver-local
   pointers are cleared. BeginFrame revokes completed evidence.
-- `remaster/capture_path.h`: orphan sidecars reserve capture names too, avoiding
+- `remaster/runtime/capture_path.h`: orphan sidecars reserve capture names too, avoiding
   accidental overwrite when a main packet has been deleted.
-- `remaster/obstacle_group_editor.h`: transactional selected-member Z/name edit,
+- `remaster/runtime/obstacle_group_editor.h`: transactional selected-member Z/name edit,
   signed range validation and unchanged contacts/unselected members. Native UI
   shows Mixed for unequal Z and supports blank mixed rename without flattening.
   Missing selected repeats require explicit completion confirmation before commit.
-- Production regression `remaster/paused_obstacle_test.cpp` runs EndFrame, proves
+- Production regression `remaster/tests/paused_obstacle_test.cpp` runs EndFrame, proves
   the old support-stripping failure, tests immediate same-packet handoff and disk
   sidecar reopening, compares all height/surface/normal fields, applies Z/undo
   repeatedly and changes live inputs to prove retained-state isolation.

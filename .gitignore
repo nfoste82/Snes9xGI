@@ -129,6 +129,9 @@ build/
 # Project-local macOS build products
 /build/debug/
 /build/release/
+# Local authoring/migration snapshots; the canonical profiles remain tracked.
+/remaster/profiles/ALttP/alttp-profile_backup*.toml
+/remaster/profiles/ALttP/*.toml.bak
 DerivedData/
 *.moved-aside
 *.pbxuser
@@ -458,8 +461,8 @@ __pycache__/
 *.pyc
 
 # Cake - Uncomment if you are using it
-# tools/**
-# !tools/packages.config
+# remaster/tools/**
+# !remaster/tools/packages.config
 
 # Tabs Studio
 *.tss

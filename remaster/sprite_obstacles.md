@@ -58,6 +58,14 @@ footprint evidence (including individual tile flips); ambiguous repeats, stale
 cells, or selections spanning groups/sources show an error and change nothing.
 Use footprint buttons when captured artwork is too incomplete to disambiguate.
 Removing the last contact is rejected with an alert and restores the checkbox.
+Click intent comes from saved member flags, not AppKit's post-click three-state
+value: an unchecked or mixed selection enables all; an all-checked selection
+disables all (unless that would remove the last contact). Rejections leave the
+profile unchanged, restore the checkbox and display an actionable alert and
+status/tooltip. No-group and ambiguous selections disable editing with a visible
+selection diagnostic; stale/empty member selections ask for reselection. Explicit
+footprint/dropdown selection takes precedence over old scene clicks and stays
+with its named group rather than a group's transient vector index.
 **Apply Selected Z / Name** applies Z to all selected exact scene/footprint
 members and updates the group name in one undo step; contacts and unselected Z
 are preserved. The dropdown selects one member. Mixed Z displays a blank field
@@ -107,10 +115,26 @@ but absolute height and shadow geometry remain absent (no guessed zero floor).
 Profile schema30 adds optional `sprite_assembly = true` to an obstacle group.
 Omitting the key retains schema22 background behavior. Old profiles need no
 migration; saving a sprite group requires the new binary. Repeated hashes remain
-legal within one group; identity ownership across groups remains exclusive.
+legal within and across groups. Identity is reusable artwork, not ownership:
+complete translated/mirrored footprints establish ownership. Two complete claims
+sharing any occurrence are rejected in full, even if their Z/contact data agree;
+neither profile order nor the larger footprint breaks a tie. This is a validation
+relaxation of the existing grammar; no new field or profile migration is needed.
 The TOML serializer, three-way merge and Python atlas/semantic preservation retain
 the field. Both native runtime and independent background audits exclude sprite
 groups from fixed room footprints and floor constraints.
+
+Clicking a member focuses an existing group only when one complete visible
+footprint contains every selected occurrence. Selecting cells outside that
+footprint returns to **Create Obstacle Group**, including cells with artwork
+shared by the old group. Start with a plain click on the new object to replace
+the previous selection, then Cmd-click its remaining cells. No locations are
+auto-added, and creation does not clone another group's contacts or Z values.
+Competing complete groups or stale click evidence disable creation/editing and
+show an ambiguity diagnostic. Partial/occluded footprints cannot auto-focus a
+group; inventory-only focus works only for an identity present in one group.
+Explicit footprint-button/member edits retain their selected group until the
+next scene click. Save Profile, merge and Undo still operate per named group.
 
 ## Runtime contract
 
@@ -134,6 +158,11 @@ See [`sprite_obstacle_movement_report.md`](sprite_obstacle_movement_report.md)
 for the scrolling ownership failure and production movement regression.
 Other producer families need equivalent verified adapters when contacts alone
 cannot distinguish the gameplay plane; grouping itself is not family-specific.
+Vertically culled mantle entries reproduce the USA producer's exact Y=$f0
+correction, retaining actor-derived logical positions for hidden identity only.
+See [`sprite_obstacle_culling_report.md`](sprite_obstacle_culling_report.md) for
+the exact `_056` recovery and unchanged `_059` control; wholly clipped children
+are not lighting receivers.
 See the header for exact current evidence limitations. In particular, grounded
 settled dungeon support is the implemented scope; airborne props, wholly hidden
 members and ambiguous overlapping-plane ownership need additional producer data.

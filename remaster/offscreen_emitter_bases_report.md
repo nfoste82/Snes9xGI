@@ -56,7 +56,7 @@ independent BG1 ownership. It also guards zero/black source denominators.
 ## Corpus and verification
 
 `offscreen_emitter_capture_probe.cpp` extends the existing production own-input
-replay without changing it. `tools/ALttP/alttp_audit_emitter_sources.py` runs it
+replay without changing it. `remaster/tools/ALttP/alttp_audit_emitter_sources.py` runs it
 over available own-profile sidecars and retains explicit rejections.
 
 55 sidecar states in rooms041/050/060/061/062:46 audited,7 rejected for

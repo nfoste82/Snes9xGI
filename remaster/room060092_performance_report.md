@@ -141,7 +141,7 @@ incomplete. Performance equality is not room approval.
 `36ae3fce625b9456be44582a3d644b395eb2100ad7c906e3fd88242dd1273e24`.
 Relaunch older running app to use it. No fresh live GUI comparison performed.
 
-Files: runtime change only `remaster/frame.h`; benchmark modes/oracles in existing
+Files: runtime change only `remaster/runtime/frame.h`; benchmark modes/oracles in existing
 `dungeon_geometry_cache_capture_probe.cpp`; new selection regression; native
 Metal probe gained repeated timing, cached pipelines, CPU field metrics and
 explicit diagnostic ablations. Shader source/profiles are unchanged. Artifact

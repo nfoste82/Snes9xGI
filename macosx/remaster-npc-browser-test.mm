@@ -1,7 +1,7 @@
 // Corpus validation uses the native JSON decoder and the same pose view source.
 #import <Cocoa/Cocoa.h>
-#include "../remaster/remaster.h"
-#include "../remaster/npc_pose.h"
+#include "../remaster/runtime/remaster.h"
+#include "../remaster/runtime/npc_pose.h"
 #include <iostream>
 
 @interface S9xEngine : NSObject

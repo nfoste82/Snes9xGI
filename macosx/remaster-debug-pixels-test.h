@@ -1,7 +1,7 @@
 // Actual production debug kernel, fed by the production field cache. This is
 // fixture-free so --metal always exercises unresolved OBJ normal presentation.
-#include "../remaster/sprite_obstacle.h"
-#include "../remaster/lighting_field_cache.h"
+#include "../remaster/runtime/sprite_obstacle.h"
+#include "../remaster/runtime/lighting_field_cache.h"
 
 static void TestRemasterDebugPixels(id<MTLDevice> device, id<MTLLibrary> library,
 	id<MTLCommandQueue> queue)

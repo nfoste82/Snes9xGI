@@ -35,7 +35,7 @@ int main(int argc, const char **argv)
             if (![engine loadROM:rom]) return 3;
             if (![mode isEqualToString:@"immediate"]) {
                 NSString *error = [engine loadRemasterProfile:[NSURL fileURLWithPath:
-                    [root stringByAppendingPathComponent:@"Profiles/ALttP/alttp-profile.toml"]]];
+                    [root stringByAppendingPathComponent:@"remaster/profiles/ALttP/alttp-profile.toml"]]];
                 if (error) { NSLog(@"%@", error); return 4; }
                 NSDate *until = [NSDate dateWithTimeIntervalSinceNow:1.0];
                 while (until.timeIntervalSinceNow > 0)

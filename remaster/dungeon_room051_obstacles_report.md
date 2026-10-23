@@ -53,11 +53,11 @@ temporary-root `room051030-before*` / `room051030-after*` inventories/packets.
 
 Reproduce from the repository root (create the output directory first):
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_room051_probe.cpp -o build/room051-probe
+c++ -std=c++17 -O2 remaster/tests/dungeon_room051_probe.cpp -o build/room051-probe
 build/room051-probe "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_030.s9xrmf" build/room051030-result
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o build/room051-solver
-python3 -B tools/ALttP/alttp_replay_live_height_evidence.py "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_030.s9xrmf" --solver build/room051-solver --output build/room051030-validation --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-python3 -B remaster/sprite_obstacle_gate.py --capture "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_030.s9xrmf" --output build/room051030-validation --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o build/room051-solver
+python3 -B remaster/tools/ALttP/alttp_replay_live_height_evidence.py "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_030.s9xrmf" --solver build/room051-solver --output build/room051030-validation --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+python3 -B remaster/tests/sprite_obstacle_gate.py --capture "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_030.s9xrmf" --output build/room051030-validation --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
 ```
 
 ## Mandatory complete-room v2: still fails

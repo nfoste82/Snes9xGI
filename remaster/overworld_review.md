@@ -48,9 +48,9 @@ Visibility/shadows; the overview reports absent occlusion data explicitly.
 
 ## Implementation
 
-- `remaster/overworld_geometry.h`: collision behavior, exact assembly discovery,
+- `remaster/runtime/overworld_geometry.h`: collision behavior, exact assembly discovery,
   support constraints, anisotropic/sample-based geometry and transformed normals.
-- `tools/ALttP/alttp_overworld_geometry.py`, `alttp_overworld_castle.py`: complete
+- `remaster/tools/ALttP/alttp_overworld_geometry.py`, `alttp_overworld_castle.py`: complete
   base-area export, reusable semantic families, corpus inventory, strict gate.
 - Frame schema36: occurrence status/role/normals/occlusion in addition to existing
   placement height/base; unresolved/conflict prevents shared-asset fallback.
@@ -59,25 +59,25 @@ Visibility/shadows; the overview reports absent occlusion data explicitly.
 - `alttp_overworld_review.py`, `alttp_overworld_review_bundle.py`: overview,
   annotations, native bundle and launcher.
 - `macosx/remaster-overworld-review-methods.h`: lightweight native navigation.
-- `remaster/overworld_capture.h` / `gfx.cpp`: first-completed-frame outdoor WRAM,
+- `remaster/runtime/overworld_capture.h` / `gfx.cpp`: first-completed-frame outdoor WRAM,
   VRAM, ROM definitions, PPU and profile evidence sidecars for future state parity.
 
 ## Reproduce
 
-Compile `tools/ALttP/alttp_overworld_core.cpp` and
-`tools/ALttP/alttp_overworld_replay.cpp` as standalone C++17 tools.
+Compile `remaster/tools/ALttP/alttp_overworld_core.cpp` and
+`remaster/tools/ALttP/alttp_overworld_replay.cpp` as standalone C++17 tools.
 Then run:
 
 ```sh
-python3 tools/ALttP/alttp_overworld_geometry.py --castle --core CORE_BINARY \
+python3 remaster/tools/ALttP/alttp_overworld_geometry.py --castle --core CORE_BINARY \
   --output build/remaster-geometry/overworld-castle-authored-v1.json \
   --write-rules build/remaster-geometry/overworld-castle-rules-v1.json \
   --review-summary build/remaster-geometry/overworld-castle-authored-v1-review.json \
   --audit-corpus
-python3 tools/ALttP/alttp_overworld_art.py --area 0x1b \
+python3 remaster/tools/ALttP/alttp_overworld_art.py --area 0x1b \
   --prefix build/remaster-geometry/castle-authored-v4 \
   --candidate build/remaster-geometry/overworld-castle-authored-v1.json
-python3 tools/ALttP/alttp_overworld_review_bundle.py --producer REPLAY_BINARY \
+python3 remaster/tools/ALttP/alttp_overworld_review_bundle.py --producer REPLAY_BINARY \
   --standing-fixture build/remaster-geometry/castle-reference-standing-fixture.json \
   --artwork build/remaster-geometry/castle-authored-v4-overview.png \
   --capture-candidate build/remaster-geometry/castle-authored-v4-open0771.json \

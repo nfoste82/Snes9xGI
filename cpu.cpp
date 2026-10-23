@@ -13,7 +13,7 @@
 #include "srtc.h"
 #include "snapshot.h"
 #include "cheats.h"
-#include "remaster/remaster.h"
+#include "remaster/runtime/remaster.h"
 #ifdef DEBUGGER
 #include "debug.h"
 #endif

@@ -63,7 +63,7 @@ Commands (output parent must exist):
 OUT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 CAP="$HOME/Library/Application Support/Snes9x/Remaster/frame_room060_071.s9xrmf"
 c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES \
-  remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/room060-cache-probe"
+  remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/room060-cache-probe"
 ALTTP_PLANE_CACHE_BENCHMARK=40 "$OUT/room060-cache-probe" "$CAP" "$OUT/plane071"
 # Optional compile-time oracle: add -DALTTP_TEST_DISABLE_CLASSIFICATION_REUSE.
 ```

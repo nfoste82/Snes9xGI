@@ -1,7 +1,7 @@
 #ifndef MAC_REMASTER_BENCHMARK_H
 #define MAC_REMASTER_BENCHMARK_H
 
-#include "remaster/remaster.h"
+#include "remaster/runtime/remaster.h"
 
 // Opt-in live benchmark. Tags are copied into GPU completion callbacks so a
 // completed sample always belongs to its producing frame, not the next case.

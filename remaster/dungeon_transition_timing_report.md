@@ -75,11 +75,11 @@ not correct height coverage for all placed tiles or all rooms/states.
 ## Reproduction
 
 ```sh
-python3 tools/run_remaster_tests.py --suite quick --output build/transition-height-verified-tests
-python3 tools/ALttP/alttp_build_transition_attributes_probe.py --engine build/remaster-geometry/room-preview-engine --output build/transition-attributes-probe
+python3 remaster/tools/run_remaster_tests.py --suite quick --output build/transition-height-verified-tests
+python3 remaster/tools/ALttP/alttp_build_transition_attributes_probe.py --engine build/remaster-geometry/room-preview-engine --output build/transition-attributes-probe
 # Run the resulting binary with the reference engine as its working directory:
 # <absolute binary> 0x61 <absolute output.ppm> 4
-c++ -std=c++17 -O2 -pthread remaster/dungeon_geometry_cache_capture_probe.cpp -o build/transition-capture-probe
+c++ -std=c++17 -O2 -pthread remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o build/transition-capture-probe
 ALTTP_DEPARTURE_HEIGHT_REGRESSION=1 build/transition-capture-probe "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_040.s9xrmf" build/transition-051
 ALTTP_DEPARTURE_HEIGHT_REGRESSION=1 build/transition-capture-probe "$HOME/Library/Application Support/Snes9x/Remaster/frame_room061_071.s9xrmf" build/transition-061
 ```

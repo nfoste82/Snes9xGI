@@ -36,13 +36,13 @@ remain RG32Float; their memory size and lighting coordinate scale are unchanged.
 
 ## Verification
 
-- `remaster/signed_height_test.cpp`: signed endpoints, values above 255,
+- `remaster/tests/signed_height_test.cpp`: signed endpoints, values above 255,
   legacy-schema rejection, overflow/fraction rejection, profile and capture
   round-trips, variants, placement composition, lighting-field cache invalidation,
   inspector values and legacy sample decoding.
-- `remaster/dungeon_semantic_cache_test.cpp`: full-byte cache identity for
+- `remaster/tests/dungeon_semantic_cache_test.cpp`: full-byte cache identity for
   positive/negative relief with identical low bytes.
-- `tools/ALttP/alttp_signed_dungeon_test.cpp`: signed geometric/support cases.
+- `remaster/tools/ALttP/alttp_signed_dungeon_test.cpp`: signed geometric/support cases.
 - Existing inspector, NPC, layer, facing/flip and dungeon regressions.
 - arm64 Debug application build passed; signed end-to-end regression passed
   ASan/UBSan. The broad dungeon run passed 41 tests; its sole stale schema

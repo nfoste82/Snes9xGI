@@ -15,11 +15,11 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
-#include "../remaster/indirect_lighting_reference.h"
-#include "../remaster/surface_mesh_material.h"
-#include "../remaster/emitter_patches.h"
-#include "../remaster/sphere_samples.h"
-#include "../remaster/hidden_emitter_samples.h"
+#include "../remaster/tests/indirect_lighting_reference.h"
+#include "../remaster/runtime/surface_mesh_material.h"
+#include "../remaster/runtime/emitter_patches.h"
+#include "../remaster/runtime/sphere_samples.h"
+#include "../remaster/runtime/hidden_emitter_samples.h"
 
 // Match the constant-buffer ABI in shaders.metal, including float3 alignment.
 struct Light

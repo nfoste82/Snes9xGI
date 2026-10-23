@@ -31,7 +31,7 @@ older profiles retain200 without migration until this setting changes.
 The live packet retains an in-memory lamp index (including at zero) for paused
 preview. This identity is not inferred from sphere appearance or serialized:
 saved captures retain their baked lamp intensity and require recapture to change it.
-`remaster/link_lamp_brightness_test.cpp` covers profile bounds/compatibility,
+`remaster/tests/link_lamp_brightness_test.cpp` covers profile bounds/compatibility,
 scene-setting restoration, paused zero/restoration, unrelated light preservation
 and independent save merging. Native layout tests and arm64 Debug build pass;
 interactive gameplay appearance has not been checked.

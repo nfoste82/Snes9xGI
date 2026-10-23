@@ -75,7 +75,7 @@ cache stress is not all-state gameplay approval.
 Artifact `build/oriented-obstacle-corpus.json`; full test manifest
 `build/oriented-obstacle-tests/20261022T203509Z-zv_fqyv5/results.json`.
 
-Reproduction: compile/run `remaster/dungeon_room051_height_probe.cpp` against
+Reproduction: compile/run `remaster/tests/dungeon_room051_height_probe.cpp` against
 `frame_room051_039.s9xrmf`, then use the replay tool and sprite_obstacle_gate.py
 as in `dungeon_room051039_report.md`, output to the orientation directory.
 Fresh interactive AppKit selection/Undo/Save and live visual acceptance were not

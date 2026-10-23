@@ -26,7 +26,7 @@
 #include "cheats.h"
 #include "movie.h"
 #include "display.h"
-#include "remaster/remaster.h"
+#include "remaster/runtime/remaster.h"
 
 #include <wchar.h>
 

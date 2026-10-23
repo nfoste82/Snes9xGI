@@ -10,7 +10,7 @@ now contains allfour carried-child intrinsic height arrays; historical019 still
 retains its own missing-source evidence. See the independent validator report.
 Parent owns builds and
 independent tests; no renderer/frontend/profile/schema30 edits by this worker.
-Concurrent `Profiles/ALttP/alttp-profile.toml` changes appeared during this task;
+Concurrent `remaster/profiles/ALttP/alttp-profile.toml` changes appeared during this task;
 they were not touched, consumed as replacement evidence, or reverted.
 
 ## Exact evidence / root causes
@@ -102,19 +102,19 @@ Repository root, preexisting directory:
 OUT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode/action-height-review
 CAP="$HOME/Library/Application Support/Snes9x/Remaster"
 ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/action-capture"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/action-full"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/action-capture"
+c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/action-full"
 "$ROOT/action-capture" "$CAP/frame_room061_048.s9xrmf" "$ROOT/action048-after"
 "$ROOT/action-capture" "$CAP/frame_room062_019.s9xrmf" "$ROOT/action019-after"
-python3 -B remaster/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/action-capture" --full "$ROOT/action-full" --output "$OUT"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/action-corpus"
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_048.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/action-corpus" --output "$OUT/corpus-after.json"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_action_review.py --captures "$CAP" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --graph061 build/remaster-geometry/surface-audit-room-local/room-061-doorway-graph.json --graph062 "$ROOT/door-pot-lifecycle/live-graph.json"
+python3 -B remaster/tests/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/action-capture" --full "$ROOT/action-full" --output "$OUT"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/action-corpus"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_048.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/action-corpus" --output "$OUT/corpus-after.json"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_action_review.py --captures "$CAP" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --graph061 build/remaster-geometry/surface-audit-room-local/room-061-doorway-graph.json --graph062 "$ROOT/door-pot-lifecycle/live-graph.json"
 git diff --check
 ```
 Replay inputs produced by `alttp_replay_live_height_evidence.py` with OWN capture,
 `--solver "$ROOT/action-solver" --output "$OUT/live048"` (or019) and same `--rom`;
-solver built from tools/ALttP/alttp_runtime_room_heights.cpp. Narrowtests compiled
+solver built from remaster/tools/ALttP/alttp_runtime_room_heights.cpp. Narrowtests compiled
 `-std=c++17 -O2`,sanitizers`-O1 -g -fsanitize=address,undefined`.
 
 Smallest next actions: parent builds/independenttests; independent validator

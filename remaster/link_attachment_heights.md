@@ -24,7 +24,7 @@ Overworld floor support remains outside this dungeon-map application path.
 Jump displacement/body geometry are unchanged. Intra-room stair support is now
 interpolated as described below; authored tread/rail geometry is unchanged.
 
-Portable regression: `remaster/link_attachment_height_test.cpp` (C++17). Covers
+Portable regression: `remaster/tests/link_attachment_height_test.cpp` (C++17). Covers
 both blocks/planes, signed/zero/raised/unknown bases, mixed priorities, clipped
 and sub-only parts, preserved local arrays, unrelated artwork, absent/ambiguous
 ownership, legacy maps and independent BG1 application. Fresh gameplay visual
@@ -55,7 +55,7 @@ The local reference engine's `src/dungeon.c` functions
 confirm that the collision plane changes at opposite endpoints depending on
 traversal direction. Sampling that plane alone cannot produce a continuous rise.
 
-`remaster/link_stair_height_test.cpp` checks every pixel in both directions,
+`remaster/tests/link_stair_height_test.cpp` checks every pixel in both directions,
 both stair orientations, same/changing planes, both Link OAM blocks, signed
 landings, clipped/sub-only equipment, unchanged local arrays, BG1 double-apply
 rejection and unsupported-input fallbacks. This changes actor support only, not

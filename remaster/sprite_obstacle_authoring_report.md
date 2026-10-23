@@ -3,7 +3,7 @@
 ## Current profile / actual presentation follow-up (14:35 capture010)
 
 This supersedes the old profile inventory below. Disk profile
-`Profiles/ALttP/alttp-profile.toml`, SHA256
+`remaster/profiles/ALttP/alttp-profile.toml`, SHA256
 `5ef31411c5473070ff158af2abdb9239f4af116c816d34714e5a0f0837227c41`,
 has schema30 `ThroneRoomDoorBlocker`, spriteAssembly=true, **16 members**, and
 all16identities have authored height and normal_xyz. No authored file was edited.
@@ -94,7 +94,7 @@ Observed latest capture `frame_room051_008.s9xrmf`: 16 unique mantle identities,
 16 captured height layers, zero base normal layers, 192 unresolved records.
 `007`/`008` have no complete room/terrain/actor sidecars. Only `003` has complete
 room inputs; it lacks contemporaneous mantle actor evidence. Current requested
-`Profiles/ALttP/alttp-profile.toml` has no sprite assembly group and zero authored
+`remaster/profiles/ALttP/alttp-profile.toml` has no sprite assembly group and zero authored
 local heights for these identities. It is NOT the same authoring snapshot as008.
 No profile, backup or user-authored arrays were edited.
 

@@ -14,8 +14,8 @@
 #include "screenshot.h"
 #include "display.h"
 #include "memmap.h"
-#include "remaster/remaster.h"
-#include "remaster/dungeon_transition_attributes.h"
+#include "remaster/runtime/remaster.h"
+#include "remaster/runtime/dungeon_transition_attributes.h"
 
 #include <cstring>
 
@@ -1057,6 +1057,12 @@ static inline void RenderScreen (bool8 sub)
 		BGActive = Memory.FillRAM[0x212d] & ~Settings.BG_Forced;
 		D = (Memory.FillRAM[0x2130] & 2) << 4; // 'do math' depth flag
 	}
+	// Inspection uses fresh stock rasterization, so exposed pixels retain exact
+	// tile ownership. Never fake an underlying layer by filtering winning pixels.
+	const auto layerView = S9xRemasterState().activeLayerView;
+	if (layerView == 1 || layerView == 2)
+		BGActive = S9xRemasterInspectionLayers(Memory.FillRAM[0x212c], Memory.FillRAM[0x212d],
+			Settings.BG_Forced, layerView, sub);
 	// Independent remaster scene target. Never alter PPU state or stock buffers.
 	ClipData sceneClip[6];
 	if (S9xRemasterState().scenePass)
@@ -1107,7 +1113,7 @@ static inline void RenderScreen (bool8 sub)
 			S9xRemasterSetUnsupportedDraw(); \
 			S9xRemasterSetInventorySource(RemasterSourceType::Background, n); \
 			BG.StartPalette = pal; \
-			BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & (1 << n)); \
+			BG.EnableMath = !layerView && !sub && (Memory.FillRAM[0x2131] & (1 << n)); \
 			BG.TileSizeH = (!hires && PPU.BG[n].BGSize) ? 16 : 8; \
 			BG.TileSizeV = (PPU.BG[n].BGSize) ? 16 : 8; \
 			S9xSelectTileConverter(depth, hires, sub, PPU.BGMosaic[n]); \
@@ -1174,13 +1180,13 @@ static inline void RenderScreen (bool8 sub)
 			S9xRemasterSetUnsupportedDraw();
 			if (BGActive & 0x01)
 			{
-				BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & 1);
+				BG.EnableMath = !layerView && !sub && (Memory.FillRAM[0x2131] & 1);
 				DrawBackgroundMode7(0, GFX.DrawMode7BG1Math, GFX.DrawMode7BG1Nomath, D);
 			}
 
 			if ((Memory.FillRAM[0x2133] & 0x40) && (BGActive & 0x02))
 			{
-				BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & 2);
+				BG.EnableMath = !layerView && !sub && (Memory.FillRAM[0x2131] & 2);
 				DrawBackgroundMode7(1, GFX.DrawMode7BG2Math, GFX.DrawMode7BG2Nomath, D);
 			}
 
@@ -1189,7 +1195,7 @@ static inline void RenderScreen (bool8 sub)
 
 	#undef DO_BG
 
-	BG.EnableMath = !sub && (Memory.FillRAM[0x2131] & 0x20);
+	BG.EnableMath = !layerView && !sub && (Memory.FillRAM[0x2131] & 0x20);
 
 	DrawBackdrop();
 }
@@ -1268,7 +1274,7 @@ void S9xUpdateScreen (void)
 		const bool hudGeometry = S9xRemasterHudGeometryContext(Memory.RAM[0x1b] != 0,
 			Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]);
 		const bool geometryOnly = hudGeometry && !lampScene;
-		if (S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
+		if (!S9xRemasterState().activeLayerView && S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
 			!IPPU.DoubleWidthPixels && !IPPU.Interlace && !IPPU.PseudoHires &&
 			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2] &&
 				(!geometryOnly || !PPU.BGMosaic[0]))) &&

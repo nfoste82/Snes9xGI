@@ -16,7 +16,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
-#include "../remaster/surface_mesh.h"
+#include "../remaster/runtime/surface_mesh.h"
 
 struct Uniforms
 {

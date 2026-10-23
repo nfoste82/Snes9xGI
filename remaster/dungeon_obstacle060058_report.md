@@ -145,37 +145,37 @@ ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 OUT="$ROOT/obstacle060058-review"
 CAP="$HOME/Library/Application Support/Snes9x/Remaster"
 ROM=build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-c++ -std=c++17 -O2 remaster/dungeon_obstacle060058_probe.cpp -o "$ROOT/obstacle060058-after"
+c++ -std=c++17 -O2 remaster/tests/dungeon_obstacle060058_probe.cpp -o "$ROOT/obstacle060058-after"
 "$ROOT/obstacle060058-after" "$CAP/frame_room060_058.s9xrmf" "$OUT/after"
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_CONTACT_PLANES remaster/dungeon_obstacle060058_probe.cpp -o "$ROOT/obstacle060058-before"
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_CONTACT_PLANES remaster/tests/dungeon_obstacle060058_probe.cpp -o "$ROOT/obstacle060058-before"
 "$ROOT/obstacle060058-before" "$CAP/frame_room060_058.s9xrmf" "$OUT/before"
-c++ -std=c++17 -O2 remaster/dungeon_authored_obstacle_test.cpp -o "$ROOT/obstacle060058-policy-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_authored_obstacle_test.cpp -o "$ROOT/obstacle060058-policy-test"
 "$ROOT/obstacle060058-policy-test"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_authored_obstacle_test.cpp -o "$ROOT/obstacle060058-policy-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_authored_obstacle_test.cpp -o "$ROOT/obstacle060058-policy-san"
 "$ROOT/obstacle060058-policy-san"
-python3 -B -m unittest discover -s tools/ALttP -p test_authored_obstacles.py
-python3 -B -m unittest discover -s tools/ALttP -p test_alttp_validate_room_heights.py
-python3 -B -m unittest discover -s tools/ALttP -p test_diagonal_preview.py
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/obstacle060058-solver"
-python3 -B tools/ALttP/alttp_validate_obstacle_live.py "$CAP/frame_room060_058.s9xrmf" --solver "$ROOT/obstacle060058-solver" --rom "$ROM" --fixture-graph build/remaster-geometry/surface-audit-room-local/room-060-doorway-graph.json --output "$OUT"
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_authored_obstacles.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_alttp_validate_room_heights.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_diagonal_preview.py
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/obstacle060058-solver"
+python3 -B remaster/tools/ALttP/alttp_validate_obstacle_live.py "$CAP/frame_room060_058.s9xrmf" --solver "$ROOT/obstacle060058-solver" --rom "$ROM" --fixture-graph build/remaster-geometry/surface-audit-room-local/room-060-doorway-graph.json --output "$OUT"
 # Expected exit1, NOT approval. Wrapper invokes alttp_validate_room_heights.py
 # with every complete input and live-runtime.bin. Direct gate rerun:
-python3 -B tools/ALttP/alttp_validate_room_heights.py --graph "$OUT/live-doorway-graph.json" --snapshot "$OUT/live-solver-input.raw" --attributes "$OUT/live-solver-input.raw.attr" --state "$OUT/live-traversal-state.json" --profile "$OUT/replay-input-profile.toml" --runtime-solution "$OUT/live-local-seed-runtime.json" --height-map "$OUT/live-runtime.bin" --rom "$ROM" --output "$OUT/live-validation-v2.json" --diagnostic-svg "$OUT/live-validation-v2.svg"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/obstacle060058-replay"
+python3 -B remaster/tools/ALttP/alttp_validate_room_heights.py --graph "$OUT/live-doorway-graph.json" --snapshot "$OUT/live-solver-input.raw" --attributes "$OUT/live-solver-input.raw.attr" --state "$OUT/live-traversal-state.json" --profile "$OUT/replay-input-profile.toml" --runtime-solution "$OUT/live-local-seed-runtime.json" --height-map "$OUT/live-runtime.bin" --rom "$ROM" --output "$OUT/live-validation-v2.json" --diagnostic-svg "$OUT/live-validation-v2.svg"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/obstacle060058-replay"
 "$ROOT/obstacle060058-replay" "$CAP/frame_room061_066.s9xrmf" "$OUT/own066"
 "$ROOT/obstacle060058-replay" "$CAP/frame_room061_048.s9xrmf" "$OUT/own048"
-python3 -B tools/ALttP/alttp_audit_authored_obstacle_replays.py --captures "$CAP" --probe "$ROOT/obstacle060058-replay" --output "$OUT"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/obstacle060058-corpus"
-python3 -B tools/ALttP/alttp_audit_authored_reference_corpus.py --manifest "$ROOT/room061-057-review/corpus-after.json" --profile "$CAP/frame_room060_058.s9xrmf.profile.toml" --rom "$ROM" --probe "$ROOT/obstacle060058-corpus" --output "$OUT/reference-after.json"
+python3 -B remaster/tools/ALttP/alttp_audit_authored_obstacle_replays.py --captures "$CAP" --probe "$ROOT/obstacle060058-replay" --output "$OUT"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/obstacle060058-corpus"
+python3 -B remaster/tools/ALttP/alttp_audit_authored_reference_corpus.py --manifest "$ROOT/room061-057-review/corpus-after.json" --profile "$CAP/frame_room060_058.s9xrmf.profile.toml" --rom "$ROM" --probe "$ROOT/obstacle060058-corpus" --output "$OUT/reference-after.json"
 # Repeat preceding two commands with -DALTTP_TEST_PRIOR_OBSTACLE_CONTACT_PLANES,
 # executable obstacle060058-corpus-before, output reference-before.json.
-python3 -B tools/ALttP/alttp_obstacle060058_summary.py --review "$OUT" --capture "$CAP/frame_room060_058.s9xrmf"
+python3 -B remaster/tools/ALttP/alttp_obstacle060058_summary.py --review "$OUT" --capture "$CAP/frame_room060_058.s9xrmf"
 git diff --check
 # REQUIRED PARENT BUILD (not run by this worker):
 xcodebuild -project macosx/snes9x.xcodeproj -scheme snes9x -configuration Debug -destination "platform=macOS,arch=arm64" CODE_SIGNING_ALLOWED=NO build
 ```
 
-Existing native preservation tests: compile/run `remaster/dungeon_symmetric_column_test.cpp`,
+Existing native preservation tests: compile/run `remaster/tests/dungeon_symmetric_column_test.cpp`,
 `dungeon_obstacle_assembly_test.cpp`, `dungeon_pot_placement_test.cpp`,
 `dungeon_geometry_cache_test.cpp`. `dungeon_placement_equivalence_test.cpp` requires
 arguments `$OUT/live-solver-input.raw`, its `.attr`, own profile, ROM (no-arg exits2).

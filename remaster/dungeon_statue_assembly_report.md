@@ -87,21 +87,21 @@ predates thisstatuechange. Noappstop/launch,staging/commit/cleanup/profilechange
 Repo root; ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode,
 CAP="$HOME/Library/Application Support/Snes9x/Remaster",OUT="$ROOT/room050-review".
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_obstacle_assembly_test.cpp -o "$ROOT/room050-statue-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_obstacle_assembly_test.cpp -o "$ROOT/room050-statue-test"
 "$ROOT/room050-statue-test"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_obstacle_assembly_test.cpp -o "$ROOT/room050-statue-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_obstacle_assembly_test.cpp -o "$ROOT/room050-statue-san"
 "$ROOT/room050-statue-san"
-c++ -std=c++17 -O2 remaster/dungeon_room050_probe.cpp -o "$ROOT/room050-classify"
+c++ -std=c++17 -O2 remaster/tests/dungeon_room050_probe.cpp -o "$ROOT/room050-classify"
 "$ROOT/room050-classify" "$CAP/frame_room050.s9xrmf" "$OUT/statues-effective-final"
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT remaster/dungeon_room050_probe.cpp -o "$ROOT/room050-statue-before"
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT remaster/tests/dungeon_room050_probe.cpp -o "$ROOT/room050-statue-before"
 "$ROOT/room050-statue-before" "$CAP/frame_room050.s9xrmf" "$OUT/statue-prior-part-policy"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/room050-statue-corpus"
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/room050-statue-corpus" --output "$OUT/corpus-statue-after.json"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_statue_evidence.py --review "$OUT" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --reference "$ROOT/diagonal-sets-priority/room-050-entrance--1.raw"
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/room050-solver"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room050.s9xrmf" --solver "$ROOT/room050-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_room050_review.py --capture "$CAP/frame_room050.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT/fixture-gates" --solver "$ROOT/room050-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/room050-statue-corpus"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/room050-statue-corpus" --output "$OUT/corpus-statue-after.json"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_statue_evidence.py --review "$OUT" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --reference "$ROOT/diagonal-sets-priority/room-050-entrance--1.raw"
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/room050-solver"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room050.s9xrmf" --solver "$ROOT/room050-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_room050_review.py --capture "$CAP/frame_room050.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT/fixture-gates" --solver "$ROOT/room050-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
 git diff --check
 ```
 Newchangesonly:frame.h,remaster.h,placement_equivalence_test.cpp,

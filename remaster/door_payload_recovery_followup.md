@@ -22,7 +22,7 @@ Application Support, and the approved temporary artifact directory:
 - 1,023 filesystem TOML candidates: 23 workspace, 934 temporary, 66 Application
   Support. This includes both disk backups and 20 build review/candidate profiles.
 - 26 semantic/profile/annotation/metadata-named JSON candidates, plus corresponding
-  historical Git blobs. The canonical `tools/ALttP/alttp-tile-semantics-v1.json`
+  historical Git blobs. The canonical `remaster/tools/ALttP/alttp-tile-semantics-v1.json`
   has no target entries or entries for their exact-source conversion aliases.
 - All-ref/reflog object traversal across 2,761 commits, including the old root
   profile paths, deleted backups and height_generation branch; 37 distinct

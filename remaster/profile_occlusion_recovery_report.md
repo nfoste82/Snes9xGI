@@ -8,7 +8,7 @@ changed by this operation. No captured evidence was modified.
 ## Exact recovery
 
 Only `occlusion` was added to these existing assets in
-`Profiles/ALttP/alttp-profile.toml`:
+`remaster/profiles/ALttP/alttp-profile.toml`:
 
 - `v1:4bpp:c9254894bb09de73`
 - `v1:4bpp:9c0473118412613f`
@@ -96,7 +96,7 @@ unchanged throughout.
   repeated save after unrelated and same-asset height edits, serializer parse
   roundtrip, frame capture roundtrip, explicit zero/mixed coverage and empty
   Door mask preservation: PASS.
-- `python3 -m unittest discover -s tools/ALttP -p test_alttp_tile_semantic_atlas.py`:
+- `python3 -m unittest discover -s remaster/tools/ALttP -p test_alttp_tile_semantic_atlas.py`:
   12 tests PASS.
 - Recovered complete profile strict parse/serialize/reparse: 1776 assets,
   70 nondefault coverage records, zero detected layer losses: PASS.

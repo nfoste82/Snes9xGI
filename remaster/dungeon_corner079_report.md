@@ -11,7 +11,7 @@ and its own complete ALTPDI1, ALTPDT1, terrain and profile sidecars. ROM SHA256
 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`;
 profile serialized FNV `3f781bcda5e8990c`, byte SHA256
 `b6784c1c97cd7a1ef01d426a790608056b087906e8e884fba669ab1e09ca1a30`.
-Active `Profiles/ALttP/alttp-profile.toml` was byte-identical at comparison.
+Active `remaster/profiles/ALttP/alttp-profile.toml` was byte-identical at comparison.
 No active-profile substitution. Packet v35,256x224; settled module7/submodule0,
 previous room061, collision mode0, Link(376,3327), plane1, scroll(256,3220)
 (room-local256,148), both graphics bases16384, PPU maps[4096,0], sizes[3,3],

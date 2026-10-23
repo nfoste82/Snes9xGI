@@ -24,7 +24,7 @@ Only changedfile benchmark extension in alreadydirty captureprobe,plusreport.
 No frontend/appbuild changes. Parent companion analysis remains independent.
 Repro:
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-recurring"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-recurring"
 SAMPLES="$CAP/frame_room061_018.s9xrmf;$CAP/frame_room061_025.s9xrmf;$CAP/frame_room061_026.s9xrmf;$CAP/frame_room061_032.s9xrmf;$CAP/frame_room061_041.s9xrmf"
 ALTTP_STAIR_RECURRING_SAMPLES="$SAMPLES" "$ROOT/stair-recurring" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair-recurring-artifact"
 git diff --check
@@ -107,9 +107,9 @@ must confirm residualflicker; legitimateauthoredflamepower variation remains.
 
 Commands:
 ```sh
-python3 -B tools/ALttP/alttp_stair_trace_sources.py "$CAP/stair061-trace-01.jsonl" --output "$OUT/appended-source-sessions.json"
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-animation-before"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-animation-after"
+python3 -B remaster/tools/ALttP/alttp_stair_trace_sources.py "$CAP/stair061-trace-01.jsonl" --output "$OUT/appended-source-sessions.json"
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-animation-before"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-animation-after"
 SAMPLES="$CAP/frame_room061_026.s9xrmf;$CAP/frame_room061_018.s9xrmf;$CAP/frame_room061_032.s9xrmf;$CAP/frame_room061_025.s9xrmf;$CAP/frame_room061_041.s9xrmf"
 ALTTP_STAIR_ANIMATION_SAMPLES="$SAMPLES" "$ROOT/stair-animation-before" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair-animation-before-artifact"
 ALTTP_STAIR_ANIMATION_SAMPLES="$SAMPLES" "$ROOT/stair-animation-after" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair-animation-after-artifact"
@@ -179,16 +179,16 @@ Parent independently builds/checks then fresh matchingliveverification required.
 Repro baseline/repaired (ROOT/CAP/OUT defined below):
 ```sh
 TRACE="$CAP/stair061-trace-01.jsonl"
-c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_STAIR_PHASE_GATE remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-before"
+c++ -std=c++17 -O2 -DALTTP_TEST_PRIOR_STAIR_PHASE_GATE remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-before"
 ALTTP_STAIR_REPLAY_TRACE="$TRACE" "$ROOT/stair-phase-before" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-phase-before"
-c++ -std=c++17 -O2 remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-after"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-after"
 ALTTP_STAIR_REPLAY_TRACE="$TRACE" "$ROOT/stair-phase-after" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-phase-after"
 "$ROOT/stair-phase-after" "$CAP/frame_room060_047.s9xrmf" "$ROOT/stair047-phase-after"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-phase-san"
 ALTTP_STAIR_REPLAY_TRACE="$TRACE" "$ROOT/stair-phase-san" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-phase-san"
-c++ -std=c++17 -O2 remaster/offscreen_emitters_test.cpp -o "$ROOT/stair-phase-unit"
+c++ -std=c++17 -O2 remaster/tests/offscreen_emitters_test.cpp -o "$ROOT/stair-phase-unit"
 "$ROOT/stair-phase-unit"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_test.cpp -o "$ROOT/stair-phase-cache"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_test.cpp -o "$ROOT/stair-phase-cache"
 "$ROOT/stair-phase-cache"
 git diff --check
 ```
@@ -241,7 +241,7 @@ Regression verified fresh-path settled own replay does NOT create file, first
 handler frame DOES create explicitstart, and subsequent72steps061/all3stairs,
 24steps060 retain exact source/maps/fields. Commands (fresh filenames required):
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-armed-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-armed-test"
 S9X_REMASTER_STAIR_LIGHT_TRACE="$OUT/armed061-new.jsonl" "$ROOT/stair-armed-test" \
  "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-armed"
 S9X_REMASTER_STAIR_LIGHT_TRACE="$OUT/armed060-new.jsonl" "$ROOT/stair-armed-test" \
@@ -332,9 +332,9 @@ ALTTP_STAIR_FAST_ROI=1 ALTTP_STAIR_SETTINGS051=1 "$ROOT/stair-metal" \
  "$CAP/frame_room061_051.s9xrmf" "$CAP/frame_room061_050.s9xrmf" "$CAP/frame_room060_047.s9xrmf"
 ALTTP_STAIR_FAST_ROI=1 ALTTP_STAIR_SETTINGS051=1 ALTTP_STAIR_UNOCCLUDED=1 "$ROOT/stair-metal" \
  "$CAP/frame_room061_051.s9xrmf" "$CAP/frame_room061_050.s9xrmf" "$CAP/frame_room060_047.s9xrmf"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-sources"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-sources"
 ALTTP_STAIR_SOURCE_EVIDENCE=1 "$ROOT/stair-sources" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-sources"
-c++ -std=c++17 -O2 remaster/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-trace-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-trace-test"
 S9X_REMASTER_STAIR_LIGHT_TRACE="$OUT/trace-test.jsonl" "$ROOT/stair-trace-test" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-trace"
 ```
 ROI classification: fullviewport placed BG2 authoredFloor and NZ>.99,upperZ>18,
@@ -345,7 +345,7 @@ mistaking a rectangle for geometry. Complete-room approval still blocked as belo
 
 ## Actual captured Metal transport replay (latest)
 
-Implemented `tools/remaster_stair_transport_probe.mm`, standalone Foundation/Metal
+Implemented `remaster/tools/remaster_stair_transport_probe.mm`, standalone Foundation/Metal
 executable, no app target/launch. Runtime-compiles exact `macosx/shaders.metal` and
 its REMASTER_REFERENCE_VISIBILITY variant. Fields use OWN packet, production main
 scene choice, HUD preservation; mesh is produced from exact field-cache samples,
@@ -412,7 +412,7 @@ Complete-room v2 failures documented below remain separate approval blockers.
 
 Repro (repo root, existing output directory):
 ```sh
-xcrun clang++ -std=c++17 -O2 -fobjc-arc tools/remaster_stair_transport_probe.mm \
+xcrun clang++ -std=c++17 -O2 -fobjc-arc remaster/tools/remaster_stair_transport_probe.mm \
  -framework Foundation -framework Metal -o "$ROOT/stair-metal"
 ALTTP_STAIR_METAL_RESULTS="$OUT/metal-transport-repeat.txt" \
 ALTTP_STAIR_METAL_IMAGES="$OUT" "$ROOT/stair-metal" \
@@ -497,16 +497,16 @@ follow-up. Fresh app/GPU validation remains parent's responsibility.
 
 Exact follow-up commands (ROOT/CAP/OUT as below; no app build required):
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-actual051"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-actual051"
 "$ROOT/stair-actual051" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-actual"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-actual051-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_stair_actual_state_test.cpp -o "$ROOT/stair-actual051-san"
 "$ROOT/stair-actual051-san" "$CAP/frame_room061_051.s9xrmf" "$ROOT/stair051-san"
 # Test reuses capture probe as fixture and includes field cache + sphere sampling;
 # header-only core, no additional link libraries.
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-capture"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-full"
-python3 -B remaster/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/stair-capture" --full "$ROOT/stair-full" --output "$OUT"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT" --solver "$ROOT/stair-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-capture"
+c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-full"
+python3 -B remaster/tests/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/stair-capture" --full "$ROOT/stair-full" --output "$OUT"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT" --solver "$ROOT/stair-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
 git diff --check
 ```
 
@@ -645,39 +645,42 @@ source list and renderer state to close the residual live symptom attribution.
 
 Worker changes only: `offscreen_emitters.h`, `offscreen_emitters_test.cpp`, new
 `dungeon_stair_emitter_sequence_test.cpp`, `dungeon_stair_light_probe.cpp`, this
-report, `tools/ALttP/alttp_stair_light_review.py`. One-line explicit `return 0`
+report, `remaster/tools/ALttP/alttp_stair_light_review.py`. One-line explicit `return 0`
 in already-dirty capture probe is necessary when its main is reused as a fixture
 function (ordinary main's implicit success no longer applies); other concurrent
 probe edits untouched. All prior060/061/062 fixes, authored arrays and schema30
 preserved. Parent frontend/current profile changes were neither read as evidence
 nor overwritten.
 
+Cleanup note: the diagnostic-only stair-light dumper listed above was retired.
+The stair emitter sequence regression and shared capture replay harness remain.
+
 Repository root; output directory already created:
 ```sh
 ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 CAP="$HOME/Library/Application Support/Snes9x/Remaster"
 OUT="$ROOT/stair-light-review"
-c++ -std=c++17 -O2 remaster/offscreen_emitters_test.cpp -o "$ROOT/stair-emitters-test"
+c++ -std=c++17 -O2 remaster/tests/offscreen_emitters_test.cpp -o "$ROOT/stair-emitters-test"
 "$ROOT/stair-emitters-test"
-c++ -std=c++17 -O2 remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-sequence"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-sequence"
 "$ROOT/stair-sequence" "$CAP/frame_room061_050.s9xrmf" "$ROOT/stair050-after"
 "$ROOT/stair-sequence" "$CAP/frame_room060_047.s9xrmf" "$ROOT/stair047-after"
 # Sanitizer dependency is same translation unit, no external linked library:
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-sequence-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/stair-sequence-san"
 "$ROOT/stair-sequence-san" "$CAP/frame_room061_050.s9xrmf" "$ROOT/stair050-san"
 "$ROOT/stair-sequence-san" "$CAP/frame_room060_047.s9xrmf" "$ROOT/stair047-san"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-capture"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-full"
-python3 -B remaster/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/stair-capture" --full "$ROOT/stair-full" --output "$OUT"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/stair-corpus"
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/stair-corpus" --output "$OUT/corpus.json"
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/stair-solver"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-capture"
+c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$ROOT/stair-full"
+python3 -B remaster/tests/dungeon_geometry_cache_captures.py --captures "$CAP" --enabled "$ROOT/stair-capture" --full "$ROOT/stair-full" --output "$OUT"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/stair-corpus"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room061_050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/stair-corpus" --output "$OUT/corpus.json"
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/stair-solver"
 # Python environment needs Pillow (independent validator import dependency).
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT" --solver "$ROOT/stair-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT" --solver "$ROOT/stair-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
 # Exact validator commands/exits preserved in each live*/gate.json, runner does
 # not turn those failures into approval.
 for test in dungeon_geometry_cache_test dungeon_transition_cache_test dungeon_entry_lifecycle_test; do
- c++ -std=c++17 -O2 "remaster/$test.cpp" -o "$ROOT/stair-$test" && "$ROOT/stair-$test"
+ c++ -std=c++17 -O2 "remaster/tests/$test.cpp" -o "$ROOT/stair-$test" && "$ROOT/stair-$test"
 done
 ALTTP_CACHE_BENCHMARK=40 ALTTP_CACHE_ONLY_MODE=0 "$ROOT/stair-capture" "$CAP/frame_room061_050.s9xrmf" "$ROOT/stair050-benchmark"
 git diff --check

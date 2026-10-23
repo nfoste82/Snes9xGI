@@ -103,8 +103,11 @@ Preapproved temp directory: `emitter007-gate-before/`, `emitter007-gate-after/`
 (complete wrapper/planes/profile/manifests/graph/runtime/compiled map/v2 JSON+SVG),
 `emitter007-corpus-before/`, `emitter007-corpus-after/`, `emitter007-corpus-delta.json`,
 `emitter007-fixtures-before/`, `emitter007-fixtures/`, production before/after
-packets and semantic inventories. See `alttp_emitter_repair_summary.py` for exact
-denominators. These outputs remain review artifacts.
+packets and semantic inventories. Exact denominators remain in each
+`*runtime.json` (`required_planes`, `missing_planes`, `solved_wall_cells`,
+`unknown_wall_cells`, `structural_conflicts`) and `*validation-v2.json`
+(`directional_wall_continuity`). The one-off summary printer was retired;
+these outputs remain review artifacts.
 
 Remaining shared capabilities: solve485 unknown007 walls via proved structural
 ownership/contacts, complete arbitrary door assembly regions/orientations, fix

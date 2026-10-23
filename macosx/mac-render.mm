@@ -26,13 +26,13 @@
 #include "apu.h"
 #include "display.h"
 #include "blit.h"
-#include "remaster/remaster.h"
-#include "remaster/held_lamp.h"
-#include "remaster/direct_batches.h"
-#include "remaster/sphere_samples.h"
-#include "remaster/hidden_emitter_samples.h"
-#include "remaster/room_debug_view.h"
-#include "remaster/tile_type_overlay.h"
+#include "remaster/runtime/remaster.h"
+#include "remaster/runtime/held_lamp.h"
+#include "remaster/runtime/direct_batches.h"
+#include "remaster/runtime/sphere_samples.h"
+#include "remaster/runtime/hidden_emitter_samples.h"
+#include "remaster/runtime/room_debug_view.h"
+#include "remaster/runtime/tile_type_overlay.h"
 
 #include <algorithm>
 #include <atomic>
@@ -257,12 +257,12 @@ static void LogRemasterRadianceMetrics (const char *label, uint32_t bounce,
 		metrics.peak[2], metrics.nonzeroPixels, metrics.significantPixels, minX, minY, metrics.maxX, metrics.maxY, delta);
 }
 
-#include "../remaster/surface_mesh_material.h"
-#include "../remaster/surface_mesh_cache.h"
-#include "../remaster/surface_mesh_debug.h"
-#include "../remaster/lighting_field_cache.h"
-#include "../remaster/field_upload_cache.h"
-#include "../remaster/emitter_patches.h"
+#include "../remaster/runtime/surface_mesh_material.h"
+#include "../remaster/runtime/surface_mesh_cache.h"
+#include "../remaster/runtime/surface_mesh_debug.h"
+#include "../remaster/runtime/lighting_field_cache.h"
+#include "../remaster/runtime/field_upload_cache.h"
+#include "../remaster/runtime/emitter_patches.h"
 
 static void S9xInitMetal (void);
 static void S9xDeinitMetal(void);

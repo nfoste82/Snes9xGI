@@ -103,20 +103,20 @@ sharedface,unobservedwall,BGownership,crossBGsupport,entry,cache,transition PASS
 061050/051exit2 unchanged diagonalproofgap. `git diff --check` PASS.
 
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_unobserved_shared_structure_test.cpp -o "$ROOT/room050-shared"
+c++ -std=c++17 -O2 remaster/tests/dungeon_unobserved_shared_structure_test.cpp -o "$ROOT/room050-shared"
 "$ROOT/room050-shared"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_unobserved_shared_structure_test.cpp -o "$ROOT/room050-shared-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_unobserved_shared_structure_test.cpp -o "$ROOT/room050-shared-san"
 "$ROOT/room050-shared-san"
-c++ -std=c++17 -O2 -DALTTP_TEST_WALL_COMPONENT_AUDIT remaster/dungeon_room050_probe.cpp -o "$ROOT/room050-component-probe"
+c++ -std=c++17 -O2 -DALTTP_TEST_WALL_COMPONENT_AUDIT remaster/tests/dungeon_room050_probe.cpp -o "$ROOT/room050-component-probe"
 ALTTP_WALL_COMPONENT_AUDIT="$OUT/component-actual-plane0.jsonl" "$ROOT/room050-component-probe" "$CAP/frame_room050.s9xrmf" "$OUT/components"
 # Component explorer compile flag ONLY; app builds have no auditI/O/graphcopies.
-python3 -B tools/ALttP/alttp_wall_component_report.py "$OUT/components" --audit "$OUT/component-actual-plane0.jsonl" --before-corpus "$OUT/corpus.json" --after-corpus "$OUT/corpus-shared-scoped.json"
-python3 -B tools/ALttP/alttp_build_route_adapter.py --engine build/remaster-geometry/room-preview-engine-v21 --output "$OUT"
+python3 -B remaster/tools/ALttP/alttp_wall_component_report.py "$OUT/components" --audit "$OUT/component-actual-plane0.jsonl" --before-corpus "$OUT/corpus.json" --after-corpus "$OUT/corpus-shared-scoped.json"
+python3 -B remaster/tools/ALttP/alttp_build_route_adapter.py --engine build/remaster-geometry/room-preview-engine-v21 --output "$OUT"
 # Run in engine workdir (tool workdir, not modifying engine files):
 ALTTP_ROUTE_ALLOW_ROOM_TRANSITIONS=1 "$OUT/route-renderer" --linked 0x50 "$OUT/route-south.raw" -1 0 0 0 S400,N500
-c++ -std=c++17 -O2 remaster/dungeon_engine_scroll_route_test.cpp -o "$ROOT/room050-engine-route"
+c++ -std=c++17 -O2 remaster/tests/dungeon_engine_scroll_route_test.cpp -o "$ROOT/room050-engine-route"
 "$ROOT/room050-engine-route" "$OUT/route-south.raw.route.jsonl"
-c++ -std=c++17 -O2 remaster/dungeon_scroll_capture_test.cpp -o "$ROOT/room050-diagnostic"
+c++ -std=c++17 -O2 remaster/tests/dungeon_scroll_capture_test.cpp -o "$ROOT/room050-diagnostic"
 "$ROOT/room050-diagnostic" "$OUT/diagnostic-tested" "$CAP/frame_room050.s9xrmf.profile.toml"
 # Existing prefix deliberately fails uniqueness; use NEWprefix for repeated test.
 ```
@@ -218,30 +218,30 @@ CAP="$HOME/Library/Application Support/Snes9x/Remaster",
 OUT="$ROOT/room050-review" (already exists). No git stage/commit/reset/clean.
 
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_room050_probe.cpp -o "$ROOT/room050-classify"
+c++ -std=c++17 -O2 remaster/tests/dungeon_room050_probe.cpp -o "$ROOT/room050-classify"
 "$ROOT/room050-classify" "$CAP/frame_room050.s9xrmf" "$OUT/after"
-c++ -std=c++17 -O2 tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/room050-solver"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room050.s9xrmf" --solver "$ROOT/room050-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_room050_review.py --capture "$CAP/frame_room050.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$ROOT/room050-corpus"
-python3 -B remaster/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/room050-corpus" --output "$OUT/corpus.json"
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_runtime_room_heights.cpp -o "$ROOT/room050-solver"
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_replay_live_height_evidence.py "$CAP/frame_room050.s9xrmf" --solver "$ROOT/room050-solver" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_room050_review.py --capture "$CAP/frame_room050.s9xrmf" --output "$OUT" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$ROOT/room050-corpus"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py --corpus "$ROOT/diagonal-sets-priority" --profile "$CAP/frame_room050.s9xrmf.profile.toml" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --probe "$ROOT/room050-corpus" --output "$OUT/corpus.json"
 for test in dungeon_scroll_ownership_test dungeon_unobserved_wall_test dungeon_transition_cache_test dungeon_geometry_cache_test dungeon_entry_lifecycle_test dungeon_pot_placement_test dungeon_disconnected_plane_test offscreen_emitters_test; do
- c++ -std=c++17 -O2 "remaster/$test.cpp" -o "$ROOT/room050-$test" && "$ROOT/room050-$test"
+ c++ -std=c++17 -O2 "remaster/tests/$test.cpp" -o "$ROOT/room050-$test" && "$ROOT/room050-$test"
 done
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_scroll_ownership_test.cpp -o "$ROOT/room050-scroll-san"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_scroll_ownership_test.cpp -o "$ROOT/room050-scroll-san"
 "$ROOT/room050-scroll-san"
-c++ -std=c++17 -O2 remaster/dungeon_variable_diagonal_test.cpp -o "$ROOT/room050-diagonal"
+c++ -std=c++17 -O2 remaster/tests/dungeon_variable_diagonal_test.cpp -o "$ROOT/room050-diagonal"
 "$ROOT/room050-diagonal" "$CAP/frame_room061_032.s9xrmf"
-c++ -std=c++17 -O2 remaster/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/room050-stair"
+c++ -std=c++17 -O2 remaster/tests/dungeon_stair_emitter_sequence_test.cpp -o "$ROOT/room050-stair"
 "$ROOT/room050-stair" "$CAP/frame_room061_051.s9xrmf" "$OUT/stair061"
 "$ROOT/room050-stair" "$CAP/frame_room060_047.s9xrmf" "$OUT/stair060"
-"$ROOT/diagonal-venv/bin/python" -B tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT/fixture-gates" --solver "$ROOT/room050-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
+"$ROOT/diagonal-venv/bin/python" -B remaster/tools/ALttP/alttp_stair_light_review.py --captures "$CAP" --output "$OUT/fixture-gates" --solver "$ROOT/room050-solver" --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc --fixtures build/remaster-geometry/surface-audit-room-local
 git diff --check
 ```
 
 All above narrow regressions passed; ASan/UBSan clean. Stair06172steps/3assemblies/
 20sources,06024steps/planechange/6sources with exact full-field oracle pass.
-Separate broad `c++ -std=c++17 -O2 remaster/remaster_test.cpp ...` FAILS line739
+Separate broad `c++ -std=c++17 -O2 remaster/tests/remaster_test.cpp ...` FAILS line739
 legacy-v16 synthetic packet deserialization. Not repaired by weakening schema30;
 parent should verify baseline. No arm64 build by worker (parent explicitly owns).
 Diagnostic capture I/O arming/bound/nonoverwrite still needs own chronology test.
@@ -255,7 +255,7 @@ Exact geometry and own sources, not frontend/GPU comparison. No fresh gameplay.
 Changed: gfx.cpp, frame.h, remaster.h, capture_probe.cpp (additive state reader),
 geometry_cache_probe.cpp (corpus failure class counts), transition_cache_test.cpp,
 new scroll_ownership_test.cpp, unobserved_wall_test.cpp, room050_probe.cpp,
-tools/ALttP/alttp_room050_review.py (local ignored tool), this report.
+remaster/tools/ALttP/alttp_room050_review.py (local ignored tool), this report.
 
 ## Smallest next action
 

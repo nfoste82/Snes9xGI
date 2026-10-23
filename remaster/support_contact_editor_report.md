@@ -61,11 +61,11 @@ The capture command was:
 
 ```sh
 c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
-  remaster/obstacle_group_editor_test.cpp \
+  remaster/tests/obstacle_group_editor_test.cpp \
   -o build/obstacle-group-editor-contact-test
 build/obstacle-group-editor-contact-test \
   "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_003.s9xrmf" \
-  Profiles/ALttP/alttp-profile.toml
+  remaster/profiles/ALttP/alttp-profile.toml
 ```
 
 ## Remaining evidence limits
@@ -97,7 +97,7 @@ one Undo record for both additions and contact flags; Save Profile is separate.
 The separate legacy Complete Footprint action retains its explicitly advertised
 south-boundary reset, but is not invoked by this contact action.
 
-Additional files: `remaster/obstacle_contact_completion_test.cpp`, plus updates to
+Additional files: `remaster/tests/obstacle_contact_completion_test.cpp`, plus updates to
 the shared helper, native action/refresh, native routing tests and authoring docs.
 
 Follow-up checks, all passing:

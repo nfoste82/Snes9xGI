@@ -95,7 +95,7 @@ Debug/Release arm64 builds and `git diff --check` pass. Final gate manifest:
 
 Reproduce production:
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_room051_height_probe.cpp -o build/room051039-height-probe
+c++ -std=c++17 -O2 remaster/tests/dungeon_room051_height_probe.cpp -o build/room051039-height-probe
 build/room051039-height-probe "$HOME/Library/Application Support/Snes9x/Remaster/frame_room051_039.s9xrmf" build/room051039-after/production
 ```
 

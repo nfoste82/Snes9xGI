@@ -58,12 +58,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	[audioMenuItem.submenu addItem:muteItem];
 	NSMenuItem *debugItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Debug: Original", nil)
 	                                                   action:@selector(cycleRemasterDebugMode:)
-	                                            keyEquivalent:@"k"];
+	                                            keyEquivalent:@""];
 	debugItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	debugItem.target = self;
 	debugItem.toolTip = @"Cycle Original, Surface Overlay, Surface IDs, Tile Types, Floors / Wall Distances. Floors: separate support colors. Walls: cyan arrow uphill, orange arrow downhill; number is tile distance from lower floor, ? unknown, ! conflict.";
 	[viewMenuItem.submenu addItem:[NSMenuItem separatorItem]];
 	[viewMenuItem.submenu addItem:debugItem];
+	NSMenuItem *layersItem = [[NSMenuItem alloc] initWithTitle:@"Inspect Layers: All layers"
+		action:@selector(cycleRemasterLayerView:) keyEquivalent:@"k"];
+	layersItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	layersItem.target = self;
+	layersItem.toolTip = @"Cycle All layers, BG1 only, BG2 only. Live rendering only; paused changes advance one frame. Isolated views hide other backgrounds and sprites.";
+	[viewMenuItem.submenu addItem:layersItem];
 	NSMenuItem *tileTypesItem = [[NSMenuItem alloc] initWithTitle:@"Show Tile Metadata Types"
 		action:@selector(showRemasterTileTypes:) keyEquivalent:@""];
 	tileTypesItem.target = self;
@@ -71,7 +77,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	[viewMenuItem.submenu addItem:tileTypesItem];
 	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
 	                                                      action:@selector(toggleRemasterLighting:)
-	                                               keyEquivalent:@"l"];
+	                                               keyEquivalent:@"s"];
 	lightingItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	lightingItem.target = self;
 	self.remasterLightingItem = lightingItem;
@@ -676,6 +682,10 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	if (action == @selector(resume:) || action == @selector(softwareReset:) || action == @selector(hardwareReset:)) {
 		return [self.s9xEngine isRunning] && [self.s9xEngine isPaused];
 	}
+	else if (action == @selector(cycleRemasterLayerView:)) {
+		menuItem.title = [NSString stringWithFormat:@"Inspect Layers: %@", [self.s9xEngine remasterLayerViewName]];
+		return [self.s9xEngine canCycleRemasterLayerView];
+	}
 	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(showRemasterTileTypes:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
@@ -803,6 +813,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 {
 	NSString *mode = [self.s9xEngine cycleRemasterDebugMode];
 	sender.title = [NSString stringWithFormat:@"Remaster Debug: %@", mode];
+}
+
+- (IBAction)cycleRemasterLayerView:(NSMenuItem *)sender
+{
+	sender.title = [NSString stringWithFormat:@"Inspect Layers: %@", [self.s9xEngine cycleRemasterLayerView]];
 }
 
 - (IBAction)showRemasterTileTypes:(NSMenuItem *)sender

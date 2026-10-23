@@ -53,11 +53,11 @@ New ASan/UBSan regression and diffcheck pass after redundant scan removal.
 
 Exact short comparison commands (same OUT/CAP as below):
 ```sh
-c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES -DALTTP_TEST_PRE_ARTWORK_CACHE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-pre061"
-c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES -DALTTP_TEST_CLASSIFY_ARTWORK_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-stage1061"
-c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-final061"
-python3 -B remaster/dungeon_geometry_cache_alternating.py --captures "$CAP" --output "$OUT" --mode 1
-python3 -B remaster/dungeon_geometry_cache_alternating.py --captures "$CAP" --output "$OUT" --mode 2
+c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES -DALTTP_TEST_PRE_ARTWORK_CACHE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-pre061"
+c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES -DALTTP_TEST_CLASSIFY_ARTWORK_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-stage1061"
+c++ -std=c++17 -O2 -DALTTP_TEST_CACHE_STAGES remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-final061"
+python3 -B remaster/tests/dungeon_geometry_cache_alternating.py --captures "$CAP" --output "$OUT" --mode 1
+python3 -B remaster/tests/dungeon_geometry_cache_alternating.py --captures "$CAP" --output "$OUT" --mode 2
 ```
 
 Root cause reproduced in production EndFrame replay: complete room061 maps and
@@ -130,8 +130,8 @@ Exact benchmark reproduction (repository root; existing OUT directory):
 ```sh
 OUT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 CAP="$HOME/Library/Application Support/Snes9x/Remaster"
-c++ -std=c++17 -O2 -DALTTP_TEST_CLASSIFY_ARTWORK_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-slow061"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-fast061"
+c++ -std=c++17 -O2 -DALTTP_TEST_CLASSIFY_ARTWORK_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-slow061"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-fast061"
 export ALTTP_CACHE_BENCHMARK=120
 export ALTTP_CACHE_GRAPHICS_SAMPLES="$CAP/frame_room061_018.s9xrmf;$CAP/frame_room061_025.s9xrmf;$CAP/frame_room061_026.s9xrmf;$CAP/frame_room061_032.s9xrmf;$CAP/frame_room061_041.s9xrmf"
 "$OUT/cache-slow061" "$CAP/frame_room061_041.s9xrmf" "$OUT/bench061-slow"
@@ -238,38 +238,33 @@ OUT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 
 ```sh
 OUT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_test.cpp -o "$OUT/geometry-cache-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_test.cpp -o "$OUT/geometry-cache-test"
 "$OUT/geometry-cache-test"
-c++ -std=c++17 -O0 -g remaster/dungeon_geometry_cache_test.cpp -o "$OUT/cache-debug-test"
+c++ -std=c++17 -O0 -g remaster/tests/dungeon_geometry_cache_test.cpp -o "$OUT/cache-debug-test"
 "$OUT/cache-debug-test"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_probe.cpp -o "$OUT/geometry-cache-probe"
-python3 -B remaster/dungeon_geometry_cache_corpus.py \
- --corpus "$OUT/diagonal-sets-priority" --profile Profiles/ALttP/alttp-profile.toml \
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_probe.cpp -o "$OUT/geometry-cache-probe"
+python3 -B remaster/tests/dungeon_geometry_cache_corpus.py \
+ --corpus "$OUT/diagonal-sets-priority" --profile remaster/profiles/ALttP/alttp-profile.toml \
  --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc \
  --probe "$OUT/geometry-cache-probe" --output "$OUT/geometry-cache-corpus.json"
-c++ -std=c++17 -O2 tools/ALttP/alttp_room062_endframe_probe.cpp -o "$OUT/cache-endframe"
+c++ -std=c++17 -O2 remaster/tools/ALttP/alttp_room062_endframe_probe.cpp -o "$OUT/cache-endframe"
 "$OUT/cache-endframe" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room062_016.s9xrmf" "$OUT/cache-production016"
 cmp "$OUT/cache-production016.s9xrmf" "$OUT/door-pot-lifecycle/perf-production016.s9xrmf"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-capture-enabled"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-capture-full"
+c++ -std=c++17 -O2 remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-capture-enabled"
+c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/tests/dungeon_geometry_cache_capture_probe.cpp -o "$OUT/cache-capture-full"
 # Existing output directory geometry-cache-captures is required.
-python3 -B remaster/dungeon_geometry_cache_captures.py \
+python3 -B remaster/tests/dungeon_geometry_cache_captures.py \
  --captures "$HOME/Library/Application Support/Snes9x/Remaster" \
  --enabled "$OUT/cache-capture-enabled" --full "$OUT/cache-capture-full" \
  --output "$OUT/geometry-cache-captures"
-c++ -std=c++17 -O2 remaster/dungeon_variable_diagonal_test.cpp -o "$OUT/variable-cache-enabled"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_variable_diagonal_test.cpp -o "$OUT/variable-cache-full"
+c++ -std=c++17 -O2 remaster/tests/dungeon_variable_diagonal_test.cpp -o "$OUT/variable-cache-enabled"
+c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/tests/dungeon_variable_diagonal_test.cpp -o "$OUT/variable-cache-full"
 "$OUT/variable-cache-enabled" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room061_032.s9xrmf"
 "$OUT/variable-cache-full" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room061_032.s9xrmf"
-c++ -std=c++17 -O2 remaster/dungeon_geometry_cache_diagonal_probe.cpp -o "$OUT/cache-diagonal-enabled"
-c++ -std=c++17 -O2 -DALTTP_TEST_DISABLE_GEOMETRY_REUSE remaster/dungeon_geometry_cache_diagonal_probe.cpp -o "$OUT/cache-diagonal-full"
-for room in 060 061; do
- for mode in enabled full; do
-  "$OUT/cache-diagonal-$mode" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room${room}_032.s9xrmf" "$OUT/diagonal-$room-$mode"
- done
- cmp "$OUT/diagonal-$room-enabled.inventory" "$OUT/diagonal-$room-full.inventory"
-done
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/dungeon_geometry_cache_test.cpp -o "$OUT/cache-sanitize-test"
+# The diagnostic-only direct-solve diagonal dumper was retired during cleanup.
+# Keep the variable-diagonal assertions above and the capture differential harness;
+# cache ablation cannot affect the retired dumper's direct-solve path.
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer remaster/tests/dungeon_geometry_cache_test.cpp -o "$OUT/cache-sanitize-test"
 "$OUT/cache-sanitize-test"
 python3 -B -c 'import json,subprocess; from pathlib import Path; p=Path("/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode/cache-gate.json"); raise SystemExit(subprocess.run(json.loads(p.read_text())["command"]).returncode)'
 git diff --check

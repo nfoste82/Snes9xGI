@@ -167,9 +167,9 @@ with matching full maps/attributes and writer/assembly provenance; resolve the
 Then rerun full graph v2 and both BG inventories before visual approval.
 Capture068 Door payload recovery is separate and untouched by this task.
 
-Reproduce tools: compile `remaster/dungeon_geometry_cache_capture_probe.cpp` and
-`tools/ALttP/alttp_runtime_room_heights.cpp` with C++17/O2, then use
-`tools/ALttP/alttp_runtime_height_bug_audit.py` (paired executables, read-only
+Reproduce tools: compile `remaster/tests/dungeon_geometry_cache_capture_probe.cpp` and
+`remaster/tools/ALttP/alttp_runtime_room_heights.cpp` with C++17/O2, then use
+`remaster/tools/ALttP/alttp_runtime_height_bug_audit.py` (paired executables, read-only
 corpus/own profiles) and `alttp_runtime_height_bug_gates.py` (pinned ALTPPD1/
 ALTPAT1 wrappers, graph scope recorded, validator JSON/SVG/map). Probe switches
 `ALTTP_SUBTILE_HEIGHT_REGRESSION=1` and `ALTTP_TORCH_PHASE_REGRESSION=<3072-byte

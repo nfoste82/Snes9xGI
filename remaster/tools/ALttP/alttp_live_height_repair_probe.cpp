@@ -1,0 +1,188 @@
+// Recompute both complete BG solves and apply them to a matching gameplay packet.
+// Outputs are review artifacts, not new gameplay evidence or room approval.
+#include "../../runtime/remaster.h"
+#include <iostream>
+#include <stdexcept>
+static void require(bool v,const char *s){if(!v)throw std::runtime_error(s);}
+static std::vector<uint8_t> read(const std::string &p){std::ifstream f(p,std::ios::binary);require(bool(f),"missing input");return {std::istreambuf_iterator<char>(f),{}};}
+int main(int argc,char **argv){try {
+  require(argc==3 || argc==4 || (argc==5 && std::string(argv[3])=="--packet") || (argc==6 && std::string(argv[3])=="--research-packet"),"usage: capture output-prefix [explicit-research-profile | --packet explicitly-matched-packet | --research-packet packet explicit-profile]");const std::string path=argv[1],out=argv[2];
+  auto frame=std::make_unique<RemasterFrame>();require(S9xReadRemasterFrame(argc>=5?argv[4]:path,*frame),"packet parse");
+ RemasterProfile profile;std::vector<RemasterProfileDiagnostic> errors;
+ require(S9xRemasterLoadProfile(path+".profile.toml",profile,errors),"profile parse");
+ auto input=read(path+".dungeon-input.bin"),templates=read(path+".dungeon-templates.bin"),meta=read(path+".dungeon.json");
+ require(input.size()==90120 && !std::memcmp(input.data(),"ALTPDI1\0",8),"complete input");
+ require(templates.size()==12884 && !std::memcmp(templates.data(),"ALTPDT1\0",8),"template input");
+ const std::string text(meta.begin(),meta.end());
+ require(text.find("66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb")!=std::string::npos,"ROM pin");
+ auto number=[&](const char *key,int index=0){auto pos=text.find(std::string("\"")+key+"\":");require(pos!=std::string::npos,"metadata key");pos=text.find(':',pos)+1;if(text[pos]=='[')pos++;for(int i=0;i<index;i++)pos=text.find(',',pos)+1;return std::stoi(text.substr(pos));};
+ std::string serialized;require(S9xRemasterSerializeProfile(profile,serialized,errors),"serialization");
+ uint64_t digest=UINT64_C(14695981039346656037);for(unsigned char b:serialized)digest=(digest^b)*UINT64_C(1099511628211);
+ std::ostringstream hex;hex<<std::hex<<digest;require(text.find("\"profile_serialized_fnv1a64\":\""+hex.str()+"\"")!=std::string::npos,"profile pin");
+  if(argc==4)require(S9xRemasterLoadProfile(argv[3],profile,errors),"explicit research profile parse");
+  if(argc==6)require(S9xRemasterLoadProfile(argv[5],profile,errors),"explicit research packet profile parse");
+ if(argc==5)for(const auto &m:frame->assetMetadata) {
+  const auto a=profile.assets.find(m.tileId);if(a==profile.assets.end())continue;
+  require(m.hasHeight==a->second.hasHeight && m.height==a->second.height &&
+    m.hasNormals==a->second.hasNormals && m.normalXyz==a->second.normalXyz && m.tileRole==a->second.tileRole,"alternate packet/profile geometry mismatch");
+ }
+ RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=number("room");c.previousRoomIndex=number("previous_room");
+ c.submodule=number("submodule");c.collisionMode=number("collision_mode");require(!c.submodule && !c.collisionMode,"unsupported/unsettled state");
+  c.linkX=number("link_xy");c.linkY=number("link_xy",1);c.linkPlane=number("plane");
+  c.groundedEvidence=text.find("\"grounded_evidence\":true")!=std::string::npos;
+ c.backgroundScrollX=number("scroll");c.backgroundScrollY=number("scroll",1);
+ c.graphicsBase=number("graphics_base");c.bg1GraphicsBase=number("bg1_graphics_base");
+  c.constructedMaps=input.data()+8;c.collisionAttributes=input.data()+16392;c.graphics=input.data()+24584;c.dungeonTemplateData=templates.data()+8;
+  if(std::ifstream(path+".terrain-input.bin").good())require(S9xRemasterReadTerrainEvidence(path+".terrain-input.bin",c),"invalid optional terrain evidence");
+ size_t matched=0;
+ for(auto *pixels:{&frame->mainPixels,&frame->subPixels,&frame->scenePixels})for(size_t at=0;at<pixels->size();at++) {
+  const auto &px=(*pixels)[at];if(!px.instanceId)continue;const auto &i=frame->tileInstances.at(px.instanceId-1);
+  if(i.source!=RemasterSourceType::Background || i.sourceIndex>1)continue;
+  const int x=(c.backgroundScrollX+at%frame->width)&511,y=(c.backgroundScrollY+at/frame->width)&511;
+  const int address=(y/8*64+x/8)*2+(i.sourceIndex?0:8192),word=c.constructedMaps[address]|c.constructedMaps[address+1]<<8;
+  uint8_t decoded[64];const int base=i.sourceIndex?c.graphicsBase:c.bg1GraphicsBase;
+  for(int yy=0;yy<8;yy++)for(int xx=0;xx<8;xx++) {
+   int v=0;for(int b=0;b<4;b++)v|=((c.graphics[uint16_t(base+(word&1023)*32+(b/2)*16+yy*2+b%2)]>>(7-xx))&1)<<b;
+   decoded[yy*8+xx]=v;
+  }
+  require(i.tileId.hash==S9xRemasterHashTile(4,decoded) && i.hFlip==bool(word&0x4000) && i.vFlip==bool(word&0x8000) &&
+          px.tilePixel==((word&0x8000?7-y%8:y%8)*8+(word&0x4000?7-x%8:x%8)),"stale packet/maps/camera");matched++;
+ }
+ S9xRemasterDungeonStairsFromAttributes(c);
+ auto image=[&](const std::string &name) {
+  std::ofstream ppm(out+name+".ppm",std::ios::binary);ppm<<"P6\n"<<frame->width<<' '<<frame->height<<"\n255\n";
+  for(size_t at=0;at<frame->mainPixels.size();at++) {
+   const auto *px=&frame->mainPixels[at];
+   if(!px->instanceId && (px->owner>>24)==static_cast<uint8_t>(RemasterSourceType::Backdrop))px=&frame->subPixels[at];
+   int h=0;if(px->instanceId) {
+    const auto &i=frame->tileInstances.at(px->instanceId-1);h=i.heightOffset;
+    if(px->tilePixel<64) {
+     if(i.hasPlacementHeight)h+=i.placementHeight[px->tilePixel];
+     else for(const auto &m:frame->assetMetadata)if(m.tileId==i.tileId && m.hasHeight){h+=m.height[px->tilePixel];break;}
+    }
+   }
+   const char shade=char(std::max(0,std::min(255,h*255/100)));for(int k=0;k<3;k++)ppm.put(shade);
+  }
+ };
+ image("-captured-composed-height");
+ std::array<std::unique_ptr<RemasterDungeonHeightMap>,2> maps;
+ std::ofstream report(out+".json");report<<"{\"room\":"<<c.roomIndex<<",\"profile_pin\":\""<<hex.str()<<"\",\"layers\":[";
+ // Reset old packet placement results; metadata/ownership/flips remain captured.
+ for(auto &i:frame->tileInstances)if(i.source==RemasterSourceType::Background && i.sourceIndex<2){i.heightOffset=0;i.hasPlacementHeight=false;}
+  for(int pass=0;pass<2;pass++) {const int bg=pass;
+  auto words=std::make_unique<std::array<uint8_t,16384>>();auto lc=c;lc.placementBackgroundIndex=bg;
+  if(!bg){std::copy_n(c.constructedMaps+8192,8192,words->begin());std::copy_n(c.constructedMaps,8192,words->begin()+8192);lc.constructedMaps=words->data();std::swap(lc.graphicsBase,lc.bg1GraphicsBase);}
+  auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();S9xRemasterDungeonPlacements(lc,profile,*tiles);lc.placements=tiles->data();
+    if(bg){lc.supportRelations=&maps[0]->authoredSupportRelations;lc.wallSupportRelations=&maps[0]->authoredWallSupportRelations;}
+    maps[bg]=std::make_unique<RemasterDungeonHeightMap>();auto &m=*maps[bg];require(S9xRemasterBuildDungeonHeightMap(lc,profile.upperFloorHeight,m),"solve");
+  if(std::getenv("ALTTP_RUNTIME024_REGRESSION")) {
+   require(c.roomIndex==0x60 && c.linkPlane==1 && hex.str()=="650c170f8c4a746e","024 regression pin");
+    if(bg)require(m.planeOffsets[0][18*64+47]==24 && m.planeOffsets[1][18*64+47]==0,"authored bridge rise / independent underpass");
+   else {
+    const int middle=34*64+42,decorated=35*64+42;
+    require((*tiles)[middle].tileHash==UINT64_C(0x83ff6d16868aaa72) && m.offsets[middle]==8,"reused middle base");
+    require(m.offsets[decorated]==0 && (*tiles)[decorated].height[0]==15,"decorated local source");
+    for(int k=0;k<64;k++)require((*tiles)[middle].height[k]+8==(*tiles)[decorated].height[k],"effective variant mismatch");
+    require(m.geometryConflicts.empty() && m.solvedWallCells==243 && m.unknownWallCells==0,"BG1 equality repair");
+   }
+  }
+   if(bg)report<<',';report<<"{\"bg\":"<<bg<<",\"shared_faces\":"<<m.sharedStructuralFaces<<",\"stair_fallbacks\":"<<m.configuredStairFallbacks<<",\"authored_relations\":"<<m.authoredSupportRelations.size()<<",\"solved_walls\":"<<m.solvedWallCells<<",\"unknown_walls\":"<<m.unknownWallCells<<",\"conflicts\":"<<m.structuralConflicts<<",\"equality_conflicts\":"<<m.geometryConflicts.size()<<",\"required_planes\":["<<m.requiredPlaneCells[0]<<','<<m.requiredPlaneCells[1]<<"],\"missing_planes\":["<<m.unknownPlaneCells[0]<<','<<m.unknownPlaneCells[1]<<"],\"cells\":[";
+  for(int i=0;i<4096;i++) {
+   if(i)report<<',';const auto &t=(*tiles)[i];
+   report<<"{\"xy\":["<<i%64<<','<<i/64<<"],\"hash\":\""<<std::hex<<t.tileHash<<std::dec<<"\",\"role\":"<<int(t.surface)<<",\"has_local\":"<<t.hasHeight<<",\"local_span\":["<<int(*std::min_element(t.height.begin(),t.height.end()))<<','<<int(*std::max_element(t.height.begin(),t.height.end()))<<"],\"base\":"<<m.offsets[i]<<",\"structural\":["<<m.structuralPlaneOffsets[0][i]<<','<<m.structuralPlaneOffsets[1][i]<<"],\"support\":["<<m.planeOffsets[0][i]<<','<<m.planeOffsets[1][i]<<"],\"fallback\":"<<int(m.fallbackDirections[i])<<",\"flips\":["<<t.hflip<<','<<t.vflip<<"],\"distinct\":"<<t.distinctLowerUsage<<'}';
+  }
+     report<<"],\"persistent_required\":["<<m.persistentSupportRequired[0]<<','<<m.persistentSupportRequired[1]<<"],\"persistent_missing\":["<<m.persistentSupportMissing[0]<<','<<m.persistentSupportMissing[1]<<']';
+     report<<",\"relations\":[";for(size_t k=0;k<m.authoredSupportRelations.size();k++){if(k)report<<',';const auto &r=m.authoredSupportRelations[k];report<<'['<<r.a<<','<<r.b<<','<<r.rise<<']';}report<<"],\"local_samples\":[";
+    for(int i=0;i<4096;i++) { if(i)report<<',';const auto &t=(*tiles)[i];report<<"{\"template\":"<<t.wallTemplateOffset<<",\"attr\":["<<int(c.collisionAttributes[i])<<','<<int(c.collisionAttributes[4096+i])<<"],\"height\":[";for(int k=0;k<64;k++){if(k)report<<',';report<<int(t.height[k]);}report<<"]}"; }
+     // Exhaustive offscreen obstacle application: one heap frame per BG,
+     // indexed metadata and all64 canonical pixels on main AND sub buffers.
+     auto audit=std::make_unique<RemasterFrame>();audit->width=audit->height=512;
+     audit->mainPixels.resize(512*512);audit->subPixels.resize(512*512);
+     std::set<RemasterTileContentId> added;size_t obstacleCells=0,unknownObstacles=0,obstacleSamples=0;
+     for(int cell=0;cell<4096;cell++)if((*tiles)[cell].surface==RemasterDungeonFloorContext::Surface::Obstacle) {
+      const auto &t=(*tiles)[cell];RemasterTileContentId id{t.tileHash,1,4};
+      auto a=profile.assets.find(id);require(a!=profile.assets.end() && a->second.hasHeight,"obstacle local metadata missing");
+      require(t.height==a->second.height && !m.fallbackDirections[cell],"obstacle solve changed authored relief");
+      obstacleCells++;unknownObstacles+=m.offsets[cell]==255;
+      if(added.insert(id).second){RemasterFrameAssetMetadata md;md.hasHeight=a->second.hasHeight;md.height=a->second.height;md.hasNormals=a->second.hasNormals;md.normalXyz=a->second.normalXyz;md.tileRole=a->second.tileRole;md.tileId=id;audit->assetMetadata.push_back(md);}
+      RemasterFrameTileInstance instance;instance.tileId=id;instance.source=RemasterSourceType::Background;instance.sourceIndex=bg;instance.hFlip=t.hflip;instance.vFlip=t.vflip;
+      audit->tileInstances.push_back(instance);const uint32_t iid=audit->tileInstances.size();
+      for(int yy=0;yy<8;yy++)for(int xx=0;xx<8;xx++){
+       const int at=(cell/64*8+yy)*512+cell%64*8+xx;
+       audit->mainPixels[at].instanceId=audit->subPixels[at].instanceId=iid;
+       audit->mainPixels[at].tilePixel=audit->subPixels[at].tilePixel=(t.vflip?7-yy:yy)*8+(t.hflip?7-xx:xx);
+      }
+     }
+     auto ac=c;ac.backgroundScrollX=ac.backgroundScrollY=0;ac.previousRoomIndex=c.roomIndex;
+     S9xRemasterApplyDungeonHeightMap(*audit,ac,m,nullptr,nullptr,bg);
+     for(const auto *pixels:{&audit->mainPixels,&audit->subPixels})for(const auto &px:*pixels)if(px.instanceId){
+      const auto &i=audit->tileInstances[px.instanceId-1];require(!i.hasPlacementHeight,"obstacle apply replaced authored local");
+      const int at=&px-pixels->data(),cell=(at/512/8)*64+at%512/8;
+      require(i.heightOffset==(m.offsets[cell]==255?0:m.offsets[cell]),"obstacle signed floor base composition");obstacleSamples++;
+     }
+     report<<"],\"obstacle_invariance\":{\"placed\":"<<obstacleCells<<",\"unresolved_base\":"<<unknownObstacles<<",\"canonical_buffer_samples\":"<<obstacleSamples<<",\"changed_local_samples\":0},\"doorframes\":[";
+     for(size_t k=0;k<m.doorframeAttachments.size();k++) {
+      if(k)report<<',';const auto &a=m.doorframeAttachments[k];
+      report<<"{\"xy\":["<<a.cell%64<<','<<a.cell/64<<"],\"plane\":"<<a.plane<<",\"base\":"<<a.base<<",\"visible\":"<<a.visible<<'}';
+     }report<<"]}";
+  // Match live EndFrame's independent pre-cone scene application. Replays
+  // otherwise look repaired in Height while GI still consumes old scene IDs.
+  if(!frame->scenePixels.empty()) {
+   auto savedSub=frame->subPixels;
+   frame->mainPixels.swap(frame->scenePixels);
+   S9xRemasterApplyDungeonHeightMap(*frame,c,m,nullptr,nullptr,bg);
+   frame->mainPixels.swap(frame->scenePixels);
+   frame->subPixels=std::move(savedSub);
+  }
+  S9xRemasterApplyDungeonHeightMap(*frame,c,m,nullptr,nullptr,bg);
+ }
+  report<<"],\"runtime_instances\":[";
+  bool first=true;for(const auto &i:frame->tileInstances)if(i.source==RemasterSourceType::Object || i.assetGroup=="stair_treads" || i.assetGroup=="stair_rails") {
+   if(!first)report<<',';first=false;int lo=0,hi=0;
+   if(i.hasPlacementHeight){lo=*std::min_element(i.placementHeight.begin(),i.placementHeight.end());hi=*std::max_element(i.placementHeight.begin(),i.placementHeight.end());}
+   else for(const auto &m:frame->assetMetadata)if(m.tileId==i.tileId && m.hasHeight){lo=*std::min_element(m.height.begin(),m.height.end());hi=*std::max_element(m.height.begin(),m.height.end());break;}
+   report<<"{\"source\":"<<int(i.source)<<",\"index\":"<<int(i.sourceIndex)<<",\"group\":\""<<i.assetGroup<<"\",\"base\":"<<i.heightOffset<<",\"effective_span\":["<<lo+i.heightOffset<<','<<hi+i.heightOffset<<"]}";
+  }
+  report<<"]}\n";
+ if(std::getenv("ALTTP_RUNTIME024_REGRESSION")) {
+  const auto &middle=frame->subPixels[135*frame->width+84];const auto &decorated=frame->subPixels[143*frame->width+84];
+  const auto &a=frame->tileInstances.at(middle.instanceId-1),&b=frame->tileInstances.at(decorated.instanceId-1);
+  require(a.sourceIndex==0 && a.tileId.hash==UINT64_C(0x83ff6d16868aaa72) && a.heightOffset==8 && !a.hasPlacementHeight,"packet middle runtime offset");
+  require(b.sourceIndex==0 && b.tileId.hash==UINT64_C(0x9836d0b8491c70b9) && b.heightOffset==0 && !b.hasPlacementHeight,"packet decorated runtime offset");
+ }
+  image("-recomputed-composed-height");
+  if(std::getenv("ALTTP_RUNTIME032_REGRESSION")) {
+   require(c.roomIndex==0x60 && hex.str()=="312c06256d6ecf0e","032 pin");
+   for(int y:{16,21})for(int x:{42,44,51,53}) {
+    const int i=y*64+x;
+    require(maps[1]->offsets[i]==24 && maps[1]->planeOffsets[0][i]==24 &&
+      maps[1]->planeOffsets[1][i]==0 && !maps[1]->fallbackDirections[i],"rail solved bases erased");
+   }
+   for(int y=26;y<=39;y++)for(int x:{59,60,61})require(maps[1]->offsets[y*64+x]==0,"east complete face");
+   for(int y=31;y<=34;y++)require(maps[1]->offsets[y*64+58]==24,"split door terminal cover");
+   for(int bg=0;bg<2;bg++)require(maps[bg]->planeOffsets[0][47*64+47]==24 &&
+     maps[bg]->configuredStairFallbacks==0,"variable rise regression");
+   require(maps[0]->offsets[34*64+42]==8,"024 middle regression");
+  }
+  if(std::getenv("ALTTP_RUNTIME034_REGRESSION")) {
+   require(c.roomIndex==0x60 && hex.str()=="cb9799c716a1a39c","034 pin");
+   for(auto xy:{std::array<int,2>{58,26},{58,40},{41,45},{54,45},{41,15},{54,15},{41,22},{54,22}})
+    require(maps[1]->offsets[xy[1]*64+xy[0]]==16 && maps[1]->fallbackDirections[xy[1]*64+xy[0]]==0,"two-face corner effective base");
+   for(int x:{44,45,50,51})require(maps[1]->offsets[54*64+x]==24,"torch cap base");
+   for(int y:{15,18,23,26,31,34,39,42,47,50})require(maps[1]->offsets[y*64+35]==32,"column end base");
+   require(maps[0]->structuralConflicts==4,"unrelated BG1 conflicts changed");
+  }
+  if(std::getenv("ALTTP_RUNTIME028_REGRESSION")) {
+   require(c.roomIndex==0x60 && hex.str()=="650c170f8c4a746e","028 pin");
+   for(int bg=0;bg<2;bg++) {
+    require(maps[bg]->planeOffsets[0][47*64+47]==24,"authored landing rise");
+    require(maps[bg]->configuredStairFallbacks==0,"fixed rise remained");
+   }
+   require(maps[0]->offsets[42*64+54]==0 && maps[0]->planeOffsets[1][42*64+55]==24,"eastern wall uphill boundary");
+   require(maps[1]->planeOffsets[0][18*64+47]==24 && maps[1]->planeOffsets[1][18*64+47]==0,"independent overlap");
+  }
+ // Upgrade legacy packets to the current representation before serialization.
+ frame->schemaVersion=REMASTER_FRAME_SCHEMA_VERSION;
+ require(S9xWriteRemasterFrame(*frame,out+".s9xrmf"),"write review packet");
+ std::cout<<"room="<<c.roomIndex<<" matching_BG_pixels="<<matched<<" pinned-profile="<<hex.str()<<" BG2="<<maps[1]->solvedWallCells<<'/'<<maps[1]->unknownWallCells<<'/'<<maps[1]->structuralConflicts<<" BG1="<<maps[0]->solvedWallCells<<'/'<<maps[0]->unknownWallCells<<'/'<<maps[0]->structuralConflicts<<'\n';
+ }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

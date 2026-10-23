@@ -44,9 +44,9 @@ visual/timing comparison is still required, not claimed by the portable tests.
 Commands from repo root (OUT is the approved temporary opencode directory):
 
 ```sh
-c++ -std=c++17 -O2 remaster/lighting_field_cache_test.cpp -o "$OUT/lighting-fields-test"
+c++ -std=c++17 -O2 remaster/tests/lighting_field_cache_test.cpp -o "$OUT/lighting-fields-test"
 REMASTER_FIELD_BENCHMARK=1 "$OUT/lighting-fields-test" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room062_016.s9xrmf" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room062_018.s9xrmf"
-c++ -std=c++17 -O1 -g -fsanitize=address,undefined remaster/lighting_field_cache_test.cpp -o "$OUT/lighting-fields-sanitizer"
+c++ -std=c++17 -O1 -g -fsanitize=address,undefined remaster/tests/lighting_field_cache_test.cpp -o "$OUT/lighting-fields-sanitizer"
 "$OUT/lighting-fields-sanitizer" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room062_016.s9xrmf" "$HOME/Library/Application Support/Snes9x/Remaster/frame_room062_018.s9xrmf"
 ```
 

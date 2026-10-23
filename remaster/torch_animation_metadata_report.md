@@ -2,7 +2,7 @@
 
 Metadata-first slice: no additional solver/frontend/direct/clustering changes.
 User profile changes were read fresh and an exact pre-edit snapshot retained.
-The tracked `Profiles/ALttP/alttp-profile.toml` was edited using apply_patch.
+The tracked `remaster/profiles/ALttP/alttp-profile.toml` was edited using apply_patch.
 
 ## Proven family and reviewed authoring
 

@@ -223,9 +223,9 @@ Artifact directory:
   `gate.json` retains exact validator command, exit/stdout/stderr and all input SHA256.
 
 ```sh
-c++ -std=c++17 -O2 remaster/sprite_obstacle_probe.cpp -o build/sprite-obstacle-probe
+c++ -std=c++17 -O2 remaster/tests/sprite_obstacle_probe.cpp -o build/sprite-obstacle-probe
 c++ -std=c++17 -Wall -Wextra -pedantic -fsanitize=address,undefined \
-  -fno-omit-frame-pointer remaster/sprite_obstacle_test.cpp -o build/sprite-obstacle-test-sanitize
+  -fno-omit-frame-pointer remaster/tests/sprite_obstacle_test.cpp -o build/sprite-obstacle-test-sanitize
 ```
 
 Probe usage: `probe pinned-capture [other-captures ...]`, JSON stdout. It reads

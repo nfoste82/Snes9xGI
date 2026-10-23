@@ -115,13 +115,13 @@ Reference scope is default/entrance graphics states, not exhaustive dynamic stat
 ROOT=/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode
 
 ```sh
-c++ -std=c++17 -O2 remaster/dungeon_authored_obstacle_test.cpp -o "$ROOT/authored-obstacle-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_authored_obstacle_test.cpp -o "$ROOT/authored-obstacle-test"
 "$ROOT/authored-obstacle-test"
-c++ -std=c++17 -O2 remaster/dungeon_cardinal_local_diagonal_test.cpp -o "$ROOT/own066-diagonal-test"
+c++ -std=c++17 -O2 remaster/tests/dungeon_cardinal_local_diagonal_test.cpp -o "$ROOT/own066-diagonal-test"
 "$ROOT/own066-diagonal-test" "/Users/nic.foster/Library/Application Support/Snes9x/Remaster/frame_room061_066.s9xrmf"
-python3 -B -m unittest discover -s tools/ALttP -p test_authored_obstacles.py
-python3 -B -m unittest discover -s tools/ALttP -p test_diagonal_preview.py
-python3 -B tools/ALttP/alttp_validate_obstacle_live.py \
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_authored_obstacles.py
+python3 -B -m unittest discover -s remaster/tools/ALttP -p test_diagonal_preview.py
+python3 -B remaster/tools/ALttP/alttp_validate_obstacle_live.py \
   "/Users/nic.foster/Library/Application Support/Snes9x/Remaster/frame_room061_066.s9xrmf" \
   --solver "$ROOT/authored-obstacle-solver" \
   --rom build/remaster-geometry/room-preview-engine-v21/zelda3.sfc \
