@@ -109,8 +109,8 @@ inline std::array<uint8_t, 3> S9xRemasterNpcDebugColor(const RemasterFrame &fram
 	if (view == RemasterNpcDebugView::Emission)
 	{
 		if (!metadata || !metadata->hasEmission) return {{0, 0, 0}};
-		const auto &rgba = metadata->emissionRgba;
-		return {{uint8_t(rgba[p * 4] * rgba[p * 4 + 3] / 255), uint8_t(rgba[p * 4 + 1] * rgba[p * 4 + 3] / 255), uint8_t(rgba[p * 4 + 2] * rgba[p * 4 + 3] / 255)}};
+		const auto rgba = S9xRemasterEmissionSample(*metadata,p,instance.hasPaletteArtwork ? instance.paletteRgb555[p] : frame.originalRgb555[at]);
+		return {{uint8_t(rgba[0]*rgba[3]/255),uint8_t(rgba[1]*rgba[3]/255),uint8_t(rgba[2]*rgba[3]/255)}};
 	}
 	if (view == RemasterNpcDebugView::Material)
 	{

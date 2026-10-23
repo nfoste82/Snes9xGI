@@ -710,6 +710,7 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.collisionMode = Memory.RAM[0x46c];
 				dungeonFloor.linkFacing = Memory.RAM[0x2f];
 				dungeonFloor.linkPlane = Memory.RAM[0xee] & 1;
+				dungeonFloor.straightStairPlane = Memory.RAM[0x48a];
 				dungeonFloor.romIdentity = UINT64_C(0x66871d66be19ad2c);
 				// USA WRAM: z=-1 is ordinary grounded, auxiliary/player states0.
 				dungeonFloor.groundedEvidence = Memory.RAM[0x24] == 0xff && Memory.RAM[0x25] == 0xff &&
@@ -726,7 +727,8 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.scrollDirection = Memory.RAM[0x418];
 				dungeonFloor.destinationOriginX = Memory.RAM[0x62c] | Memory.RAM[0x62d]<<8;
 				dungeonFloor.destinationOriginY = Memory.RAM[0x62e] | Memory.RAM[0x62f]<<8;
-				dungeonFloor.hasDestinationOrigin = dungeonFloor.module==7 && dungeonFloor.submodule==2 && dungeonFloor.constructionPhase>=2;
+				dungeonFloor.hasDestinationOrigin = dungeonFloor.module==7 && S9xRemasterDungeonRoomScroll(dungeonFloor.submodule) &&
+					dungeonFloor.constructionPhase>=S9xRemasterDungeonRoomLoadedPhase(dungeonFloor.submodule);
 				dungeonFloor.roomTransitionFlags = Memory.RAM[0xef];
 				dungeonFloor.backgroundScrollX = PPU.BG[1].HOffset;
 				// DrawBackground samples LineData.VOffset, which includes the SNES
@@ -735,6 +737,7 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.collisionAttributes = Memory.RAM + 0x12000;
 				dungeonFloor.constructedMaps = Memory.RAM + 0x2000;
 				dungeonFloor.graphics = Memory.VRAM;
+				dungeonFloor.emitterPalette = PPU.CGDATA;
 				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
 				dungeonFloor.hasTerrainActors = true;
 				dungeonFloor.linkZ = static_cast<int16_t>(Memory.RAM[0x24] | Memory.RAM[0x25]<<8);
@@ -764,13 +767,14 @@ void S9xEndScreenRefresh (void)
 				// Decode the completed handler overrides, not cumulative endpoints:
 				// e.g. $49c=2, $49e=0 is one south plane-changing stair,
 				// not an empty table. Wet ladders without this signature stay unknown.
-				const bool preparingRoom=dungeonFloor.indoors && dungeonFloor.module==7 && dungeonFloor.submodule==2;
-				if(!preparingRoom || dungeonFloor.constructionPhase<2 ||
+				const bool preparingRoom=dungeonFloor.indoors && dungeonFloor.module==7 && S9xRemasterDungeonRoomScroll(dungeonFloor.submodule);
+				const int loadedPhase=S9xRemasterDungeonRoomLoadedPhase(dungeonFloor.submodule);
+				if(!preparingRoom || dungeonFloor.constructionPhase<loadedPhase ||
 					completedTransitionRoom!=dungeonFloor.roomIndex || completedTransitionSession!=S9xRemasterState().dungeonSession) {
 					completedTransitionAttributes.reset();completedTransitionRoom=0xffff;
 				}
 				if(preparingRoom &&
-					dungeonFloor.constructionPhase>=2 && dungeonFloor.constructionPhase<=15 &&
+					dungeonFloor.constructionPhase>=loadedPhase && dungeonFloor.constructionPhase<=(dungeonFloor.submodule==2?15:18) &&
 					dungeonFloor.attributeConstructionState!=5) {
 					// The real builder consumes torch/chest counters. Complete once,
 					// before those destructive scratch updates; never rerun on them.
@@ -1065,7 +1069,8 @@ static inline void RenderScreen (bool8 sub)
 			BGActive &= ~0x04;
 		else
 		{
-			BGActive = (Memory.FillRAM[0x212c] | Memory.FillRAM[0x212d]) & 0x16 & ~Settings.BG_Forced;
+			// Cone-free BG2/OBJ world; stock BG3 HUD is presented separately.
+			BGActive = (Memory.FillRAM[0x212c] | Memory.FillRAM[0x212d]) & 0x12 & ~Settings.BG_Forced;
 			for (auto &clip : sceneClip)
 			{
 				clip = {};
@@ -1253,24 +1258,25 @@ void S9xUpdateScreen (void)
 
 		RenderScreen(FALSE);
 
-		// Verified ALTTP independent scene: cone-free lamp colors indoors, or
-		// HUD-free world ownership outdoors with stock presentation colors.
+		// Verified ALTTP independent scene: cone-free lamp colors, or HUD-free
+		// world ownership indoors/outdoors with exact stock presentation colors.
 		static const uint8 alttpUsSha256[32] = {
 			0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,
 			0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
-		const bool overworldGeometry = !Memory.RAM[0x1b] &&
-			((Memory.RAM[0x10] == 9 && !Memory.RAM[0x11] && !Memory.RAM[0xb0]) ||
-			 (Memory.RAM[0x10] == 14 && Memory.RAM[0x11] == 2 && Memory.RAM[0x10c] == 9));
+		const bool lampScene = Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampSceneContext(
+			Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]);
+		const bool hudGeometry = S9xRemasterHudGeometryContext(Memory.RAM[0x1b] != 0,
+			Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]);
+		const bool geometryOnly = hudGeometry && !lampScene;
 		if (S9xRemasterFramePacketActive() && PPU.BGMode == 1 &&
 			!IPPU.DoubleWidthPixels && !IPPU.Interlace && !IPPU.PseudoHires &&
 			(PPU.Mosaic <= 1 || (!PPU.BGMosaic[1] && !PPU.BGMosaic[2] &&
-				(!overworldGeometry || !PPU.BGMosaic[0]))) &&
-			(overworldGeometry || (Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampSceneContext(
-				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0xb0], Memory.RAM[0x10c]))) &&
+				(!geometryOnly || !PPU.BGMosaic[0]))) &&
+			(hudGeometry || lampScene) &&
 			!std::memcmp(Memory.ROMSHA256, alttpUsSha256, 32))
 		{
 			auto &state = S9xRemasterState();
-			state.sceneGeometryOnly = overworldGeometry;
+			state.sceneGeometryOnly = geometryOnly;
 			if (state.sceneRgb.empty())
 			{
 				state.sceneRgb.assign(GFX.ScreenSize, 0);

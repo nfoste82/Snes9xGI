@@ -40,6 +40,43 @@ Area decoding is gated by the existing verified ALTTP US ROM hash.
 
 ## Persistence
 
+### Per-area scene controls (profile v33)
+
+**Window > Area Settings** also contains **Original Scene RGB Contribution**
+(0–1) and **Representative Emitters per Tile** (1–8, with a checkbox to disable
+approximation). Each indoor room stores its own settings. These two controls
+share one `overworld` setting across all outdoor screens, including both Light
+and Dark World; directional lights retain their separate world settings.
+
+Areas without a saved RGB value use **0.035**, regardless of the old global RGB
+setting. Missing representative-emitter values inherit the existing Profile
+Controls default. Editing RGB alone does not pin that inherited emitter count.
+Profile Controls labels the legacy global RGB value as applying to unknown areas
+only (other games or captures without area identity).
+
+```toml
+[area_scene_settings.room_061]
+original_scene_contribution = 0.035
+representative_emitters = 2
+
+[area_scene_settings.overworld]
+original_scene_contribution = 0.05
+representative_emitters = 8
+```
+
+Zero emitters means approximation is disabled, not that lights are removed.
+Values update immediately and switch with area identity without directional-light
+fading. Save persists all pending profile edits. Captures already store the
+effective RGB/emitter values, so no capture-format change is necessary. Live
+updates publish a small settings map without invalidating dungeon geometry.
+The panel restores its new fixed size even with an older saved window placement.
+
+Validation: `area_scene_settings_test.cpp` covers defaults, room isolation,
+shared overworld, strict schema/ranges, serialization, retained/live frames,
+frame-boundary publication and save merging. Existing `area_lighting_test.cpp`,
+`profile_merge_test.cpp`, Profile Controls layout tests and arm64 Debug app build
+pass. Interactive window/room-change/save testing remains unperformed.
+
 Profile schema 26 adds optional named tables:
 
 ```toml

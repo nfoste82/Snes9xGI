@@ -1,4 +1,4 @@
-"""Check Profile Controls spacing after its two legacy row shifts."""
+"""Check Profile Controls spacing and removal of the retired patch-size row."""
 
 from pathlib import Path
 import re
@@ -16,6 +16,20 @@ def frame(name):
 
 
 class ProfileControlsLayoutTests(unittest.TestCase):
+    def test_area_scene_controls_have_separate_rows_and_fixed_restore_size(self):
+        area = SOURCE.split("- (void)showRemasterAreaSettings\n", 1)[1].split(
+            "- (void)refreshRemasterAreaSettings\n", 1)[0]
+        def area_frame(name):
+            match = re.search(rf"{name} = .*?NSMakeRect\(([^)]+)\)", area)
+            return tuple(map(int, match[1].split(",")))
+        _, original_y, _, original_height = area_frame("remasterAreaOriginalSlider")
+        _, enabled_y, _, enabled_height = area_frame("remasterAreaRepresentativeEnabled")
+        _, count_y, _, count_height = area_frame("remasterAreaRepresentativeSlider")
+        self.assertGreaterEqual(original_y - enabled_y - enabled_height, 12)
+        self.assertGreaterEqual(enabled_y - count_y - count_height, 6)
+        self.assertIn("restoredFrame.size = layoutSize;", area)
+        self.assertIn("view.frame = frame;", area)
+
     def test_saved_placement_cannot_restore_obsolete_panel_size(self):
         capture = SECTION.index("const NSSize layoutSize = remasterProfileSettingsPanel.frame.size;")
         restore = SECTION.index("S9xInitializeWindowPlacement(remasterProfileSettingsPanel")
@@ -28,10 +42,9 @@ class ProfileControlsLayoutTests(unittest.TestCase):
 
     def test_profile_heading_has_its_own_row(self):
         _, y, _, height = frame("reflectanceTitle")
-        patch_shift = int(re.search(r"rect.origin.y \+= (\d+); view.frame", SECTION)[1])
         metrics_shift = int(re.search(r"else if .*?rect.origin.y \+= (\d+)", SECTION)[1])
         _, label_y, _, label_height = frame("remasterLoadedProfileLabel")
-        self.assertGreaterEqual(label_y - (y + patch_shift + metrics_shift + height), 12)
+        self.assertGreaterEqual(label_y - (y + metrics_shift + height), 12)
         _, _, _, panel_height = frame("remasterProfileSettingsPanel")
         self.assertLessEqual(label_y + label_height, panel_height - 12)
 
@@ -41,6 +54,26 @@ class ProfileControlsLayoutTests(unittest.TestCase):
         growth = int(re.search(r"if \(view == remasterMetricsText\) rect.size.height \+= (\d+)", SECTION)[1])
         shift = int(re.search(r"else if .*?rect.origin.y \+= (\d+)", SECTION)[1])
         self.assertGreaterEqual(checkbox_y + shift - (text_y + text_height + growth), 12)
+
+    def test_lamp_has_separate_rows_below_heading(self):
+        _, heading_y, _, _ = frame("remasterLoadedProfileLabel")
+        _, title_y, _, title_height = frame("lampTitle")
+        _, slider_y, _, slider_height = frame("remasterLinkLampBrightnessSlider")
+        self.assertGreaterEqual(heading_y - title_y - title_height, 10)
+        self.assertGreaterEqual(title_y - slider_y - slider_height, 8)
+        _, reflectance_y, _, reflectance_height = frame("reflectanceTitle")
+        self.assertGreaterEqual(slider_y - (reflectance_y + 80 + reflectance_height), 12)
+
+    def test_patch_size_removed_without_leaving_a_gap(self):
+        self.assertNotIn("Emitter Patch Size", SOURCE)
+        self.assertNotIn("remasterEmitterPatch", SOURCE)
+        _, samples_y, _, _ = frame("remasterSamplesSlider")
+        _, enabled_y, _, enabled_height = frame("remasterRepresentativeEnabled")
+        _, representative_y, _, representative_height = frame("remasterRepresentativeSlider")
+        _, bounce_y, _, bounce_height = frame("title")
+        self.assertGreaterEqual(samples_y - enabled_y - enabled_height, 6)
+        self.assertGreaterEqual(enabled_y - representative_y - representative_height, 4)
+        self.assertGreaterEqual(representative_y - bounce_y - bounce_height, 0)
 
 
 if __name__ == "__main__":

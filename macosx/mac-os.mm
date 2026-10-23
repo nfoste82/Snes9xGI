@@ -689,9 +689,9 @@ static NSSlider			*remasterOriginalSceneSlider;
 static NSTextField		*remasterOriginalSceneInput;
 static NSSlider			*remasterReflectanceBoostSlider;
 static NSTextField		*remasterReflectanceBoostInput;
+static NSSlider			*remasterLinkLampBrightnessSlider;
+static NSTextField		*remasterLinkLampBrightnessInput;
 static NSSlider			*remasterSamplesSlider;
-static NSSlider *remasterEmitterPatchSlider;
-static NSTextField *remasterEmitterPatchInput;
 static NSSlider *remasterRepresentativeSlider;
 static NSTextField *remasterRepresentativeInput;
 static NSButton *remasterRepresentativeEnabled;
@@ -786,6 +786,10 @@ static NSUndoManager	*remasterUndoManager;
 static std::string	remasterSavedProfileText;
 static RemasterSceneSettings remasterSavedSceneSettings;
 static std::map<std::string, RemasterDirectionalLight> remasterSavedAreaLights;
+static std::map<std::string, RemasterAreaSceneSettings> remasterSavedAreaSceneSettings;
+static NSSlider *remasterAreaOriginalSlider, *remasterAreaRepresentativeSlider;
+static NSTextField *remasterAreaOriginalInput, *remasterAreaRepresentativeInput;
+static NSButton *remasterAreaRepresentativeEnabled;
 static NSPanel *remasterAreaPanel;
 static NSTextField *remasterAreaName, *remasterAreaDirection[3], *remasterAreaBrightness;
 static NSButton *remasterAreaEnabled, *remasterAreaSave;
@@ -799,7 +803,8 @@ static bool remasterAreaNeedsRefresh = true;
 
 static bool RemasterAreaDirty()
 {
-	return remasterEditingProfile.areaLights != remasterSavedAreaLights;
+	return remasterEditingProfile.areaLights != remasterSavedAreaLights ||
+		remasterEditingProfile.areaSceneSettings != remasterSavedAreaSceneSettings;
 }
 static bool			remasterNonSceneDirty = false;
 @interface S9xRemasterAssetUndoSnapshot : NSObject
@@ -1019,6 +1024,7 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.occlusion = captured->occlusion;
 		metadata.normalXyz = captured->normalXyz;
 		metadata.emissionRgba = captured->emissionRgba;
+		metadata.emissionColorMask = captured->emissionColorMask;
 		metadata.emissionDepth = captured->emissionDepth;
 		metadata.emissionOmnidirectional = captured->emissionOmnidirectional;
 		metadata.combineEmitters = captured->combineEmitters;
@@ -1075,6 +1081,7 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	if (source.hasEmission)
 	{
 		metadata.emissionRgba = source.emissionRgba;
+		metadata.emissionColorMask = source.emissionColorMask;
 		metadata.hasEmission = true;
 	}
 	metadata.directLightingOppositeFacing = source.directLightingOppositeFacing;
@@ -1191,6 +1198,7 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	else if (layer == RemasterEditorEmission)
 	{
 		destination.emissionRgba = source.emissionRgba;
+		destination.emissionColorMask = source.emissionColorMask;
 		destination.hasEmission = source.hasEmission;
 		destination.emissionDepth = source.emissionDepth;
 		destination.emissionOmnidirectional = source.emissionOmnidirectional;
@@ -1208,6 +1216,7 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 	if (!metadata.combineEmitters.empty()) version = std::max<uint32_t>(version, 17);
 	if (metadata.hasEmission)
 		version = std::max<uint32_t>(version, 3);
+	if (metadata.hasEmission && metadata.emissionColorMask != UINT64_MAX) version = std::max<uint32_t>(version, 31);
 	if (metadata.hasNormals)
 		version = std::max<uint32_t>(version, 5);
 	if (metadata.directLightingOppositeFacing)
@@ -1247,6 +1256,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::Normal: return @"Normals";
 	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
 	case RemasterLightingView::Emission: return @"Emission";
+	case RemasterLightingView::MetadataTypes: return @"Metadata Types";
 	case RemasterLightingView::Mesh: return @"Mesh (green fallback, cyan sheets, amber shells, pink walls)";
 	case RemasterLightingView::Composite:
 	default: return @"Composite";
@@ -1285,6 +1295,7 @@ static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, cons
 	const RemasterFrameAssetMetadata *captured = S9xRemasterFrameMetadataForTile(frame, tileId);
 	if (!hadLayer && captured && captured->hasEmission)
 		metadata.emissionRgba = captured->emissionRgba;
+	if (!hadLayer) metadata.emissionColorMask = captured && captured->hasEmission ? captured->emissionColorMask : 0;
 	bool changed = false;
 	bool imported = false;
 	for (size_t pixel = 0; pixel < 64; pixel++)
@@ -1292,6 +1303,8 @@ static bool SetRemasterEmissionFromVisibleColors (RemasterProfile &profile, cons
 		if (!visible[pixel] || (selectedPixel >= 0 && pixel != static_cast<size_t>(selectedPixel)))
 			continue;
 		imported = true;
+		changed |= (metadata.emissionColorMask & (UINT64_C(1)<<pixel)) != 0;
+		metadata.emissionColorMask &= ~(UINT64_C(1)<<pixel);
 		const size_t offset = pixel * 4;
 		const uint8_t newRed = visibleColors[pixel][0];
 		const uint8_t newGreen = visibleColors[pixel][1];
@@ -4494,6 +4507,8 @@ void QuitWithFatalError ( NSString *message)
 - (BOOL)commitRemasterIndirectRoughness;
 - (void)changeRemasterReflectanceBoost:(id)sender;
 - (BOOL)commitRemasterReflectanceBoost;
+- (void)changeRemasterLinkLampBrightness:(id)sender;
+- (BOOL)commitRemasterLinkLampBrightness;
 - (void)refreshRemasterEditingControls;
 - (void)restoreRemasterProfileFromText:(NSString *)text;
 - (void)restoreRemasterSceneSettings:(NSData *)snapshot;
@@ -5192,7 +5207,6 @@ void QuitWithFatalError ( NSString *message)
 	benchmarkWarmupFrames = static_cast<unsigned>(std::round(warmup * Memory.ROMFramesPerSecond));
 	benchmarkMeasureFrames = std::max(1u, static_cast<unsigned>(std::round(seconds * Memory.ROMFramesPerSecond)));
 	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
-	benchmarkReport[@"emitter_patch_size"] = @(benchmarkSceneSettings.emitterPatchSize);
 	benchmarkReport[@"representative_emitters"] = @(benchmarkSceneSettings.representativeEmitters);
 	benchmarkReport[@"audio_muted"] = @YES;
 	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
@@ -5336,6 +5350,10 @@ void QuitWithFatalError ( NSString *message)
 {
 	ClearRemasterDebugLightRedraw();
 	remasterLightingView = NextRemasterLightingView(remasterLightingView);
+	// Selecting a GI debug view exits any separate surface diagnostic so the
+	// requested view is visible, including when cycling away from Metadata Types.
+	S9xRemasterSetDebugMode(RemasterDebugMode::Original);
+	remasterReplayDebugMode = RemasterDebugMode::Original;
 	remasterLightingEnabled = true;
 	SetLiveRemasterPresentation(running && remasterEditingProfileLoaded, remasterLightingView);
 	[s9xView updateRemasterDebugOverlay];
@@ -5432,6 +5450,7 @@ void QuitWithFatalError ( NSString *message)
 				remasterEditingProfileDirty = false;
 				remasterSavedSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 				remasterSavedAreaLights = remasterEditingProfile.areaLights;
+				remasterSavedAreaSceneSettings = remasterEditingProfile.areaSceneSettings;
 				remasterAreaNeedsRefresh = true;
 				remasterNonSceneDirty = false;
 				S9xRemasterSerializeProfile(remasterEditingProfile, remasterSavedProfileText, diagnostics, false);
@@ -6237,6 +6256,7 @@ void QuitWithFatalError ( NSString *message)
 		[contentView addSubview:remasterEmissionColor];
 		remasterEmissionPaintMode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(252, 377, 120, 28) pullsDown:NO];
 		[remasterEmissionPaintMode addItemsWithTitles:@[@"Intensity", @"RGB", @"RGB + Intensity"]];
+		remasterEmissionPaintMode.toolTip = @"Intensity uses current artwork colors by default and preserves existing color overrides. RGB / RGB + Intensity explicitly override color only on painted pixels.";
 		[contentView addSubview:remasterEmissionPaintMode];
 		remasterEmissionColorScope = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(300, 307, 130, 28) pullsDown:NO];
 		[remasterEmissionColorScope addItemsWithTitles:@[@"Selected Pixel", @"Entire Tile"]];
@@ -6898,7 +6918,13 @@ void QuitWithFatalError ( NSString *message)
 					const std::array<uint8_t, 256> *emission = showEmission ?
 						(editableMetadata && editableMetadata->hasEmission ? &editableMetadata->emissionRgba : &capturedMetadata->emissionRgba) : nullptr;
 					const size_t emissionOffset = source * 4;
-					const auto preview = emission ? S9xRemasterEmissionPreview(emission->data() + emissionOffset) :
+					std::array<uint8_t,4> effectiveEmission = {};
+					if (emission) {
+						std::copy_n(emission->data()+emissionOffset,4,effectiveEmission.begin());
+						const uint64_t mask=editableMetadata && editableMetadata->hasEmission ? editableMetadata->emissionColorMask : capturedMetadata->emissionColorMask;
+						if (!(mask & (UINT64_C(1)<<source))) for(unsigned c=0;c<3;c++) effectiveEmission[c]=visibleColors[source*3+c];
+					}
+					const auto preview = emission ? S9xRemasterEmissionPreview(effectiveEmission.data()) :
 						std::array<uint8_t, 3>{};
 					for (size_t component = 0; component < 3; component++)
 					{
@@ -7589,9 +7615,6 @@ void QuitWithFatalError ( NSString *message)
 	std::string before;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	S9xRemasterSerializeProfile(remasterEditingProfile, before, diagnostics);
-	std::array<std::array<uint8_t, 3>, 64> sourceArtwork = {};
-	const std::array<bool, 64> sourceArtworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
-		remasterSelectedTile, sourceArtwork);
 	for (const RemasterTileContentId &tileId : remasterVariants)
 	{
 		RemasterAssetMetadata destination = sourceMetadata;
@@ -7607,27 +7630,6 @@ void QuitWithFatalError ( NSString *message)
 			destination.flipGeometry = existing.flipGeometry;
 			destination.normalIgnoreTileTransform = existing.normalIgnoreTileTransform;
 			destination.directLightingOppositeFacing = existing.directLightingOppositeFacing;
-		}
-		if (sourceMetadata.hasEmission && !(tileId == remasterSelectedTile))
-		{
-			std::array<std::array<uint8_t, 3>, 64> destinationArtwork = {};
-			const std::array<bool, 64> destinationArtworkVisible = RemasterVisibleTileColors(remasterReplayFrame,
-				tileId, destinationArtwork);
-			for (size_t pixel = 0; pixel < 64; pixel++)
-			{
-				const size_t offset = pixel * 4;
-				if (sourceArtworkVisible[pixel] && destinationArtworkVisible[pixel] &&
-					sourceMetadata.emissionRgba[offset] == sourceArtwork[pixel][0] &&
-					sourceMetadata.emissionRgba[offset + 1] == sourceArtwork[pixel][1] &&
-					sourceMetadata.emissionRgba[offset + 2] == sourceArtwork[pixel][2])
-				{
-					// Artwork-colored emission tracks each frame's artwork; only its intensity is shared.
-					destination.emissionRgba[offset] = destinationArtwork[pixel][0];
-					destination.emissionRgba[offset + 1] = destinationArtwork[pixel][1];
-					destination.emissionRgba[offset + 2] = destinationArtwork[pixel][2];
-					destination.emissionRgba[offset + 3] = sourceMetadata.emissionRgba[offset + 3];
-				}
-			}
 		}
 		remasterEditingProfile.assets[tileId] = std::move(destination);
 	}
@@ -8424,6 +8426,15 @@ void QuitWithFatalError ( NSString *message)
 			}
 			if (rgba)
 			{
+				std::array<uint8_t,256> effective;
+				std::copy_n(rgba,256,effective.begin());
+				const uint64_t mask=editableMetadata ? editableMetadata->emissionColorMask : captured->emissionColorMask;
+				if (!(mask & (UINT64_C(1)<<remasterSelectedTilePixel))) {
+					std::array<std::array<uint8_t,3>,64> colors={};
+					RemasterVisibleTileColors(remasterReplayFrame,remasterSelectedTile,colors);
+					std::copy(colors[remasterSelectedTilePixel].begin(),colors[remasterSelectedTilePixel].end(),effective.begin()+offset);
+				}
+				rgba=effective.data();
 				remasterValueBrush.integerValue = rgba[offset + 3];
 				remasterValueInput.integerValue = rgba[offset + 3];
 				remasterEmissionColor.color = [NSColor colorWithCalibratedRed:rgba[offset] / 255.0
@@ -8672,10 +8683,13 @@ void QuitWithFatalError ( NSString *message)
 		const bool hadLayer = metadata.hasEmission;
 		if (!metadata.hasEmission && captured && captured->hasEmission)
 			metadata.emissionRgba = captured->emissionRgba;
+		if (!hadLayer) metadata.emissionColorMask = captured && captured->hasEmission ? captured->emissionColorMask : 0;
 		metadata.hasEmission = true;
 		const size_t offset = pixel * 4;
 		if (remasterStrokeEmissionMode != RemasterEmissionPaintIntensity)
 		{
+			remasterStrokeChanged |= !(metadata.emissionColorMask & (UINT64_C(1)<<pixel));
+			metadata.emissionColorMask |= UINT64_C(1)<<pixel;
 			for (size_t component = 0; component < remasterStrokeEmissionRgb.size(); component++)
 			{
 				remasterStrokeChanged |= !hadLayer ||
@@ -8837,6 +8851,7 @@ void QuitWithFatalError ( NSString *message)
 		const bool hadLayer = metadata.hasEmission;
 		if (!metadata.hasEmission && captured && captured->hasEmission)
 			metadata.emissionRgba = captured->emissionRgba;
+		if (!hadLayer) metadata.emissionColorMask = captured && captured->hasEmission ? captured->emissionColorMask : 0;
 		metadata.hasEmission = true;
 		const size_t offset = remasterSelectedTilePixel * 4 + 3;
 		if (hadLayer && metadata.emissionRgba[offset] == value)
@@ -8857,7 +8872,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)controlTextDidChange:(NSNotification *)notification
 {
-	if (notification.object == remasterAreaBrightness || notification.object == remasterAreaDirection[0] ||
+	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput ||
+		notification.object == remasterAreaBrightness || notification.object == remasterAreaDirection[0] ||
 		notification.object == remasterAreaDirection[1] || notification.object == remasterAreaDirection[2])
 	{
 		[self changeRemasterAreaSettings:nil];
@@ -8876,6 +8892,8 @@ void QuitWithFatalError ( NSString *message)
 	else if (notification.object == remasterOriginalSceneInput)
 		remasterSettingsSaveButton.enabled = YES;
 	else if (notification.object == remasterReflectanceBoostInput)
+		remasterSettingsSaveButton.enabled = YES;
+	else if (notification.object == remasterLinkLampBrightnessInput)
 		remasterSettingsSaveButton.enabled = YES;
 }
 
@@ -9389,7 +9407,7 @@ void QuitWithFatalError ( NSString *message)
 	if (![self commitRemasterHeightScale] || ![self commitRemasterCameraDirection] ||
 		![self commitRemasterIndirectRoughness] ||
 		![self commitRemasterOriginalSceneContribution] ||
-		![self commitRemasterReflectanceBoost])
+		![self commitRemasterReflectanceBoost] || ![self commitRemasterLinkLampBrightness])
 		return NO;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (!remasterEditingProfileLoaded || !remasterEditingProfileURL) return NO;
@@ -9448,6 +9466,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterSavedProfileText = std::move(savedText);
 		remasterSavedSceneSettings = S9xRemasterGetSceneSettings(merged.saved);
 		remasterSavedAreaLights = merged.saved.areaLights;
+		remasterSavedAreaSceneSettings = merged.saved.areaSceneSettings;
 		std::string currentText;
 		S9xRemasterSerializeProfile(remasterEditingProfile, currentText, diagnostics, false);
 		UpdateRemasterEditingProfileDirty(currentText);
@@ -9524,14 +9543,15 @@ void QuitWithFatalError ( NSString *message)
 		remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.originalSceneContribution];
 		remasterReflectanceBoostSlider.floatValue = remasterEditingProfile.reflectanceBoost;
+		remasterLinkLampBrightnessSlider.floatValue = remasterEditingProfile.linkLampBrightness;
+		remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g",
+			remasterEditingProfile.linkLampBrightness];
 		remasterReflectanceBoostInput.stringValue = [NSString stringWithFormat:@"%.6g",
 			remasterEditingProfile.reflectanceBoost];
 		remasterHeightPreviewMultiplierSlider.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 		remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 		remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
-		remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
-		remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
 		[self refreshRemasterRepresentativeControls];
 		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
@@ -9579,7 +9599,7 @@ void QuitWithFatalError ( NSString *message)
 	[self savePreviousWorkspace];
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1160)
+		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1166)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Profile Controls";
@@ -9661,7 +9681,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMaxInput.action = @selector(changeRemasterHeightPreviewRange:);
 		[content addSubview:remasterHeightPreviewMaxInput];
 		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 220, 24)];
-		originalTitle.stringValue = @"Original Scene RGB Contribution";
+		originalTitle.stringValue = @"Original Scene RGB (unknown areas only)";
 		originalTitle.editable = NO;
 		originalTitle.bezeled = NO;
 		originalTitle.drawsBackground = NO;
@@ -9699,32 +9719,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterSamplesInput.target = self;
 		remasterSamplesInput.action = @selector(changeRemasterSamplesPerFrame:);
 		[content addSubview:remasterSamplesInput];
-		NSTextField *sampleNote = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 546, 390, 24)];
-		sampleNote.stringValue = @"Emitter Patch Size (1–5; maximum N×N)";
-		sampleNote.editable = NO;
-		sampleNote.bezeled = NO;
-		sampleNote.drawsBackground = NO;
-		[content addSubview:sampleNote];
-		remasterEmitterPatchSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 522, 300, 24)];
-		remasterEmitterPatchSlider.minValue = 1;
-		remasterEmitterPatchSlider.maxValue = 5;
-		remasterEmitterPatchSlider.numberOfTickMarks = 5;
-		remasterEmitterPatchSlider.allowsTickMarkValuesOnly = YES;
-		remasterEmitterPatchSlider.continuous = NO;
-		remasterEmitterPatchSlider.target = self;
-		remasterEmitterPatchSlider.action = @selector(changeRemasterEmitterPatchSize:);
-		[content addSubview:remasterEmitterPatchSlider];
-		remasterEmitterPatchInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 522, 60, 24)];
-		remasterEmitterPatchInput.target = self;
-		remasterEmitterPatchInput.action = @selector(changeRemasterEmitterPatchSize:);
-		[content addSubview:remasterEmitterPatchInput];
-		// Make room between patch size and bounce controls without compressing rows.
-		for (NSView *view in content.subviews) if (view.frame.origin.y >= 522) {
-			NSRect rect = view.frame; rect.origin.y += 64; view.frame = rect;
-		}
 		remasterRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 550, 390, 24)];
 		[remasterRepresentativeEnabled setButtonType:NSButtonTypeSwitch];
-		remasterRepresentativeEnabled.title = @"Representative Emitters per Tile (1–8; approximate)";
+		remasterRepresentativeEnabled.title = @"Default Representative Emitters per Tile (1–8)";
 		remasterRepresentativeEnabled.target = self;
 		remasterRepresentativeEnabled.action = @selector(changeRemasterRepresentativeEmitters:);
 		[content addSubview:remasterRepresentativeEnabled];
@@ -9864,7 +9861,27 @@ void QuitWithFatalError ( NSString *message)
 			else if (view != remasterSettingsSaveButton) rect.origin.y += 80;
 			view.frame = rect;
 		}
-		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1110, 390, 24)];
+		NSTextField *lampTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1081, 390, 24)];
+		lampTitle.stringValue = @"Link’s Lamp Brightness (0–1600; default 200)";
+		lampTitle.editable = NO;
+		lampTitle.bezeled = NO;
+		lampTitle.drawsBackground = NO;
+		[content addSubview:lampTitle];
+		remasterLinkLampBrightnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 1048, 300, 24)];
+		remasterLinkLampBrightnessSlider.minValue = 0;
+		remasterLinkLampBrightnessSlider.maxValue = 1600;
+		remasterLinkLampBrightnessSlider.continuous = NO;
+		remasterLinkLampBrightnessSlider.target = self;
+		remasterLinkLampBrightnessSlider.action = @selector(changeRemasterLinkLampBrightness:);
+		remasterLinkLampBrightnessSlider.toolTip = @"Held lamp in dark rooms only; 0 turns its light off. Does not change torches. Saved captures retain their recorded lamp brightness.";
+		[content addSubview:remasterLinkLampBrightnessSlider];
+		remasterLinkLampBrightnessInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 1048, 60, 24)];
+		remasterLinkLampBrightnessInput.alignment = NSTextAlignmentCenter;
+		remasterLinkLampBrightnessInput.delegate = self;
+		remasterLinkLampBrightnessInput.target = self;
+		remasterLinkLampBrightnessInput.action = @selector(changeRemasterLinkLampBrightness:);
+		[content addSubview:remasterLinkLampBrightnessInput];
+		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1116, 390, 24)];
 		remasterLoadedProfileLabel.editable = NO;
 		remasterLoadedProfileLabel.selectable = YES;
 		remasterLoadedProfileLabel.bezeled = NO;
@@ -9894,6 +9911,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterOriginalSceneSlider.floatValue = remasterEditingProfile.originalSceneContribution;
 	remasterOriginalSceneInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.originalSceneContribution];
 	remasterReflectanceBoostSlider.floatValue = remasterEditingProfile.reflectanceBoost;
+	remasterLinkLampBrightnessSlider.floatValue = remasterEditingProfile.linkLampBrightness;
+	remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.linkLampBrightness];
 	remasterReflectanceBoostInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.reflectanceBoost];
 	remasterHeightPreviewMultiplierSlider.integerValue = remasterEditingProfile.heightPreviewMultiplier;
 	remasterHeightPreviewMultiplierInput.integerValue = remasterEditingProfile.heightPreviewMultiplier;
@@ -9901,8 +9920,6 @@ void QuitWithFatalError ( NSString *message)
 	remasterHeightPreviewMaxInput.integerValue = remasterHeightPreviewMax;
 	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
-	remasterEmitterPatchSlider.integerValue = remasterEditingProfile.emitterPatchSize;
-	remasterEmitterPatchInput.integerValue = remasterEditingProfile.emitterPatchSize;
 	[self refreshRemasterRepresentativeControls];
 	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
@@ -9919,7 +9936,7 @@ void QuitWithFatalError ( NSString *message)
 	if (!remasterEditingProfileLoaded) return;
 	if (!remasterAreaPanel)
 	{
-		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 400)
+		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 570)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
 		remasterAreaPanel.title = @"Area Settings";
 		remasterAreaPanel.releasedWhenClosed = NO;
@@ -9972,11 +9989,43 @@ void QuitWithFatalError ( NSString *message)
 		remasterAreaColor = [[NSColorWell alloc] initWithFrame:NSMakeRect(190, 66, 90, 30)];
 		remasterAreaColor.target = self; remasterAreaColor.action = @selector(changeRemasterAreaSettings:);
 		[content addSubview:remasterAreaColor];
+		// Leave room below the directional controls for room/shared-overworld settings.
+		for (NSView *view in [content.subviews copy]) {
+			NSRect frame = view.frame; frame.origin.y += 170; view.frame = frame;
+		}
+		label(@"Original Scene RGB Contribution (0–1)", NSMakeRect(20, 196, 370, 22));
+		remasterAreaOriginalSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 166, 260, 24)];
+		remasterAreaOriginalSlider.minValue = 0; remasterAreaOriginalSlider.maxValue = 1;
+		remasterAreaOriginalSlider.continuous = YES;
+		remasterAreaOriginalSlider.target = self; remasterAreaOriginalSlider.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaOriginalSlider];
+		remasterAreaOriginalInput = [[NSTextField alloc] initWithFrame:NSMakeRect(300, 166, 80, 24)];
+		remasterAreaOriginalInput.target = self; remasterAreaOriginalInput.action = @selector(changeRemasterAreaSettings:);
+		remasterAreaOriginalInput.delegate = self; [content addSubview:remasterAreaOriginalInput];
+		remasterAreaRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 126, 370, 24)];
+		[remasterAreaRepresentativeEnabled setButtonType:NSButtonTypeSwitch];
+		remasterAreaRepresentativeEnabled.title = @"Representative Emitters per Tile (1–8)";
+		remasterAreaRepresentativeEnabled.target = self; remasterAreaRepresentativeEnabled.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaRepresentativeEnabled];
+		remasterAreaRepresentativeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 96, 260, 24)];
+		remasterAreaRepresentativeSlider.minValue = 1; remasterAreaRepresentativeSlider.maxValue = 8;
+		remasterAreaRepresentativeSlider.numberOfTickMarks = 8; remasterAreaRepresentativeSlider.allowsTickMarkValuesOnly = YES;
+		remasterAreaRepresentativeSlider.target = self; remasterAreaRepresentativeSlider.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaRepresentativeSlider];
+		remasterAreaRepresentativeInput = [[NSTextField alloc] initWithFrame:NSMakeRect(300, 96, 80, 24)];
+		remasterAreaRepresentativeInput.target = self; remasterAreaRepresentativeInput.action = @selector(changeRemasterAreaSettings:);
+		remasterAreaRepresentativeInput.delegate = self; [content addSubview:remasterAreaRepresentativeInput];
+		label(@"Outdoors: these two settings apply to the entire overworld.", NSMakeRect(20, 56, 380, 30)).font = [NSFont systemFontOfSize:10];
 		remasterAreaSave = [[NSButton alloc] initWithFrame:NSMakeRect(280, 15, 110, 30)];
 		remasterAreaSave.title = @"Save"; remasterAreaSave.bezelStyle = NSBezelStyleRounded;
 		remasterAreaSave.target = self; remasterAreaSave.action = @selector(saveRemasterAreaSettings:);
 		[content addSubview:remasterAreaSave];
+		const NSSize layoutSize = remasterAreaPanel.frame.size;
 		S9xInitializeWindowPlacement(remasterAreaPanel, @"RemasterAreaSettings");
+		NSRect restoredFrame = remasterAreaPanel.frame;
+		restoredFrame.origin.y += restoredFrame.size.height - layoutSize.height;
+		restoredFrame.size = layoutSize;
+		[remasterAreaPanel setFrame:restoredFrame display:NO];
 	}
 	[self refreshRemasterAreaSettings];
 	if (!remasterAreaTimer) remasterAreaTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 target:self
@@ -10000,9 +10049,15 @@ void QuitWithFatalError ( NSString *message)
 	remasterAreaName.stringValue = area.id == 320 ? @"Light World" : area.id == 321 ? @"Dark World" :
 		area.valid() ? [NSString stringWithFormat:@"Room 0x%03X", area.id] : @"No active area";
 	const auto light = S9xRemasterAreaLight(remasterEditingProfile, area);
+	const auto scene = S9xRemasterAreaSceneSettings(remasterEditingProfile, area);
 	if (changed || remasterAreaNeedsRefresh || !remasterAreaPanel.visible)
 	{
 		remasterAreaNeedsRefresh = false;
+		remasterAreaOriginalSlider.floatValue = scene.originalSceneContribution;
+		remasterAreaOriginalInput.stringValue = [NSString stringWithFormat:@"%.6g", scene.originalSceneContribution];
+		remasterAreaRepresentativeEnabled.state = scene.representativeEmitters ? NSControlStateValueOn : NSControlStateValueOff;
+		remasterAreaRepresentativeSlider.integerValue = scene.representativeEmitters ? scene.representativeEmitters : 4;
+		remasterAreaRepresentativeInput.integerValue = remasterAreaRepresentativeSlider.integerValue;
 		remasterAreaEnabled.state = light.enabled ? NSControlStateValueOn : NSControlStateValueOff;
 		for (int i = 0; i < 3; ++i) remasterAreaDirection[i].stringValue = [NSString stringWithFormat:@"%.9g", light.direction[i]];
 		remasterAreaBrightness.stringValue = [NSString stringWithFormat:@"%.9g", S9xRemasterDirectionalBrightnessToUi(light.brightness)];
@@ -10022,12 +10077,26 @@ void QuitWithFatalError ( NSString *message)
 	remasterAreaBrightness.enabled = area.valid(); remasterAreaColor.enabled = area.valid();
 	remasterAreaAxes.enabled = area.valid(); remasterAreaBack.enabled = area.valid();
 	remasterAreaBrightnessSlider.enabled = area.valid();
+	remasterAreaOriginalSlider.enabled = remasterAreaOriginalInput.enabled = area.valid();
+	remasterAreaRepresentativeEnabled.enabled = area.valid();
+	remasterAreaRepresentativeSlider.enabled = remasterAreaRepresentativeInput.enabled = area.valid() && scene.representativeEmitters != 0;
 	remasterAreaSave.enabled = remasterEditingProfileLoaded && RemasterAreaDirty();
 }
 
 - (BOOL)changeRemasterAreaSettings:(id)sender
 {
 	if (!remasterEditingProfileLoaded || !remasterDisplayedArea.valid()) return NO;
+	const auto oldScene = S9xRemasterAreaSceneSettings(remasterEditingProfile, remasterDisplayedArea);
+	auto scene = oldScene;
+	if (sender == remasterAreaOriginalSlider) remasterAreaOriginalInput.floatValue = remasterAreaOriginalSlider.floatValue;
+	if (sender == remasterAreaRepresentativeSlider) remasterAreaRepresentativeInput.integerValue = remasterAreaRepresentativeSlider.integerValue;
+	uint32_t representatives = 0;
+	if (!RemasterProfileParsing::ParseFloat(remasterAreaOriginalInput.stringValue.UTF8String, scene.originalSceneContribution) ||
+		!std::isfinite(scene.originalSceneContribution) || scene.originalSceneContribution < 0 || scene.originalSceneContribution > 1) return NO;
+	if (remasterAreaRepresentativeEnabled.state == NSControlStateValueOn) {
+		if (!RemasterProfileParsing::ParseUnsigned(remasterAreaRepresentativeInput.stringValue.UTF8String, representatives) || representatives < 1 || representatives > 8) return NO;
+	}
+	scene.representativeEmitters = int(representatives);
 	if (sender == remasterAreaBack)
 		remasterAreaDirection[2].floatValue = std::abs(remasterAreaDirection[2].floatValue) *
 			(remasterAreaBack.state == NSControlStateValueOn ? -1 : 1);
@@ -10055,12 +10124,24 @@ void QuitWithFatalError ( NSString *message)
 	if (light.direction[2] != 0) remasterAreaBack.state = light.direction[2] < 0 ? NSControlStateValueOn : NSControlStateValueOff;
 	[remasterAreaAxes setNeedsDisplay:YES];
 	const auto old = S9xRemasterAreaLight(remasterEditingProfile, remasterDisplayedArea);
-	if (old == light) return YES;
+	if (old == light && oldScene == scene) return YES;
 	const std::string key = S9xRemasterAreaKey(remasterDisplayedArea.id);
 	RemasterProfile defaults;
-	if (!remasterSavedAreaLights.count(key) && light == S9xRemasterAreaLight(defaults, remasterDisplayedArea))
-		remasterEditingProfile.areaLights.erase(key);
-	else remasterEditingProfile.areaLights[key] = light;
+	if (!(old == light)) {
+		if (!remasterSavedAreaLights.count(key) && light == S9xRemasterAreaLight(defaults, remasterDisplayedArea))
+			remasterEditingProfile.areaLights.erase(key);
+		else remasterEditingProfile.areaLights[key] = light;
+	}
+	if (!(oldScene == scene)) {
+		const auto sceneKey = S9xRemasterAreaSceneKey(remasterDisplayedArea);
+		// Editing RGB alone must not freeze an inherited emitter default.
+		auto &stored = remasterEditingProfile.areaSceneSettings[sceneKey];
+		stored.originalSceneContribution = scene.originalSceneContribution;
+		if (oldScene.representativeEmitters != scene.representativeEmitters) stored.representativeEmitters = scene.representativeEmitters;
+	}
+	remasterAreaOriginalSlider.floatValue = scene.originalSceneContribution;
+	remasterAreaRepresentativeSlider.integerValue = representatives ? representatives : 4;
+	remasterAreaRepresentativeSlider.enabled = remasterAreaRepresentativeInput.enabled = representatives != 0;
 	remasterMetadataNeedsSync = true;
 	remasterEditingProfileDirty = remasterNonSceneDirty || RemasterAreaDirty() || !S9xRemasterSceneSettingsEqual(
 		S9xRemasterGetSceneSettings(remasterEditingProfile), remasterSavedSceneSettings);
@@ -10068,7 +10149,10 @@ void QuitWithFatalError ( NSString *message)
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	remasterSaveProfileButton.enabled = remasterEditingProfileDirty;
 	remasterNpcSaveButton.enabled = remasterEditingProfileDirty;
-	if (running) S9xRemasterSetAreaLights(remasterEditingProfile.areaLights);
+	if (running) {
+		S9xRemasterSetAreaLights(remasterEditingProfile.areaLights);
+		S9xRemasterSetAreaSceneSettings(remasterEditingProfile.areaSceneSettings);
+	}
 	if (remasterFramePresenting)
 	{
 		SyncRemasterEditingMetadataToFrame();
@@ -10171,13 +10255,13 @@ void QuitWithFatalError ( NSString *message)
 	remasterOriginalSceneSlider.floatValue = restored.originalSceneContribution;
 	remasterOriginalSceneInput.floatValue = restored.originalSceneContribution;
 	remasterReflectanceBoostSlider.floatValue = restored.reflectanceBoost;
+	remasterLinkLampBrightnessSlider.floatValue = restored.linkLampBrightness;
+	remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g", restored.linkLampBrightness];
 	remasterReflectanceBoostInput.floatValue = restored.reflectanceBoost;
 	remasterHeightPreviewMultiplierSlider.integerValue = restored.heightPreviewMultiplier;
 	remasterHeightPreviewMultiplierInput.integerValue = restored.heightPreviewMultiplier;
 	remasterSamplesSlider.integerValue = restored.samplesPerFrame;
 	remasterSamplesInput.integerValue = restored.samplesPerFrame;
-	remasterEmitterPatchSlider.integerValue = restored.emitterPatchSize;
-	remasterEmitterPatchInput.integerValue = restored.emitterPatchSize;
 	[self refreshRemasterRepresentativeControls];
 	remasterSampleAccumulationButton.state = restored.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 }
@@ -10340,6 +10424,38 @@ void QuitWithFatalError ( NSString *message)
 	return YES;
 }
 
+- (void)changeRemasterLinkLampBrightness:(id)sender
+{
+	if (sender == remasterLinkLampBrightnessSlider)
+		remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterLinkLampBrightnessSlider.floatValue];
+	[self commitRemasterLinkLampBrightness];
+}
+
+- (BOOL)commitRemasterLinkLampBrightness
+{
+	if (!remasterEditingProfileLoaded || !remasterLinkLampBrightnessInput)
+		return YES;
+	float brightness = 0;
+	if (!RemasterProfileParsing::ParseFloat(remasterLinkLampBrightnessInput.stringValue.UTF8String, brightness) ||
+		!std::isfinite(brightness) || brightness < 0 || brightness > 1600)
+	{
+		remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.linkLampBrightness];
+		remasterLinkLampBrightnessSlider.floatValue = remasterEditingProfile.linkLampBrightness;
+		NSBeep();
+		return NO;
+	}
+	if (remasterEditingProfile.linkLampBrightness == brightness)
+		return YES;
+	const RemasterSceneSettings before = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	remasterEditingProfile.linkLampBrightness = brightness;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 32);
+	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)]
+		actionName:@"Change Link’s Lamp Brightness"];
+	remasterLinkLampBrightnessSlider.floatValue = brightness;
+	remasterLinkLampBrightnessInput.stringValue = [NSString stringWithFormat:@"%.6g", brightness];
+	return YES;
+}
+
 - (void)refreshRemasterRepresentativeControls
 {
 	const uint8_t count = remasterEditingProfile.representativeEmitters;
@@ -10347,7 +10463,6 @@ void QuitWithFatalError ( NSString *message)
 	remasterRepresentativeSlider.integerValue = count ? count : 4;
 	remasterRepresentativeInput.integerValue = count ? count : 4;
 	remasterRepresentativeSlider.enabled = remasterRepresentativeInput.enabled = count != 0;
-	remasterEmitterPatchSlider.enabled = remasterEmitterPatchInput.enabled = count == 0;
 }
 
 - (void)changeRemasterRepresentativeEmitters:(id)sender
@@ -10362,20 +10477,6 @@ void QuitWithFatalError ( NSString *message)
 	if (count == before.representativeEmitters) return;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(16, remasterEditingProfile.schemaVersion);
 	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Representative Emitters"];
-}
-
-- (void)changeRemasterEmitterPatchSize:(id)sender
-{
-	if (!remasterEditingProfileLoaded) return;
-	NSInteger value = sender == remasterEmitterPatchInput ? remasterEmitterPatchInput.integerValue : remasterEmitterPatchSlider.integerValue;
-	uint8_t size = static_cast<uint8_t>(std::max<NSInteger>(1, std::min<NSInteger>(5, value)));
-	remasterEmitterPatchSlider.integerValue = size;
-	remasterEmitterPatchInput.integerValue = size;
-	if (size == remasterEditingProfile.emitterPatchSize) return;
-	const auto before = S9xRemasterGetSceneSettings(remasterEditingProfile);
-	remasterEditingProfile.emitterPatchSize = size;
-	remasterEditingProfile.schemaVersion = std::max<uint32_t>(15, remasterEditingProfile.schemaVersion);
-	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Emitter Patch Size"];
 }
 
 - (void)changeRemasterSamplesPerFrame:(id)sender
@@ -10596,6 +10697,7 @@ void QuitWithFatalError ( NSString *message)
 	remasterEditingProfileDirty = false;
 	remasterSavedSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 	remasterSavedAreaLights = remasterEditingProfile.areaLights;
+	remasterSavedAreaSceneSettings = remasterEditingProfile.areaSceneSettings;
 	remasterDisplayedArea = {};
 	remasterAreaNeedsRefresh = true;
 	[self refreshRemasterAreaSettings];

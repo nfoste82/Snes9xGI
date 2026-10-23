@@ -71,7 +71,7 @@ int main(int argc,char **argv){@autoreleasepool {try {
    const bool batched=!sampled && batchMode;
    variant=std::to_string(full)+std::to_string(clustered)+std::to_string(batched);
  std::vector<Light> lights;uint32_t sphereCount=0;for(auto &l:f->lights){Light a={};a.position={l.x,l.y,l.z};a.radius=l.radius;a.intensity=l.intensity/25;a.color={std::pow(l.red,2.2f),std::pow(l.green,2.2f),std::pow(l.blue,2.2f)};a.sampleCount=full?128:S9xRemasterSphereSamples(l.x,l.y,l.radius,w,h);a.firstSample=sphereCount;sphereCount+=a.sampleCount;lights.push_back(a);}Light emptyLight={};auto lightBuffer=buffer(lights.empty()?&emptyLight:lights.data(),std::max<size_t>(1,lights.size())*sizeof(Light));
-  auto patches=clustered?S9xRemasterEmitterPatches(*f,fields.emission.data(),fields.participation.data(),fields.surface.data(),mesh):std::vector<RemasterEmitterPatch>{};RemasterEmitterPatch dummy={};auto patchBuffer=buffer(patches.empty()?&dummy:patches.data(),std::max<size_t>(1,patches.size())*sizeof(dummy));
+  auto patches=clustered?S9xRemasterEmitterPatches(*f,fields.emission.data(),fields.participation.data(),mesh):std::vector<RemasterEmitterPatch>{};RemasterEmitterPatch dummy={};auto patchBuffer=buffer(patches.empty()?&dummy:patches.data(),std::max<size_t>(1,patches.size())*sizeof(dummy));
   if(clustered && std::getenv("ALTTP_PERF_EMITTER_INVENTORY")){
    std::map<uint64_t,std::pair<unsigned,unsigned>> inventory;
    for(const auto &patch:patches){const auto &px=f->mainPixels[patch.members[0]];if(!px.instanceId || px.instanceId>f->tileInstances.size())continue;auto hash=f->tileInstances[px.instanceId-1].tileId.hash;inventory[hash].first++;inventory[hash].second+=patch.count;}

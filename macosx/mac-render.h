@@ -37,6 +37,7 @@ enum class RemasterLightingView : uint32_t
 	DirectAndIndirectContribution,
 	Emission,
 	Mesh,
+	MetadataTypes,
 	Count
 };
 

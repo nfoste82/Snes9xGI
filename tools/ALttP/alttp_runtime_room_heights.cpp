@@ -160,7 +160,7 @@ int main(int argc, char **argv)
 				std::cout<<",\"local_source\":\"placement_wall_mount_backing\",\"local_height\":[";
 				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(v.height[k]);}std::cout<<']';break;
 			}
-			if(tiles[i].diagonalHeightPreview) {
+			if(tiles[i].diagonalHeightPreview && !tiles[i].diagonalAuthoredPreserved) {
 				std::cout<<",\"local_source\":\"placement_rom_diagonal_preview\",\"local_height\":[";
 				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(tiles[i].height[k]);}std::cout<<']';
 			}
@@ -283,7 +283,7 @@ int main(int argc, char **argv)
 					std::cout<<"],\"runtime_authored_pixels_preserved\":"<<((f.assetMetadata[0].height==t.height && (!t.hasHeight || !f.tileInstances[0].hasPlacementHeight))?"true":"false")
 						<<",\"obstacle_local_source\":\""<<(t.hasHeight?"authored_asset":map.offsets[i]!=255?"placement_obstacle_vertical_fallback":"unresolved_support")<<'"';
 				}
-				if(t.diagonalHeightPreview) {
+				if(t.diagonalHeightPreview && !t.diagonalAuthoredPreserved) {
 					std::cout<<",\"captured_local_source\":\"placement_rom_diagonal_preview\",\"preview_row\":"<<int(t.diagonalPreviewRow)
 						<<",\"preview_foot\":"<<int(t.diagonalPreviewFoot)
 						<<",\"preview_intercept\":"<<t.diagonalIntercept<<",\"preview_minimum\":"<<int(t.diagonalMinimum)

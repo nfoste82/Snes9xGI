@@ -65,6 +65,23 @@ struct Fixture {
 }
 
 int main(int argc,char **argv) {
+	{Fixture f;f.support(0,50);
+		// Independent scene draw records and stock records observe the same OAM
+		// assembly. EndFrame swaps these planes; paused refresh does not.
+		f.frame.scenePixels=f.frame.mainPixels;
+		const size_t originalCount=f.frame.tileInstances.size();
+		for(size_t i=0;i<originalCount;i++)f.frame.tileInstances.push_back(f.frame.tileInstances[i]);
+		for(auto &p:f.frame.scenePixels)if(p.instanceId)p.instanceId+=uint32_t(originalCount);
+		std::swap(f.frame.mainPixels,f.frame.scenePixels);f.apply();
+		assert(f.diagnostics.claimedInstances==12 && f.diagnostics.resolvedAssemblies==1);
+		const auto resolved=f.frame.tileInstances;
+		std::swap(f.frame.mainPixels,f.frame.scenePixels);f.apply();
+		assert(f.diagnostics.claimedInstances==12 && f.diagnostics.resolvedAssemblies==1);
+		for(size_t i=0;i<resolved.size();i++) {
+			assert(f.frame.tileInstances[i].heightOffset==resolved[i].heightOffset);
+			assert(f.frame.tileInstances[i].geometryStatus==resolved[i].geometryStatus);
+		}
+	}
 	for(bool conflict:{false,true}) {
 		Fixture f;f.frame.originalRgb555.resize(f.frame.width*f.frame.height);
 		f.frame.subPixels.resize(f.frame.width*f.frame.height);

@@ -1262,7 +1262,7 @@ int main()
                         std::printf("EDGE camera=%d power=%.9g spheres=%zu pixels=%zu records=%zu\n",camera,energies.back(),lights.size(),packet.hiddenEmitters.size(),samples.size());
                     };
                     while(std::getline(file,line)){std::istringstream row(line);std::string kind;row>>kind;
-                        if(kind=="camera"){measure();row>>camera;lights.clear();packet.hiddenEmitters.clear();packet.representativeEmitters=std::getenv("S9X_REMASTER_EDGE_CLUSTERED")?3:0;packet.emitterPatchSize=1;}
+                        if(kind=="camera"){measure();row>>camera;lights.clear();packet.hiddenEmitters.clear();packet.representativeEmitters=std::getenv("S9X_REMASTER_EDGE_CLUSTERED")?3:0;}
                         else if(kind=="sphere"){Light l={};float x,y,z,r,g,b;row>>x>>y>>z>>l.radius>>l.intensity>>r>>g>>b;l.position={x,y,z};l.color={r,g,b};
                             l.position.x-=160;l.position.y-=64;l.sampleCount=128;lights.push_back(l);}
                         else if(kind=="pixel"){RemasterFrameHiddenEmitter e;int r,g,b,a,omni;row>>e.x>>e.y>>e.z>>e.depth>>e.normal[0]>>e.normal[1]>>e.normal[2]>>r>>g>>b>>a>>omni;

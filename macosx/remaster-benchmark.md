@@ -866,7 +866,12 @@ quitting the running app. Sampling is opt-in pending visual noise review. Next
 work: parallelize cheap source weighting/selection, investigate denoising/history
 with dynamic-scene invalidation, and add a user-facing independent Direct budget.
 
-### Default emitter patches and size control
+### Default emitter patches and size control (historical, removed)
+
+The patch-size UI and rectangle grouping described below have been removed.
+Representative emitters remain supported; disabling them uses individual pixels.
+Legacy profile keys are ignored on load and omitted on save; the capture byte is
+reserved for compatibility. These measurements describe the former implementation.
 
 Added default2 maximum emitter footprint with Scene Controls integer slider1..5,
 numeric input, undo/live preview/profile persistence and captured replay setting.
@@ -987,7 +992,7 @@ use Composite with zero bounces only until Direct meets the target.
 ### Representative emitters per tile
 
 Opt-in checkbox plus1..8 integer slider/input in Scene Controls, initial enabled
-value4; Off uses existing patch-size method. Undo/live profile application and
+value4; Off originally used the patch-size method (now individual pixels). Undo/live profile application and
 profile schema16/frame23 persistence implemented; older files default off. Uses
 deterministic color/spatial weighted clusters with actual-member endpoints,
 summed energy/area and membership self-exclusion (see lighting contract).

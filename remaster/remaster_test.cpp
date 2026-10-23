@@ -716,7 +716,6 @@ int main ()
 	assert(decodedFrame.originalSceneContribution == 0.4f);
 	assert(decodedFrame.heightPreviewMultiplier == 12);
 	assert(decodedFrame.samplesPerFrame == frame.samplesPerFrame);
-	assert(decodedFrame.emitterPatchSize == 2);
 	assert(decodedFrame.representativeEmitters == 0);
 	assert(!decodedFrame.sampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
@@ -762,7 +761,7 @@ int main ()
 		// transform and v32/v33 empty facing/flip maps (26 bytes).
 		const auto extensions = emission + 256 + 4 + 4 + metadata.combineEmitters.size() * 10 + 1;
 		assert(std::all_of(extensions, extensions + 28, [] (uint8_t value) { return value == 0; }));
-		result.erase(extensions, extensions + 28);
+		result.erase(extensions, extensions + 36); // includes v38 explicit emission-color mask
 		std::vector<uint8_t> modernTail;
 		RemasterFrameSerialization::U8(modernTail, instance.ppuPriority);
 		RemasterFrameSerialization::U32(modernTail, static_cast<uint32_t>(instance.heightOffset));
@@ -1572,7 +1571,6 @@ material = "missing"
 	profile.assets[flame].hasEmission = true;
 	profile.assets[flame].emissionRgba = flameEmission;
 	profile.assets[flame].emissionDepth = 3.25f;
-	profile.emitterPatchSize = 2; // Explicit fixture; loaded user profile may change.
 	profile.schemaVersion = 15; profile.representativeEmitters = 0;
 	std::string volumeText;
 	std::vector<RemasterProfileDiagnostic> volumeDiagnostics;
@@ -1580,14 +1578,18 @@ material = "missing"
 	RemasterProfile volumeProfile;
 	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
 	assert(volumeProfile.schemaVersion == 15 && volumeProfile.assets.at(flame).emissionDepth == 3.25f);
-	assert(volumeProfile.emitterPatchSize == 2);
-	profile.emitterPatchSize = 5;
-	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
-	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
-	assert(volumeProfile.emitterPatchSize == 5);
-	profile.emitterPatchSize = 6;
-	assert(!S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
-	profile.emitterPatchSize = 2;
+	assert(volumeText.find("emitter_patch_size") == std::string::npos);
+	const auto lightingSpace = volumeText.find("[lighting_space]\n");
+	assert(lightingSpace != std::string::npos);
+	for (unsigned size = 1; size <= 5; size++) {
+		auto legacyText = volumeText;
+		legacyText.insert(lightingSpace + std::string("[lighting_space]\n").size(),
+			"emitter_patch_size = " + std::to_string(size) + "\n");
+		assert(S9xRemasterParseProfile(legacyText, volumeProfile, volumeDiagnostics));
+		std::string savedText;
+		assert(S9xRemasterSerializeProfile(volumeProfile, savedText, volumeDiagnostics));
+		assert(savedText.find("emitter_patch_size") == std::string::npos);
+	}
 	profile.representativeEmitters = 4;
 	assert(S9xRemasterSerializeProfile(profile, volumeText, volumeDiagnostics));
 	assert(S9xRemasterParseProfile(volumeText, volumeProfile, volumeDiagnostics));
@@ -1624,7 +1626,13 @@ material = "missing"
 	assert(representativeDecoded.tileInstances[0].ppuPriority == 2 && representativeDecoded.tileInstances[0].heightOffset == 48);
 	representativeBytes[8] = 22;
 	const size_t representativesOffset = 8 + 4 + 4 + 4 + 4 + representativeFrame.profileRomSha256.size() + 33;
+	assert(representativeBytes[representativesOffset - 1] == 1); // retired wire slot
 	representativeBytes.erase(representativeBytes.begin() + representativesOffset);
+	for (unsigned size = 1; size <= 5; size++) {
+		representativeBytes[representativesOffset - 1] = size;
+		assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
+		assert(representativeDecoded.representativeEmitters == 0);
+	}
 	assert(S9xDeserializeRemasterFrame(representativeBytes, representativeDecoded));
 	assert(representativeDecoded.representativeEmitters == 0);
 	assert(representativeDecoded.tileInstances[0].heightOffset == 48);

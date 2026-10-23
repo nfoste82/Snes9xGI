@@ -141,10 +141,10 @@ int main()
 		clusteredFrame.hiddenEmitters.push_back(clusteredFrame.hiddenEmitters[0]);
 		require(S9xRemasterHiddenDirectSamples(clusteredFrame,false,true).size()==260,
 			"overlapping room planes preserve duplicate source power");
-		clusteredFrame.hiddenEmitters.resize(64);clusteredFrame.representativeEmitters=0;clusteredFrame.emitterPatchSize=2;
+		clusteredFrame.hiddenEmitters.resize(64);clusteredFrame.representativeEmitters=0;
 		for(auto &e:clusteredFrame.hiddenEmitters)e.z=0;
-		require(S9xRemasterHiddenDirectSamples(clusteredFrame,false,true).size()==64,
-			"hidden flat rectangles use existing footprint clustering");
+		require(S9xRemasterHiddenDirectSamples(clusteredFrame,false,true).size()==256,
+			"disabled representatives retain every hidden pixel and depth stratum");
 	}
 	RemasterFrameMaterial hudMaterial;
 	hudMaterial.name="hud"; hudMaterial.surfaceClass=RemasterSurfaceClass::UserInterface;

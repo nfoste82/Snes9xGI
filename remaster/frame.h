@@ -37,7 +37,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 37;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 38;
 
 struct RemasterFramePixel
 {
@@ -90,6 +90,7 @@ struct RemasterFrameAssetMetadata
 	std::array<int16_t, 64> height = {};
 	std::array<uint8_t, 192> normalXyz = {};
 	std::array<uint8_t, 256> emissionRgba = {};
+	uint64_t emissionColorMask = UINT64_MAX;
 	float emissionDepth = 0.0f;
 	bool emissionOmnidirectional = false;
 	std::vector<RemasterTileContentId> combineEmitters;
@@ -291,7 +292,6 @@ struct RemasterFrame
 	float originalSceneContribution = 0.65f;
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
-	uint8_t emitterPatchSize = 2;
 	uint8_t representativeEmitters = 0;
 	bool sampleAccumulation = true;
 	std::vector<uint16_t> originalRgb555;
@@ -315,6 +315,8 @@ struct RemasterFrame
 	std::vector<RemasterRoomPixelDiagnostic> subRoomDiagnostics;
 	std::vector<RemasterRoomPixelDiagnostic> sceneRoomDiagnostics;
 	std::vector<RemasterFrameLight> lights;
+	// Live/paused editor identity only; captures already retain the baked intensity.
+	size_t heldLampLightIndex = SIZE_MAX;
 	std::vector<RemasterFrameHiddenEmitter> hiddenEmitters;
 	RemasterAreaContext area;
 	RemasterDirectionalLight directionalLight{false};
@@ -349,6 +351,58 @@ inline RemasterFrameAssetMetadata S9xRemasterResolveFrameGeometry(const Remaster
 		if (frame.tileInstances[index].source != RemasterSourceType::Object) result.hasNormals = false;
 	}
 	return result;
+}
+
+// The cone-free raster intentionally excludes BG1 (which also carries the lamp
+// mask). An empty scene/main receiver can nevertheless have a real subscreen
+// surface. Restore only observed, explicitly authored physical wall/floor art, including
+// its exact canonical palette sample; never synthesize a placement datum or
+// import arbitrary BG1 color-math masks. Run before placement application so the
+// restored receiver participates in the same occurrence solve as other scene art.
+inline size_t S9xRemasterRestoreSceneSubscreenWalls(RemasterFrame &frame)
+{
+	const size_t count = frame.mainPixels.size();
+	if (frame.profileRomSha256 != "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb" ||
+		frame.scenePixels.size() != count || frame.sceneRgb555.size() != count || frame.subPixels.size() != count)
+		return 0;
+	std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
+	for (const auto &m : frame.assetMetadata) metadata[m.tileId] = &m;
+	std::map<uint32_t, bool> accepted;
+	auto backdrop = [](const RemasterFramePixel &p) {
+		return !p.instanceId && static_cast<RemasterSourceType>(p.owner >> 24) == RemasterSourceType::Backdrop;
+	};
+	size_t restored = 0;
+	for (size_t k = 0; k < count; k++) {
+		if (!backdrop(frame.scenePixels[k]) || !backdrop(frame.mainPixels[k])) continue;
+		const auto &p = frame.subPixels[k];
+		if (!p.instanceId || p.instanceId > frame.tileInstances.size() || p.tilePixel >= 64 ||
+			static_cast<RemasterSourceType>(p.owner >> 24) != RemasterSourceType::Background || ((p.owner >> 16) & 255) != 0) continue;
+		const auto &i = frame.tileInstances[p.instanceId - 1];
+		auto a = accepted.find(p.instanceId);
+		if (a == accepted.end()) {
+			bool physical = false;
+			const auto m = metadata.find(i.tileId);
+			if (i.source == RemasterSourceType::Background && i.sourceIndex == 0 && i.hasPaletteArtwork &&
+				!S9xRemasterInstanceGeometryUnresolved(i) && m != metadata.end()) {
+				const auto effective = S9xRemasterResolveFrameGeometry(*m->second, frame, p.instanceId - 1);
+				physical = effective.hasHeight && effective.hasNormals &&
+					(effective.tileRole == RemasterTileRole::Wall || effective.tileRole == RemasterTileRole::WallCorner
+#ifndef ALTTP_TEST_PRIOR_SCENE_FLOORS
+						 || effective.tileRole == RemasterTileRole::Floor
+#endif
+#ifndef ALTTP_TEST_PRIOR_SCENE_STAIRS
+						 || effective.tileRole == RemasterTileRole::StairTop || effective.tileRole == RemasterTileRole::StairBottom
+#endif
+					);
+			}
+			a = accepted.emplace(p.instanceId, physical).first;
+		}
+		if (!a->second) continue;
+		frame.scenePixels[k] = p;
+		frame.sceneRgb555[k] = i.paletteRgb555[p.tilePixel];
+		restored++;
+	}
+	return restored;
 }
 
 inline std::set<uint32_t> S9xRemasterContextSelection(const RemasterProfile &profile,
@@ -491,6 +545,7 @@ struct RemasterDungeonFloorContext
 		bool highCornerFace = false; // ordered HIGH curved face; terminal seam ownership only
 		bool lowerDoorWallPart = false; // terminal split-door cover at preserved high face seam
 		bool diagonalHeightPreview = false; // effective local geometry only; authored asset is immutable
+		bool diagonalAuthoredPreserved = false; // exact ROM cross section uses intrinsic samples
 		uint8_t diagonalPreviewRow = 0;
 		int16_t diagonalPreviewFoot = 0;
 		// Exact assembly-local clipped affine model, including internal cap
@@ -517,7 +572,7 @@ struct RemasterDungeonFloorContext
 				t.authoredObstacle,t.authoredObstacleAssembly,t.authoredObstacleGroup,t.authoredObstacleZ,t.authoredObstacleFlip,t.authoredObstacleContact,t.authoredObstacleDirection,t.hflip,t.vflip,t.floorPlaneMask,
 				t.distinctLowerUsage,t.structuralFloorPlaneMask,t.wallTemplateOffset,
 				t.supportingTrim,t.terminalCorner,t.highPerimeterFace,t.highCornerFace,
-				t.lowerDoorWallPart,t.diagonalHeightPreview,t.diagonalPreviewRow,
+				t.lowerDoorWallPart,t.diagonalHeightPreview,t.diagonalAuthoredPreserved,t.diagonalPreviewRow,
 				t.diagonalPreviewFoot,t.diagonalIntercept,t.diagonalMinimum,t.diagonalMaximum,
 				t.semanticSoutheastWall,t.semanticBoundaryKnown,t.diagnosticWallTemplateOffset,
 				t.diagnosticUphillDirections,t.diagnosticNormalUphill,
@@ -539,6 +594,9 @@ struct RemasterDungeonFloorContext
 	uint8_t collisionMode = 0;
 	uint8_t linkFacing = 0xff;
 	uint8_t linkPlane = 0;
+	// USA $048a destination selector latched by stair detection, not the
+	// current actor plane ($ee), which switches only after the camera scroll.
+	uint8_t straightStairPlane = 255;
 	// Which placed artwork is being solved; never a gameplay-plane label.
 	uint8_t placementBackgroundIndex = 1;
 	uint16_t linkX = 0;
@@ -566,6 +624,7 @@ struct RemasterDungeonFloorContext
 	const Placement *placements = nullptr;
 	const uint8_t *constructedMaps = nullptr; // both final WRAM BG maps, 16384 bytes
 	const uint8_t *graphics = nullptr; // complete VRAM; included in state identity
+	const uint16_t *emitterPalette = nullptr; // current CGRAM, emitter-only (not geometry state)
 	// Verified USA ROM predefined tile table ($80:9B52, 6438 words).
 	// Optional: old captures/adapters conservatively lack template evidence.
 	const uint8_t *dungeonTemplateData = nullptr;
@@ -691,16 +750,32 @@ inline void S9xRemasterDungeonStairsFromAttributes(RemasterDungeonFloorContext &
 	}
 }
 
+// USA Module07 handlers: ordinary door scroll and straight inter-room stairs.
+// Other warps/falls/spiral stairs have different publication/visibility lifetimes.
+inline bool S9xRemasterDungeonRoomScroll(uint8_t submodule)
+{
+	return submodule==2 || submodule==18 || submodule==19;
+}
+
+inline uint8_t S9xRemasterDungeonRoomLoadedPhase(uint8_t submodule)
+{
+	return submodule==2?2:3; // LoadNextRoom vs StraightInterroomStairs/02
+}
+
 inline uint16_t S9xRemasterDungeonRoomForScreenPosition (const RemasterDungeonFloorContext &context,
 	uint32_t x, uint32_t y)
 {
-	if (context.module != 7 || context.submodule != 2 || context.previousRoomIndex == 0xffff ||
+	if (context.module != 7 || !S9xRemasterDungeonRoomScroll(context.submodule) || context.previousRoomIndex == 0xffff ||
 		context.previousRoomIndex == context.roomIndex)
 		return context.roomIndex;
+	const bool straight=context.submodule==18 || context.submodule==19;
+	// Stair detection changes A0 before the fade/loader; origin still names the
+	// source until handler02 returns. Never project destination art onto it.
+	if(straight && context.constructionPhase<3)return context.previousRoomIndex;
 	if(context.hasDestinationOrigin && context.scrollDirection<4) {
 		// MoveLinkOutDoor resets $0418 at completion of phase13. By14 the
 		// camera scroll has ended and the entire viewport belongs to destination.
-		if(context.constructionPhase>=14)return context.roomIndex;
+		if(context.constructionPhase>=(straight?11:14))return context.roomIndex;
 		// Header loader records the actual BG origin, including teleport-door
 		// remaps. Compare in 16-bit camera space, not a room-ID-grid guess.
 		const int16_t dx=static_cast<int16_t>(uint16_t(context.backgroundScrollX+x-context.destinationOriginX));
@@ -958,6 +1033,21 @@ inline bool S9xRemasterReadDungeonHeightMap (const std::string &path,
 }
 
 #include "dungeon_wall_mounts.h"
+
+// Canonical local source proof; placement flips are applied only when selecting
+// displayed seam samples. A cap is not permission to ignore arbitrary relief.
+inline bool S9xRemasterDungeonDoorTangentCap(const RemasterDungeonFloorContext::Placement &wall,
+	uint8_t doorDirection)
+{
+	if(doorDirection>=4 || wall.surface!=RemasterDungeonFloorContext::Surface::Wall ||
+		!wall.hasHeight || !wall.wallTemplateOffset || (!wall.highCornerFace && !wall.highPerimeterFace))return false;
+	const int low=*std::min_element(wall.height.begin(),wall.height.end());
+	const int cap=*std::max_element(wall.height.begin(),wall.height.end());
+	if(cap<=low || cap>=low+7)return false;
+	for(int y=0;y<8;y++)for(int x=0;x<8;x++)
+		if(wall.height[y*8+x]!=std::min(cap,low+7-(doorDirection<2?y:x)))return false;
+	return true;
+}
 
 inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext &inputContext,
 	uint8_t floorRise, RemasterDungeonHeightMap &result)
@@ -1849,7 +1939,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			}audit<<"]}\n";
 		}
 #endif
-		for(int i=0;i<4096;i++)if(context.placements[i].diagonalHeightPreview && !result.producerObstacle[i])
+		for(int i=0;i<4096;i++)if(context.placements[i].diagonalHeightPreview && !context.placements[i].diagonalAuthoredPreserved && !result.producerObstacle[i])
 			result.localHeightPreviews.push_back({i,context.placements[i].height});
 		for(int encoded=0;encoded<8192;encoded++) {
 			auto &d=diagnosticStorage->cells[encoded];
@@ -2310,13 +2400,21 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 							}
 						}
 						if(nb==255 || !n.hasHeight)continue;
+						// A proved high-wall band can have a clipped outer cap. Its
+						// plateau is a different surface, not a continuation of the
+						// doorway's descending face. Prove the COMPLETE canonical
+						// section before excluding cap pixels from a tangent contact;
+						// arbitrary relief/masks must still fail seam agreement.
+						const bool axial=t.doorDirection<2?dy[d]!=0:dx[d]!=0;
+						const int cap=*std::max_element(n.height.begin(),n.height.end());
+						const bool clippedCap=!axial && S9xRemasterDungeonDoorTangentCap(n,t.doorDirection);
 						int samples=0,vote=255;bool mismatch=false;
 						for(int k=0;k<8;k++) {
 							int ax=dx[d]? (dx[d]>0?7:0):k,ay=dy[d]? (dy[d]>0?7:0):k;
 							int bx=dx[d]?7-ax:ax,by=dy[d]?7-ay:ay;
 							if(!S9xRemasterDoorframePixel(t.doorframeMask,ax,ay,t.hflip,t.vflip))continue;
+							if(clippedCap && height(j,bx,by)==cap)continue;
 							if(n.surface==RemasterDungeonFloorContext::Surface::Door && !S9xRemasterDoorframePixel(n.doorframeMask,bx,by,n.hflip,n.vflip))continue;
-							const bool axial=t.doorDirection<2?dy[d]!=0:dx[d]!=0;
 							const int step=axial?height(j,bx,by)-height(j,bx+dx[d],by+dy[d]):0;
 							if(axial && std::abs(step)!=1) {mismatch=true;continue;}
 							const int value=nb+height(j,bx,by)+step-height(i,ax,ay);
@@ -2528,6 +2626,70 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			}
 		}
 		S9xRemasterAttachWallMounts(context,result);
+		// An explicitly authored obstacle assembly can interrupt a wall's tangent
+		// without interrupting its physical surface (decorated wall columns). Its
+		// solved SUPPORT base is not the seam height: compare the complete local
+		// relief on both sides. Only exact one-axis sections with nonflat tangent
+		// edges qualify. Never cross a missing-height foot, a corner, an overwrite
+		// with incompatible relief, an underpass, or an ambiguous assembly owner.
+#ifndef ALTTP_TEST_PRIOR_OBSTACLE_WALL_SEAMS
+		for(int p=0;p<2;p++)if(activePlanes[p]) {
+			std::array<bool,4096> seen={};
+			auto axis=[&](int i) {
+				const auto &t=context.placements[i];if(!t.hasHeight)return -1;
+				for(int a=0;a<2;a++) {
+					bool exact=true;const int first=height(i,0,0),last=height(i,a?0:7,a?7:0);
+					if(first==last)continue;
+					for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
+						if(height(i,x,y)!=height(i,a?0:x,a?y:0))exact=false;
+						const int k=a?y:x;
+						const int derivative=k<7?height(i,a?0:k+1,a?k+1:0)-height(i,a?0:k,a?k:0):0;
+						if(derivative && (derivative>0)!=(last>first))exact=false;
+					}
+					if(exact)return a;
+				}return -1;
+			};
+			for(int start=0;start<4096;start++) {
+				const auto &t=context.placements[start];const int a=axis(start);
+				if(seen[start] || a<0 || t.surface!=RemasterDungeonFloorContext::Surface::Wall ||
+					(context.placementBackgroundIndex==0 && p==0 && activePlanes[1] && t.distinctLowerUsage) ||
+					!solidFace(context.collisionAttributes[p*4096+start]))continue;
+				std::vector<int> queue{start};std::map<int,int> relative{{start,0}};std::set<int> anchors;bool conflict=false,assemblyContact=false;
+				for(size_t at=0;at<queue.size();at++) {
+					const int i=queue[at];seen[i]=true;
+					if(nodes[p*4096+i]>=0 && bad[nodes[p*4096+i]])conflict=true;
+					for(int sign:{-1,1}) {
+						const int x=i%64+(a?sign:0),y=i/64+(a?0:sign);if(x<0 || x>=64 || y<0 || y>=64)continue;
+						const int j=y*64+x;const auto &n=context.placements[j];if(axis(j)!=a)continue;
+						if(context.placementBackgroundIndex==0 && p==0 && activePlanes[1] && n.distinctLowerUsage)continue;
+						int delta=INT_MIN;bool exact=true;
+						for(int k=0;k<8;k++) {
+							const int h=height(i,a?(sign>0?7:0):k,a?k:(sign>0?7:0));
+							const int oh=height(j,a?(sign>0?0:7):k,a?k:(sign>0?0:7));
+							if(delta!=INT_MIN && delta!=h-oh)exact=false;delta=h-oh;
+						}if(!exact)continue;
+						const int r=relative[i]+delta;
+						if(n.surface==RemasterDungeonFloorContext::Surface::Wall && solidFace(context.collisionAttributes[p*4096+j])) {
+							if(relative.count(j)){if(relative[j]!=r)conflict=true;}
+							else {relative[j]=r;queue.push_back(j);}
+						} else if(n.authoredObstacle && n.authoredObstacleAssembly && result.offsets[j]!=255) {
+							for(const auto &e:result.authoredObstacleEvidence)if(e.assembly==n.authoredObstacleAssembly &&
+								e.plane==p && !e.conflict && e.floorBase!=255){anchors.insert(result.offsets[j]-r);assemblyContact=true;}
+						}
+					}
+				}
+				for(int i:queue)if(result.structuralPlaneOffsets[p][i]!=255)anchors.insert(result.structuralPlaneOffsets[p][i]-relative[i]);
+				for(int i:queue)if(result.offsets[i]!=255)anchors.insert(result.offsets[i]-relative[i]);
+				if(assemblyContact && anchors.size()>1 && !conflict)result.structuralConflicts++;
+				if(!assemblyContact || conflict || anchors.size()!=1)continue;
+				for(int i:queue) {
+					const int base=*anchors.begin()+relative[i];if(base==255 || base<-32767 || base>32767)continue;
+					if(result.offsets[i]!=255 && result.offsets[i]!=base)continue;
+					result.offsets[i]=base;result.structuralPlaneOffsets[p][i]=base;
+				}
+			}
+		}
+#endif
 		for (int i = 0; i < 4096; i++)
 		{
 			const auto &tile = context.placements[i];
@@ -2735,7 +2897,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 			const int word=context.retainedOutgoingMaps[at]|context.retainedOutgoingMaps[at+1]<<8;
 			return instance.tileNumber==(word&1023) && instance.palette==((word>>10)&7) && instance.hFlip==bool(word&0x4000) && instance.vFlip==bool(word&0x8000);
 		}
-		if(context.submodule!=2 || !context.constructedMaps)return true;
+		if(!S9xRemasterDungeonRoomScroll(context.submodule) || !context.constructedMaps)return true;
 		const int start=backgroundIndex?0:8192;
 		const uint16_t word=context.constructedMaps[start+cell*2]|context.constructedMaps[start+cell*2+1]<<8;
 		return instance.tileNumber==(word&1023) && instance.palette==((word>>10)&7) &&
@@ -3684,12 +3846,14 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.indirectBounceCount = profile.indirectBounceCount;
 	frame.indirectRoughness = profile.indirectRoughness;
 	frame.reflectanceBoost = profile.reflectanceBoost;
-	frame.originalSceneContribution = profile.originalSceneContribution;
+	if (frame.heldLampLightIndex < frame.lights.size())
+		frame.lights[frame.heldLampLightIndex].intensity = profile.linkLampBrightness;
+	const auto areaSettings = S9xRemasterAreaSceneSettings(profile, frame.area);
+	frame.originalSceneContribution = areaSettings.originalSceneContribution;
 	if (frame.area.valid()) frame.directionalLight = S9xRemasterAreaLight(profile, frame.area);
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
-	frame.emitterPatchSize = profile.emitterPatchSize;
-	frame.representativeEmitters = profile.representativeEmitters;
+	frame.representativeEmitters = static_cast<uint8_t>(areaSettings.representativeEmitters);
 	frame.sampleAccumulation = profile.sampleAccumulation;
 
 	// Capture-local animation tracks are observations, not semantic profile groups.
@@ -3733,6 +3897,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.height = source.height;
 		metadata.normalXyz = source.normalXyz;
 		metadata.emissionRgba = source.emissionRgba;
+		metadata.emissionColorMask = source.emissionColorMask;
 		metadata.emissionDepth = source.emissionDepth;
 		metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 		metadata.combineEmitters = source.combineEmitters;
@@ -4136,6 +4301,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	uint32_t instanceCount = 0;
 	uint32_t lightCount = 0;
 	uint8_t sampleAccumulation = 1;
+	uint8_t retiredEmitterPatchSize = 1; // v22+ wire slot; no longer affects lighting.
 	if (!input.ReadU32(result.schemaVersion) || result.schemaVersion < 1 ||
 		result.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION ||
 		!input.ReadU32(result.width) || !input.ReadU32(result.height) || !result.width || !result.height ||
@@ -4149,7 +4315,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			!input.ReadFloat(result.cameraDirection[1]) || !input.ReadFloat(result.cameraDirection[2]))) ||
 		(result.schemaVersion >= 15 && !input.ReadU8(result.heightPreviewMultiplier)) ||
 		(result.schemaVersion >= 17 && !input.ReadFloat(result.reflectanceBoost)) ||
-		(result.schemaVersion >= 22 && !input.ReadU8(result.emitterPatchSize)) ||
+		(result.schemaVersion >= 22 && !input.ReadU8(retiredEmitterPatchSize)) ||
 		(result.schemaVersion >= 23 && !input.ReadU8(result.representativeEmitters)) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
@@ -4157,7 +4323,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
 		return false;
-	if (result.representativeEmitters > 8 || result.emitterPatchSize < 1 || result.emitterPatchSize > 5 || !std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
+	if (result.representativeEmitters > 8 || retiredEmitterPatchSize < 1 || retiredEmitterPatchSize > 5 || !std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
 		return false;
 	if (result.indirectBounceCount > 16)
 		return false;
@@ -4341,6 +4507,8 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			}
 		}
 	}
+	if (result.schemaVersion >= 38)
+		for (auto &metadata : result.assetMetadata) if (!input.ReadU64(metadata.emissionColorMask)) return false;
 	result.materials.resize(materialCount);
 	for (RemasterFrameMaterial &material : result.materials)
 	{
@@ -4551,6 +4719,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			(result.schemaVersion >= 5 && pixel.instanceId && pixel.tilePixel >= 64))
 			return false;
 	S9xRemasterInferLegacyTileInstanceFlips(result);
+	S9xRemasterRestoreSceneSubscreenWalls(result);
 	frame = std::move(result);
 	return true;
 }
@@ -4669,6 +4838,16 @@ inline const RemasterFrameAssetMetadata *S9xRemasterFrameMetadataForTile (
 		if (metadata.tileId == tileId)
 			return &metadata;
 	return nullptr;
+}
+
+inline std::array<uint8_t,4> S9xRemasterEmissionSample(const RemasterFrameAssetMetadata &metadata,
+	unsigned pixel, uint16_t artworkRgb555)
+{
+	std::array<uint8_t,4> result;
+	std::copy_n(metadata.emissionRgba.data()+pixel*4,4,result.begin());
+	if (!(metadata.emissionColorMask & (UINT64_C(1)<<pixel)))
+		for(unsigned c=0;c<3;c++) result[c]=uint8_t(((((artworkRgb555 >> (10-c*5))&31)*527)+23)>>6);
+	return result;
 }
 
 inline bool S9xRemasterFramePaletteArtwork (const RemasterFrame &frame,
@@ -4819,6 +4998,8 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		if (!metadata || !metadata->hasEmission)
 			continue;
 		const size_t emissionOffset = pixel.tilePixel * 4;
+		const auto emission = S9xRemasterEmissionSample(*metadata, pixel.tilePixel,
+			instance.hasPaletteArtwork ? instance.paletteRgb555[pixel.tilePixel] : frame.originalRgb555[offset]);
 		const float intensity = metadata->emissionRgba[emissionOffset + 3] / 25.0f;
 		if (intensity <= 0.0f)
 			continue;
@@ -4826,9 +5007,9 @@ inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const Rem
 		accumulator.y += (static_cast<float>(offset / frame.width) + 0.5f) * intensity;
 		// Eight standard-intensity pixels produce a 1x light; every pixel remains additive.
 		// Match the shader's emission decode before summing differently colored pixels.
-		accumulator.red += std::pow(metadata->emissionRgba[emissionOffset] / 255.0f, 2.2f) * intensity / 8.0f;
-		accumulator.green += std::pow(metadata->emissionRgba[emissionOffset + 1] / 255.0f, 2.2f) * intensity / 8.0f;
-		accumulator.blue += std::pow(metadata->emissionRgba[emissionOffset + 2] / 255.0f, 2.2f) * intensity / 8.0f;
+		accumulator.red += std::pow(emission[0] / 255.0f, 2.2f) * intensity / 8.0f;
+		accumulator.green += std::pow(emission[1] / 255.0f, 2.2f) * intensity / 8.0f;
+		accumulator.blue += std::pow(emission[2] / 255.0f, 2.2f) * intensity / 8.0f;
 		const int16_t localHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
 			(metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
 		accumulator.z += localHeight / 255.0f * intensity;
@@ -4986,8 +5167,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			return false;
 		RemasterFrameSerialization::Float(bytes, frame.reflectanceBoost);
 	}
-	if (frame.emitterPatchSize < 1 || frame.emitterPatchSize > 5) return false;
-	RemasterFrameSerialization::U8(bytes, frame.emitterPatchSize);
+	RemasterFrameSerialization::U8(bytes, 1); // Retired v22+ patch-size slot, fixed to per-pixel.
 	if (frame.representativeEmitters > 8) return false;
 	RemasterFrameSerialization::U8(bytes, frame.representativeEmitters);
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
@@ -5088,6 +5268,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			}
 		}
 	}
+	for (const auto &metadata : frame.assetMetadata) RemasterFrameSerialization::U64(bytes, metadata.emissionColorMask);
 	for (const RemasterFrameMaterial &material : frame.materials)
 	{
 		if (!RemasterFrameSerialization::String(bytes, material.name))

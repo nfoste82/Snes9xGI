@@ -90,6 +90,11 @@ inline bool S9xRemasterShiftMetadataLayer(RemasterAssetMetadata &metadata, int l
 			S9xRemasterShiftLayerPixels(metadata.normalXyz, dx, dy, std::array<uint8_t, 3>{{128,128,255}}); break;
 		case RemasterEditorEmission:
 			if (!metadata.hasEmission) return false;
+			{
+				std::array<uint8_t,64> mask={}; for(unsigned p=0;p<64;p++) mask[p]=(metadata.emissionColorMask>>p)&1;
+				S9xRemasterShiftLayerPixels(mask,dx,dy); metadata.emissionColorMask=0;
+				for(unsigned p=0;p<64;p++) metadata.emissionColorMask |= uint64_t(mask[p])<<p;
+			}
 			S9xRemasterShiftLayerPixels(metadata.emissionRgba, dx, dy); break;
 		case RemasterEditorDoorframe:
 		{
@@ -143,6 +148,11 @@ inline bool S9xRemasterFlipMetadataLayer(RemasterAssetMetadata &metadata, int la
 			S9xRemasterFlipNormalLayer(metadata.normalXyz, horizontal); break;
 		case RemasterEditorEmission:
 			if (!metadata.hasEmission) return false;
+			{
+				std::array<uint8_t,64> mask={}; for(unsigned p=0;p<64;p++) mask[p]=(metadata.emissionColorMask>>p)&1;
+				S9xRemasterFlipLayerPixels(mask,horizontal); metadata.emissionColorMask=0;
+				for(unsigned p=0;p<64;p++) metadata.emissionColorMask |= uint64_t(mask[p])<<p;
+			}
 			S9xRemasterFlipLayerPixels(metadata.emissionRgba, horizontal); break;
 		case RemasterEditorDoorframe:
 		{

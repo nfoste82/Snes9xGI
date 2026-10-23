@@ -28,6 +28,7 @@ namespace RemasterProfileMerge
 				else if (header.compare(0, 11, "[materials.") == 0) key = "3:" + header;
 				else if (header.compare(0, 14, "[asset_groups.") == 0) key = "4:" + header;
 				else if (header.compare(0, 13, "[area_lights.") == 0) key = "2:" + header;
+				else if (header.compare(0, 21, "[area_scene_settings.") == 0) key = "2:" + header;
 				block = line + '\n';
 				continue;
 			}

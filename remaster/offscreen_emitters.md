@@ -23,6 +23,19 @@ artifact/log prefix `build/remaster-tests/room012-008-source-audit`.
 
 ## Held-lamp presentation
 
+Profile Controls exposes **Link’s Lamp Brightness** as a slider/numeric field
+in [0,1600], default200; zero disables its contribution without changing torches.
+Changes use scene-setting Undo, preview on live and retained paused-live frames,
+and Save Profile. Profile v32 stores `lighting_space.link_lamp_brightness`;
+older profiles retain200 without migration until this setting changes.
+The live packet retains an in-memory lamp index (including at zero) for paused
+preview. This identity is not inferred from sphere appearance or serialized:
+saved captures retain their baked lamp intensity and require recapture to change it.
+`remaster/link_lamp_brightness_test.cpp` covers profile bounds/compatibility,
+scene-setting restoration, paused zero/restoration, unrelated light preservation
+and independent save merging. Native layout tests and arm64 Debug build pass;
+interactive gameplay appearance has not been checked.
+
 Link's held lamp defaults to a forward offset of 10 source pixels (formerly 12).
 Its radius 2, height 12, intensity 200 and warm color are unchanged. Held lamps
 set `RemasterFrameLight::hideSource`: Composite/Difference and Emission omit the

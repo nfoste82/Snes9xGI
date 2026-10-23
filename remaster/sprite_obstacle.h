@@ -2,6 +2,7 @@
 #ifndef _REMASTER_SPRITE_OBSTACLE_H_
 #define _REMASTER_SPRITE_OBSTACLE_H_
 #include "frame.h"
+#include "tile_hash.h"
 #include <set>
 
 // Additive producer sidecar; older terrain observations cannot attest these actors.
@@ -43,8 +44,10 @@ struct RemasterSpriteObstacleDiagnostics
 struct RemasterSpriteObstacleSupport
 {
 	struct Cell { int component=-1,base=255,planeBase=255; bool observed=false,wall=false,conflict=false; };
+	struct HiddenChild { int x,y,slot; RemasterTileContentId id; bool h,v; };
 	RemasterDungeonFloorContext context;
 	std::array<Cell,8192> cells;
+	std::vector<HiddenChild> hiddenChildren;
 };
 
 // Requires runtime movement-floor diagnostics, not artwork offsets (which may
@@ -53,7 +56,8 @@ struct RemasterSpriteObstacleSupport
 // for every claimed record. Existing placement-local arrays remain immutable.
 // Limitations: settled current-room grounded assemblies only; no inferred actor
 // plane, airborne displacement, outgoing-room support or wholly occluded member.
-// Every declared 8x8 member needs an owned pixel. Contact evidence is restricted
+// Every member needs owned ink, except wholly clipped children independently
+// decoded from a complete, uniquely actor-owned latched producer. Contact evidence is restricted
 // to its transformed underside and the immediately outside pixel row, not a
 // nearest-floor search. A future producer adapter can disambiguate overlapping
 // gameplay planes; equal bases alone cannot establish ownership. Diagnostics
@@ -79,13 +83,52 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 			const auto &v=map->roomDiagnostics->cells[i];
 			support->cells[i]={v.floorId,v.floorBase,map->planeOffsets[i/4096][i%4096],v.planeObserved,v.wall,v.heightConflict};
 		}
+		// Decode only wholly screen-clipped OAM children from the same complete
+		// VRAM/latched-OAM snapshot. They are identity evidence, never receivers.
+		// The exact actor/whole-producer signature is still required below before
+		// a claim containing any such child can acquire a floor base.
+		if(context->graphics && context->hasTerrainActors && context->hasObstacleActors
+#ifdef ALTTP_TEST_PRIOR_SPRITE_CLIPPING
+			&& false
+#endif
+			)
+		for(int slot=0;slot<128;slot++) {
+			const auto &o=context->terrainOam[slot];if(o.size!=2)continue;
+			int ox=o.x>=256?int(o.x)-512:int(o.x),oy=int(o.y);
+			// OAM Y is eight-bit wrapped; >=240 is not a general sign bit.
+			// An exact mantle entry supplies the signed screen origin. Multiple
+			// possible actor origins must agree before admitting hidden identity.
+			int signedY=INT_MIN;bool ambiguousY=false;
+			static const int dx[]={32,16,0,32,16,0},dy[]={16,16,16,0,0,0};
+			static const uint8_t names[]={0x2c,0x2e,0x2c,0x0c,0x0e,0x0c},flags[]={0x71,0x31,0x31,0x71,0x31,0x31};
+			for(const auto &a:context->obstacleActors)if(a.type==0xee && a.state==9 && !a.z && a.plane<2) {
+				const int ay=int16_t(uint16_t(a.y-context->actorScrollY));
+				std::set<uint16_t> anchors{a.x};
+				if(a.hasMotion && a.xVelocity==2 && !a.yVelocity)anchors.insert(uint16_t(((uint32_t(a.x)<<8)+a.xSubpixel-32)>>8));
+				for(auto anchor:anchors)for(int part=0;part<6;part++)if(o.x==((int16_t(uint16_t(anchor-context->actorScrollX))+dx[part])&511) &&
+					o.y==uint8_t(ay+dy[part]) && o.name==names[part] && o.flags==flags[part]) {
+					const int value=ay+dy[part];if(signedY!=INT_MIN && signedY!=value)ambiguousY=true;signedY=value;
+				}
+			}
+			if(signedY==INT_MIN || ambiguousY)continue;oy=signedY;
+			for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++) {
+				const int x=ox+xx*8,y=oy+yy*8;
+				if(x+8>0 && y+8>0 && x<int(frame.width) && y<int(frame.height))continue;
+				const int number=(o.name|((o.flags&1)<<8))+((o.flags&64)?1-xx:xx)+((o.flags&128)?1-yy:yy)*16;
+				uint8_t pixels[64];for(int py=0;py<8;py++)for(int px=0;px<8;px++) {
+					int value=0;for(int b=0;b<4;b++)value|=((context->graphics[uint16_t(0x8000+number*32+b/2*16+py*2+b%2)]>>(7-px))&1)<<b;
+					pixels[py*8+px]=value;
+				}
+				support->hiddenChildren.push_back({x,y,slot,{S9xRemasterHashTile(4,pixels),1,4},bool(o.flags&64),bool(o.flags&128)});
+			}
+		}
 		frame.spriteObstacleSupport=std::move(support);
 	} else if(context || map) frame.spriteObstacleSupport.reset();
 	// A null context/map is the paused/replay refresh contract. No snapshot means
 	// no support, never a Link-plane or base-zero fallback.
 	const auto support=frame.spriteObstacleSupport;
 	context=support?&support->context:nullptr;
-	struct Tile { int x,y; RemasterTileContentId id; bool h,v; std::vector<size_t> instances; };
+	struct Tile { int x,y; RemasterTileContentId id; bool h,v; std::vector<size_t> instances; int hiddenSlot=-1; };
 	using Key=std::tuple<int,int,RemasterTileContentId,bool,bool>;
 	std::map<Key,size_t> index;
 	std::map<RemasterTileContentId,const RemasterFrameAssetMetadata *> metadata;
@@ -105,7 +148,10 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 	std::vector<bool> invalid(frame.tileInstances.size(),false),seen(frame.tileInstances.size(),false);
 	// Scanline renderer records are observations, not separate 8x8 objects.
 	// Recover each origin from the owned canonical pixel, including clipped ink.
-	for(const auto *pixels:{&frame.mainPixels,&frame.subPixels})for(size_t p=0;p<pixels->size();p++) {
+	// Include both stock and HUD-free observations regardless of the temporary
+	// main/scene swap used during EndFrame; paused refresh must resolve the same
+	// instances, including world parts completely covered by BG3 ink.
+	for(const auto *pixels:{&frame.mainPixels,&frame.subPixels,&frame.scenePixels})for(size_t p=0;p<pixels->size();p++) {
 		const auto &px=(*pixels)[p];
 		if(!frame.width || p>=size_t(frame.width)*frame.height || !px.instanceId ||
 			px.instanceId>frame.tileInstances.size())continue;
@@ -121,6 +167,11 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 		const int n=int(found->second);
 		if(occurrence[i]>=0 && occurrence[i]!=n)invalid[i]=true;
 		else if(occurrence[i]<0){occurrence[i]=n;tiles[n].instances.push_back(i);}
+	}
+	if(support)for(const auto &child:support->hiddenChildren)if(identities.count(child.id)) {
+		const Key key{child.x,child.y,child.id,child.h,child.v};
+		if(index.count(key)){auto &t=tiles[index.at(key)];if(t.hiddenSlot!=child.slot)t.hiddenSlot=-2;continue;}
+		index.emplace(key,tiles.size());tiles.push_back({child.x,child.y,child.id,child.h,child.v,{},child.slot});
 	}
 	out.observedTiles=uint32_t(tiles.size());
 	for(size_t i=0;i<invalid.size();i++)if(invalid[i])out.invalidInstances++;
@@ -140,7 +191,7 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 				auto it=index.find(Key{ox+(hf?-m.x:m.x)*8,oy+(vf?-m.y:m.y)*8,m.tileId,m.hflip!=hf,m.vflip!=vf});
 				if(it==index.end()){complete=false;break;}
 				const auto &part=tiles[it->second];
-				if(part.instances.empty())complete=false;
+				if(part.instances.empty() && part.hiddenSlot<0)complete=false;
 				int slot=-1;
 				for(size_t i:part.instances) {
 					if(invalid[i])complete=false;
@@ -225,13 +276,26 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 				for(size_t tile:c.tiles) {
 					const auto &t=tiles[tile];
 					if(t.x<sx || t.x>=sx+48 || t.y<sy || t.y>=sy+32 || (t.x-sx)%8 || (t.y-sy)%8)exact=false;
+					if(t.hiddenSlot>=0) {
+						if(!slots.count(t.hiddenSlot))exact=false;
+						const auto &o=context->terrainOam[t.hiddenSlot];
+						int childX=0,childY=0;bool childOrigin=false;
+						for(int part=0;part<6;part++)if(o.x==((sx+dx[part])&511) && o.y==uint8_t(sy+dy[part]) && o.name==names[part] && o.flags==flags[part]) {
+							childX=t.x-(sx+dx[part]);childY=t.y-(sy+dy[part]);childOrigin=true;
+						}
+						if(!childOrigin)exact=false;
+						children.emplace(t.hiddenSlot,childX,childY);
+					}
 					for(size_t i:t.instances) {
 						const auto &instance=frame.tileInstances[i];const int slot=instance.sourceIndex;
 						if(!slots.count(slot)){exact=false;continue;}
 						const auto &o=context->terrainOam[slot];
-						const int xx=t.x-int(o.x),yy=t.y-int(o.y);
+						const int xx=t.x-(o.x>=256?int(o.x)-512:int(o.x));
+						int yy=t.y-int(o.y);
+						for(int part=0;part<6;part++)if(o.x==((sx+dx[part])&511) && o.y==uint8_t(sy+dy[part]) && o.name==names[part] && o.flags==flags[part])yy=t.y-(sy+dy[part]);
 						const int expected=(o.name|((o.flags&1)<<8))+(instance.hFlip?(8-xx)/8:xx/8)+(instance.vFlip?(8-yy)/8:yy/8)*16;
-						if((xx!=0 && xx!=8) || (yy!=0 && yy!=8) || instance.tileNumber!=expected || instance.hFlip!=bool(o.flags&64) || instance.vFlip!=bool(o.flags&128) || instance.palette!=((o.flags>>1)&7))exact=false;
+						if((xx!=0 && xx!=8) || (yy!=0 && yy!=8) || instance.tileNumber!=expected ||
+							instance.vramAddress!=uint16_t(0x8000+expected*32) || instance.hFlip!=bool(o.flags&64) || instance.vFlip!=bool(o.flags&128) || instance.palette!=((o.flags>>1)&7))exact=false;
 						children.emplace(slot,xx,yy);
 					}
 				}
@@ -243,6 +307,9 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 				}
 			}
 		}
+		// Screen-clipped identity is admissible only for a fully reproduced,
+		// uniquely owned producer. Missing on-screen/occluded art is not rescued.
+		for(size_t tile:c.tiles)if(tiles[tile].hiddenSlot>=0 && d.producerActor<0)unknown=true;
 		for(size_t tile:c.tiles)for(size_t i:tiles[tile].instances)
 			if(!localSources[i])d.missingLocalInstances++;
 		struct Support {int component=-1,base=255;bool valid=false,unknown=false,conflict=false;};
@@ -259,7 +326,13 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 				std::set<int> cells;
 				for(int y:{sy,outside})for(int edgeX=0;edgeX<8;edgeX++) {
 					const int x=t.x+edgeX;
+#ifdef ALTTP_TEST_PRIOR_SPRITE_CLIPPING
 					if(x<0 || y<0 || x>=int(frame.width) || y>=int(frame.height))continue;
+#endif
+					// Completed room support is camera-independent. An offscreen
+					// contact of an otherwise proved producer remains a real contact.
+					const int rx=(context->backgroundScrollX&511)+x,ry=(context->backgroundScrollY&511)+y;
+					if(rx<0 || ry<0 || rx>=512 || ry>=512)continue;
 					const int cell=(((context->backgroundScrollY+y)&511)/8)*64+((context->backgroundScrollX+x)&511)/8;
 					if(!cells.insert(cell).second)continue;
 					const auto &v=support->cells[plane*4096+cell];

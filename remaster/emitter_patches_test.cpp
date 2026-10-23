@@ -14,20 +14,13 @@ int main()
 		frame.mainPixels[i].tilePixel = i;
 		surface[i*4+3] = 1;
 	}
-	auto build = [&] { return S9xRemasterEmitterPatches(frame, emission.data(), participation.data(), surface.data(), mesh); };
-	assert(build().size() == 16);
-	for (unsigned n = 1; n <= 5; n++) {
-		frame.emitterPatchSize = n;
-		auto patches = build();
-		std::array<unsigned,64> seen = {};
-		for (const auto &p : patches) {
-			assert(p.count && p.count <= n*n);
-			for (unsigned k = 0; k < p.count; k++) seen[p.members[k]]++;
-		}
-		for (unsigned count : seen) assert(count == 1);
-		if (n == 1) assert(patches.size() == 64);
+	auto build = [&] { return S9xRemasterEmitterPatches(frame, emission.data(), participation.data(), mesh); };
+	// Disabling representatives always retains one source per emitting pixel.
+	auto singletons = build();
+	assert(singletons.size() == 64);
+	for (unsigned i = 0; i < singletons.size(); i++) {
+		assert(singletons[i].count == 1 && singletons[i].members[0] == i);
 	}
-	frame.emitterPatchSize = 2;
 	emission[3] = 0;
 	auto hole = build();
 	for (const auto &p : hole) for (unsigned k = 0; k < p.count; k++) assert(p.members[k] != 0);

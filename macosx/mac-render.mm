@@ -553,6 +553,9 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	if (frame.width > INT_MAX || frame.height > INT_MAX ||
 		!S9xRemasterFrameHasPixelData(frame, frame.width, frame.height))
 		return false;
+	// The GI debug cycle shares the authored-type overlay with the View menu.
+	if (lighting && lightingView == RemasterLightingView::MetadataTypes)
+		debugMode = RemasterDebugMode::TileTypes;
 	// Surface diagnostics are presentation-only, never lighting albedo.
 	if (debugMode == RemasterDebugMode::TileTypes || debugMode == RemasterDebugMode::FloorWalls)
 	{
@@ -1342,7 +1345,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
-			const bool clustered = frame && (frame->emitterPatchSize > 1 || frame->representativeEmitters > 0) &&
+			const bool clustered = frame && frame->representativeEmitters > 0 &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
 			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clustered) : std::vector<RemasterHiddenDirectSample>{};
@@ -1351,7 +1354,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
 			}
 			std::vector<RemasterEmitterPatch> patches;
-			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, surfaceField, *mesh);
+			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, *mesh);
 			std::vector<vector_uint2> directSources;
 			if (clustered) {
 				for (uint32_t p = 0; p < patches.size(); p++) {

@@ -72,4 +72,7 @@ int main()
 	} while (view != RemasterLightingView::Composite);
 	assert(views.size() == static_cast<unsigned>(RemasterLightingView::Count) - 1);
 	assert(NextRemasterLightingView(RemasterLightingView::DirectContribution) == RemasterLightingView::Height);
+	assert(views.count(static_cast<unsigned>(RemasterLightingView::MetadataTypes)) == 1);
+	assert(NextRemasterLightingView(RemasterLightingView::Mesh) == RemasterLightingView::MetadataTypes);
+	assert(NextRemasterLightingView(RemasterLightingView::MetadataTypes) == RemasterLightingView::Composite);
 }

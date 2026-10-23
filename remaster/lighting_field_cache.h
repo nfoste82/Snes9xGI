@@ -131,7 +131,12 @@ struct RemasterLightingFieldCache
 			const auto *m = valid ? instanceMetadata[pixel.instanceId-1] : nullptr;
 			// Sources animate independently of cached surface fields.
 			std::fill_n(emission.begin()+i*4, 4, 0);
-			if (!hud && m && m->hasEmission) std::copy_n(m->emissionRgba.begin()+pixel.tilePixel*4, 4, emission.begin()+i*4);
+			if (!hud && m && m->hasEmission) {
+				const auto &instance=frame.tileInstances[pixel.instanceId-1];
+				const auto rgba=S9xRemasterEmissionSample(*m,pixel.tilePixel,instance.hasPaletteArtwork ?
+					instance.paletteRgb555[pixel.tilePixel] : frame.originalRgb555[i]);
+				std::copy(rgba.begin(),rgba.end(),emission.begin()+i*4);
+			}
 			depths[i] = m ? m->emissionDepth : 0;
 			omnidirectional[i] = m && m->emissionOmnidirectional ? 1.0f : 0.0f;
 			if (!full && key == keys_[i] && (!valid || !dirty[pixel.instanceId-1])) continue;

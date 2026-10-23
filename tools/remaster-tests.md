@@ -20,10 +20,10 @@ stack cases in `full` also load the checked-in
 python3 tools/run_remaster_tests.py --list
 python3 tools/run_remaster_tests.py --suite full --metal --list
 
-# Thirteen essential lifecycle/ownership/height/source regressions (default).
+# Fourteen essential lifecycle/ownership/height/source regressions (default).
 python3 tools/run_remaster_tests.py --suite quick
 
-# Twenty-three cases, including floor continuity, reuse, terrain and stack safety.
+# Twenty-eight cases, including doorway frames, reuse, terrain and stack safety.
 python3 tools/run_remaster_tests.py --suite full
 
 # ASan + UBSan; findings terminate the test and fail the aggregate.
@@ -67,6 +67,7 @@ does not launch any benchmark, emulator, or parallel test workers.
 | quick | `paused_obstacle` | Production EndFrame packet retention, same-frame sidecars, paused effective height/normal invariance and bulk Z refresh |
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
 | full adds | `dungeon_floor_continuity` | Same-BG cardinal floor base continuation despite local relief and narrow strips; preserve flips/local arrays, reject barriers/diagonals/plane and level conflicts without expanding movement |
+| full adds | `dungeon_frame_recognition` | Complete ordinary and 4×4 stair doorway frames, all directions/flips and split BGs; interior artwork independence, overwritten-frame and competing-origin rejection |
 | full adds | `dungeon_oriented_obstacle` | Horizontal authored support ends mirror west/east, V-symmetric claims share ownership, missing outward support stays unknown |
 | full adds | `dungeon_semantic_cache` | `EndFrame`: semantic activation/facing/context/door-mask rebuild versus exact reload reuse |
 | full adds | `dungeon_terrain_lifecycle` | Pickup/break support, carried/thrown/landed object plane/Z, OAM transforms and ambiguous ownership rejection |
@@ -148,6 +149,9 @@ Not covered by this gate:
   Synthetic `EndFrame` checks runtime policy, not every actual WRAM sequence.
 - No whole-room approval, corpus-wide tile/plane denominator audit or room-wide
   validator. Passing this runner never means room heights are complete/correct.
+- `dungeon_frame_interior_test` separately checks the pinned Room061079 complete
+  capture bundle (pass its `.s9xrmf` path); it is not silently included in the
+  fixture-free gate. The curated `dungeon_frame_recognition` test needs no capture.
 - Capture-dependent `hud_emitter_capture_test`, placement-equivalence and
   exact-capture height tests require separately pinned assets; they are not
   run without arguments and then misreported as useful coverage.

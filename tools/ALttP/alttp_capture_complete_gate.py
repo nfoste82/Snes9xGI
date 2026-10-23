@@ -14,7 +14,13 @@ g=dict(format='alttp-doorway-graph-review-v1',room_id=s['room'],state=pin,graph=
 r=json.loads((a.output/'live-runtime.json').read_text());bases=[[255]*4096 for _ in range(2)];visible=[255]*4096
 for p,x,y,b in r['cells_plane_x_y_base']:
  i=y*64+x;bases[p][i]=b;visible[i]=b if visible[i]==255 else max(visible[i],b)
-for v in r['structural_placements']:visible[v['y']*64+v['x']]=v['floor_base']
+for v in r['structural_placements']:
+ i=v['y']*64+v['x'];visible[i]=v['floor_base']
+ # ALTPHM3 carries independent structural/support arrays, not just the visible
+ # byte map. Dropping structural plane claims fabricates compiled-map mismatches
+ # whenever a solved wall has no walkable support at its own coordinate.
+ for p in v.get('planes',[]):
+  bases[p][i]=v['floor_base']
 compiled=a.output/'review-map.bin';compiled.write_bytes(b'ALTPHM3\0'+struct.pack('<H',s['room'])+struct.pack('<12288i',*(visible+bases[0]+bases[1])))
 cmd=[sys.executable,'-B','tools/ALttP/alttp_validate_room_heights.py','--graph',str(a.output/'live-graph.json'),'--snapshot',str(raw),'--attributes',str(attr),'--state',str(a.output/'live-state.json'),'--profile',str(a.output/'replay-input-profile.toml'),'--runtime-solution',str(a.output/'live-runtime.json'),'--height-map',str(compiled),'--rom',str(a.rom),'--output',str(a.output/'validation-v2.json'),'--diagnostic-svg',str(a.output/'validation-v2.svg')]
 run=subprocess.run(cmd,capture_output=True,text=True)

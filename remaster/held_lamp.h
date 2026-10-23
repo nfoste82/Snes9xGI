@@ -19,6 +19,17 @@ inline bool S9xRemasterHeldLampSceneContext(uint8_t module, uint8_t submodule,
 		(module == 14 && submodule == 2 && savedModule == 7);
 }
 
+// Ownership-only HUD removal preserves stock main-screen composition, so it
+// also works during dungeon stairs/door scrolling. Unlike lamp color recovery,
+// it must not disappear just because the gameplay submodule changes.
+inline bool S9xRemasterHudGeometryContext(bool indoors, uint8_t module,
+	uint8_t submodule, uint8_t subsubmodule, uint8_t savedModule)
+{
+	if (indoors) return S9xRemasterHeldLampDungeonContext(module, submodule, savedModule);
+	return (module == 9 && !submodule && !subsubmodule) ||
+		(module == 14 && submodule == 2 && savedModule == 9);
+}
+
 // Verified USA ALTTP adapter input, copied at the completed-frame boundary.
 // Do not consult live WRAM during replay or infer lamp state from painted colors.
 struct RemasterHeldLampState

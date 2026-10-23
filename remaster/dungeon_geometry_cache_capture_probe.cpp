@@ -35,6 +35,7 @@ int main(int argc,char **argv){try {
     c.savedModule=7;std::cout<<"Legacy dialog saved_module=7 supplied for controlled ablation; not captured evidence\n";
    }
   if(text.find("\"construction_phase\":")!=std::string::npos)c.constructionPhase=number("construction_phase");
+  if(text.find("\"straight_stair_plane\":")!=std::string::npos)c.straightStairPlane=number("straight_stair_plane");
   if(text.find("\"room_transition_flags\":")!=std::string::npos)c.roomTransitionFlags=number("room_transition_flags");
    if(text.find("\"attribute_construction_state\":")!=std::string::npos)c.attributeConstructionState=number("attribute_construction_state");
 	 c.hasCompletedTransitionAttributes=text.find("\"completed_transition_attributes\":true")!=std::string::npos;
@@ -49,7 +50,8 @@ int main(int argc,char **argv){try {
  c.backgroundScrollX=number("scroll");c.backgroundScrollY=number("scroll",1);c.graphicsBase=number("graphics_base");c.bg1GraphicsBase=number("bg1_graphics_base");
  for(int l=0;l<2;l++){c.ppuMapBase[l]=number("ppu_map_base",l);c.ppuMapSize[l]=number("ppu_map_size",l);}
  c.constructedMaps=input.data()+8;c.collisionAttributes=input.data()+16392;c.graphics=input.data()+24584;c.dungeonTemplateData=templates.data()+8;
- if(std::ifstream(path+".terrain-input.bin").good())check(S9xRemasterReadTerrainEvidence(path+".terrain-input.bin",c),"terrain evidence");
+  if(std::ifstream(path+".terrain-input.bin").good())check(S9xRemasterReadTerrainEvidence(path+".terrain-input.bin",c),"terrain evidence");
+  if(std::ifstream(path+".sprite-input.bin").good())check(S9xRemasterReadSpriteObstacleEvidence(path+".sprite-input.bin",c),"sprite evidence");
  size_t matched=0;
  for(auto *pixels:{&captured->mainPixels,&captured->subPixels,&captured->scenePixels})for(size_t at=0;at<pixels->size();at++) {
   const auto &px=(*pixels)[at];if(!px.instanceId)continue;const auto &i=captured->tileInstances.at(px.instanceId-1);

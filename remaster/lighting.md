@@ -194,8 +194,8 @@ more angular samples, so source-count reduction must be benchmarked rather than
 assumed to improve frame time.
 
 Scene Controls also offers opt-in **Representative Emitters per Tile**: enable
-the checkbox and choose1..8, initially4. Off retains rectangular patch grouping;
-patch-size controls are disabled while representative mode is enabled. Profile
+the checkbox and choose1..8, initially4. Off uses individual emitting pixels.
+The retired rectangular patch-size setting and grouping path have been removed. Profile
 schema16 stores `representative_emitters` (0=off); frame schema23 stores the same
 byte. Older files default off. Changes support live apply and scene-settings undo.
 
@@ -220,27 +220,13 @@ Mixed geometry/directional/depth behavior is deliberately approximated by the
 chosen member, so near-source shadows and animation can shift/pop. This mode
 does not change artwork emission or blockers. Visual acceptance remains pending.
 
-Scene Controls' **Emitter Patch Size** is an integer1..5 maximum footprint,
-default2. Profile schema15 saves `emitter_patch_size` in `[lighting_space]`;
-capture schema22 saves it for replay. Older profiles/captures default2. Size1
-retains per-pixel emission. It affects exhaustive and sampled Direct, not the
-displayed emission artwork or blocker geometry.
-
-Deterministic full rectangles (including1xN strips) merge only within the same
-owner instance and canonical tile-local N-grid bin. Hidden/nonemitting pixels
-never fill holes. Height, shading/geometric normals, flat corner support,
-thickness and depth must match. Colors split when max-normalized linear RGB
-differs from the seed by more than0.4 in any channel. Summed linear radiance
-preserves RGB energy; maximum-channel power weights positions and biased
-endpoints. Normalization area is member count, quartered for depth strata.
-Receiver membership removes only that receiver's energy/area and centroid weight.
-Visibility/diagnostic modes bypass clustering. Snapshot export currently requires
-size1 because its packet format does not contain member lists.
-
-This is approximate area-light transport: a centroid cannot preserve all nearby
-shadow boundaries, inverse-square falloff or spatial color variation. Larger
-footprints are maxima, not guaranteed source counts; compatible fragments often
-remain smaller. Visual acceptance of clustering is pending.
+Legacy profiles still accept and validate `lighting_space.emitter_patch_size`
+(1..5), but ignore it and omit it when saved. The frame-v22+ byte is read and
+discarded, and new captures write1 in that reserved slot to preserve wire-layout
+compatibility. Replaying an old capture uses representative emitters if enabled,
+otherwise individual pixels; it does not reproduce retired rectangle grouping.
+Visibility/diagnostic modes bypass clustering. Snapshot export does not contain
+cluster member lists.
 
 Normal Direct is deterministic and exhaustive over prepared emitter clusters
 and adaptive sphere quadrature. Scene Controls connections per receiver controls
@@ -270,7 +256,7 @@ Indirect connections remain independently controlled by the profile. Visibility
 and diagnostic views and an enabled debug sphere use exhaustive Direct. Source
 and geometry preparation remain frame-local and unchanged.
 
-HUD source-only pixels use the existing rectangle/representative clustering
+HUD source-only pixels use the representative clustering
 settings on CPU-only 8x8 support grids. Their deterministic depth records retain
 four quarter-power strata and the same receiver-adaptive depth refinement as
 visible clusters. No support grids enter scene geometry. In the explicit sampled

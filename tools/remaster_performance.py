@@ -13,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY = (
     "schema_version", "gpu", "os", "rom_file_sha256", "state_sha256", "profile_sha256",
-    "movement", "presentation", "connections", "emitter_patch_size", "representative_emitters",
+    "movement", "presentation", "connections", "representative_emitters",
     "warmup_frames", "measurement_frames", "debug_sphere_enabled", "audio_muted",
     "transport_threads_override", "serial_direct_override", "serial_indirect_override",
     "full_mesh_override", "stage_counters_disabled", "direct_samples_override",

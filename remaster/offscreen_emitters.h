@@ -83,12 +83,22 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		auto asset=profile.assets.find(found->second);
 		if (asset==profile.assets.end() || !asset->second.hasEmission) continue;
 		const auto &a=asset->second;
+		auto emissionAt = [&](int pixel) {
+			std::array<uint8_t,4> e; std::copy_n(a.emissionRgba.data()+pixel*4,4,e.begin());
+			if (!(a.emissionColorMask & (UINT64_C(1)<<pixel))) {
+				unsigned index=0, y=pixel/8, x=pixel%8;
+				for(unsigned p=0;p<4;p++) index |= ((c.graphics[uint16_t(address+p/2*16+y*2+p%2)]>>(7-x))&1)<<p;
+				const uint16_t rgb=c.emitterPalette && index ? S9xRemasterPaletteRgb555(c.emitterPalette[((word>>10)&7)*16+index]) : 0;
+				for(unsigned k=0;k<3;k++) e[k]=uint8_t(((((rgb>>(10-k*5))&31)*527)+23)>>6);
+			}
+			return e;
+		};
 		// Explicit all-zero emission arrays are common on non-emitting art.
 		// They are not source placements or unknown source bases. In particular,
 		// counting them hid the small set of genuinely unsupported room fixtures.
 		bool emitting=false;
 		for(int pixel=0;pixel<64;pixel++) {
-			const auto *e=a.emissionRgba.data()+pixel*4;
+			const auto e=emissionAt(pixel);
 			if(e[3] && (e[0] || e[1] || e[2])) { emitting=true; break; }
 		}
 		if(!emitting)continue;
@@ -114,7 +124,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		for (int y=0; y<8; y++) for (int x=0; x<8; x++)
 		{
 			const int pixel=(word&0x8000 ? 7-y : y)*8+(word&0x4000 ? 7-x : x);
-			const auto *e=a.emissionRgba.data()+pixel*4;
+			const auto e=emissionAt(pixel);
 			if (!e[3] || !(e[0] || e[1] || e[2])) continue;
 			const int px=cell%64*8+x-scrollX, py=cell/64*8+y-scrollY;
 			// World-covered pixels remain with the authoritative pixel path. HUD
@@ -139,7 +149,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 				// Same existing placement-local source consumed by visible tilePixel.
 				hidden.z=(datum+local)*frame.lightingCoordinateScale/255.0f;
 				hidden.depth=a.emissionDepth; hidden.omnidirectional=a.emissionOmnidirectional;
-				std::copy_n(e,4,hidden.emission.begin());
+				std::copy(e.begin(),e.end(),hidden.emission.begin());
 				if (a.hasNormals) {
 					float length=0;
 					for (int k=0;k<3;k++) {

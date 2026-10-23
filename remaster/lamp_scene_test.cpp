@@ -18,6 +18,21 @@ struct DarkMath { static uint16 Calc(uint16, uint16, uint8) { return 0; } };
 
 int main(int argc, char **argv)
 {
+	for (unsigned submodule = 0; submodule < 32; submodule++)
+	{
+		require(S9xRemasterHudGeometryContext(true, 7, submodule, 0, 0),
+			"dungeon HUD ownership survives gameplay/stairs/door submodules");
+		require(S9xRemasterHudGeometryContext(true, 14, submodule, 5, 7) == (submodule == 2),
+			"only dungeon dialogue retains world ownership in interface module");
+		require(!S9xRemasterHudGeometryContext(true, 14, submodule, 0, 9),
+			"saved overworld is not a dungeon context");
+	}
+	require(S9xRemasterHudGeometryContext(false, 9, 0, 0, 0) &&
+		S9xRemasterHudGeometryContext(false, 14, 2, 5, 9) &&
+		!S9xRemasterHudGeometryContext(false, 9, 1, 0, 0) &&
+		!S9xRemasterHudGeometryContext(true, 14, 1, 0, 7) &&
+		!S9xRemasterHudGeometryContext(true, 11, 0, 0, 7),
+		"retain overworld gates; menus/maps never provide dungeon world ownership");
 	auto &s = S9xRemasterState();
 	s.requestedLiveFrames = true;
 	S9xRemasterBeginFrame(2, 2, 2, 1);

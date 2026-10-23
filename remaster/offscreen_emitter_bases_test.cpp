@@ -44,6 +44,10 @@ int main() {
  map->roomIndex++;need(run().lights==0,"changed room cannot reuse solved base");map->roomIndex=c.roomIndex;
  (*maps)[cell*2]=(*maps)[cell*2+1]=0;
  need(run().lights==0,"distinct BG1 emitter cannot borrow solved BG2 geometry");
- frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1,"distinct BG1 uses its own proven map");
+  frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1,"distinct BG1 uses its own proven map");
+ std::array<uint16_t,256> palette={};palette[1]=31;c.emitterPalette=palette.data();a.emissionColorMask=0;
+ frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red>0 && frame.lights[0].blue==0,"offscreen artwork emission uses current red CGRAM");
+ palette[1]=31<<10;
+ frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red==0 && frame.lights[0].blue>0,"offscreen artwork emission follows palette animation");
  std::puts("Offscreen emitter base/provenance checks passed");
 }
