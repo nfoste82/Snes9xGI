@@ -1450,7 +1450,7 @@ y = 0
 z = 0
 hflip = false
 vflip = false
-support_contact = false
+support_contact = true
 
 [[obstacle_groups.members]]
 tile_hash = "v1:4bpp:b07b3c69017a85e0"
@@ -1498,7 +1498,7 @@ y = 0
 z = 0
 hflip = true
 vflip = false
-support_contact = false
+support_contact = true
 
 [[obstacle_groups.members]]
 tile_hash = "v1:4bpp:92bb4bf4c7026dd7"

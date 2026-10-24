@@ -1394,6 +1394,53 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			}
 			return low < high;
 		};
+		// A clipped region of an ordered HIGH corner is a face plus
+		// a ceiling plateau, not a shortened affine wall. The plateau cannot
+		// supply an exterior floor equality. Prove the entire canonical section
+		// and an intact downhill continuation before excluding that contact.
+		auto clippedCornerCap = [&] (int i, int dx, int dy) {
+			const auto &t=context.placements[i];
+			const auto highTemplate=[](uint16_t off){return (off>=0xb66 && off<=0xbc6 && (off-0xb66)%0x20==0) ||
+				(off>=0xc66 && off<=0xcc6 && (off-0xc66)%0x20==0);};
+			if(!highTemplate(t.wallTemplateOffset) || !t.hasHeight)return false;
+			const int lo=*std::min_element(t.height.begin(),t.height.end()),hi=*std::max_element(t.height.begin(),t.height.end());
+			if(hi<=lo || hi>=lo+7)return false;
+			for(int axis=0;axis<2;axis++)for(int sign:{-1,1}) {
+				const int ux=axis?0:sign,uy=axis?sign:0;
+				if(dx!=ux || dy!=uy)continue;
+				bool exact=false;
+				for(int tangentSign=-1;tangentSign<=1;tangentSign++) {
+					bool match=true;
+					for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
+						const int k=axis?y:x,q=axis?x:y;
+						const int normal=lo+(sign>0?k:7-k),tangent=lo+(tangentSign>0?q:7-q);
+						match &= height(i,x,y)==std::min(hi,tangentSign?std::max(normal,tangent):normal);
+					}exact |= match;
+				}
+				const int x=i%64-ux,y=i/64-uy;
+				if(!exact || x<0 || x>=64 || y<0 || y>=64)continue;
+				const int j=y*64+x;const auto &n=context.placements[j];
+				if(!highTemplate(n.wallTemplateOffset) || !n.hasHeight ||
+					n.surface!=RemasterDungeonFloorContext::Surface::Wall)continue;
+				// Adjacent complementary phases of one corner facing are allowed;
+				// another facing/height family is not ownership of this region.
+				if((t.wallTemplateOffset-0xb66)/0x40!=(n.wallTemplateOffset-0xb66)/0x40)continue;
+				// The surviving face region must meet its ordered downhill member.
+				// A folded neighbor can turn the face; compare only non-cap samples
+				// and retain every other seam/conflict in the ordinary graph.
+				int samples=0,delta=INT_MIN;bool seam=true;
+				for(int k=0;k<8;k++) {
+					const int ax=ux?(ux>0?0:7):k,ay=uy?(uy>0?0:7):k;
+					if(height(i,ax,ay)==hi)continue;
+					const int value=height(i,ax,ay)-height(j,ux?7-ax:ax,uy?7-ay:ay);
+					if(delta!=INT_MIN && delta!=value)seam=false;delta=value;samples++;
+				}
+				bool capEdge=true;
+				for(int k=0;k<8;k++)capEdge &= height(i,dx?(dx>0?7:0):k,dy?(dy>0?7:0):k)==hi;
+				if(capEdge && exact && seam && samples>=2)return true;
+			}
+			return false;
+		};
 		struct CornerRamp { int ax=0,ay=0,sx=0,sy=0; bool maximum=false,exact=false; };
 		auto cornerModels=std::make_unique<std::array<CornerRamp,4096>>();
 		for(int i=0;i<4096;i++){
@@ -1614,6 +1661,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				if (otherWall && context.collisionAttributes[p * 4096 + j] == 0) continue;
 				if (wall)
 				{
+					if(other.surface==RemasterDungeonFloorContext::Surface::Floor && clippedCornerCap(i,dx,dy))continue;
 					// Occupancy under unknown artwork proves the wall's foot only
 					// on its downhill contact. It cannot supply an uphill plateau
 					// seam from an unclassified zero/local array.

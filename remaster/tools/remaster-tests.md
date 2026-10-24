@@ -68,6 +68,7 @@ does not launch any benchmark, emulator, or parallel test workers.
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
 | full adds | `context_location_publication` | `EndFrame`: BG locations remain selectable with zero, one or multiple named contexts; capture roundtrip |
 | full adds | `layer_view` | Exhaustive background enable/forced masks, subscreen-only exposure, OBJ exclusion and frame-boundary inspection latch |
+| full adds | `dungeon_corner_cap_region` | Ordered clipped HIGH-corner cap contacts, transforms, authored preservation and malformed/overwritten/incompatible ownership rejection |
 | full adds | `dungeon_floor_continuity` | Same-BG cardinal floor base continuation despite local relief and narrow strips; preserve flips/local arrays, reject barriers/diagonals/plane and level conflicts without expanding movement |
 | full adds | `dungeon_frame_recognition` | Complete ordinary and 4×4 stair doorway frames, all directions/flips and split BGs; interior artwork independence, overwritten-frame and competing-origin rejection |
 | full adds | `dungeon_oriented_obstacle` | Horizontal authored support ends mirror west/east, V-symmetric claims share ownership, missing outward support stays unknown |

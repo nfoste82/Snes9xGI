@@ -40,6 +40,7 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+    ("dungeon_corner_cap_region", "Ordered high-corner cap/face contacts, transforms, authored preservation and ownership rejection"),
     ("layer_view", "Background inspection masks, subscreen-only exposure, OBJ exclusion and frame-boundary latching"),
     ("context_location_publication", "EndFrame preserves selectable BG locations before contexts exist and across capture roundtrip"),
     ("dungeon_wall_obstacle_seam", "Exact authored wall tangent seams to supported assemblies, flips, overwrite and ambiguous/underpass rejection"),
