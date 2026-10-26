@@ -50,6 +50,7 @@ FULL_EXTRA = (
     ("dungeon_authored_stair", "Owned stair producer offsets preserve authored arrays; ordinary unowned stairs retain zero-offset policy"),
     ("dungeon_corner_cap_region", "Ordered high-corner cap/face contacts, transforms, authored preservation and ownership rejection"),
     ("layer_view", "Background inspection masks, subscreen-only exposure, OBJ exclusion and frame-boundary latching"),
+    ("tile_selection_highlight", "BG1/BG2 selection highlights follow visible main/subscreen picking, not lighting ownership"),
     ("context_location_publication", "EndFrame preserves selectable BG locations before contexts exist and across capture roundtrip"),
     ("dungeon_wall_obstacle_seam", "Exact authored wall tangent seams to supported assemblies, flips, overwrite and ambiguous/underpass rejection"),
     ("dungeon_wall_floor_contact", "Direct authored wall feet on occupied Floor, transformed relief and independent overlap/ownership rejection"),

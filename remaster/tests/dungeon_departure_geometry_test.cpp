@@ -50,6 +50,16 @@ int main(){try {
  c.roomIndex=0x60;c.submodule=0;frame();
  // Defrost/reset/profile change invalidates retained source before application.
  c.submodule=2;frame();S9xRemasterInvalidateDungeonContinuity();need(!s.outgoingGeometry.valid,"defrost retained snapshot");
- c.submodule=0;frame();c.submodule=2;frame();S9xRemasterSetProfile(p);frame();need(!s.outgoingGeometry.valid,"profile edit reused old geometry");
+  c.submodule=0;frame();c.submodule=2;frame();S9xRemasterSetProfile(p);frame();need(!s.outgoingGeometry.valid,"profile edit reused old geometry");
+  // Teleport doors rewrite A2 to a synthetic neighbor before handler02 starts.
+  c.roomIndex=0x60;c.submodule=0;frame();
+  const auto sourceMaps=*maps;
+  auto detect=[&]{c.roomIndex=0x22;c.previousRoomIndex=0x21;c.scrollDirection=2;c.submodule=2;c.constructionPhase=0;S9xRemasterObserveOutgoingGeometry(c);};
+  (*maps)[17]^=1;detect();need(!s.outgoingGeometry.valid,"overwritten maps claimed teleport source");
+  *maps=sourceMaps;c.constructionPhase=2;S9xRemasterObserveOutgoingGeometry(c);need(!s.outgoingGeometry.valid,"late handler claimed stale teleport source");
+  c.constructionPhase=0;c.previousRoomIndex=0x23;S9xRemasterObserveOutgoingGeometry(c);need(!s.outgoingGeometry.valid,"incompatible predecessor claimed teleport source");
+  detect();need(s.outgoingGeometry.valid && s.outgoingGeometry.room==0x60,"intact synthetic-neighbor teleport source not retained");
+  c.previousRoomIndex=0x60;c.retainedOutgoingRoom=0x60;
+  need(S9xRemasterDungeonRoomForScreenPosition(c,0,0)==0x60,"preload used stale destination origin");
  std::cout<<"PASS EndFrame settled/departure/plane+construction/mixed destination/offscreen unload/reset/profile producer-qualified both-BG local geometry\n";
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

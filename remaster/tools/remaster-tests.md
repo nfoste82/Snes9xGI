@@ -68,6 +68,7 @@ does not launch any benchmark, emulator, or parallel test workers.
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
 | full adds | `context_location_publication` | `EndFrame`: BG locations remain selectable with zero, one or multiple named contexts; capture roundtrip |
 | full adds | `layer_view` | Exhaustive background enable/forced masks, subscreen-only exposure, OBJ exclusion and frame-boundary inspection latch |
+| full adds | `tile_selection_highlight` | BG1/BG2 visible selection on main/subscreen; hidden, invalid and independent lighting-scene ownership rejection |
 | full adds | `dungeon_corner_cap_region` | Ordered clipped HIGH-corner cap contacts, transforms, authored preservation and malformed/overwritten/incompatible ownership rejection |
 | full adds | `dungeon_stair_assembly_support` | Complete stair footprint and rail proof, signed landing datums, transforms, ambiguous sources and competing/plane-mismatched ownership rejection |
 | full adds | `doorway_metadata` | Doorway/Door migration, validated directional support and capture roundtrip |

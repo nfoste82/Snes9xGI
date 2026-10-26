@@ -795,7 +795,8 @@ inline uint16_t S9xRemasterDungeonRoomForScreenPosition (const RemasterDungeonFl
 	const bool straight=context.submodule==18 || context.submodule==19;
 	// Stair detection changes A0 before the fade/loader; origin still names the
 	// source until handler02 returns. Never project destination art onto it.
-	if(straight && context.constructionPhase<3)return context.previousRoomIndex;
+	if((straight || context.retainedOutgoingRoom==context.previousRoomIndex) &&
+		context.constructionPhase<S9xRemasterDungeonRoomLoadedPhase(context.submodule))return context.previousRoomIndex;
 	if(context.hasDestinationOrigin && context.scrollDirection<4) {
 		// MoveLinkOutDoor resets $0418 at completion of phase13. By14 the
 		// camera scroll has ended and the entire viewport belongs to destination.
@@ -5076,6 +5077,22 @@ inline const RemasterFrameTileInstance *S9xRemasterFrameVisibleInstanceAt (
 {
 	const RemasterFramePixel *pixel = S9xRemasterFrameVisibleTilePixelAt(frame, x, y, subscreen);
 	return pixel ? &frame.tileInstances[pixel->instanceId - 1] : nullptr;
+}
+
+// Presentation selection must follow the same main/subscreen precedence as
+// picking, not the independent lighting scene (which can expose hidden tiles).
+inline std::vector<uint32_t> S9xRemasterFrameVisibleOccurrences (
+	const RemasterFrame &frame, const RemasterTileContentId &tileId)
+{
+	std::vector<uint32_t> occurrences;
+	for (uint32_t y = 0; y < frame.height; y++)
+		for (uint32_t x = 0; x < frame.width; x++)
+		{
+			const auto *instance = S9xRemasterFrameVisibleInstanceAt(frame, x, y);
+			if (instance && instance->tileId == tileId)
+				occurrences.push_back(y * frame.width + x);
+		}
+	return occurrences;
 }
 
 inline std::vector<uint32_t> S9xRemasterFrameOccurrences (

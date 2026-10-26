@@ -1,5 +1,11 @@
 # Remaining bipedal NPC normals — review v1
 
+**Status confirmed 2026-10-26:** accepted NPC proposals, including this normals
+work, were merged into `remaster/profiles/ALttP/alttp-profile.toml`. Candidate
+loading/generation and pending-review language below are historical. Do not
+replace the canonical profile with an old candidate; recorded seam and runtime
+validation limits remain evidence limits, not pending promotion requirements.
+
 Load `build/remaster-geometry/biped-normals-v1/biped-profile.toml`.
 This candidate builds on the edited reference-NPC v6, not the rejected original
 humanoid proposal. Main, v6 and the user's previous edits remain untouched.

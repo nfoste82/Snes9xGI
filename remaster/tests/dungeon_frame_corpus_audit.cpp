@@ -48,8 +48,14 @@ int main(int argc,char **argv){
    for(const auto &a:map->stairAttachments){attached+=!a.conflict;
     if(const char *out=std::getenv("ALTTP_FRAME_STAIRS_AUDIT")){std::ofstream f(out,std::ios::app);f<<file.path().filename().string()<<','<<bg<<','<<a.origin<<','<<a.lowPlane<<','<<a.highPlane<<','<<a.rise<<','<<a.base<<','<<a.conflict<<'\n';}}
    for(bool ownedStair:map->producerOwnedStair)stairCells+=ownedStair;
-   for(int i=0;i<4096;i++){
-    const auto &t=(*tiles)[i];const auto a=profile.assets.find({t.tileHash,1,4});
+    for(int i=0;i<4096;i++){
+     const auto &t=(*tiles)[i];const auto a=profile.assets.find({t.tileHash,1,4});
+     if(const char *out=std::getenv("ALTTP_OBSTACLE_MEMBER_AUDIT"))if(t.authoredObstacle){
+      std::ofstream f(out,std::ios::app);const RemasterDungeonHeightMap::AuthoredObstacleEvidence *e=nullptr;
+      for(const auto &v:map->authoredObstacleEvidence)if(v.assembly==t.authoredObstacleAssembly)e=&v;
+      f<<file.path().filename().string()<<','<<bg<<','<<i<<','<<std::hex<<t.tileHash<<std::dec<<','<<t.hflip<<','<<t.vflip<<','<<t.authoredObstacleAssembly<<','<<t.authoredObstacleContact<<','<<int(t.authoredObstacleDirection)<<','<<t.hasHeight<<','<<map->offsets[i]<<','<<map->planeOffsets[0][i]<<','<<map->planeOffsets[1][i]<<','<<t.distinctLowerUsage<<','<<int(t.floorPlaneMask)<<','<<int(c.collisionAttributes[i])<<','<<int(c.collisionAttributes[4096+i])<<','<<(e?e->plane:-1)<<','<<(e?e->component:-1)<<','<<(e?e->conflict:false)<<','<<(e?e->witnessedContacts:0)<<','<<(e?e->contacts:0);
+      for(int k=0;k<64;k++)f<<','<<t.height[k];f<<'\n';
+     }
     doorwayMarkers+=t.doorwaySupport;
     if(const char *out=std::getenv("ALTTP_FRAME_OWNERSHIP_AUDIT"))if(t.surface==RemasterDungeonFloorContext::Surface::Door){
      std::ofstream f(out,std::ios::app);f<<file.path().filename().string()<<','<<bg<<','<<i<<','<<t.doorTemplateOffset<<','<<t.doorAssembly<<','<<int(t.doorDirection)<<','<<t.hasDoorframeMask<<','<<t.doorframeMask<<'\n';

@@ -1,5 +1,10 @@
 # Link reference-guided geometry proposal
 
+**Status confirmed 2026-10-26:** accepted geometry is merged into the canonical
+profile. Generation commands, candidate paths and pre-promotion review requirements
+below describe the historical workflow, not a pending promotion. Do not regenerate
+or promote an old candidate over subsequent authored edits.
+
 **Approved 2026-10-19:** the user accepted the proposal and its changes have been
 merged into `remaster/profiles/ALttP/alttp-profile.toml`. The original candidate/input
 snapshot remain available for review. See [Humanoid NPC Geometry](HUMANOID-GEOMETRY.md)

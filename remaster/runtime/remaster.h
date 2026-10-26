@@ -352,7 +352,16 @@ inline void S9xRemasterObserveOutgoingGeometry(const RemasterDungeonFloorContext
 	}
 	if(!S9xRemasterDungeonRoomScroll(c.submodule) || !s.runtimeDungeonHeightValid)return;
 	const auto room=s.runtimeDungeonHeightMap.roomIndex;
-	if(room==0xffff || (room!=c.roomIndex && room!=c.previousRoomIndex) || s.runtimeDungeonBg1HeightMap.roomIndex!=room)return;
+	// Teleport-door detection rewrites both A0 and A2 (the latter becomes a
+	// synthetic cardinal neighbor) before the first handler02 frame. The last
+	// published room is still the source: phases0/1 have not called LoadNextRoom.
+	// Require the complete unchanged source maps, not an arbitrary stale cache.
+	const int predecessorDelta=c.scrollDirection==0?16:c.scrollDirection==1?-16:c.scrollDirection==2?-1:1;
+	const bool intactDoorSource=c.submodule==2 && c.constructionPhase<2 && c.scrollDirection<4 &&
+		c.previousRoomIndex==uint16_t(c.roomIndex+predecessorDelta) &&
+		s.dungeonSnapshotValid && c.constructedMaps &&
+		std::equal(s.dungeonObservedMaps.begin(),s.dungeonObservedMaps.end(),c.constructedMaps);
+	if(room==0xffff || (room!=c.roomIndex && room!=c.previousRoomIndex && !intactDoorSource) || s.runtimeDungeonBg1HeightMap.roomIndex!=room)return;
 	s.previousRuntimeDungeonHeightMap=s.runtimeDungeonHeightMap;
 	s.previousRuntimeDungeonBg1HeightMap=s.runtimeDungeonBg1HeightMap;
 	s.outgoingFinalMaps=s.dungeonObservedMaps;

@@ -1,5 +1,11 @@
 # Reference-guided NPC revision
 
+**Status confirmed 2026-10-26:** accepted NPC proposals were merged into
+`remaster/profiles/ALttP/alttp-profile.toml`. Candidate paths, revision-specific
+preservation statements and approval instructions below record the historical
+workflow; they do not indicate pending promotion or justify overwriting later
+authored edits. Recorded evidence limits are not erased by acceptance.
+
 ## Frame17 mirrored centerline v6 (2026-10-20)
 
 Load `build/remaster-geometry/reference-npc-detail-v6/reference-npc-profile.toml`.

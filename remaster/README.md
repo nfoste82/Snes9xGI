@@ -9,9 +9,14 @@
 - **`profiles/`**: authored game profiles (formerly the root `Profiles/` folder).
 - **`tools/`**: command-line utilities, authoring workbenches, benchmark runners,
   and game-specific tooling (formerly the root `tools/` folder).
-- **Top-level Markdown files**: feature documentation and historical investigation
-  reports. Commands in these notes use the reorganized source paths; captured
-  evidence and generated outputs have not moved.
+- **`docs/authoring/`**: [authoring and inspection](docs/authoring/00-index.md).
+- **`docs/geometry/`**: [geometry and placement](docs/geometry/00-index.md).
+- **`docs/lighting/`**: [lighting and performance](docs/lighting/00-index.md).
+- **Top-level Markdown files**: additional game-specific review/tooling notes.
+- **`historic-investigations/`**: room/capture investigations and older repair,
+  audit, editor and performance reports, with a [table of contents](historic-investigations/00-index.md).
+  These are historical evidence, not a current issue list. Captured evidence and
+  generated outputs have not moved; commands retain repository-root paths.
 
 Run the curated portable suite from the repository root:
 
@@ -33,5 +38,5 @@ Platform-specific tests remain in `macosx/`; game-tool tests remain in
 selection and limitations.
 
 Door frame authoring uses the **Doorway** role; the separate **Door** role is
-reserved for actual door leaves/barriers. See [doorway authoring](doorway_authoring.md)
+reserved for actual door leaves/barriers. See [doorway authoring](docs/authoring/doorway_authoring.md)
 for directional support contacts in the Metadata inspector and migration behavior.

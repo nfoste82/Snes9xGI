@@ -47,8 +47,17 @@ alone does not determine the source layer.
 
 ## Tests
 
+Selection highlighting uses the same composed main/subscreen tile lookup as
+click picking. In All layers, a BG1 tile can be a subscreen contributor through
+main-screen backdrop; it must still highlight. Hidden subscreen tiles and the
+independent lighting scene do not override the clicked visible occurrence.
+This applies to both tile-type and Tile Locations selection.
+
 - `remaster/tests/layer_view_test.cpp`: exhaustive enable/forced-mask combinations,
   subscreen-only backgrounds, OBJ exclusion, default equivalence and frame latch.
+- `remaster/tests/tile_selection_highlight_test.cpp`: both BGs on main/subscreen,
+  visible-pick equivalence, hidden/invalid ownership rejection and lighting-scene
+  independence (also checked with ASan/UBSan).
 - `macosx/remaster-inspector-layout-test.py`: shortcut assignment, fresh-frame
   ownership/picking guards and disabled independent scene pass.
 - Opt-in native production raster test: environment

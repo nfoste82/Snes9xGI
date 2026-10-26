@@ -1,5 +1,11 @@
 # Humanoid NPC geometry pass
 
+**Status confirmed 2026-10-26:** the later accepted NPC revisions are merged into
+the canonical profile. The broad first-pass candidate documented below was rejected
+and superseded by [reference-guided revisions](REFERENCE-NPC-GEOMETRY.md) and
+[remaining biped normals](BIPED-NORMALS.md). Its load/generation instructions are
+historical, not a recommendation to replace the current profile.
+
 The user approved the Link proposal on 2026-10-19. Its exact asset changes and
 OBJ classifications were promoted to `remaster/profiles/ALttP/alttp-profile.toml` using a
 three-way field merge. Existing detailed geometry was preserved. No git push is

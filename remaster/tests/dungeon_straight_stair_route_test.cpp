@@ -7,7 +7,8 @@
 uint32_t *S9xRemasterCurrentOwners=nullptr;uint32_t S9xRemasterCurrentOwner=0;
 static void need(bool b,const char *s){if(!b)throw std::runtime_error(s);}
 int main(int argc,char **argv){try {
- need(argc==4,"usage: runtime.bin own-capture.profile.toml templates.bin");
+ need(argc==4 || argc==5,"usage: runtime.bin own-capture.profile.toml templates.bin [teleport]");
+ const bool teleport=argc==5 && std::string(argv[4])=="teleport";
  std::ifstream in(argv[1],std::ios::binary);char magic[8];in.read(magic,8);need(!memcmp(magic,"ALTPRT1\0",8),"route format");
  RemasterProfile p;std::vector<RemasterProfileDiagnostic> errors;need(S9xRemasterLoadProfile(argv[2],p,errors),"profile");
  std::ifstream tf(argv[3],std::ios::binary);std::vector<uint8_t> templates{std::istreambuf_iterator<char>(tf),{}};need(templates.size()==12884,"templates");
@@ -22,7 +23,7 @@ int main(int argc,char **argv){try {
  uint16_t completedRoom=0xffff;int frames=0,stairs=0,scrolls=0,sourcePixels=0,loaded=0,north=0,south=0,effectiveChecks=0;
   struct Settled { RemasterDungeonHeightMap bg[2]; std::array<uint8_t,16384> words; };
   std::map<uint16_t,std::unique_ptr<Settled>> settled;
-  int incomingChecks[2]={},incomingRaised[2]={},planeChecks[2][2]={};
+   int incomingChecks[2]={},incomingRaised[2]={},planeChecks[2][2]={},outgoingChecks[2]={};
   for(int pass=0;pass<2;pass++) {
   in.clear();in.seekg(8);completedRoom=0xffff;bool awaitingSettled=false;
   while(in.read(reinterpret_cast<char*>(data->data()),data->size())) {
@@ -36,10 +37,12 @@ int main(int argc,char **argv){try {
   c.backgroundScrollX=word(196608);c.backgroundScrollY=word(196610);c.graphicsBase=word(196616);c.bg1GraphicsBase=word(196612);
   c.constructedMaps=r+0x2000;c.graphics=g;c.collisionAttributes=r+0x12000;c.dungeonTemplateData=templates.data()+8;
   c.scrollDirection=r[0x418];c.destinationOriginX=word(0x62c);c.destinationOriginY=word(0x62e);
-  const bool stair=c.submodule==18 || c.submodule==19;
+   const bool stair=c.submodule==18 || c.submodule==19;
+   const bool transition=stair || (teleport && c.submodule==2);
+   const int loadedPhase=stair?3:2, scrollPhase=stair?10:8;
   c.hasDestinationOrigin=S9xRemasterDungeonRoomScroll(c.submodule) && c.constructionPhase>=S9xRemasterDungeonRoomLoadedPhase(c.submodule);
-  if(!stair || c.constructionPhase<3 || completedRoom!=c.roomIndex)completedRoom=0xffff;
-  if(stair && c.constructionPhase>=3 && c.attributeConstructionState!=5) {
+   if(!transition || c.constructionPhase<loadedPhase || completedRoom!=c.roomIndex)completedRoom=0xffff;
+   if(transition && c.constructionPhase>=loadedPhase && c.attributeConstructionState!=5) {
    if(completedRoom==0xffff){need(S9xRemasterCompleteDungeonAttributes(r,*complete),"actual stair collision completion rejected");completedRoom=c.roomIndex;}
    c.collisionAttributes=complete->data();c.hasCompletedTransitionAttributes=true;
   }
@@ -65,7 +68,7 @@ int main(int argc,char **argv){try {
   }
    S9xRemasterEndFrame(screen.data(),256,256,224,frame.get(),&c);
    if(pass==0) {
-    if(stair)awaitingSettled=true;
+     if(transition)awaitingSettled=true;
     if(awaitingSettled && !c.submodule && !settled.count(c.roomIndex)) {
      auto oracle=std::make_unique<Settled>();oracle->bg[0]=s.runtimeDungeonBg1HeightMap;oracle->bg[1]=s.runtimeDungeonHeightMap;
      std::copy_n(c.constructedMaps,16384,oracle->words.begin());settled[c.roomIndex]=std::move(oracle);
@@ -74,14 +77,14 @@ int main(int argc,char **argv){try {
     continue;
    }
    frames++;
-   if(stair && c.constructionPhase==10) {
+    if(transition && c.constructionPhase==scrollPhase) {
     need(settled.count(c.roomIndex),"missing settled destination oracle");const auto &oracle=*settled.at(c.roomIndex);
     auto expected=*frame;
     for(auto &i:expected.tileInstances){i.heightOffset=0;i.hasPlacementHeight=false;}
     auto dest=c;dest.submodule=0;dest.previousRoomIndex=0xffff;dest.constructedMaps=oracle.words.data();
     for(int bg=0;bg<2;bg++)S9xRemasterApplyDungeonHeightMap(expected,dest,oracle.bg[bg],nullptr,nullptr,bg);
     for(int y=0;y<224;y++)for(int x=0;x<256;x++) {
-     if(uint16_t(c.backgroundScrollY+y-c.destinationOriginY)>=512)continue;
+      if(teleport ? uint16_t(c.backgroundScrollX+x-c.destinationOriginX)>=512 : uint16_t(c.backgroundScrollY+y-c.destinationOriginY)>=512)continue;
      const int cell=(((c.backgroundScrollY+y)&511)/8)*64+((c.backgroundScrollX+x)&511)/8;
      for(int bg=0;bg<2;bg++) {
       const auto &px=(bg?frame->mainPixels:frame->subPixels)[y*256+x];
@@ -110,21 +113,35 @@ int main(int argc,char **argv){try {
      }
     }
    }
-  if(stair) {
-   stairs++;north+=c.submodule==18;south+=c.submodule==19;
-   if(c.constructionPhase<3)need(s.outgoingGeometry.valid,"actual stair lost outgoing geometry before load");
-   if(c.constructionPhase>=3) {need(s.runtimeDungeonHeightValid && s.runtimeDungeonHeightMap.roomIndex==c.roomIndex,"actual stair destination unpublished");loaded++;}
-   if(c.constructionPhase==10)scrolls++;
-   need(!s.runtimeDungeonHeightMap.entrySupportConsumed,"stairs invented level-door anchor");
+   if(transition) {
+    stairs++;north+=teleport?c.scrollDirection==2:c.submodule==18;south+=teleport?c.scrollDirection==3:c.submodule==19;
+    if(c.constructionPhase<loadedPhase)need(s.outgoingGeometry.valid,"actual transition lost outgoing geometry before load");
+    if(c.constructionPhase>=loadedPhase) {need(s.runtimeDungeonHeightValid && s.runtimeDungeonHeightMap.roomIndex==c.roomIndex,"actual transition destination unpublished");loaded++;}
+    if(c.constructionPhase==scrollPhase)scrolls++;
+    if(!teleport)need(!s.runtimeDungeonHeightMap.entrySupportConsumed,"stairs invented level-door anchor");
+    auto outgoing=*frame;
+    if(s.outgoingGeometry.valid) {
+     for(auto &i:outgoing.tileInstances){i.heightOffset=0;i.hasPlacementHeight=false;}
+     auto source=c;source.submodule=0;source.roomIndex=s.outgoingGeometry.room;source.previousRoomIndex=0xffff;source.constructedMaps=s.outgoingFinalMaps.data();
+     S9xRemasterApplyDungeonHeightMap(outgoing,source,s.previousRuntimeDungeonBg1HeightMap,nullptr,nullptr,0);
+     S9xRemasterApplyDungeonHeightMap(outgoing,source,s.previousRuntimeDungeonHeightMap,nullptr,nullptr,1);
+    }
    for(int y=0;y<224;y++)for(int x=0;x<256;x++) {
-    auto render=c;if(s.outgoingGeometry.valid)render.previousRoomIndex=s.outgoingGeometry.room;
-    const bool source=c.constructionPhase<3 || (c.constructionPhase==10 && uint16_t(c.backgroundScrollY+y-c.destinationOriginY)>=512);
+     auto render=c;if(s.outgoingGeometry.valid){render.previousRoomIndex=s.outgoingGeometry.room;render.retainedOutgoingRoom=s.outgoingGeometry.room;}
+     const bool source=c.constructionPhase<loadedPhase || (c.constructionPhase==scrollPhase && (teleport ? uint16_t(c.backgroundScrollX+x-c.destinationOriginX)>=512 : uint16_t(c.backgroundScrollY+y-c.destinationOriginY)>=512));
     if(source){need(s.outgoingGeometry.valid,"actual stair lost visible outgoing geometry");need(S9xRemasterDungeonRoomForScreenPosition(render,x,y)==render.previousRoomIndex,"actual stair source ownership");sourcePixels++;
      for(auto pixels:{&frame->mainPixels,&frame->subPixels}) {
       const auto &px=(*pixels)[y*256+x];if(!px.instanceId)continue;const auto &i=frame->tileInstances[px.instanceId-1];
       const auto &m=i.sourceIndex?s.previousRuntimeDungeonHeightMap:s.previousRuntimeDungeonBg1HeightMap;
       const int cell=((c.backgroundScrollY+y)&511)/8*64+((c.backgroundScrollX+x)&511)/8;
-      const int at=(i.sourceIndex?0:8192)+cell*2;const int w=s.outgoingFinalMaps[at]|s.outgoingFinalMaps[at+1]<<8;
+       const int at=(i.sourceIndex?0:8192)+cell*2;const int w=s.outgoingFinalMaps[at]|s.outgoingFinalMaps[at+1]<<8;
+       if(m.producerHashes[cell]==i.tileId.hash && m.producerFlips[cell]==(i.hFlip|(i.vFlip<<1)) &&
+        i.tileNumber==(w&1023) && i.palette==((w>>10)&7)) {
+        const auto &ep=(i.sourceIndex?outgoing.mainPixels:outgoing.subPixels)[y*256+x];const auto &e=outgoing.tileInstances[ep.instanceId-1];
+        need(i.heightOffset==e.heightOffset && i.hasPlacementHeight==e.hasPlacementHeight &&
+         (!i.hasPlacementHeight || i.placementHeight[px.tilePixel]==e.placementHeight[ep.tilePixel]),"outgoing effective base/local source differs from retained solve");
+        outgoingChecks[i.sourceIndex]++;
+       }
       if(m.producerZeroFloor[cell] && m.offsets[cell]!=255 && m.offsets[cell]!=0 &&
        m.producerHashes[cell]==i.tileId.hash && m.producerFlips[cell]==(i.hFlip|(i.vFlip<<1)) &&
        i.tileNumber==(w&1023) && i.palette==((w>>10)&7)) {
@@ -136,7 +153,8 @@ int main(int argc,char **argv){try {
   }
  }
   }
-  need(in.eof() && frames==801 && north && south && scrolls==120 && effectiveChecks>0 && incomingChecks[0] && incomingChecks[1],"complete roundtrip denominator");
-  std::cout<<"incoming effective checks BG1/BG2="<<incomingChecks[0]<<'/'<<incomingChecks[1]<<" nonzero="<<incomingRaised[0]<<'/'<<incomingRaised[1]<<" plane checks="<<planeChecks[0][0]<<','<<planeChecks[0][1]<<'/'<<planeChecks[1][0]<<','<<planeChecks[1][1]<<'\n';
+   need(in.eof() && frames==(teleport?601:801) && north && south && scrolls==(teleport?128:120) && effectiveChecks>0 && incomingChecks[0] && incomingChecks[1],"complete roundtrip denominator");
+   std::cout<<"incoming effective checks BG1/BG2="<<incomingChecks[0]<<'/'<<incomingChecks[1]<<" nonzero="<<incomingRaised[0]<<'/'<<incomingRaised[1]<<" plane checks="<<planeChecks[0][0]<<','<<planeChecks[0][1]<<'/'<<planeChecks[1][0]<<','<<planeChecks[1][1]<<'\n';
+   std::cout<<"outgoing effective base/local checks BG1/BG2="<<outgoingChecks[0]<<'/'<<outgoingChecks[1]<<'\n';
  std::cout<<"PASS actual reference roundtrip frames="<<frames<<" stair_frames="<<stairs<<" scroll_frames="<<scrolls<<" destination_frames="<<loaded<<" source_coordinate_checks="<<sourcePixels<<" effective_nonzero_floor_checks="<<effectiveChecks<<"\n";
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

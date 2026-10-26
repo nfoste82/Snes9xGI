@@ -13,7 +13,7 @@ in [Room 061 performance plan](room061-performance-plan.md).
 For the Room060 slot-A user fixture, the receiver-emission hoisting optimization,
 same-build reference switch (`--reference-receiver-emission`), exact image checks
 and variable short/60-second live results, see
-[Area lighting performance follow-up](../remaster/area_lighting.md#receiver-emission-optimization-october-14).
+[Area lighting performance follow-up](../remaster/docs/lighting/area_lighting.md#receiver-emission-optimization-october-14).
 
 User's near-torch view requires `Zelda_ALTTP.006.frz`; slot 002 initially contains
 no visible emitters. Root backup profile has three representatives. In 180
@@ -183,7 +183,7 @@ The app also accepts these options directly:
 
 ## Session handoff: resume GPU optimization
 
-Read `AIDocs/00-index.md` first, then this note and `remaster/lighting.md`.
+Read `AIDocs/00-index.md` first, then this note and `remaster/docs/lighting/lighting.md`.
 The user wants GPU frame time addressed before CPU scene fields. Benchmark mode
 and direct-source preparation/specialization are implemented; CPU field caching,
 buffer reuse, and material-resolution optimization have not yet been implemented.
@@ -813,7 +813,7 @@ reviewed design and implementation; no height metadata generated or approved.
 
 `S9X_REMASTER_DIRECT_SAMPLES=N` opts into stratified receiver-specific source
 sampling, N1..4096; exhaustive default and debug-sphere/visibility/diagnostic
-fallback remain. See `remaster/lighting.md` for exact-denominator estimator.
+fallback remain. See `remaster/docs/lighting/lighting.md` for exact-denominator estimator.
 No temporal filtering. Benchmark reports record raw `direct_samples_override`
 and fallback note; per-frame `direct_samples` continues to mean available
 prepared emitter samples, not the requested sampling budget.
@@ -1054,7 +1054,7 @@ Resume tomorrow with these notes; performance tests remain Composite0 only.
 Adjacent-tile authoring implemented in the following session: Combine Emitters
 in Emission layer, reciprocal per-hash lists (profile17/capture24), connected-shape
 validation and cardinal footprint joining with one shared representative budget.
-See `remaster/lighting.md` for semantics and larger-shape capacity fallback.
+See `remaster/docs/lighting/lighting.md` for semantics and larger-shape capacity fallback.
 Portable grouping/profile/capture checks pass; Metal1249 checks pass in serial
 and batched modes including256-member energy/ABI. Debug/Release build verified.
 Interactive button/alert and combined-torch visual review remain pending.
@@ -1073,7 +1073,7 @@ User approved implementing adaptive sphere sampling. Production now reduces
 quadrature by angular radius at each receiver (8..128), retaining solid-angle
 energy normalization, near/interior128, session-debug128 and full diagnostic
 paths. CPU conservative viewport budgets reduce dispatched work for fully distant
-lights. See `remaster/lighting.md` for approximation/override contracts. Reports
+lights. See `remaster/docs/lighting/lighting.md` for approximation/override contracts. Reports
 and panel include sphere counts/max samples/batch size. Full quadrature can be
 restored with `S9X_REMASTER_FULL_SPHERE_SAMPLES=1` at launch.
 

@@ -604,17 +604,17 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	}
 	else if (frame.contextLocationSelection || !frame.selectedContextInstances.empty()) {
 		highlights.assign(frame.mainPixels.size(), 0);
-		for (size_t i=0;i<scenePixels.size();i++) {
-			auto id=scenePixels[i].instanceId;
-			if (!id && i<frame.subPixels.size()) id=frame.subPixels[i].instanceId;
-			if (frame.selectedContextInstances.count(id)) highlights[i]=1;
+		for (uint32_t y=0;y<frame.height;y++) for (uint32_t x=0;x<frame.width;x++) {
+			const auto *pixel=S9xRemasterFrameVisibleTilePixelAt(frame,x,y);
+			if (pixel && frame.selectedContextInstances.count(pixel->instanceId))
+				highlights[size_t(y)*frame.width+x]=1;
 		}
 	}
 	else if (selectedTiles && !selectedTiles->empty())
 	{
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (const RemasterTileContentId &tileId : *selectedTiles)
-			for (uint32_t offset : S9xRemasterFrameOccurrences(frame, tileId))
+			for (uint32_t offset : S9xRemasterFrameVisibleOccurrences(frame, tileId))
 				highlights[offset] = 1;
 	}
 	static RemasterLightingFieldCache fieldCache;

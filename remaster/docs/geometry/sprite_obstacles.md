@@ -154,13 +154,13 @@ and exact complete OAM draw signature to disambiguate overlapping floors. This
 includes exact reconstruction of its draw-before-movement horizontal step.
 Actor/camera observations are pinned at frame start with the DMA-latched PPU
 entries; next-frame WRAM staging data is not the displayed frame's evidence.
-See [`sprite_obstacle_movement_report.md`](sprite_obstacle_movement_report.md)
+See [`sprite_obstacle_movement_report.md`](../../historic-investigations/sprite_obstacle_movement_report.md)
 for the scrolling ownership failure and production movement regression.
 Other producer families need equivalent verified adapters when contacts alone
 cannot distinguish the gameplay plane; grouping itself is not family-specific.
 Vertically culled mantle entries reproduce the USA producer's exact Y=$f0
 correction, retaining actor-derived logical positions for hidden identity only.
-See [`sprite_obstacle_culling_report.md`](sprite_obstacle_culling_report.md) for
+See [`sprite_obstacle_culling_report.md`](../../historic-investigations/sprite_obstacle_culling_report.md) for
 the exact `_056` recovery and unchanged `_059` control; wholly clipped children
 are not lighting receivers.
 See the header for exact current evidence limitations. In particular, grounded
@@ -201,4 +201,4 @@ usable for authoring but do not retrospectively gain actor-plane evidence.
 These tests are not approval of every room's floor geometry. Complete-room
 validation v2 and pinned producer/plane inputs remain required for that claim.
 The pinned Room051 audit and reproducible validation artifacts are recorded in
-[`sprite_obstacle_report.md`](sprite_obstacle_report.md).
+[`sprite_obstacle_report.md`](../../historic-investigations/sprite_obstacle_report.md).

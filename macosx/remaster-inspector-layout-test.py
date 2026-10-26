@@ -223,6 +223,13 @@ class MetadataLayoutTests(unittest.TestCase):
         self.assertNotIn("remasterObstacleSelection.clear()", change)
         self.assertIn("if (remasterObstacleGroupingActive) return", change)
 
+    def test_selection_highlights_follow_picking_not_lighting_scene(self):
+        renderer = Path(__file__).with_name("mac-render.mm").read_text()
+        context = renderer.split("else if (frame.contextLocationSelection", 1)[1].split("else if (selectedTiles", 1)[0]
+        self.assertIn("S9xRemasterFrameVisibleTilePixelAt(frame,x,y)", context)
+        self.assertNotIn("scenePixels", context)
+        self.assertIn("S9xRemasterFrameVisibleOccurrences(frame, tileId)", renderer)
+
     def test_grouping_cannot_paint_or_reset_metadata(self):
         for method in ("resetRemasterLayer", "copyRemasterLayer", "pasteRemasterLayer"):
             body = SOURCE.split(f"- (void){method}:(id)sender\n", 1)[1].split("\n}", 1)[0]

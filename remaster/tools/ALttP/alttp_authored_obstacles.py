@@ -119,6 +119,52 @@ def support_direction(group, flip=0):
     return d
 
 
+def parallel_section_datums(cells, placements):
+    """Inventory, NOT seam proof: explicit obstacles may have discontinuous parts.
+
+    Equal displayed affine slopes in two neighboring members can expose a local
+    datum disagreement. A footprint proves membership/support, not a continuous
+    surface between arbitrary members. Never feed these proposals to the solve.
+    Authored arrays are sampled through each placement's own flips, not the
+    group's mirror (members can be intrinsically authored in opposite facings).
+    """
+    by_cell = {r['y']*64+r['x']: r for r in placements}
+    result = []
+    def affine(i):
+        r = by_cell[i]
+        if r['local_source'] != 'authored_asset':
+            return None
+        c = cells[i]; local = r['local_height']
+        h = lambda x, y: local[(7-y if c.vflip else y)*8+(7-x if c.hflip else x)]
+        sx, sy = h(1, 0)-h(0, 0), h(0, 1)-h(0, 0)
+        if bool(sx) == bool(sy) or abs(sx or sy) != 1:
+            return None
+        if any(h(x, y) != h(0, 0)+sx*x+sy*y for y in range(8) for x in range(8)):
+            return None
+        return h(0, 0), sx, sy
+    for i, a in sorted(by_cell.items()):
+        aa = affine(i)
+        if aa is None:
+            continue
+        # Tangent-only, same explicitly owned assembly. Do not manufacture a
+        # normal-continuation relation between adjacent independent relief bands.
+        j = i+(64 if aa[1] else 1)
+        if j not in by_cell or (not aa[1] and i%64 == 63):
+            continue
+        b = by_cell[j]; bb = affine(j)
+        if bb is None or a['assembly'] != b['assembly'] or a['group'] != b['group'] or aa[1:] != bb[1:]:
+            continue
+        delta = a['floor_base']+aa[0]-b['floor_base']-bb[0]
+        if delta:
+            result.append(dict(layer=a['layer'], assembly=a['assembly'], group=a['group'],
+                               first_xy=[i%64, i//64], second_xy=[j%64, j//64],
+                               first_hash=a['tile_hash'], second_hash=b['tile_hash'],
+                               displayed_slope=list(aa[1:]), effective_first_minus_second=delta,
+                               status='unproven_continuity_datum_disagreement',
+                               required_evidence='explicit continuous surface contact; obstacle membership alone is insufficient'))
+    return result
+
+
 def audit(snapshot, attributes, profile, solution, state=None, components=None):
     groups, identities = validate_groups(profile)
     # Dynamic OBJ footprints never claim cells in complete BG room maps.
@@ -143,7 +189,8 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
             raise ValueError('obstacle audit requires pinned Link state')
         components = [movement_components(attributes, p, (plane, *xy), stairs) if p in active else [-1]*4096 for p in range(2)]
     report = dict(groups=len(groups), sprite_groups_excluded=sprite_groups, required_cells=0, solved_cells=0, missing_cells=0,
-                  conflicting_cells=0, per_layer=[], placements=[], assemblies=[], issues=[], mismatches=[])
+                  conflicting_cells=0, per_layer=[], placements=[], assemblies=[], issues=[], mismatches=[],
+                  parallel_section_datum_candidates=[])
     inventory = {(r['layer'], r['plane'], r['y']*64+r['x']): r for r in solution.get('directional_geometry', [])}
     for layer in (0, 1):
         bases = {(p, y*64+x): b for p, x, y, b in solution.get('bg1_cells_plane_x_y_base' if layer == 0 else 'cells_plane_x_y_base',
@@ -281,6 +328,7 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
             report['issues'].append(dict(layer=layer, x=i%64, y=i//64, tile_hash=cells[i].tile_hash,
                                          reasons=reasons or ['incomplete_or_unmatched_footprint']))
         expected = {r['y']*64+r['x']: r for r in report['placements'] if r['layer'] == layer}
+        report['parallel_section_datum_candidates'].extend(parallel_section_datums(cells, list(expected.values())))
         for i in sorted(required):
             for p in (0, 1):
                 actual = inventory.get((layer, p, i))
@@ -316,4 +364,5 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
     report['witnessed_contacts'] = sum(bool(c['witnesses']) for r in report['assemblies'] for c in r['contacts'])
     report['movement_scope'] = 'Complete ordinary collision-body components on observed/stair-activated planes; not viewport or pixel00 flood.'
     report['floor_base_scope'] = 'Accepted plane floor bases from the separately validated room solve; obstacle output claims are not inputs.'
+    report['parallel_section_datum_scope'] = 'Non-gating diagnostic only: affine shape and common footprint are not continuous-surface contact evidence; no heights or coverage counts changed.'
     return report
