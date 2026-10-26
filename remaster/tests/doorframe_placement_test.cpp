@@ -18,7 +18,7 @@ int main ()
 	const RemasterTileContentId id {S9xRemasterHashTile(4, pixels), 1, 4};
 	RemasterProfile profile;
 	auto &door = profile.assets[id];
-	door.tileId = id; door.tileRole = RemasterTileRole::Door;
+	door.tileId = id; door.tileRole = RemasterTileRole::Doorway;
 	door.hasHeight = true;
 	for (unsigned i = 0; i < 64; i++) door.height[i] = i / 8;
 	const auto stairs = door.height;

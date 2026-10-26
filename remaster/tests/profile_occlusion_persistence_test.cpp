@@ -24,7 +24,7 @@ int main(int argc, char **argv)
 	profile.assets[zero].hasOcclusion = profile.assets[mixed].hasOcclusion = true;
 	profile.assets[zero].occlusion.fill(0);
 	for (unsigned i = 0; i < 64; ++i) profile.assets[mixed].occlusion[i] = i % 3 == 0 ? 0 : i % 3 == 1 ? 125 : 255;
-	profile.assets[mixed].tileRole = RemasterTileRole::Door;
+	profile.assets[mixed].tileRole = RemasterTileRole::Doorway;
 	profile.assets[mixed].hasDoorframeMask = true;
 	profile.assets[mixed].doorframeMask = 0; // Explicit empty is authored, not absent.
 	const auto expectedZero = profile.assets[zero].occlusion;

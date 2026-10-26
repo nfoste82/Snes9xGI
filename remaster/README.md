@@ -31,3 +31,7 @@ does not make them fixture-free or establish complete-room height approval.
 Platform-specific tests remain in `macosx/`; game-tool tests remain in
 `remaster/tools/ALttP/`. See [the test guide](tools/remaster-tests.md) for suite
 selection and limitations.
+
+Door frame authoring uses the **Doorway** role; the separate **Door** role is
+reserved for actual door leaves/barriers. See [doorway authoring](doorway_authoring.md)
+for directional support contacts in the Metadata inspector and migration behavior.

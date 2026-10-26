@@ -160,6 +160,15 @@ inline bool S9xRemasterRotateMetadataLayer(RemasterAssetMetadata &metadata, int 
 {
 	switch (layer)
 	{
+		case RemasterEditorMetadata:
+			if (!metadata.doorwaySupport) return false;
+			{
+				const unsigned clockwiseMap[] = {0,3,4,2,1}, counterclockwiseMap[] = {0,4,3,1,2};
+				const auto d=static_cast<unsigned>(metadata.doorwaySupportDirection);
+				if(d<1 || d>4)return false;
+				metadata.doorwaySupportDirection=static_cast<RemasterSupportDirection>((clockwise?clockwiseMap:counterclockwiseMap)[d]);
+			}
+			break;
 		case RemasterEditorMaterial:
 			if (!metadata.hasMaterialSelectors) return false;
 			S9xRemasterRotateLayerPixels(metadata.materialSelectors, clockwise); break;
@@ -194,6 +203,10 @@ inline bool S9xRemasterFlipMetadataLayer(RemasterAssetMetadata &metadata, int la
 {
 	switch (layer)
 	{
+		case RemasterEditorMetadata:
+			if (!metadata.doorwaySupport) return false;
+			metadata.doorwaySupportDirection=S9xRemasterTransformSupportDirection(metadata.doorwaySupportDirection,horizontal,!horizontal);
+			break;
 		case RemasterEditorMaterial:
 			if (!metadata.hasMaterialSelectors) return false;
 			S9xRemasterFlipLayerPixels(metadata.materialSelectors, horizontal); break;

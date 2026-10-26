@@ -137,6 +137,12 @@ class AuthoredObstacles(unittest.TestCase):
             r = audit(s, tuple(map(bytes, attrs)), p, sol, components=c)
             self.assertTrue(r['success'])
             self.assertEqual({v['floor_base'] for v in r['placements']}, {-16}) # NOT highest/actor plane
+            for solid in (0x6c, 0x6d, 0x6e, 0x6f):
+                attrs[0][10*64+10] = solid
+                checked = audit(s, tuple(map(bytes, attrs)), p, sol, components=c)
+                self.assertTrue(checked['success'])
+                self.assertEqual({v['floor_base'] for v in checked['placements']}, {-16})
+            attrs[0][10*64+10] = 0x27
             p['assets'][-1]['height'][0] = 1
             self.assertEqual(audit(s, tuple(map(bytes, attrs)), p, sol, components=c)['conflicting_cells'], 2)
             p['assets'][-1]['height'][0] = 0

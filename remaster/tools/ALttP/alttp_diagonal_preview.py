@@ -85,7 +85,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
                         owned.add((x,y))
         for x,y in owned:
             c=snapshot.cell(layer,x,y);a=assets.get(c.tile_hash,{})
-            if a.get('tile_role') in ('floor','obstacle','door','stair_top','stair_bottom') or len(a.get('height',[]))!=64:
+            if a.get('tile_role') in ('floor','obstacle','door','doorway','stair_top','stair_bottom') or len(a.get('height',[]))!=64:
                 continue
             rows={4-r if c.vflip else r for r,w in enumerate(words) if w==c.word}
             if len(rows)!=1 or next(iter(rows))>3:continue
@@ -118,7 +118,7 @@ def _rom_diagonal_previews(snapshot, profile, template_data, layer=1, owned=None
             for x in range(63):
                 members=[snapshot.cell(layer,x+c,y+c*step+r) for c in range(2) for r in range(extent)]
                 if any(c.word&0xdfff!=word(offsets[n%extent])&0xdfff or len(assets.get(c.tile_hash,{}).get('height',[]))!=64 or
-                       assets.get(c.tile_hash,{}).get('tile_role') in ('floor','obstacle','door','stair_top','stair_bottom')
+                       assets.get(c.tile_hash,{}).get('tile_role') in ('floor','obstacle','door','doorway','stair_top','stair_bottom')
                        for n,c in enumerate(members)):continue
                 for n,c in enumerate(members):
                     row=n%extent;b=extent-1-row if reverse else row

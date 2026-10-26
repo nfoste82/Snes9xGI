@@ -48,6 +48,7 @@ int main(int argc,char **argv) {try {
    // Every semantic field, never object padding or only a tile hash.
     std::cout<<int(t.surface)<<' '<<t.groundedFloorMask<<' '<<t.doorframeMask<<' '<<t.hasDoorframeMask<<' '
      <<t.doorTemplateOffset<<' '<<t.doorAssembly<<' '<<int(t.doorDirection)<<' '<<t.splitDoorPart<<' '<<t.hasHeight<<' '<<t.hflip<<' '<<t.vflip<<' '
+     <<t.doorwayColumnContact<<' '<<t.doorwayColumnSource<<' '<<int(t.doorwayColumnBand)<<' '
     <<int(t.floorPlaneMask)<<' '<<t.distinctLowerUsage<<' '<<int(t.structuralFloorPlaneMask)<<' '
     <<t.wallTemplateOffset<<' '<<t.tileHash<<' '<<t.supportingTrim<<' '<<t.terminalCorner<<' '
     <<t.highPerimeterFace<<' '<<t.lowerDoorWallPart<<' '<<t.diagnosticWallTemplateOffset<<' '

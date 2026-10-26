@@ -11,7 +11,7 @@ int main ()
 	const RemasterTileContentId id {123, 1, 4}, animation {124, 1, 4};
 	auto &door = profile.assets[id];
 	door.tileId = id;
-	door.tileRole = RemasterTileRole::Door;
+	door.tileRole = RemasterTileRole::Doorway;
 	door.hasHeight = door.hasNormals = door.hasTileSemantics = true;
 	door.tileSemanticNote = "opening may contain stairs";
 	for (unsigned i = 0; i < 64; i++) door.height[i] = i / 8;
@@ -22,7 +22,7 @@ int main ()
 	std::vector<RemasterProfileDiagnostic> errors;
 	RemasterProfile decoded;
 	assert(S9xRemasterSerializeProfile(profile, text, errors));
-	assert(text.find("schema_version = 21") != std::string::npos);
+	assert(text.find("schema_version = 34") != std::string::npos);
 	assert(text.find("doorframe_mask") == std::string::npos); // unknown, not empty
 	assert(S9xRemasterParseProfile(text, decoded, errors));
 	assert(!decoded.assets.at(id).hasDoorframeMask);
@@ -39,10 +39,10 @@ int main ()
 		assert(!S9xRemasterParseProfile(invalid, decoded, errors));
 	}
 	auto invalid = text;
-	invalid.replace(invalid.find("schema_version = 21"), 19, "schema_version = 20");
+	invalid.replace(invalid.find("schema_version = 34"), 19, "schema_version = 20");
 	assert(!S9xRemasterParseProfile(invalid, decoded, errors));
 	invalid = text;
-	invalid.replace(invalid.find("tile_role = \"door\""), 18, "tile_role = \"floor\"");
+	invalid.replace(invalid.find("tile_role = \"doorway\""), 21, "tile_role = \"floor\"");
 	assert(!S9xRemasterParseProfile(invalid, decoded, errors));
 	assert(S9xRemasterPaintDoorframe(door, 0, true));
 	assert(S9xRemasterPaintDoorframe(door, 17, true));
@@ -59,7 +59,7 @@ int main ()
 	door = undo; // same full-asset snapshots used by native undo
 	auto &phase = profile.assets[animation];
 	phase.tileId = animation;
-	phase.tileRole = RemasterTileRole::Door;
+	phase.tileRole = RemasterTileRole::Doorway;
 	phase.hasHeight = true;
 	phase.height.fill(47);
 	S9xRemasterCopyDoorframe(door, phase);
@@ -107,20 +107,27 @@ int main ()
 	S9xRemasterApplyProfileToFrame(profile, frame);
 	assert(S9xSerializeRemasterFrame(frame, bytes));
 	const size_t doorUnknown = bytes.size();
+	// Historical v38 Door ordinal 8 represented a doorway, with an optional
+	// frame-mask byte but no directional support metadata. Preserve that meaning.
+	auto legacyDoor = bytes;
+	legacyDoor[presenceOffset - 2] = static_cast<uint8_t>(RemasterTileRole::Door);
+	legacyDoor.erase(legacyDoor.begin()+presenceOffset+1,legacyDoor.begin()+presenceOffset+3);
+	legacyDoor[8]=38;
+	assert(S9xDeserializeRemasterFrame(legacyDoor,packet));
+	assert(packet.assetMetadata[0].tileRole==RemasterTileRole::Doorway && !packet.assetMetadata[0].doorwaySupport);
 	profile.assets[id].tileRole = RemasterTileRole::Other;
 	S9xRemasterApplyProfileToFrame(profile, frame);
 	assert(S9xSerializeRemasterFrame(frame, bytes));
 	assert(bytes.size() + 1 == doorUnknown); // non-door pays no extension byte
-	bytes.erase(bytes.begin() + presenceOffset, bytes.begin() + presenceOffset + 27); // v31-v33 normal options and empty facing/flip maps
-	bytes.erase(bytes.end() - 4, bytes.end()); // v30 empty palette-artwork count
-	bytes[8] = 28; // legacy v28 non-door layout remains decodable
+	bytes.erase(bytes.begin() + presenceOffset, bytes.begin() + presenceOffset + 2); // v39 support/direction
+	bytes[8] = 38; // previous non-door layout remains decodable
 	assert(S9xDeserializeRemasterFrame(bytes, packet));
 	assert(!packet.assetMetadata[0].hasDoorframeMask);
 	// Refresh replaces mask absence as well as presence; stale capture data is not resurrected.
-	profile.assets[id].tileRole = RemasterTileRole::Door;
+	profile.assets[id].tileRole = RemasterTileRole::Doorway;
 	profile.assets[id].tileSemanticContextDependent = true;
 	S9xRemasterApplyProfileToFrame(profile, frame);
-	assert(frame.assetMetadata[0].tileRole == RemasterTileRole::Door && !frame.assetMetadata[0].hasDoorframeMask);
+	assert(frame.assetMetadata[0].tileRole == RemasterTileRole::Doorway && !frame.assetMetadata[0].hasDoorframeMask);
 	RemasterAnimationCapture capture;
 	S9xRemasterAddAnimationCaptureFrame(capture, frame);
 	RemasterFrame phaseFrame = frame;

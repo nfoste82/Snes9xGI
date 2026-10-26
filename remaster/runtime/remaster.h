@@ -505,7 +505,7 @@ inline bool S9xRemasterDungeonArtworkGeometryEquivalent(const RemasterProfile &p
 	if(x!=profile.assets.end()) {
 		auto fields=[](const RemasterAssetMetadata &t){return std::tie(
 			t.tileRole,t.hasTileSemantics,t.tileSemanticContextDependent,t.tileSemanticNormals,t.tileSemanticCorner,
-			t.hasHeight,t.height,t.hasNormals,t.normalXyz,t.hasOcclusion,t.occlusion,t.hasDoorframeMask,t.doorframeMask);};
+			t.hasHeight,t.height,t.hasNormals,t.normalXyz,t.hasOcclusion,t.occlusion,t.hasDoorframeMask,t.doorframeMask,t.doorwaySupport,t.doorwaySupportDirection);};
 		if(fields(x->second)!=fields(y->second))return false;
 	}
 	for(const auto &g:profile.assetGroups) {
@@ -571,6 +571,7 @@ inline std::unique_ptr<RemasterState::DungeonCaptureEvidence> S9xRemasterPinDung
 	evidence->context=*c;evidence->context.placements=nullptr;
 	evidence->context.supportRelations=nullptr; // solve-local pointer, never retain
 	evidence->context.wallSupportRelations=nullptr;
+	evidence->context.doorwaySupportRelations=nullptr;
 	auto &p=evidence->context;
 	p.movementCache=nullptr;
 	p.retainedOutgoingMaps=nullptr;
@@ -1105,15 +1106,27 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			else if (role == RemasterTileRole::StairTop || role == RemasterTileRole::StairBottom) placed.surface = Surface::Stair;
 			// A stale floor/wall group must
 			// not promote the new role into a solved structural classification.
-			else if (role == RemasterTileRole::Door) placed.surface = Surface::Door;
-			if (role == RemasterTileRole::Door) {
+			else if (role == RemasterTileRole::Doorway) placed.surface = Surface::Door;
+			else if (role == RemasterTileRole::Door) placed.surface = Surface::ClosedDoor;
+			if (role == RemasterTileRole::Doorway) {
 				placed.hasDoorframeMask=asset->second.hasDoorframeMask;
 				placed.doorframeMask=asset->second.doorframeMask;
+				placed.doorwaySupport=asset->second.doorwaySupport;
+				placed.doorwaySupportDirection=asset->second.doorwaySupportDirection;
+				// Alternate placement-local sources have not been compiled here.
+				// Never prove a doorway base from a potentially inactive default.
+				if(asset->second.geometryByFacing || asset->second.geometryByFlip || profile.tileContexts.count(asset->first))
+					placed.doorwaySupport=false;
 			}
 			placed.diagnosticAuthoredFloor=role==RemasterTileRole::Floor;
 		}
 		if (asset != profile.assets.end() && asset->second.hasHeight)
 		{ placed.hasHeight = true; placed.height = asset->second.height; }
+		// Stair datum proof must sample the same local source as rendering. Until
+		// alternate geometry selection is compiled here, do not certify its base
+		// from a default asset that a context/facing/flip source can replace.
+		placed.stairSourceAmbiguous=profile.tileContexts.count(id) ||
+			(asset!=profile.assets.end() && (asset->second.geometryByFacing || asset->second.geometryByFlip));
 		// Supporting axis evidence only; this cannot classify a wall. Reviewed
 		// east/south references descend TOWARD +X/+Y face normals: uphill is
 		// opposite. Require consistent significant XY on every non-cap sample;
@@ -1302,8 +1315,8 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 					exact=(word&0xdfff)==(expected&0xdfff);
 					if(bg==context.placementBackgroundIndex &&
 						(output[i].surface==Surface::Floor || output[i].surface==Surface::Obstacle ||
-						 output[i].surface==Surface::Stair))exact=false;
-					frame|=output[i].surface==Surface::Door && output[i].hasDoorframeMask && output[i].doorframeMask;
+						 output[i].surface==Surface::Stair || output[i].surface==Surface::ClosedDoor))exact=false;
+					frame|=output[i].surface==Surface::Door && ((output[i].hasDoorframeMask && output[i].doorframeMask) || output[i].doorwaySupport);
 				}
 				// Ordinary axis thresholds prove a real doorway rather than the
 				// closed-wall template (which can match many sliding origins).
@@ -1330,7 +1343,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 					if(threshold && framePart && t.hasHeight && !t.hasDoorframeMask &&
 						(t.surface==Surface::Unknown || t.surface==Surface::Door)) {
 						bool ramp=true;uint64_t mask=UINT64_MAX;const auto asset=profile.assets.find({t.tileHash,1,4});
-						if(t.diagnosticAuthoredFloor || (asset!=profile.assets.end() && asset->second.tileRole!=RemasterTileRole::Unknown && asset->second.tileRole!=RemasterTileRole::Door))ramp=false;
+						if(t.diagnosticAuthoredFloor || (asset!=profile.assets.end() && asset->second.tileRole!=RemasterTileRole::Unknown && asset->second.tileRole!=RemasterTileRole::Doorway))ramp=false;
 						// Exact transparent/excluded pixels are NOT frame geometry.
 						// A mixed opaque part still needs its authored frame mask.
 						if(asset!=profile.assets.end() && asset->second.hasOcclusion) {
@@ -1358,7 +1371,97 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// just its shared member. Do not leave a partially proved U-shaped frame.
 		for(const auto &t:output)if(t.doorDirection==0xfe)ambiguousFrames.insert(t.doorAssembly);
 		for(auto &t:output)if(ambiguousFrames.count(t.doorAssembly))t.doorDirection=0xfe;
+		#ifndef ALTTP_TEST_PRIOR_LOWER_DOOR_WRITER
+		// Lower inter-room staircase handlers26..29 use FOUR-word columns,
+		// unlike ordinary three-word doors. The terminal band is written to
+		// BOTH maps; the other three rows belong to BG1. Attest every write,
+		// including signed opening art and the nonstructural roomward trim.
+		// This is not recovery of a partly overwritten ordinary-door template.
+		std::map<int,std::set<std::tuple<int,int,int>>> lowerClaims;
+		for(int d=0;d<2;d++)for(int off=d?0x1268:0x1228;off<=(d?0x1288:0x1248);off+=32)
+		for(int flip=0;flip<4;flip++)for(int y=0;y<=60;y++)for(int x=0;x<=60;x++) {
+			bool exact=true;
+			for(int xx=0;exact && xx<4;xx++)for(int yy=0;exact && yy<4;yy++) {
+				const int px=flip&1?3-xx:xx,py=flip&2?3-yy:yy,i=(y+py)*64+x+px;
+				const int expected=(context.dungeonTemplateData[off+2*(xx*4+yy)]|context.dungeonTemplateData[off+2*(xx*4+yy)+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+				for(int bg=0;bg<2;bg++)if(bg==0 || yy==(d?3:0)) {
+					const int at=(bg==context.placementBackgroundIndex?0:8192)+2*i;
+					const int word=context.constructedMaps[at]|context.constructedMaps[at+1]<<8;
+					exact &= (word&0xdfff)==(expected&0xdfff);
+				}
+			}
+			if(!exact)continue;
+			const int direction=d^((flip&2)?1:0);
+			// Assembly origin is the displayed three-band bounding box.
+			const int origin=(y+((d==0) == bool(flip&2)?1:0))*64+x+1;
+			for(int xx=0;xx<4;xx++)for(int yy=0;yy<4;yy++) {
+				if((d?yy==0:yy==3) || !(xx==0 || xx==3 || yy==(d?3:0)))continue;
+				if(context.placementBackgroundIndex==1 && yy!=(d?3:0))continue;
+				const int i=(y+(flip&2?3-yy:yy))*64+x+(flip&1?3-xx:xx);const auto &t=output[i];
+				if(t.surface!=Surface::Door || !t.hasHeight || t.stairSourceAmbiguous)continue;
+				lowerClaims[i].insert({origin,direction,off});
+			}
+		}
+		for(const auto &entry:lowerClaims)if(entry.second.size()==1) {
+			const auto [origin,direction,off]=*entry.second.begin();auto &t=output[entry.first];
+			if(t.doorAssembly && (t.doorAssembly!=origin || t.doorDirection!=direction))continue;
+			t.doorAssembly=origin;t.doorDirection=direction;t.doorTemplateOffset=off;t.splitDoorPart=true;
+		}
+		#endif
 	}
+	// Independent surviving inner jambs: exact two-word handler column/row,
+	// transformed explicit support at the roomward end, no inferred full frame.
+	// Collect every source claim first; incompatible claims withhold BOTH bands.
+	#ifndef ALTTP_TEST_PRIOR_DOORWAY_COLUMNS
+	if(context.verifiedAlttpRom && context.dungeonTemplateData) {
+		using Claim=std::tuple<int,int,int>; // contact, band, canonical source
+		std::map<int,std::set<Claim>> claims;
+		std::map<int,int> columnSources;
+		static const int starts[]={0x2716,0x29f0,0x2c6a,0x2e6a},ends[]={0x2926,0x2be8,0x2e32,0x3032};
+		for(int d=0;d<4;d++)for(int off=starts[d];off<=ends[d];off+=24)for(int flip=0;flip<4;flip++) {
+			const int w=d<2?4:3,h=d<2?3:4;
+			for(int side:{0,3}) {
+				int source[2];
+				for(int band=0;band<2;band++) {
+					const int xx=d<2?side:(d==2?2-band:band),yy=d<2?(d==0?2-band:band):side;
+					source[band]=off+2*(xx*h+yy);
+				}
+				const int direction=d<2?(d^((flip&2)?1:0)):(d^((flip&1)?1:0));
+				const int dx=direction==2?-1:direction==3?1:0,dy=direction==0?-1:direction==1?1:0;
+				for(int foot=0;foot<4096;foot++) {
+					const int x=foot%64+dx,y=foot/64+dy;if(x<0||x>=64||y<0||y>=64)continue;
+					const int other=y*64+x;const auto &f=output[foot];const auto &m=output[other];
+					if(f.doorAssembly || m.doorAssembly || !f.doorwaySupport || f.surface!=Surface::Door || m.surface!=Surface::Door ||
+						!f.hasHeight || !m.hasHeight || f.stairSourceAmbiguous || m.stairSourceAmbiguous)continue;
+					const auto facing=S9xRemasterTransformSupportDirection(f.doorwaySupportDirection,f.hflip,f.vflip);
+					const auto wanted=direction==0?RemasterSupportDirection::South:direction==1?RemasterSupportDirection::North:
+						direction==2?RemasterSupportDirection::East:RemasterSupportDirection::West;
+					if(facing!=wanted)continue;
+					bool exact=true;for(int band=0;band<2;band++) {
+						const int n=source[band],i=band?other:foot;
+						const int expected=(context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+						const int word=context.constructedMaps[2*i]|context.constructedMaps[2*i+1]<<8;
+						exact &= (word&0xdfff)==(expected&0xdfff);
+					}if(!exact)continue;
+					// Equivalent source templates are one claim only when their exact
+					// two canonical words agree. Source identity is the foot word index.
+					const int key=(context.constructedMaps[2*foot]|context.constructedMaps[2*foot+1]<<8)&0xdfff;
+					claims[foot].insert({foot,0,key});claims[other].insert({foot,1,key});
+					if(!columnSources.count(foot) || off<columnSources[foot])columnSources[foot]=off;
+				}
+			}
+		}
+		for(const auto &entry:claims)if(entry.second.size()==1) {
+			const auto [foot,band,source]=*entry.second.begin();
+			const auto &f=output[foot];const auto direction=S9xRemasterTransformSupportDirection(f.doorwaySupportDirection,f.hflip,f.vflip);
+			const int dx=direction==RemasterSupportDirection::East?-1:direction==RemasterSupportDirection::West?1:0;
+			const int dy=direction==RemasterSupportDirection::South?-1:direction==RemasterSupportDirection::North?1:0;
+			const int other=foot+dx+64*dy;
+			if(!claims.count(foot)||!claims.count(other)||claims[foot].size()!=1||claims[other].size()!=1)continue;
+			auto &t=output[entry.first];t.doorwayColumnContact=foot+1;t.doorwayColumnBand=band;t.doorwayColumnSource=columnSources.at(foot);
+		}
+	}
+	#endif
 	// Handler01/02 (north/south) and61/62 (west/east) emit 2x4/4x2
 	// perimeter templates from the ROM predefined table. An intact exact
 	// final-word face footprint is placement evidence, not a hash-wide wall rule.
@@ -1803,7 +1906,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// The layouts below are emitted by the pinned USA dungeon handlers;
 		// never recognize a single matching art word/hash as an assembly.
 		auto diagnosticMember=[](const RemasterDungeonFloorContext::Placement &t) {
-			return !t.diagnosticAuthoredFloor && !t.diagnosticRomFloorTrim && t.surface!=Surface::Obstacle && t.surface!=Surface::Stair &&
+			return !t.diagnosticAuthoredFloor && !t.diagnosticRomFloorTrim && t.surface!=Surface::Obstacle && t.surface!=Surface::Stair && t.surface!=Surface::ClosedDoor &&
 				!(t.surface==Surface::Floor && t.hasHeight &&
 				std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;}));
 		};
@@ -2621,7 +2724,15 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	S9xRemasterApplyProfileToFrame(state.activeProfile, result);
 	if (!result.scenePixels.empty() && result.profileRomSha256.empty())
 		result.profileRomSha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
-	S9xRemasterRestoreSceneSubscreenWalls(result);
+	// Rule matching need not assign an instance group for authored asset-group
+	// semantics to be active. Use canonical group membership, as classification
+	// does; never infer physical stairs from their special collision attributes.
+	std::set<RemasterTileContentId> authoredSceneStairs;
+	for(const char *name:{"stair_treads","stair_rails"}) {
+		const auto group=state.activeProfile.assetGroups.find(name);
+		if(group!=state.activeProfile.assetGroups.end())authoredSceneStairs.insert(group->second.tileIds.begin(),group->second.tileIds.end());
+	}
+	S9xRemasterRestoreSceneSubscreenWalls(result,&authoredSceneStairs);
 	struct ArtworkAccumulator
 	{
 		std::array<uint32_t, 64> red = {};
@@ -2998,6 +3109,12 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				for(unsigned char c:asset.second.tileSemanticCorner)mixGeometry(c);
 				mixGeometry(asset.second.tileSemanticCorner.size());
 				mixGeometry(asset.second.hasDoorframeMask);mixGeometry(asset.second.doorframeMask);
+				mixGeometry(asset.second.doorwaySupport);mixGeometry(static_cast<uint8_t>(asset.second.doorwaySupportDirection));
+				// Alternate source activation revokes stair proof even when default
+				// samples are unchanged. Include the exact capability predicate so
+				// retained artwork/continuity keys cannot reuse an owned stair base.
+				mixGeometry(asset.second.geometryByFacing);mixGeometry(asset.second.geometryByFlip);
+				mixGeometry(state.activeProfile.tileContexts.count(asset.first)!=0);
 				// Exact excluded pixels constrain inferred ROM-owned frame regions.
 				mixGeometry(asset.second.hasOcclusion);
 				if(asset.second.hasOcclusion)for(uint8_t o:asset.second.occlusion)mixGeometry(o);
@@ -3195,9 +3312,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 							else state.runtimeDungeonBg1HeightMap = std::move(*std::make_unique<RemasterDungeonHeightMap>());
 							// Transport signed support relationships, not BG1 art bases.
 							if(!state.runtimeDungeonBg1HeightMap.authoredSupportRelations.empty() ||
-								!state.runtimeDungeonBg1HeightMap.authoredWallSupportRelations.empty()) {
+								!state.runtimeDungeonBg1HeightMap.authoredWallSupportRelations.empty() ||
+								!state.runtimeDungeonBg1HeightMap.doorwaySupportRelations.empty()) {
 								constructed.supportRelations=&state.runtimeDungeonBg1HeightMap.authoredSupportRelations;
 								constructed.wallSupportRelations=&state.runtimeDungeonBg1HeightMap.authoredWallSupportRelations;
+								constructed.doorwaySupportRelations=&state.runtimeDungeonBg1HeightMap.doorwaySupportRelations;
 								if(S9xRemasterBuildDungeonHeightMap(constructed,state.activeProfile.upperFloorHeight,*candidate))
 									state.runtimeDungeonHeightMap=std::move(*candidate);
 							}

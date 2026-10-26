@@ -77,6 +77,7 @@ int main(int argc, char **argv)
 		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=1;
 		context.supportRelations=&lowerMap->authoredSupportRelations;
 		context.wallSupportRelations=&lowerMap->authoredWallSupportRelations;
+		context.doorwaySupportRelations=&lowerMap->doorwaySupportRelations;
 		S9xRemasterDungeonPlacements(context,profile,tiles);
 		// Read-only failure-class ablation; never a published/runtime policy.
 		if(std::getenv("ALTTP_AUDIT_NO_PERSISTENT_POTS"))for(auto &t:tiles)if(t.removableSupportPlanes){t.removableSupportPlanes=0;t.surface=RemasterDungeonFloorContext::Surface::Unknown;}
@@ -264,7 +265,8 @@ int main(int argc, char **argv)
 				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<p<<",\"x\":"<<i%64<<",\"y\":"<<i/64
 					<<",\"role\":"<<int(t.surface)<<",\"base\":"<<base<<",\"fallback_directions\":"<<int(map.fallbackDirections[i])
 					<<",\"has_local\":"<<(t.hasHeight?"true":"false")<<",\"floor_datum\":"<<floor;
-				if(t.authoredObstacle) {
+				if(map.producerOwnedStair[i])std::cout<<",\"owned_stair\":true";
+				if(t.authoredObstacle || map.producerOwnedStair[i]) {
 					std::cout<<",\"authored_obstacle\":true,\"authored_obstacle_group\":"<<t.authoredObstacleGroup
 						<<",\"authored_obstacle_assembly\":"<<t.authoredObstacleAssembly<<",\"member_z_tiles\":"<<t.authoredObstacleZ
 						<<",\"support_contact\":"<<(t.authoredObstacleContact?"true":"false")<<",\"footprint_flip\":"<<int(t.authoredObstacleFlip);
@@ -298,6 +300,20 @@ int main(int argc, char **argv)
 				std::cout<<'}';
 			}
 		}
+		std::cout << "],\"stair_attachments\":[";first=true;
+		for(int layer=0;layer<2;layer++) {
+			if(layer==1){std::rotate(maps.begin(),maps.begin()+8192,maps.end());std::swap(context.graphicsBase,context.bg1GraphicsBase);
+				context.placementBackgroundIndex=1;S9xRemasterDungeonPlacements(context,profile,tiles);S9xRemasterBuildDungeonHeightMap(context,profile.upperFloorHeight,map);}
+			for(const auto &a:map.stairAttachments) {
+				if(!first)std::cout<<',';first=false;
+				std::cout<<"{\"layer\":"<<layer<<",\"origin\":"<<a.origin<<",\"low\":"<<a.low<<",\"high\":"<<a.high
+					<<",\"low_plane\":"<<a.lowPlane<<",\"high_plane\":"<<a.highPlane<<",\"rise\":"<<a.rise<<",\"base\":"<<a.base
+					<<",\"flip\":"<<int(a.flip)<<",\"conflict\":"<<(a.conflict?"true":"false")<<'}';
+			}
+		}
+		// Restore the BG1 starting inventory expected by the following pass.
+		std::rotate(maps.begin(),maps.begin()+8192,maps.end());std::swap(context.graphicsBase,context.bg1GraphicsBase);
+		context.placementBackgroundIndex=0;S9xRemasterDungeonPlacements(context,profile,tiles);map=*lowerMap;
 		std::cout << "],\"doorframe_attachments\":[";first=true;
 		// Complete BG1 map is selected above; also reconstruct BG2's applied
 		// result for the region inventory without changing authored metadata.
@@ -314,7 +330,7 @@ int main(int argc, char **argv)
 				RemasterFrame frame;frame.width=frame.height=8;frame.mainPixels.resize(64);frame.subPixels.resize(64);
 				RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=layer;
 				instance.tileId={t.tileHash,1,4};instance.hFlip=t.hflip;instance.vFlip=t.vflip;frame.tileInstances.push_back(instance);
-				RemasterFrameAssetMetadata metadata;metadata.tileId=instance.tileId;metadata.tileRole=RemasterTileRole::Door;
+				RemasterFrameAssetMetadata metadata;metadata.tileId=instance.tileId;metadata.tileRole=RemasterTileRole::Doorway;
 				metadata.hasHeight=metadata.hasDoorframeMask=true;metadata.height=t.height;metadata.doorframeMask=t.doorframeMask;
 				frame.assetMetadata.push_back(metadata);
 				for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
@@ -335,14 +351,15 @@ int main(int argc, char **argv)
 				}
 				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<a.plane<<",\"x\":"<<a.cell%64<<",\"y\":"<<a.cell/64
 					<<",\"frame_base\":"<<a.base<<",\"opening_base\":"<<a.openingBase<<",\"visible\":"<<(a.visible?"true":"false")<<",\"split_dispatch\":"<<(t.splitDoorPart?"true":"false")<<",\"template_offset\":"<<a.source<<",\"mask\":\""<<std::hex<<a.mask<<std::dec
-					<<"\",\"local_source\":\"placement_rom_doorframe_seam\",\"effective_height\":[";
+					<<"\",\"local_source\":\"placement_rom_directional_doorway_support\",\"ownership_scope\":\""<<(t.doorwayColumnContact?"surviving_inner_column":"complete_frame")<<"\",\"effective_height\":[";
 				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(t.height[k])+((a.mask&(UINT64_C(1)<<k))?a.base:a.openingBase==255?0:a.openingBase);}std::cout<<"]}";
 			}
 		}
 		std::cout << "],\"doorframe_ownership\":[";first=true;
-		for(int i=0;i<4096;i++)if(tiles[i].surface==RemasterDungeonFloorContext::Surface::Door && tiles[i].doorframeMask) {
+		for(int i=0;i<4096;i++)if(tiles[i].surface==RemasterDungeonFloorContext::Surface::Door && (tiles[i].doorframeMask || tiles[i].doorwaySupport)) {
 			if(!first)std::cout<<',';first=false;const auto &t=tiles[i];
-			std::cout<<"{\"xy\":["<<i%64<<','<<i/64<<"],\"template\":"<<t.doorTemplateOffset<<",\"assembly\":"<<t.doorAssembly<<",\"direction\":"<<int(t.doorDirection)<<",\"neighbors\":[";
+			std::cout<<"{\"xy\":["<<i%64<<','<<i/64<<"],\"template\":"<<t.doorTemplateOffset<<",\"assembly\":"<<t.doorAssembly<<",\"direction\":"<<int(t.doorDirection)
+				<<",\"doorway_support\":"<<(t.doorwaySupport?"true":"false")<<",\"doorway_support_direction\":\""<<S9xRemasterSupportDirectionName(t.doorwaySupportDirection)<<"\",\"neighbors\":[";
 			bool nf=true;for(int j:{i-64,i+64,i-1,i+1})if(j>=0 && j<4096) {
 				if(!nf)std::cout<<',';nf=false;const auto &n=tiles[j];
 				std::cout<<"{\"xy\":["<<j%64<<','<<j/64<<"],\"role\":"<<int(n.surface)<<",\"template\":"<<n.wallTemplateOffset<<",\"base\":"<<map.structuralPlaneOffsets[0][j]<<",\"local\":[";

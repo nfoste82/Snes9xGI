@@ -5,7 +5,7 @@
 static std::vector<uint8_t> load(const std::string &p){std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
 int main(int argc,char **argv){
  if(argc!=2)return 2;
- std::cout<<"capture,bg,door_cells,owned_frame_cells,ambiguous_frame_cells,authored_wall_unknown,diagonal_cells,diagonal_authored_equal,diagonal_solved,required0,required1,missing0,missing1,conflicts,unknown_walls\n";
+ std::cout<<"capture,bg,door_cells,owned_frame_cells,ambiguous_frame_cells,authored_wall_unknown,diagonal_cells,diagonal_authored_equal,diagonal_solved,required0,required1,missing0,missing1,conflicts,unknown_walls,stair_records,complete_stair_proofs,attached_stairs,stair_cells,doorway_support_markers,doorway_plane_attachments,unknown_doorway_cells,conflicting_doorway_cells\n";
  for(const auto &file:std::filesystem::directory_iterator(argv[1])){
   const auto name=file.path().string();const std::string suffix=".s9xrmf.dungeon-input.bin";
   if(name.size()<suffix.size() || name.substr(name.size()-suffix.size())!=suffix)continue;
@@ -29,16 +29,28 @@ int main(int argc,char **argv){
   for(int bg=0;bg<2;bg++){
    std::rotate(input.begin()+8,input.begin()+8200,input.begin()+16392);std::swap(c.graphicsBase,c.bg1GraphicsBase);
    c.placementBackgroundIndex=bg;
-   if(bg){c.supportRelations=&lower->authoredSupportRelations;c.wallSupportRelations=&lower->authoredWallSupportRelations;}
+   if(bg){c.supportRelations=&lower->authoredSupportRelations;c.wallSupportRelations=&lower->authoredWallSupportRelations;c.doorwaySupportRelations=&lower->doorwaySupportRelations;}
    S9xRemasterDungeonPlacements(c,profile,*tiles);c.placements=tiles->data();
-   auto map=std::make_unique<RemasterDungeonHeightMap>();S9xRemasterBuildDungeonHeightMap(c,profile.upperFloorHeight,*map);
+    auto map=std::make_unique<RemasterDungeonHeightMap>();S9xRemasterBuildDungeonHeightMap(c,profile.upperFloorHeight,*map);
+    if(const char *out=std::getenv("ALTTP_TRANSITION_FLOOR_AUDIT")) {
+     std::ofstream f(out,std::ios::app);
+     for(int p=0;p<2;p++)for(int cell=0;cell<4096;cell++)if(c.collisionAttributes[p*4096+cell]==0x22) {
+      const auto &d=map->roomDiagnostics->cells[p*4096+cell];
+      f<<file.path().filename().string()<<','<<bg<<','<<p<<','<<cell<<','<<d.semanticFloorSupport<<','<<d.floorId<<','<<d.floorBase<<','<<map->planeOffsets[p][cell]<<','<<d.heightConflict<<','<<d.planeObserved<<'\n';
+     }
+    }
    if(const char *out=std::getenv("ALTTP_FRAME_ATTACHMENTS_AUDIT")){
     std::ofstream f(out,std::ios::app);
     for(const auto &a:map->doorframeAttachments)f<<file.path().filename().string()<<','<<bg<<','<<a.cell<<','<<a.plane<<','<<a.base<<','<<a.visible<<','<<a.mask<<'\n';
    }
-   int doors=0,owned=0,ambiguous=0,unknown=0,diagonal=0,equal=0,solved=0;
+   int doors=0,owned=0,ambiguous=0,unknown=0,diagonal=0,equal=0,solved=0,proofs=0,attached=0,stairCells=0,doorwayMarkers=0;
+   for(int si=0;si<c.stairCount;si++){RemasterDungeonStairProof proof;proofs+=S9xRemasterDungeonStairProof(c,c.stairs[si],proof);}
+   for(const auto &a:map->stairAttachments){attached+=!a.conflict;
+    if(const char *out=std::getenv("ALTTP_FRAME_STAIRS_AUDIT")){std::ofstream f(out,std::ios::app);f<<file.path().filename().string()<<','<<bg<<','<<a.origin<<','<<a.lowPlane<<','<<a.highPlane<<','<<a.rise<<','<<a.base<<','<<a.conflict<<'\n';}}
+   for(bool ownedStair:map->producerOwnedStair)stairCells+=ownedStair;
    for(int i=0;i<4096;i++){
     const auto &t=(*tiles)[i];const auto a=profile.assets.find({t.tileHash,1,4});
+    doorwayMarkers+=t.doorwaySupport;
     if(const char *out=std::getenv("ALTTP_FRAME_OWNERSHIP_AUDIT"))if(t.surface==RemasterDungeonFloorContext::Surface::Door){
      std::ofstream f(out,std::ios::app);f<<file.path().filename().string()<<','<<bg<<','<<i<<','<<t.doorTemplateOffset<<','<<t.doorAssembly<<','<<int(t.doorDirection)<<','<<t.hasDoorframeMask<<','<<t.doorframeMask<<'\n';
     }
@@ -48,7 +60,9 @@ int main(int argc,char **argv){
     if(t.diagonalHeightPreview){diagonal++;equal+=a!=profile.assets.end() && a->second.height==t.height;solved+=map->offsets[i]!=255;}
    }
    std::cout<<file.path().filename().string()<<','<<bg<<','<<doors<<','<<owned<<','<<ambiguous<<','<<unknown<<','<<diagonal<<','<<equal<<','<<solved
-    <<','<<map->requiredPlaneCells[0]<<','<<map->requiredPlaneCells[1]<<','<<map->unknownPlaneCells[0]<<','<<map->unknownPlaneCells[1]<<','<<map->structuralConflicts<<','<<map->unknownWallCells<<'\n';
+    <<','<<map->requiredPlaneCells[0]<<','<<map->requiredPlaneCells[1]<<','<<map->unknownPlaneCells[0]<<','<<map->unknownPlaneCells[1]<<','<<map->structuralConflicts<<','<<map->unknownWallCells
+    <<','<<int(c.stairCount)<<','<<proofs<<','<<attached<<','<<stairCells
+    <<','<<doorwayMarkers<<','<<map->doorframeAttachments.size()<<','<<map->unknownDoorframeCells<<','<<map->conflictingDoorframeCells<<'\n';
    if(!bg)lower=std::move(map);
   }
  }

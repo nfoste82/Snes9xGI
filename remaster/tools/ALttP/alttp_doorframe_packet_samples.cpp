@@ -13,7 +13,7 @@ int main(int argc,char **argv) {
   if(!v.instanceId||!w.instanceId||v.tilePixel>=64)continue;
   const auto &i=before.tileInstances[v.instanceId-1];if(i.source!=RemasterSourceType::Background)continue;
   const RemasterFrameAssetMetadata *m=nullptr;for(const auto &a:before.assetMetadata)if(a.tileId==i.tileId)m=&a;
-  if(!m||m->tileRole!=RemasterTileRole::Door||!m->hasDoorframeMask)continue;
+  if(!m||m->tileRole!=RemasterTileRole::Doorway||!m->hasDoorframeMask)continue;
   bool marked=m->doorframeMask&(UINT64_C(1)<<v.tilePixel);int b=height(before,v),a=height(after,w);
   if(!marked && b!=a){std::cerr<<"opening changed\n";return 1;}
   if(b!=a)changed++;else preserved++;

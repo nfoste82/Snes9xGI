@@ -14,7 +14,7 @@ int main()
 		RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
 		RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=1;
 		instance.hFlip=flip&1;instance.vFlip=flip&2;instance.heightOffset=3;f.tileInstances.push_back(instance);
-		RemasterFrameAssetMetadata a;a.tileRole=RemasterTileRole::Door;a.hasHeight=a.hasDoorframeMask=true;a.doorframeMask=mask;
+		RemasterFrameAssetMetadata a;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=a.hasDoorframeMask=true;a.doorframeMask=mask;
 		for(int k=0;k<64;k++)a.height[k]=(mask>>k&1)?7-k/8:0;
 		f.assetMetadata.push_back(a);
 		for(auto *pixels:{&f.mainPixels,&f.subPixels})for(int y=0;y<8;y++)for(int x=0;x<8;x++) {

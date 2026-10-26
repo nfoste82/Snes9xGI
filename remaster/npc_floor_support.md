@@ -10,6 +10,22 @@ independent per-part support failure.
 
 ## Repair
 
+Capture104 reproduces the crossing failure: OAM48/49 contact lies on authored
+flat Floor carrying collision0x22 (inter-room stair marker). It already solves
+at24 but has no ordinary movement component. The shared solver now publishes
+explicit semanticFloorSupport for admissible zero-local Floor on that handler;
+actor contacts consume that evidence without adding traversal or movement IDs.
+Unknown/conflicting or blocked support still rejects. All128follower records
+change0→24 with unchanged local arrays. See `room051104_follower_report.md`.
+
+October2026 follow-up: attested follower contact now uses the producer's full
+16×16 lower-body OAM bounds rather than clipped visible ink. Its delayed
+movement-history plane is decoded from the attested Tagalong producer, not
+borrowed from Link. Generic actors do not inherit that producer-specific rule.
+Exact capture103 already has all OAM68/69 records at24 and does not place Zelda
+over the reported room cell(31,17,BG2); the visual crossing symptom remains
+unreproduced. See `room051_098_103_geometry_report.md`.
+
 With runtime movement diagnostics, generic OBJ support now samples the bottom
 eight pixel rows of its visible contact footprint, accepting only observed,
 nonwall movement-floor cells with solved gameplay-plane support. Structural

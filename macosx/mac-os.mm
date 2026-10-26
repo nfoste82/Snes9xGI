@@ -745,6 +745,8 @@ static bool remasterMetadataToolOpening = false;
 static NSPopUpButton	*remasterLayerSelector;
 static NSView *remasterSemanticsView;
 static NSPopUpButton *remasterRoleSelector, *remasterFacingSelector, *remasterSecondFacingSelector, *remasterCornerSelector;
+static NSButton *remasterDoorwaySupportButton;
+static NSPopUpButton *remasterDoorwaySupportDirectionSelector;
 static NSButton *remasterContextDependentButton;
 static NSButton *remasterDoorframeBrush, *remasterDoorframeAnimationButton;
 static NSTextField *remasterSemanticNoteInput;
@@ -1060,6 +1062,8 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 		metadata.emissionOmnidirectional = captured->emissionOmnidirectional;
 		metadata.combineEmitters = captured->combineEmitters;
 		metadata.tileRole = captured->tileRole;
+		metadata.doorwaySupport = captured->doorwaySupport;
+		metadata.doorwaySupportDirection = captured->doorwaySupportDirection;
 		metadata.hasDoorframeMask = captured->hasDoorframeMask;
 		metadata.doorframeMask = captured->doorframeMask;
 		metadata.hasMaterialSelectors = captured->hasMaterialSelectors;
@@ -1130,6 +1134,8 @@ static RemasterAssetMetadata EffectiveRemasterMetadata (const RemasterTileConten
 	metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 	metadata.combineEmitters = source.combineEmitters;
 	metadata.tileRole = source.tileRole;
+	metadata.doorwaySupport = source.doorwaySupport;
+	metadata.doorwaySupportDirection = source.doorwaySupportDirection;
 	metadata.hasDoorframeMask = source.hasDoorframeMask;
 	metadata.doorframeMask = source.doorframeMask;
 	metadata.hasTileSemantics = source.hasTileSemantics;
@@ -1184,7 +1190,9 @@ static void CopyRemasterMetadataLayer (const RemasterAssetMetadata &source, Rema
 	if (layer == RemasterEditorMetadata)
 	{
 		destination.tileRole = source.tileRole;
-		if (destination.tileRole != RemasterTileRole::Door)
+		destination.doorwaySupport = source.tileRole == RemasterTileRole::Doorway && source.doorwaySupport;
+		destination.doorwaySupportDirection = destination.doorwaySupport ? source.doorwaySupportDirection : RemasterSupportDirection::Unknown;
+		if (destination.tileRole != RemasterTileRole::Doorway)
 		{
 			destination.hasDoorframeMask = false;
 			destination.doorframeMask = 0;
@@ -1241,7 +1249,6 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 	uint32_t version = RemasterMetadataHasData(metadata) ? 2 : 0;
 	if (metadata.hasTileSemantics) version = 20;
 	else if (metadata.tileRole != RemasterTileRole::Unknown) version = 18;
-	if (metadata.tileRole == RemasterTileRole::Door || metadata.hasDoorframeMask) version = 21;
 	if (metadata.emissionDepth > 0) version = std::max<uint32_t>(version, 14);
 	if (metadata.emissionOmnidirectional) version = std::max<uint32_t>(version, 19);
 	if (!metadata.combineEmitters.empty()) version = std::max<uint32_t>(version, 17);
@@ -1255,6 +1262,7 @@ static uint32_t RemasterMetadataSchemaVersion (const RemasterAssetMetadata &meta
 	if (metadata.normalIgnoreTileTransform) version = std::max<uint32_t>(version, 23);
 	if (metadata.geometryByFacing || std::any_of(metadata.facingGeometry.begin(), metadata.facingGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; })) version = 24;
 	if (metadata.geometryByFlip || std::any_of(metadata.flipGeometry.begin(), metadata.flipGeometry.end(), [](const auto &g) { return g.hasHeight || g.hasNormals; })) version = 25;
+	if (metadata.tileRole == RemasterTileRole::Door || metadata.tileRole == RemasterTileRole::Doorway || metadata.hasDoorframeMask || metadata.doorwaySupport) version = std::max<uint32_t>(version, 34);
 	return version;
 }
 
@@ -4504,6 +4512,7 @@ void QuitWithFatalError ( NSString *message)
 - (void)stepRemasterTileHeight:(NSButton *)sender;
 - (void)applyRemasterHeightToAnimation:(id)sender;
 - (void)changeRemasterDoorframe:(id)sender;
+- (void)changeRemasterDoorwayControls:(id)sender;
 - (void)applyRemasterDoorframeToAnimation:(id)sender;
 - (void)changeRemasterNormalPreset:(id)sender;
 - (void)changeRemasterNormalValue:(id)sender;
@@ -6056,23 +6065,36 @@ void QuitWithFatalError ( NSString *message)
 		remasterDoorframeAnimationButton.target = self;
 		remasterDoorframeAnimationButton.action = @selector(applyRemasterDoorframeToAnimation:);
 		[contentView addSubview:remasterDoorframeAnimationButton];
-		remasterSemanticsView = [[NSView alloc] initWithFrame:NSMakeRect(168, 342, 570, 205)];
+		remasterSemanticsView = [[NSView alloc] initWithFrame:NSMakeRect(168, 287, 570, 260)];
 		[contentView addSubview:remasterSemanticsView];
 		NSArray *titles = @[@"Tile role", @"Canonical wall facing", @"Second corner facing", @"Corner type"];
 		NSPopUpButton * __strong *menus[] = { &remasterRoleSelector, &remasterFacingSelector, &remasterSecondFacingSelector, &remasterCornerSelector };
 		for (NSUInteger i = 0; i < 4; i++)
 		{
 			NSTextField *label = [NSTextField labelWithString:titles[i]];
-			label.frame = NSMakeRect((i % 2) * 280, 183 - (i / 2) * 55, 270, 18);
+			label.frame = NSMakeRect((i % 2) * 280, 238 - (i / 2) * 55, 270, 18);
 			[remasterSemanticsView addSubview:label];
-			*menus[i] = [[NSPopUpButton alloc] initWithFrame:NSMakeRect((i % 2) * 280, 155 - (i / 2) * 55, 270, 26) pullsDown:NO];
+			*menus[i] = [[NSPopUpButton alloc] initWithFrame:NSMakeRect((i % 2) * 280, 210 - (i / 2) * 55, 270, 26) pullsDown:NO];
 			[remasterSemanticsView addSubview:*menus[i]];
 		}
 		for (unsigned i = 0; i < static_cast<unsigned>(RemasterTileRole::Count); i++)
 			[remasterRoleSelector addItemWithTitle:[NSString stringWithUTF8String:S9xRemasterTileRoleName(static_cast<RemasterTileRole>(i))]];
+		remasterRoleSelector.target = self;
+		remasterRoleSelector.action = @selector(changeRemasterDoorwayControls:);
 		for (NSPopUpButton *menu in @[remasterFacingSelector, remasterSecondFacingSelector])
 			[menu addItemsWithTitles:@[@"Choose facing…", @"north", @"east", @"south", @"west", @"north_east", @"south_east", @"south_west", @"north_west"]];
 		[remasterCornerSelector addItemsWithTitles:@[@"Choose corner…", @"inside", @"outside"]];
+		remasterDoorwaySupportButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 104, 270, 26)];
+		remasterDoorwaySupportButton.buttonType = NSButtonTypeSwitch;
+		remasterDoorwaySupportButton.title = @"Doorway: support contact";
+		remasterDoorwaySupportButton.target = self;
+		remasterDoorwaySupportButton.action = @selector(changeRemasterDoorwayControls:);
+		remasterDoorwaySupportButton.toolTip = @"Only Doorway tiles can supply frame support. Select the direction toward the supporting floor in the canonical, unflipped tile. Placement flips transform this direction.";
+		[remasterSemanticsView addSubview:remasterDoorwaySupportButton];
+		remasterDoorwaySupportDirectionSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(280, 104, 270, 26) pullsDown:NO];
+		[remasterDoorwaySupportDirectionSelector addItemsWithTitles:@[@"Choose support direction…", @"north", @"east", @"south", @"west"]];
+		remasterDoorwaySupportDirectionSelector.toolTip = @"Required for a support contact: direction from this doorway tile toward the floor that supports it, before tile H/V flips. Not the door opening direction.";
+		[remasterSemanticsView addSubview:remasterDoorwaySupportDirectionSelector];
 		remasterContextDependentButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 70, 550, 24)];
 		remasterContextDependentButton.buttonType = NSButtonTypeSwitch;
 		remasterContextDependentButton.title = @"Context-dependent: artwork has different meanings in different placements";
@@ -6080,7 +6102,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterSemanticNoteInput = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 38, 550, 26)];
 		remasterSemanticNoteInput.placeholderString = @"Optional notes (single line)";
 		[remasterSemanticsView addSubview:remasterSemanticNoteInput];
-		NSButton *apply = [[NSButton alloc] initWithFrame:NSMakeRect(0, 3, 240, 28)];
+		NSButton *apply = [[NSButton alloc] initWithFrame:NSMakeRect(0, 12, 240, 24)];
 		apply.title = @"Apply Metadata to Selected Tiles";
 		apply.bezelStyle = NSBezelStyleRounded;
 		apply.target = self;
@@ -6426,8 +6448,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterEmissionVisibleButton.target = self;
 		remasterEmissionVisibleButton.action = @selector(changeRemasterPreviewLayers:);
 		[contentView addSubview:remasterEmissionVisibleButton];
-		remasterResetLayerButton = [[NSButton alloc] initWithFrame:NSMakeRect(640, 267, 100, 28)];
+		remasterResetLayerButton = [[NSButton alloc] initWithFrame:NSMakeRect(656, 267, 84, 28)];
 		remasterResetLayerButton.title = @"Reset Layer";
+		remasterResetLayerButton.font = [NSFont systemFontOfSize:10];
 		remasterResetLayerButton.bezelStyle = NSBezelStyleRounded;
 		remasterResetLayerButton.target = self;
 		remasterResetLayerButton.action = @selector(resetRemasterLayer:);
@@ -6442,9 +6465,10 @@ void QuitWithFatalError ( NSString *message)
 		SEL clipboardActions[] = { @selector(copyRemasterLayer:), @selector(pasteRemasterLayer:),
 			@selector(copyRemasterTile:), @selector(pasteRemasterTile:), @selector(flipRemasterLayerHorizontal:), @selector(flipRemasterLayerVertical:),
 			@selector(rotateRemasterLayer:), @selector(rotateRemasterLayer:) };
-		const NSRect buttonFrames[] = {NSMakeRect(168, 267, 90, 28), NSMakeRect(264, 267, 90, 28),
-			NSMakeRect(168, 232, 90, 28), NSMakeRect(264, 232, 90, 28), NSMakeRect(360, 267, 90, 28), NSMakeRect(456, 267, 90, 28),
-			NSMakeRect(552, 267, 90, 28), NSMakeRect(648, 267, 90, 28)};
+		// Reserve room for Reset Layer as well as both rotation buttons.
+		const NSRect buttonFrames[] = {NSMakeRect(168, 267, 80, 28), NSMakeRect(252, 267, 80, 28),
+			NSMakeRect(168, 232, 90, 28), NSMakeRect(264, 232, 90, 28), NSMakeRect(336, 267, 72, 28), NSMakeRect(412, 267, 72, 28),
+			NSMakeRect(488, 267, 80, 28), NSMakeRect(572, 267, 80, 28)};
 		for (size_t buttonIndex = 0; buttonIndex < clipboardTitles.count; buttonIndex++)
 		{
 			NSButton *button = [[NSButton alloc] initWithFrame:buttonFrames[buttonIndex]];
@@ -6808,8 +6832,8 @@ void QuitWithFatalError ( NSString *message)
 	}
 	const auto doorMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
 	// Keep stable enum indices, including the appended grouping layer.
-	[remasterLayerSelector itemAtIndex:RemasterEditorDoorframe].hidden = doorMetadata.tileRole != RemasterTileRole::Door;
-	if (doorMetadata.tileRole != RemasterTileRole::Door)
+	[remasterLayerSelector itemAtIndex:RemasterEditorDoorframe].hidden = doorMetadata.tileRole != RemasterTileRole::Doorway;
+	if (doorMetadata.tileRole != RemasterTileRole::Doorway)
 	{
 		if (remasterLayerSelector.indexOfSelectedItem == RemasterEditorDoorframe)
 			[remasterLayerSelector selectItemAtIndex:RemasterEditorMetadata];
@@ -7189,12 +7213,34 @@ void QuitWithFatalError ( NSString *message)
 		[self refreshRemasterEditingControls];
 }
 
+- (void)changeRemasterDoorwayControls:(id)sender
+{
+	const bool doorway = remasterRoleSelector.indexOfSelectedItem == static_cast<NSInteger>(RemasterTileRole::Doorway);
+	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview() &&
+		!remasterObstacleGroupingActive &&
+		(remasterTileContextName.empty() || std::all_of(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), [](const auto &tile) { return RemasterSelectedContext(tile) != nullptr; }));
+	remasterDoorwaySupportButton.enabled = doorway && editable;
+	remasterDoorwaySupportDirectionSelector.enabled = remasterDoorwaySupportButton.enabled &&
+		remasterDoorwaySupportButton.state == NSControlStateValueOn;
+}
+
 - (void)updateRemasterSemantics:(id)sender
 {
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty()) return;
 	RemasterAssetMetadata annotation;
 	annotation.hasTileSemantics = true;
 	annotation.tileRole = static_cast<RemasterTileRole>(remasterRoleSelector.indexOfSelectedItem);
+	annotation.doorwaySupport = annotation.tileRole == RemasterTileRole::Doorway &&
+		remasterDoorwaySupportButton.state == NSControlStateValueOn;
+	if (annotation.doorwaySupport)
+	{
+		const NSInteger selected = remasterDoorwaySupportDirectionSelector.indexOfSelectedItem;
+		if (selected <= 0) { NSBeep(); return; }
+		for (unsigned d = 1; d <= 4; ++d)
+			if ([remasterDoorwaySupportDirectionSelector.titleOfSelectedItem isEqualToString:@(S9xRemasterSupportDirectionName(static_cast<RemasterSupportDirection>(d)))])
+				annotation.doorwaySupportDirection = static_cast<RemasterSupportDirection>(d);
+		if (annotation.doorwaySupportDirection == RemasterSupportDirection::Unknown) { NSBeep(); return; }
+	}
 	const size_t expected = annotation.tileRole == RemasterTileRole::Wall ? 1 :
 		(annotation.tileRole == RemasterTileRole::WallCorner ? 2 : 0);
 	if (expected)
@@ -7263,6 +7309,8 @@ void QuitWithFatalError ( NSString *message)
 		[remasterFacingSelector selectItemAtIndex:0];
 		[remasterSecondFacingSelector selectItemAtIndex:0];
 		remasterContextDependentButton.state = NSControlStateValueOff;
+		remasterDoorwaySupportButton.state = NSControlStateValueOff;
+		[remasterDoorwaySupportDirectionSelector selectItemAtIndex:0];
 		remasterSemanticNoteInput.stringValue = @"";
 		[self updateRemasterSemantics:sender];
 		return;
@@ -8345,6 +8393,14 @@ void QuitWithFatalError ( NSString *message)
 			{
 				for (unsigned i = 0; i < static_cast<unsigned>(RemasterTileRole::Count); i++)
 					if ([annotation[@"role"] isEqualToString:[NSString stringWithUTF8String:S9xRemasterTileRoleName(static_cast<RemasterTileRole>(i))]]) metadata.tileRole = static_cast<RemasterTileRole>(i);
+				// Older sidecars used Door for the fixed frame; v2 distinguishes leaves.
+				if ([document[@"metadata_version"] integerValue] < 2 && metadata.tileRole == RemasterTileRole::Door)
+					metadata.tileRole = RemasterTileRole::Doorway;
+				metadata.doorwaySupport = metadata.tileRole == RemasterTileRole::Doorway && [annotation[@"doorway_support"] boolValue];
+				if (metadata.doorwaySupport)
+					for (unsigned d = 1; d <= 4; ++d)
+						if ([annotation[@"doorway_support_direction"] isEqualToString:@(S9xRemasterSupportDirectionName(static_cast<RemasterSupportDirection>(d)))])
+							metadata.doorwaySupportDirection = static_cast<RemasterSupportDirection>(d);
 				for (NSString *normal in annotation[@"normals"]) metadata.tileSemanticNormals.push_back(normal.UTF8String);
 				metadata.tileSemanticCorner = [annotation[@"corner_type"] isEqualToString:@"unknown"] ? "" : ([annotation[@"corner_type"] UTF8String] ?: "");
 				metadata.tileSemanticContextDependent = [annotation[@"context_dependent"] boolValue];
@@ -8352,6 +8408,10 @@ void QuitWithFatalError ( NSString *message)
 			}
 		}
 		[remasterRoleSelector selectItemAtIndex:static_cast<NSInteger>(metadata.tileRole)];
+		remasterDoorwaySupportButton.state = metadata.doorwaySupport ? NSControlStateValueOn : NSControlStateValueOff;
+		[remasterDoorwaySupportDirectionSelector selectItemAtIndex:0];
+		if (metadata.doorwaySupport)
+			[remasterDoorwaySupportDirectionSelector selectItemWithTitle:@(S9xRemasterSupportDirectionName(metadata.doorwaySupportDirection))];
 		[remasterFacingSelector selectItemAtIndex:0];
 		[remasterSecondFacingSelector selectItemAtIndex:0];
 		if (!metadata.tileSemanticNormals.empty()) [remasterFacingSelector selectItemWithTitle:[NSString stringWithUTF8String:metadata.tileSemanticNormals[0].c_str()]];
@@ -8361,6 +8421,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterContextDependentButton.state = metadata.tileSemanticContextDependent ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSemanticNoteInput.stringValue = [NSString stringWithUTF8String:metadata.tileSemanticNote.c_str()];
 		for (NSControl *control in remasterSemanticsView.subviews) control.enabled = editable;
+		[self changeRemasterDoorwayControls:nil];
+		remasterDoorwaySupportButton.enabled &= editable;
+		remasterDoorwaySupportDirectionSelector.enabled &= editable;
 	}
 	remasterMetadataToolButton.enabled = remasterSelectionValid && !remasterMetadataToolOpening;
 	remasterTilePreview.showsNormalAxes = NO;
@@ -8922,7 +8985,7 @@ void QuitWithFatalError ( NSString *message)
 		}
 	}
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion,
-		layer == RemasterEditorDoorframe ? 21 : (layer == RemasterEditorNormal ? 5 : (layer == RemasterEditorEmission ? 3 : 2)));
+		layer == RemasterEditorDoorframe ? 34 : (layer == RemasterEditorNormal ? 5 : (layer == RemasterEditorEmission ? 3 : 2)));
 	remasterMetadataNeedsSync |= remasterStrokeChanged;
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
 }
@@ -9002,19 +9065,19 @@ void QuitWithFatalError ( NSString *message)
 {
 	if (!remasterEditingProfileLoaded || remasterVariants.empty()) return;
 	const auto source = EffectiveRemasterMetadata(remasterSelectedTile);
-	if (source.tileRole != RemasterTileRole::Door) return;
+	if (source.tileRole != RemasterTileRole::Doorway) return;
 	std::set<RemasterTileContentId> touched(remasterVariants.begin(), remasterVariants.end());
 	auto snapshot = CaptureRemasterAssetSnapshot(touched);
 	for (const auto &id : touched)
 	{
 		auto metadata = EffectiveRemasterMetadata(id);
 		metadata.tileId = id;
-		// Explicit operation authors the Door role for these animation identities.
+		// Explicit operation authors the Doorway role for these animation identities.
 		CopyRemasterMetadataLayer(source, metadata, RemasterEditorMetadata);
 		CopyRemasterMetadataLayer(source, metadata, RemasterEditorDoorframe);
 		remasterEditingProfile.assets[id] = metadata;
 	}
-	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, 21u);
+	remasterEditingProfile.schemaVersion = std::max(remasterEditingProfile.schemaVersion, 34u);
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterAssetSnapshot:) object:snapshot];
 	[remasterUndoManager setActionName:@"Apply Doorframe to Animation"];
 	remasterMetadataNeedsSync = remasterNonSceneDirty = remasterEditingProfileDirty = true;

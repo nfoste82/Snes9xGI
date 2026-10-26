@@ -117,6 +117,8 @@ struct RemasterAssetMetadata : RemasterGeometryLayers
 	RemasterTileRole tileRole = RemasterTileRole::Unknown;
 	uint64_t doorframeMask = 0;
 	bool hasDoorframeMask = false;
+	bool doorwaySupport = false;
+	RemasterSupportDirection doorwaySupportDirection = RemasterSupportDirection::Unknown;
 	bool hasTileSemantics = false;
 	std::vector<std::string> tileSemanticNormals;
 	std::string tileSemanticCorner;
@@ -226,7 +228,7 @@ inline const RemasterGeometryLayers &S9xRemasterGeometryForEditing(const Remaste
 // Absent is unknown; painting even a false pixel creates an explicit mask.
 inline bool S9xRemasterPaintDoorframe (RemasterAssetMetadata &metadata, unsigned pixel, bool value)
 {
-	if (metadata.tileRole != RemasterTileRole::Door || pixel >= 64) return false;
+	if (metadata.tileRole != RemasterTileRole::Doorway || pixel >= 64) return false;
 	const bool wasPresent = metadata.hasDoorframeMask;
 	const uint64_t before = metadata.doorframeMask;
 	if (!wasPresent) metadata.doorframeMask = 0;
@@ -239,7 +241,7 @@ inline bool S9xRemasterPaintDoorframe (RemasterAssetMetadata &metadata, unsigned
 
 inline void S9xRemasterCopyDoorframe (const RemasterAssetMetadata &source, RemasterAssetMetadata &destination)
 {
-	if (destination.tileRole != RemasterTileRole::Door) return;
+	if (destination.tileRole != RemasterTileRole::Doorway) return;
 	destination.hasDoorframeMask = source.hasDoorframeMask;
 	destination.doorframeMask = source.hasDoorframeMask ? source.doorframeMask : 0;
 }
@@ -1286,6 +1288,20 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				asset->hasDoorframeMask = ParseDoorframeMask(value, asset->doorframeMask);
 				if (!asset->hasDoorframeMask) fail(lineNumber, "doorframe_mask must be exactly 16 lowercase hexadecimal digits in a quoted string");
 			}
+			else if (key == "doorway_support")
+			{
+				if (parsed.schemaVersion < 34 || !ParseBool(value, asset->doorwaySupport))
+					fail(lineNumber, "doorway_support requires schema_version 34 and a boolean");
+			}
+			else if (key == "doorway_support_direction")
+			{
+				bool valid = false;
+				if (parsed.schemaVersion >= 34 && ParseString(value, stringValue))
+					for (unsigned d = 1; d <= 4; d++)
+						if (stringValue == S9xRemasterSupportDirectionName(static_cast<RemasterSupportDirection>(d)))
+						{ asset->doorwaySupportDirection = static_cast<RemasterSupportDirection>(d); valid = true; }
+				if (!valid) fail(lineNumber, "doorway_support_direction requires north, south, east, or west and schema_version 34");
+			}
 			else if (key == "tile_semantics_authored" || key == "tile_semantic_normals" ||
 				key == "tile_semantic_corner" || key == "tile_semantic_context_dependent" || key == "tile_semantic_note")
 			{
@@ -1507,8 +1523,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 33)
-		fail(0, "schema_version must be an integer in [1, 33]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 34)
+		fail(0, "schema_version must be an integer in [1, 34]");
+	for (auto &entry : parsed.assets) {
+		auto &item = entry.second;
+		if (parsed.schemaVersion < 34 && item.tileRole == RemasterTileRole::Door) item.tileRole = RemasterTileRole::Doorway;
+		else if (parsed.schemaVersion < 34 && item.tileRole == RemasterTileRole::Doorway) fail(0, "doorway role requires schema_version 34");
+		if (item.doorwaySupport && (item.tileRole != RemasterTileRole::Doorway || item.doorwaySupportDirection == RemasterSupportDirection::Unknown))
+			fail(0, "doorway_support requires doorway role and a direction");
+		if (!item.doorwaySupport && item.doorwaySupportDirection != RemasterSupportDirection::Unknown)
+			fail(0, "doorway_support_direction requires doorway_support = true");
+	}
 	if (!parsed.areaSceneSettings.empty() && parsed.schemaVersion < 33) fail(0, "area_scene_settings requires schema_version 33");
 	for (const auto &entry : parsed.areaSceneSettings)
 		if (!std::isfinite(entry.second.originalSceneContribution) || entry.second.originalSceneContribution < 0 ||
@@ -1633,10 +1658,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	for (const auto &entry : parsed.assets)
 	{
 		const RemasterAssetMetadata &item = entry.second;
-		if ((item.tileRole == RemasterTileRole::Door || item.hasDoorframeMask) && parsed.schemaVersion < 21)
+		if ((item.tileRole == RemasterTileRole::Doorway || item.hasDoorframeMask) && parsed.schemaVersion < 21)
 			fail(0, "door role and doorframe_mask require schema_version 21");
-		if (item.hasDoorframeMask && item.tileRole != RemasterTileRole::Door)
-			fail(0, "doorframe_mask requires tile_role = door");
+		if (item.hasDoorframeMask && item.tileRole != RemasterTileRole::Doorway)
+			fail(0, "doorframe_mask requires tile_role = doorway");
 		if (!item.tileId.hashVersion)
 			fail(0, "asset requires tile_hash");
 		for (const auto &facing : item.facingGeometry)
@@ -1823,8 +1848,14 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
 	const bool hasTileRoles = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole != RemasterTileRole::Unknown; });
 	const bool hasTileSemantics = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.hasTileSemantics; });
-	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.hasDoorframeMask; });
-	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 21u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema)))) << "\n\n";
+	for (const auto &entry : profile.assets) {
+		const auto &a=entry.second;const unsigned d=static_cast<unsigned>(a.doorwaySupportDirection);
+		if(d>4 || (a.doorwaySupport && (a.tileRole!=RemasterTileRole::Doorway || !d)) || (!a.doorwaySupport && d)) {
+			diagnostics.push_back({0,"invalid doorway support role/direction"});return false;
+		}
+	}
+	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.tileRole == RemasterTileRole::Doorway || entry.second.hasDoorframeMask; });
+	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 34u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema)))) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -1978,6 +2009,11 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 		if (asset.tileRole != RemasterTileRole::Unknown)
 			output << "tile_role = " << Quote(S9xRemasterTileRoleName(asset.tileRole)) << "\n";
+		if (asset.tileRole == RemasterTileRole::Doorway) {
+			output << "doorway_support = " << (asset.doorwaySupport ? "true" : "false") << "\n";
+			if (asset.doorwaySupport)
+				output << "doorway_support_direction = " << Quote(S9xRemasterSupportDirectionName(asset.doorwaySupportDirection)) << "\n";
+		}
 		if (asset.hasDoorframeMask)
 		{
 			std::ostringstream mask;

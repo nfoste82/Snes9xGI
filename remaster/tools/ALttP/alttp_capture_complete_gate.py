@@ -21,6 +21,9 @@ for v in r['structural_placements']:
  # whenever a solved wall has no walkable support at its own coordinate.
  for p in v.get('planes',[]):
   bases[p][i]=v['floor_base']
+for v in r.get('directional_geometry',[]):
+ if v['layer']==1 and v.get('owned_stair') and v['base']!=255:
+  i=v['y']*64+v['x'];bases[v['plane']][i]=v['base'];visible[i]=v['base']
 compiled=a.output/'review-map.bin';compiled.write_bytes(b'ALTPHM3\0'+struct.pack('<H',s['room'])+struct.pack('<12288i',*(visible+bases[0]+bases[1])))
 cmd=[sys.executable,'-B','remaster/tools/ALttP/alttp_validate_room_heights.py','--graph',str(a.output/'live-graph.json'),'--snapshot',str(raw),'--attributes',str(attr),'--state',str(a.output/'live-state.json'),'--profile',str(a.output/'replay-input-profile.toml'),'--runtime-solution',str(a.output/'live-runtime.json'),'--height-map',str(compiled),'--rom',str(a.rom),'--output',str(a.output/'validation-v2.json'),'--diagnostic-svg',str(a.output/'validation-v2.svg')]
 run=subprocess.run(cmd,capture_output=True,text=True)

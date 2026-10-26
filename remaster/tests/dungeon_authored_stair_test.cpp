@@ -12,6 +12,17 @@ int main(){
   S9xRemasterApplyDungeonHeightMap(*f,c,*m,nullptr,nullptr,bg);
   for(auto &t:f->tileInstances)assert(t.heightOffset==0 && !t.hasPlacementHeight);
   assert(f->assetMetadata[0].height==md.height);
+  // Only a producer-matched, complete assembly may carry a nonzero datum.
+  m->producerOwnedStair[0]=true;m->producerHashes[0]=i.tileId.hash;
+  m->fallbackDirections[0]=0;
+  for(int signedBase:{-17,13}) {
+   for(auto &t:f->tileInstances)t.heightOffset=0;
+   m->offsets[0]=signedBase;S9xRemasterApplyDungeonHeightMap(*f,c,*m,nullptr,nullptr,bg);
+   const auto &placed=f->tileInstances[f->mainPixels[0].instanceId-1];
+   assert(placed.heightOffset==signedBase && !placed.hasPlacementHeight && f->assetMetadata[0].height==md.height);
+  }
+  m->producerOwnedStair[0]=false;m->producerHashes[0]=0;m->offsets.fill(base);
+  for(auto &t:f->tileInstances)t.heightOffset=0;
   // Ordinary obstacle relief is not an authored absolute stair ramp.
   f->assetMetadata[0].tileRole=RemasterTileRole::Obstacle;
   S9xRemasterApplyDungeonHeightMap(*f,c,*m,nullptr,nullptr,bg);

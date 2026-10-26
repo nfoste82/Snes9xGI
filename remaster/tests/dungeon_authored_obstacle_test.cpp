@@ -157,8 +157,27 @@ int main(){try {
    need(map->offsets[(14+(flip&2?-1:1))*64+14]==255,"nonflat lower metadata falsely proves ownership");
    p.assets[ids[0]].height[0]=0;
   }
-  p.assetGroups["dungeon_floor"].tileIds={ids[0]};
-   c.stairs[0].changesPlane=false;
+   p.assetGroups["dungeon_floor"].tileIds={ids[0]};
+   // Indoor 6c..6f are blocking body art, not walkable support. Complete exact
+   // transformed footprints corroborate the upper owner while keeping occupied
+   // lower floor independent. Unsupported body behavior/lower colliders reject.
+   for(int flip=0;flip<4;flip++)for(int solid:{0x6c,0x6d,0x6e,0x6f}) {
+    build(flip);c.stairs[0].changesPlane=true;
+    for(int y=8;y<20;y++)for(int x=8;x<30;x++)(*attrs)[4096+y*64+x]=0;
+    const int cell=(14+(flip&2?-1:1))*64+14;
+    S9xRemasterDungeonPlacements(c,p,*tiles);c.placements=tiles->data();
+    S9xRemasterBuildDungeonHeightMap(c,50,*map);
+    const int expected=map->offsets[cell];need(expected!=255,"ordinary solid baseline ownership");
+    (*attrs)[cell]=solid;
+    need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->offsets[cell]==expected,"indoor blocking special lost upper ownership");
+    need(map->planeOffsets[1][cell]==0,"blocking body destroyed lower support");
+    need((*tiles)[cell].height==p.assets.at(ids[1]).height && !map->fallbackDirections[cell],"blocking body relief replaced");
+    (*attrs)[cell]=0x08;
+    need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->offsets[cell]==255,"unsupported body behavior guessed ownership");
+    (*attrs)[cell]=solid;(*attrs)[4096+cell]=1;
+    need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->offsets[cell]==255,"lower collider guessed upper ownership");
+   }
+    c.stairs[0].changesPlane=false;
   // Interior contacts share the exact assembly's ground edge. A one-cell-deep
   // floor strip below furniture is solved geometry, not full-body occupancy.
   // Its explicit zero-local floor path must reach ONE independent component.

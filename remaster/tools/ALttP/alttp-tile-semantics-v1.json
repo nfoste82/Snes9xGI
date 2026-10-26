@@ -1,5 +1,6 @@
 {
   "format": "alttp-tile-semantics-v1",
+  "metadata_version": 2,
   "rom_sha256": "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
   "tiles": {
     "v1:4bpp:00424c3d9ab4463f": {
@@ -1405,7 +1406,8 @@
       "note": ""
     },
     "v1:4bpp:340a4407d6533bc1": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -1808,7 +1810,8 @@
       "note": ""
     },
     "v1:4bpp:42f17089396b9f54": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -3125,7 +3128,8 @@
       "note": ""
     },
     "v1:4bpp:7ed060bc66bd24cb": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -3300,7 +3304,8 @@
       "note": ""
     },
     "v1:4bpp:85dfb167918c7691": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -3871,7 +3876,8 @@
       "note": ""
     },
     "v1:4bpp:9e757414854d83b5": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -3892,7 +3898,8 @@
       "note": ""
     },
     "v1:4bpp:9eb947628ab00ab3": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -5077,7 +5084,8 @@
       "corner_type": "inside"
     },
     "v1:4bpp:c6b1ff4ed0392e82": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",
@@ -5114,7 +5122,8 @@
       "note": ""
     },
     "v1:4bpp:c72c0d2c90678917": {
-      "role": "door",
+      "role": "doorway",
+      "doorway_support": false,
       "normals": [],
       "context_dependent": false,
       "note": "",

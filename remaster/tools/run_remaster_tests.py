@@ -40,6 +40,14 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+    ("npc_transition_floor", "Proven transition-marker floor support without movement ownership, transforms and unsafe-source rejection"),
+    ("npc_floor_support", "Follower producer-body contacts, delayed gameplay plane and clipped/contradictory support rejection"),
+    ("dungeon_doorway_column", "Surviving directional doorway columns, transforms, per-plane support and cache invalidation"),
+    ("dungeon_doorway_propagation", "Doorway frame bands, non-support members, flips, split-BG relations and ownership rejection"),
+    ("doorway_metadata", "Doorway/Door versioned migration, directional support metadata and capture roundtrip"),
+    ("dungeon_door_foot", "Explicit doorway support directions, flips, signed bases and conflicting assembly contacts"),
+    ("dungeon_stair_assembly_support", "Complete stair ownership, signed landing datums, transforms and ambiguous-source/plane rejection"),
+    ("dungeon_authored_stair", "Owned stair producer offsets preserve authored arrays; ordinary unowned stairs retain zero-offset policy"),
     ("dungeon_corner_cap_region", "Ordered high-corner cap/face contacts, transforms, authored preservation and ownership rejection"),
     ("layer_view", "Background inspection masks, subscreen-only exposure, OBJ exclusion and frame-boundary latching"),
     ("context_location_publication", "EndFrame preserves selectable BG locations before contexts exist and across capture roundtrip"),

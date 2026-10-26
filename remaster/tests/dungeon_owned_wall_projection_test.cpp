@@ -13,7 +13,7 @@ int main(){try {
   RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=7;
   RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
   RemasterFrameTileInstance i;i.source=RemasterSourceType::Background;i.sourceIndex=bg;i.tileId={stale?124u:123u,1,4};i.hFlip=flip&1;i.vFlip=flip&2;f.tileInstances={i};
-  RemasterFrameAssetMetadata a;a.tileId=i.tileId;a.tileRole=RemasterTileRole::Door;a.hasHeight=true;for(int k=0;k<64;k++)a.height[k]=7-k%8;f.assetMetadata={a};
+  RemasterFrameAssetMetadata a;a.tileId=i.tileId;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=true;for(int k=0;k<64;k++)a.height[k]=7-k%8;f.assetMetadata={a};
   for(int k=0;k<64;k++){f.mainPixels[k].instanceId=f.subPixels[k].instanceId=1;f.mainPixels[k].tilePixel=f.subPixels[k].tilePixel=k;}
   S9xRemasterApplyDungeonHeightMap(f,c,*map,nullptr,nullptr,bg);
   for(auto *pixels:{&f.mainPixels,&f.subPixels})for(auto &px:*pixels) {
@@ -21,7 +21,7 @@ int main(){try {
    need(applied.heightOffset==(stale?0:owned || px.tilePixel==0?base:0),"ownership/region/stale projection");
    need(!applied.hasPlacementHeight,"authored ramp replaced");
   }
-  need(f.assetMetadata[0].height==a.height && f.assetMetadata[0].tileRole==RemasterTileRole::Door,"authored metadata changed");
+  need(f.assetMetadata[0].height==a.height && f.assetMetadata[0].tileRole==RemasterTileRole::Doorway,"authored metadata changed");
  }
  std::cout<<"PASS owned ROM wall vs Door asset: both BGs/buffers, all flips/signed bases, unowned region and stale producer rejection\n";
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

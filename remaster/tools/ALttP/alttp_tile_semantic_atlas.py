@@ -24,7 +24,7 @@ from alttp_room_geometry import RoomSnapshot
 
 FORMAT = "alttp-tile-semantics-v1"
 ROLES = {"unknown", "floor", "wall", "wall_corner", "stair_top",
-         "stair_bottom", "obstacle", "other", "door", "particle"}
+         "stair_bottom", "obstacle", "other", "door", "doorway", "particle"}
 CARDINAL_NORMALS = {"north", "south", "east", "west"}
 NORMALS = CARDINAL_NORMALS | {"north_east", "south_east", "south_west", "north_west"}
 CORNER_TYPES = {"inside", "outside"}
@@ -39,7 +39,7 @@ class AtlasError(ValueError):
 def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
     if not isinstance(value, dict):
         raise AtlasError("annotation must be an object")
-    allowed = {"role", "normals", "corner_type", "context_dependent", "note", "doorframe_mask"}
+    allowed = {"role", "normals", "corner_type", "context_dependent", "note", "doorframe_mask", "doorway_support", "doorway_support_direction"}
     extra = set(value) - allowed
     if extra:
         raise AtlasError("unknown annotation fields: " + ", ".join(sorted(extra)))
@@ -75,9 +75,18 @@ def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
         result["corner_type"] = corner_type
     if "doorframe_mask" in value:
         mask = value["doorframe_mask"]
-        if role != "door" or not isinstance(mask, str) or not re.fullmatch(r"[0-9a-f]{16}", mask):
-            raise AtlasError("doorframe_mask requires door role and exactly 16 lowercase hexadecimal digits")
+        if role != "doorway" or not isinstance(mask, str) or not re.fullmatch(r"[0-9a-f]{16}", mask):
+            raise AtlasError("doorframe_mask requires doorway role and exactly 16 lowercase hexadecimal digits")
         result["doorframe_mask"] = mask
+    from alttp_doorway_metadata import validate_asset
+    try:
+        validate_asset(dict(value, tile_role=role))
+    except ValueError as error:
+        raise AtlasError(str(error)) from error
+    if role == 'doorway':
+        result['doorway_support'] = value.get('doorway_support', False)
+        if result['doorway_support']:
+            result['doorway_support_direction'] = value['doorway_support_direction']
     return result
 
 
@@ -100,11 +109,12 @@ class AnnotationStore:
             raw_tiles = value.get("tiles")
             if not isinstance(raw_tiles, dict):
                 raise AtlasError("annotation file tiles must be an object")
-            self.tiles = {key: validate_annotation(item, allow_incomplete=True)
+            legacy = value.get('metadata_version', 1) < 2
+            self.tiles = {key: validate_annotation(dict(item, role='doorway') if legacy and item.get('role') == 'door' else item, allow_incomplete=True)
                           for key, item in raw_tiles.items()}
 
     def document(self) -> dict:
-        return {"format": FORMAT, "rom_sha256": self.rom_sha256,
+        return {"format": FORMAT, "metadata_version": 2, "rom_sha256": self.rom_sha256,
                  "tiles": {key: self.tiles[key] for key in sorted(self.tiles)}}
 
     def refresh(self) -> str:
@@ -129,7 +139,8 @@ class AnnotationStore:
             if self.profile_marker and self.profile_marker.exists():
                 path = Path(json.loads(self.profile_marker.read_text())["profile"])
                 snapshot = path.read_bytes()
-                profile = tomllib.loads(snapshot.decode())
+                from alttp_doorway_metadata import migrate_profile
+                profile = migrate_profile(tomllib.loads(snapshot.decode()))
                 from alttp_authored_obstacles import validate_groups
                 try:
                     validate_groups(profile)
@@ -139,7 +150,7 @@ class AnnotationStore:
                     self.profile_path, self.profile_bytes = path, snapshot
                     changed = False
                     for asset in profile.get("assets", []):
-                        if not asset.get("tile_semantics_authored") and asset.get("tile_role") != "door":
+                        if not asset.get("tile_semantics_authored") and asset.get("tile_role") not in ("doorway", "door"):
                             continue
                         value = {"role": asset.get("tile_role", "unknown"),
                                  "normals": asset.get("tile_semantic_normals", []),
@@ -149,6 +160,9 @@ class AnnotationStore:
                             value["corner_type"] = asset["tile_semantic_corner"]
                         if "doorframe_mask" in asset:
                             value["doorframe_mask"] = asset["doorframe_mask"]
+                        for field in ('doorway_support', 'doorway_support_direction'):
+                            if field in asset:
+                                value[field] = asset[field]
                         value = validate_annotation(value)
                         key = asset["tile_hash"]
                         if self.tiles.get(key) != value:
@@ -170,8 +184,11 @@ class AnnotationStore:
             raise AtlasError("profile changed; refresh before saving")
         text = self.profile_bytes.decode()
         version = tomllib.loads(text)["schema_version"]
+        needs34 = annotation['role'] in ('door', 'doorway') or any(a.get('tile_role') in ('door', 'doorway') for a in tomllib.loads(text).get('assets', []))
         text = re.sub(r"(?m)^schema_version\s*=\s*\d+\s*$",
-                      f"schema_version = {max(21 if annotation['role'] == 'door' else 20, version)}", text, count=1)
+                      f"schema_version = {max(34 if needs34 else 20, version)}", text, count=1)
+        if version < 34:
+            text = re.sub(r'(?m)^tile_role\s*=\s*"door"\s*$', 'tile_role = "doorway"', text)
         quote = lambda value: '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
         fields = (f'tile_role = {quote(annotation["role"])}\n'
                   'tile_semantics_authored = true\n'
@@ -182,6 +199,10 @@ class AnnotationStore:
             fields += f'tile_semantic_corner = {quote(annotation["corner_type"])}\n'
         if "doorframe_mask" in annotation:
             fields += f'doorframe_mask = {quote(annotation["doorframe_mask"])}\n'
+        if annotation['role'] == 'doorway':
+            fields += 'doorway_support = ' + str(annotation.get('doorway_support', False)).lower() + '\n'
+            if annotation.get('doorway_support'):
+                fields += f'doorway_support_direction = {quote(annotation["doorway_support_direction"])}\n'
         remaining = set(content_ids)
         def replace(match):
             block = match.group()
@@ -193,8 +214,8 @@ class AnnotationStore:
             # authored pixel mask. Preserve each member's own mask (including
             # explicit empty); replacing it requires an explicit mask field.
             # Leaving Door must still remove the now-inapplicable payload.
-            preserve_mask = annotation['role'] == 'door' and 'doorframe_mask' not in annotation
-            removed = r'tile_role|tile_semantics_authored|tile_semantic_\w+'
+            preserve_mask = annotation['role'] == 'doorway' and 'doorframe_mask' not in annotation
+            removed = r'tile_role|tile_semantics_authored|tile_semantic_\w+|doorway_support|doorway_support_direction'
             if not preserve_mask:
                 removed += '|doorframe_mask'
             block = re.sub(r'(?m)^(' + removed + r')\s*=.*\n?', '', block)
@@ -540,9 +561,10 @@ PAGE = r'''<!doctype html>
 <aside class="filters"><div class="field"><label class="cap" for="search">Find tile</label><input id="search" type="search" placeholder="hash, role, note"></div><div class="field"><label class="cap" for="roleFilter">Role</label><select id="roleFilter"><option value="">All roles</option><option>unknown</option><option>floor</option><option>wall</option><option>wall_corner</option><option>stair_top</option><option>stair_bottom</option><option>other</option></select></div><div class="field"><label class="cap" for="packFilter">Graphics pack</label><select id="packFilter"><option value="">All packs</option></select></div><div class="checks"><label><input id="reviewed" type="checkbox"> Reviewed only</label><label><input id="reused" type="checkbox"> Reused artwork</label><label><input id="contextOnly" type="checkbox"> Context-dependent</label><label><input id="showLow" type="checkbox"> Show low/grayscale variants</label></div><div class="stats" id="stats"></div><p class="hint">Low and high variants are exact-source aliases created by the game's two 3bpp conversion paths. They share semantics; low variants are hidden by default. Artwork uses a diagnostic palette, not in-game CGRAM colors.</p></aside>
 <main class="gridPane"><div class="tileGrid" id="grid"></div></main><section class="detail" id="detail"><div class="empty">Select a tile to annotate it.</div></section></div>
 <script>
-const roles=['unknown','floor','wall','wall_corner','stair_top','stair_bottom','obstacle','other','door','particle'];const labels={unknown:'Unknown',floor:'Floor',wall:'Wall',wall_corner:'Wall corner',stair_top:'Stair top (high)',stair_bottom:'Stair bottom (low)',obstacle:'Obstacle',other:'Other / non-geometry',door:'Door',particle:'Particle'};const palette=['#10110f','#36382f','#555747','#74765f','#939579','#b2b894','#d2d7ad','#f0ebcb','#3e5355','#55777a','#6f9da0','#92c5c6','#5d4936','#85633e','#b68b4f','#e1bd70'];let meta,tiles=[],selected=null,detailData=null,saveTimer=null,pendingId=null,pageSize=1000;const roomChoice=new Map(),byId=new Map();const grid=document.getElementById('grid'),detail=document.getElementById('detail');
+const roles=['unknown','floor','wall','wall_corner','stair_top','stair_bottom','obstacle','other','door','doorway','particle'];const labels={unknown:'Unknown',floor:'Floor',wall:'Wall',wall_corner:'Wall corner',stair_top:'Stair top (high)',stair_bottom:'Stair bottom (low)',obstacle:'Obstacle',other:'Other / non-geometry',door:'Door (leaf)',doorway:'Doorway',particle:'Particle'};const palette=['#10110f','#36382f','#555747','#74765f','#939579','#b2b894','#d2d7ad','#f0ebcb','#3e5355','#55777a','#6f9da0','#92c5c6','#5d4936','#85633e','#b68b4f','#e1bd70'];let meta,tiles=[],selected=null,detailData=null,saveTimer=null,pendingId=null,pageSize=1000;const roomChoice=new Map(),byId=new Map();const grid=document.getElementById('grid'),detail=document.getElementById('detail');
 const obstacleFilter=document.createElement('option');obstacleFilter.value='obstacle';obstacleFilter.textContent=labels.obstacle;document.getElementById('roleFilter').add(obstacleFilter);
 const doorFilter=document.createElement('option');doorFilter.value='door';doorFilter.textContent=labels.door;document.getElementById('roleFilter').add(doorFilter);
+const doorwayFilter=document.createElement('option');doorwayFilter.value='doorway';doorwayFilter.textContent=labels.doorway;document.getElementById('roleFilter').add(doorwayFilter);
 const particleFilter=document.createElement('option');particleFilter.value='particle';particleFilter.textContent=labels.particle;document.getElementById('roleFilter').add(particleFilter);
 function draw(canvas,indices){canvas.width=8;canvas.height=8;let c=canvas.getContext('2d'),im=c.createImageData(8,8);for(let i=0;i<64;i++){let color=palette[indices[i]%palette.length],n=parseInt(color.slice(1),16);im.data[i*4]=n>>16;im.data[i*4+1]=(n>>8)&255;im.data[i*4+2]=n&255;im.data[i*4+3]=255}c.putImageData(im,0,0)}
 function roleOf(t){return t.annotation?.role||'unknown'}function filtered(){let q=document.getElementById('search').value.trim().toLowerCase(),r=document.getElementById('roleFilter').value,p=document.getElementById('packFilter').value;return tiles.filter(t=>{let a=t.annotation||{};if(t.low_variant&&!document.getElementById('showLow').checked)return false;if(r&&roleOf(t)!==r)return false;if(p&&!t.packs.includes(Number(p)))return false;if(document.getElementById('reviewed').checked&&!t.annotation)return false;if(document.getElementById('reused').checked&&t.source_count<2&&t.family_count<2)return false;if(document.getElementById('contextOnly').checked&&!a.context_dependent)return false;return !q||[t.content_id,...t.aliases,a.role,a.corner_type,a.note,(a.normals||[]).join(' ')].join(' ').toLowerCase().includes(q)})}
@@ -555,7 +577,7 @@ function renderCornerType(a){let box=document.createElement('div');box.className
 function renderRoomContext(){let box=document.createElement('div');box.className='roomContext';let cap=document.createElement('label');cap.className='cap';cap.textContent='Dungeon room context';box.append(cap);if(!detailData.rooms.length){let p=document.createElement('div');p.className='hint';let activeAlt=detailData.alternatives.find(a=>a.dungeon_rooms||a.loaded_rooms||a.overworld_placements);if(detailData.loaded_rooms.length)p.textContent=`Loaded in ${detailData.loaded_rooms.length} indexed dungeon graphics context${detailData.loaded_rooms.length===1?'':'s'}, but no default-state BG1/BG2 tilemap references it. It may be event or replacement art revealed by another room state.`;else if(detailData.usage_count)p.textContent=`No indexed dungeon preview. This tile is used ${detailData.usage_count} times in the overworld base tilemap, so it is not unused art.`;else if(activeAlt)p.textContent=`No placement for this palette-half conversion. The same ROM pack/tile slot has an active ${activeAlt.conversion} conversion (${activeAlt.dungeon_rooms} dungeon rooms, ${activeAlt.loaded_rooms} loaded contexts, ${activeAlt.overworld_placements} overworld placements).`;else p.textContent='No indexed dungeon or overworld-base placement was found. It may be unused decoded art, used only in an unsampled state, or referenced by another map system.';box.append(p);detail.append(box);return}let chosen=roomChoice.get(selected);if(!detailData.rooms.some(r=>r.room_id===chosen))chosen=detailData.rooms[0].room_id;roomChoice.set(selected,chosen);let select=document.createElement('select');for(let r of detailData.rooms){let o=document.createElement('option');o.value=r.room_id;o.selected=r.room_id===chosen;o.textContent=`Room 0x${r.room_id.toString(16).padStart(3,'0')} · ${r.placement_count} placements · BG1 ${r.bg1_count} / BG2 ${r.bg2_count}`;select.append(o)}select.onchange=()=>{roomChoice.set(selected,Number(select.value));renderDetail()};box.append(select);let canvas=document.createElement('canvas');canvas.width=512;canvas.height=512;box.append(canvas);let legend=document.createElement('div');legend.className='roomLegend';legend.innerHTML='<span><i style="background:#35e6ff"></i>BG1</span><span><i style="background:#ffd23f"></i>BG2</span>';box.append(legend);let note=document.createElement('div');note.className='hint';note.textContent='Exact 8x8 tilemap placements in the renderer’s default room state. Room 0x01b is placed last because its stairs are initially obscured.';box.append(note);detail.append(box);loadRoom(canvas,chosen)}
 async function loadRoom(canvas,room){let id=selected,response=await fetch(`/api/room/${room}/${encodeURIComponent(id)}`),data=await response.json();if(id!==selected)return;let image=new Image();image.onload=()=>{let c=canvas.getContext('2d');c.drawImage(image,0,0,512,512);c.lineWidth=2;for(let cell of data.cells){c.fillStyle=cell.layer?'rgba(255,210,63,.36)':'rgba(53,230,255,.36)';c.strokeStyle=cell.layer?'#ffd23f':'#35e6ff';c.fillRect(cell.x*8,cell.y*8,8,8);c.strokeRect(cell.x*8+1,cell.y*8+1,6,6)}};image.src=`/room-image/${room.toString(16).padStart(3,'0')}.png`}
 function complete(a){let count=a.role==='wall'?1:a.role==='wall_corner'?2:0;return a.normals.length===count&&(a.role!=='wall_corner'||['inside','outside'].includes(a.corner_type))}function showCompletionState(a){let state=document.getElementById('saveState');if(!state||complete(a))return;if(a.normals.length<(a.role==='wall_corner'?2:1))state.textContent='Choose the required wall normal'+(a.role==='wall_corner'?'s':'')+' to save';else if(a.role==='wall_corner')state.textContent='Choose inside or outside to save'}
-function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role!=='door')delete a.doorframe_mask;if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall'?1:2,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
+function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role!=='doorway'){delete a.doorframe_mask;delete a.doorway_support;delete a.doorway_support_direction;}if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall'?1:2,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
 function update(a){byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function scheduleSave(){clearTimeout(saveTimer);pendingId=selected;let state=document.getElementById('saveState');if(state)state.textContent='Unsaved...';saveTimer=setTimeout(()=>save(pendingId),350)}async function save(id){if(!id)return;let t=byId.get(id),snapshot=t.annotation;if(!complete(snapshot)){pendingId=null;return}saving=true;let response;try{response=await fetch('/api/annotation/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json','If-Match':meta.revision},body:JSON.stringify(snapshot)})}catch(e){saving=false;return}let value=await response.json();saving=false;if(pendingId===id)pendingId=null;let state=id===selected?document.getElementById('saveState'):null;if(!response.ok){if(state)state.textContent='Not saved: '+value.error;if(response.status===409)document.getElementById('subtitle').textContent='Metadata changed elsewhere. Reload this page to review the current data.';return}meta.revision=value.revision;let stored=(value.annotation.role==='unknown'&&!value.annotation.note&&!value.annotation.context_dependent)?null:value.annotation;for(let alias of value.content_ids)if(byId.has(alias))byId.get(alias).annotation=stored;if(state)state.textContent=`Saved to ${value.content_ids.length} runtime identit${value.content_ids.length===1?'y':'ies'}`;renderGrid()}
 let saving=false;setInterval(async()=>{if(!meta||pendingId||saving||document.activeElement?.tagName==='TEXTAREA'||(selected&&!complete(annotation())))return;try{let r=await fetch('/api/revision'),v=await r.json();if(r.ok&&v.revision!==meta.revision)location.reload()}catch(e){}},2000);
 for(let id of ['search','roleFilter','packFilter','reviewed','reused','contextOnly','showLow'])document.getElementById(id).addEventListener(id==='search'?'input':'change',()=>{pageSize=1000;renderGrid()});document.getElementById('export').onclick=()=>location.href='/api/export';

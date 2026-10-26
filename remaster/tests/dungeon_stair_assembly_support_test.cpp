@@ -25,9 +25,25 @@ int main(){try {
    for(int py=0;py<8;py++)for(int px=0;px<8;px++)t.height[py*8+px]=std::max(0,rise-1-((north?y:3-y)*8+py)*rise/32);
   }
  };
- for(bool north:{true,false})for(int rise:{24,32}) {
+  for(bool north:{true,false})for(int rise:{24,32}) {
   build(north,rise);need(S9xRemasterBuildDungeonHeightMap(c,50,*map),"solve");
-  need(map->configuredStairFallbacks==0 && map->authoredSupportRelations.size()==1 && map->authoredSupportRelations[0].rise==rise,"ROM rail signed rise");
+   need(map->configuredStairFallbacks==0 && map->authoredSupportRelations.size()==1 && map->authoredSupportRelations[0].rise==rise,"ROM rail signed rise");
+   for(int y=20;y<24;y++)for(int x=14;x<18;x++)need(map->producerOwnedStair[y*64+x] && map->offsets[y*64+x]==0,"complete terminal attachment");
+   const auto authored=*tiles;
+   // Explicit signed entry datum shifts BOTH landings, never the local arrays.
+   for(int base:{-17,13}) {
+    const int low=(north?24:19)*64+15;
+    c.entrySupport.cell=4096+low;c.entrySupport.base=base;c.entrySupport.transitionEvidence=1;
+    c.previousRoomIndex=6;c.entrySupport.predecessorRoom=6;c.entrySupport.predecessorState=1;
+    c.entrySupport.destinationState=S9xRemasterDungeonEntryStateKey(c,50);
+    need(S9xRemasterBuildDungeonHeightMap(c,50,*map),"signed attachment solve");
+    need(map->entrySupportConsumed,"signed anchor consumed");
+    for(int y=20;y<24;y++)for(int x=14;x<18;x++) {
+     const int i=y*64+x;need(map->producerOwnedStair[i] && map->offsets[i]==base,"signed stair datum");
+     need((*tiles)[i].height==authored[i].height,"authored stair array changed");
+    }
+   }
+   c.entrySupport={};need(S9xRemasterBuildDungeonHeightMap(c,50,*map),"restore relative datum");
   auto relation=map->authoredSupportRelations;
   // An unrelated wall cycle on the same support poisons the structural solve,
   // not the independent intact ROM stair measurement. Both walls disagree
@@ -52,8 +68,25 @@ int main(){try {
   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->configuredStairFallbacks==1,"nonuniform rail accepted");
   build(north,rise);(*tiles)[20*64+14].hasHeight=false;
   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->configuredStairFallbacks==1,"missing source accepted");
-  build(north,rise);(*tiles)[20*64+14].surface=S::Obstacle;
-  need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->configuredStairFallbacks==1,"explicit incompatible role accepted");
+   build(north,rise);(*tiles)[20*64+14].surface=S::Obstacle;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->configuredStairFallbacks==1,"explicit incompatible role accepted");
+   build(north,rise);(*tiles)[20*64+15].stairSourceAmbiguous=true;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && !map->producerOwnedStair[20*64+15],"alternate source accepted");
+   build(north,rise);(*tiles)[(north?24:19)*64+15].stairSourceAmbiguous=true;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && !map->producerOwnedStair[20*64+15],"alternate landing source accepted");
+   build(north,rise);c.stairs[0].changesPlane=false;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && !map->producerOwnedStair[20*64+15],"plane-mismatched landings accepted");c.stairs[0].changesPlane=true;
+   build(north,rise);c.stairs[1]=c.stairs[0];c.stairCount=2;
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && !map->producerOwnedStair[20*64+15],"competing owner accepted");c.stairCount=1;
+   // Horizontal reflection changes words, transforms and member identities,
+   // while retaining the N/S endpoint direction and canonical arrays.
+   build(north,rise);const auto originalTiles=*tiles;const auto originalWords=*words;
+   for(int y=0;y<4;y++)for(int x=0;x<4;x++) {
+    const int i=(20+y)*64+14+x,j=(20+y)*64+17-x;
+    (*tiles)[i]=originalTiles[j];(*tiles)[i].hflip=!(*tiles)[i].hflip;
+    const int w=(originalWords[j*2]|originalWords[j*2+1]<<8)^0x4000;(*words)[i*2]=w;(*words)[i*2+1]=w>>8;
+   }
+   need(S9xRemasterBuildDungeonHeightMap(c,50,*map) && map->producerOwnedStair[20*64+15],"horizontal assembly transform");
  }
  // Unsupported floor-art chain joining two body components must not defeat
  // their signed wall path. Same unique-owner flat continuation remains legal.

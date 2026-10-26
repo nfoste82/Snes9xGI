@@ -17,13 +17,19 @@ int main() {
  auto frame=[&]{S9xRemasterBeginFrame(64,8,8,8);S9xRemasterEndFrame(screen,8,8,8,nullptr,&c);};
  S9xRemasterSetProfile(profile);frame();auto epoch=s.runtimeDungeonHeightEpoch;auto key=s.dungeonGeometryProfileKey;
  // Same room/maps/arrays/groups, only semantic activation changes.
- for(int change=0;change<5;change++) {
+  for(int change=0;change<11;change++) {
   auto &a=profile.assets[id];
   if(change==0)a.tileRole=RemasterTileRole::Obstacle;
   if(change==1){a.tileRole=RemasterTileRole::Wall;a.hasTileSemantics=true;a.tileSemanticNormals={"east"};}
   if(change==2)a.tileSemanticNormals={"south"};
   if(change==3)a.tileSemanticContextDependent=true;
-  if(change==4){a.tileRole=RemasterTileRole::Door;a.hasTileSemantics=false;a.hasDoorframeMask=true;a.doorframeMask=1;}
+   if(change==4){a.tileRole=RemasterTileRole::Doorway;a.hasTileSemantics=false;a.hasDoorframeMask=true;a.doorframeMask=1;}
+   if(change==5)a.geometryByFacing=true;
+   if(change==6)a.geometryByFlip=true;
+   if(change==7)profile.tileContexts[id]["alternate"]={};
+   if(change==8){a.doorwaySupport=true;a.doorwaySupportDirection=RemasterSupportDirection::North;}
+   if(change==9)a.doorwaySupportDirection=RemasterSupportDirection::South;
+   if(change==10){a.doorwaySupport=false;a.doorwaySupportDirection=RemasterSupportDirection::Unknown;}
   S9xRemasterSetProfile(profile);frame();assert(s.dungeonGeometryProfileKey!=key && s.runtimeDungeonHeightEpoch>epoch);
   key=s.dungeonGeometryProfileKey;epoch=s.runtimeDungeonHeightEpoch;frame();assert(s.runtimeDungeonHeightEpoch==epoch);
   assert(s.activeProfile.assets[id].height==profile.assets[id].height);

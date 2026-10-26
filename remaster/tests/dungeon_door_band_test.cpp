@@ -17,11 +17,11 @@ int main(){
   const int middle=11*64+11;assert(!(*tiles)[middle].hasDoorframeMask); // opening never promoted
   const auto authored=a.height;
   (*maps)[2*(10*64+10)]^=1;S9xRemasterDungeonPlacements(c,profile,*tiles);assert(!(*tiles)[10*64+10].doorframeMask);
-  (*maps)[2*(10*64+10)]^=1;a.hasDoorframeMask=true;a.doorframeMask=0;a.tileRole=RemasterTileRole::Door;
+  (*maps)[2*(10*64+10)]^=1;a.hasDoorframeMask=true;a.doorframeMask=0;a.tileRole=RemasterTileRole::Doorway;
   S9xRemasterDungeonPlacements(c,profile,*tiles);assert(!(*tiles)[10*64+10].doorframeMask); // explicit empty is respected
   a.hasDoorframeMask=false;a.height[0]++;S9xRemasterDungeonPlacements(c,profile,*tiles);assert(!(*tiles)[10*64+10].doorframeMask);a.height=authored;
   // Transparent zero-height opening columns are excluded, never raised.
-  a.tileRole=RemasterTileRole::Door;a.hasOcclusion=true;uint64_t mask=0;
+  a.tileRole=RemasterTileRole::Doorway;a.hasOcclusion=true;uint64_t mask=0;
   for(int k=0;k<64;k++){bool ink=d<2?k%8<6:k/8<6;a.occlusion[k]=ink?255:0;if(!ink)a.height[k]=0;else mask|=UINT64_C(1)<<k;}
   S9xRemasterDungeonPlacements(c,profile,*tiles);assert((*tiles)[10*64+10].doorframeMask==mask);
   a.hasOcclusion=false;a.height=authored;

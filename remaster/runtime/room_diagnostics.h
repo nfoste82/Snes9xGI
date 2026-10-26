@@ -26,6 +26,7 @@ struct RemasterRoomDiagnostic
 	bool heightConflict = false; // independent of structural path ambiguity
 	bool axisUnknown = false;
 	bool planeObserved = false; // scope, not visual upper/lower ownership
+	bool semanticFloorSupport = false; // exact zero-local transition floor; NOT movement ownership
 	enum class WallSource : uint8_t { None, AuthoredRole, RomAssembly };
 	WallSource wallSource = WallSource::None;
 	uint16_t wallTemplateOffset = 0; // diagnostic ownership; never a solver role

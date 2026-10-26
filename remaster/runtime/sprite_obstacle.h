@@ -56,7 +56,7 @@ struct RemasterSpriteObstacleDiagnostics
 // This lets paused painting reapply local layers without borrowing a newer room.
 struct RemasterSpriteObstacleSupport
 {
-	struct Cell { int component=-1,base=255,planeBase=255; bool observed=false,wall=false,conflict=false; };
+	struct Cell { int component=-1,base=255,planeBase=255; bool observed=false,wall=false,conflict=false,semanticFloorSupport=false; };
 	struct HiddenChild { int x,y,slot; RemasterTileContentId id; bool h,v; };
 	RemasterDungeonFloorContext context;
 	std::array<Cell,8192> cells;
@@ -94,7 +94,7 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 		c.dungeonTemplateData=nullptr;c.placements=nullptr;c.supportRelations=nullptr;c.wallSupportRelations=nullptr;
 		for(size_t i=0;i<8192;i++) {
 			const auto &v=map->roomDiagnostics->cells[i];
-			support->cells[i]={v.floorId,v.floorBase,map->planeOffsets[i/4096][i%4096],v.planeObserved,v.wall,v.heightConflict};
+			support->cells[i]={v.floorId,v.floorBase,map->planeOffsets[i/4096][i%4096],v.planeObserved,v.wall,v.heightConflict,v.semanticFloorSupport};
 		}
 		// Decode only wholly screen-clipped OAM children from the same complete
 		// VRAM/latched-OAM snapshot. They are identity evidence, never receivers.

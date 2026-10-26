@@ -23,6 +23,41 @@ def intersects(a, b):
 
 
 class MetadataLayoutTests(unittest.TestCase):
+    def test_directional_doorway_support_controls(self):
+        controls = SOURCE.split('remasterDoorwaySupportButton = [[NSButton alloc]', 1)[1].split('remasterContextDependentButton =', 1)[0]
+        self.assertIn('@"Doorway: support contact"', controls)
+        self.assertIn('@"Choose support direction…", @"north", @"east", @"south", @"west"', controls)
+        self.assertIn('before tile H/V flips', controls)
+        frames = rects('NSMakeRect' + controls)
+        self.assertEqual(len(frames), 2)
+        self.assertFalse(intersects(*frames))
+        for x, y, w, h in frames:
+            self.assertLessEqual(x + w, 570)
+            self.assertLessEqual(y + h, 260)
+        apply = SOURCE.split('- (void)updateRemasterSemantics:(id)sender\n', 1)[1].split('- (void)changeRemasterPreviewLayers:', 1)[0]
+        self.assertIn('annotation.tileRole == RemasterTileRole::Doorway', apply)
+        self.assertIn('if (selected <= 0) { NSBeep(); return; }', apply)
+        self.assertIn('S9xRemasterSupportDirectionName', apply)
+        self.assertIn('CopyRemasterMetadataLayer(annotation, metadata, RemasterEditorMetadata)', apply)
+        self.assertIn('destination.doorwaySupportDirection = destination.doorwaySupport ?', SOURCE)
+        self.assertIn('metadata.doorwaySupport = captured->doorwaySupport', SOURCE)
+        self.assertIn('metadata.doorwaySupport = source.doorwaySupport', SOURCE)
+        self.assertIn('doorMetadata.tileRole != RemasterTileRole::Doorway', SOURCE)
+        self.assertIn('[document[@"metadata_version"] integerValue] < 2 && metadata.tileRole == RemasterTileRole::Door', SOURCE)
+        copy = SOURCE.split('static void CopyRemasterMetadataLayer', 1)[1].split('static uint32_t RemasterMetadataSchemaVersion', 1)[0]
+        metadata_copy = copy.split('if (layer == RemasterEditorMetadata)', 1)[1].split('else if (layer == RemasterEditorDoorframe)', 1)[0]
+        self.assertNotIn('destination.height =', metadata_copy)
+        self.assertNotIn('destination.normalXyz =', metadata_copy)
+        reset = SOURCE.split('- (void)resetRemasterLayer:(id)sender\n', 1)[1].split('if (layer == RemasterEditorHeight', 1)[0]
+        self.assertIn('remasterDoorwaySupportButton.state = NSControlStateValueOff', reset)
+        self.assertIn('[remasterDoorwaySupportDirectionSelector selectItemAtIndex:0]', reset)
+
+    def test_metadata_support_row_clears_shared_clipboard_controls(self):
+        self.assertIn('remasterSemanticsView = [[NSView alloc] initWithFrame:NSMakeRect(168, 287, 570, 260)]', SOURCE)
+        # The shared copy/paste row ends at y=298. Metadata Apply starts at299.
+        self.assertIn('NSButton *apply = [[NSButton alloc] initWithFrame:NSMakeRect(0, 12, 240, 24)]', SOURCE)
+        self.assertGreaterEqual(287 + 12, 298)
+
     def test_layer_visibility_preserves_debug_view_and_lighting(self):
         cycle = SOURCE.split('- (NSString *)cycleRemasterLayerView\n', 1)[1].split('- (NSString *)remasterLayerViewName', 1)[0]
         self.assertNotIn('remasterLightingEnabled =', cycle)
@@ -75,10 +110,18 @@ class MetadataLayoutTests(unittest.TestCase):
         controls = SOURCE.split('NSArray<NSString *> *clipboardTitles =', 1)[1].split('NSMutableArray<NSButton *> *shiftButtons', 1)[0]
         frames = rects(controls)
         self.assertEqual(len(frames), 8)
+        reset_layer = rects(SOURCE.split('remasterResetLayerButton = [[NSButton alloc]', 1)[1].split('remasterResetLayerButton.title', 1)[0])[0]
+        reset_tile = rects(SOURCE.split('remasterResetTileButton = [[NSButton alloc]', 1)[1].split('remasterResetTileButton.title', 1)[0])[0]
+        apply_tile = rects(SOURCE.split('remasterApplyTileToVariantsButton = [[NSButton alloc]', 1)[1].split('remasterApplyTileToVariantsButton.title', 1)[0])[0]
+        frames += [reset_layer, reset_tile, apply_tile]
         for i, frame in enumerate(frames):
+            self.assertGreaterEqual(frame[0], 168)
             self.assertLessEqual(frame[0] + frame[2], 740)
             for other in frames[i + 1:]:
-                self.assertFalse(intersects(frame, other))
+                self.assertFalse(intersects(frame, other), (frame, other))
+                if frame[1] == other[1]:
+                    left, right = sorted((frame, other))
+                    self.assertGreaterEqual(right[0] - (left[0] + left[2]), 4)
         self.assertEqual(controls.count('@selector(rotateRemasterLayer:)'), 2)
         self.assertIn('button.tag = 1;', controls)
         action = SOURCE.split('- (void)rotateRemasterLayer:(id)sender\n', 1)[1].split('- (void)shiftRemasterLayer:', 1)[0]

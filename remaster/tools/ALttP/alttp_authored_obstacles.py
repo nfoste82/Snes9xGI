@@ -191,9 +191,12 @@ def audit(snapshot, attributes, profile, solution, state=None, components=None):
                     c = snapshot.cell(0, i%64, i//64)
                     return (roles.get(c.tile_hash) == 'floor' or (roles.get(c.tile_hash, 'unknown') == 'unknown' and c.tile_hash in floor_ids)) and assets.get(c.tile_hash) == [0]*64
                 underpass = layer == 1 and all(lower_floor(i) and identity(snapshot.cell(0, i%64, i//64)) != identity(snapshot.cell(1, i%64, i//64)) for i in positions)
+                # TileDetect_ExecuteInner: 6c..6f set the indoor blocking bit.
+                # Ownership corroboration only; contacts still need solved support.
+                solid_body = (1, 2, 0x27, 0x6c, 0x6d, 0x6e, 0x6f)
                 body_planes = [p for p in (0,) if underpass and
-                               any(attributes[p][i] in (1, 2, 0x27) for i in positions) and
-                               all(attributes[p][i] in (0, 1, 2, 0x27) and attributes[1-p][i] == 0 for i in positions)]
+                               any(attributes[p][i] in solid_body for i in positions) and
+                               all((attributes[p][i] == 0 or attributes[p][i] in solid_body) and attributes[1-p][i] == 0 for i in positions)]
                 body_plane = body_planes[0] if len(body_planes) == 1 else None
                 record['body_plane'] = body_plane
                 for i, m in slots:

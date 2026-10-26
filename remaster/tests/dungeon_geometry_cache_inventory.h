@@ -7,6 +7,7 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
 	array(m.producerHashes);array(m.producerFlips);array(m.producerZeroFloor);array(m.producerObstacle);
 	array(m.producerAuthoredObstacle);
 	array(m.producerOwnedWall);
+	array(m.producerOwnedStair);
 	array(m.producerGeneratedObstacle);
  v(m.roomIndex);array(m.offsets);for(auto &a:m.planeOffsets)array(a);
  v(m.componentCount);v(m.constraintCount);v(m.conflictingComponentCount);array(m.solvedPlaneCells);
@@ -21,7 +22,9 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  v(m.disconnectedPlaneCandidates);v(m.planeRelationshipUnresolved);
  v(m.geometryConflicts.size());for(auto &r:m.geometryConflicts){v(r.node);v(r.other);v(r.expected);v(r.actual);}
  v(m.cornerBranches.size());for(auto &r:m.cornerBranches){v(r.corner);v(r.plane);v(r.branch);v(r.base);v(r.support);v(r.rise);}
- v(m.doorframeAttachments.size());for(auto &r:m.doorframeAttachments){v(r.cell);v(r.plane);v(r.base);v(r.mask);v(r.source);v(r.visible);v(r.openingBase);}
+   v(m.doorframeAttachments.size());for(auto &r:m.doorframeAttachments){v(r.cell);v(r.plane);v(r.base);v(r.mask);v(r.source);v(r.visible);v(r.openingBase);}
+   v(m.doorwaySupportRelations.size());for(auto &r:m.doorwaySupportRelations){v(r.assembly);v(r.source);v(r.direction);v(r.plane);v(r.base);}
+  v(m.stairAttachments.size());for(auto &r:m.stairAttachments){v(r.origin);v(r.low);v(r.high);v(r.lowPlane);v(r.highPlane);v(r.rise);v(r.base);v(r.flip);v(r.conflict);}
  v(m.localHeightPreviews.size());for(auto &r:m.localHeightPreviews){v(r.cell);array(r.height);}
  v(m.unknownDoorframeCells);v(m.conflictingDoorframeCells);
  v(m.geometryIssuePlacements.size());for(auto &r:m.geometryIssuePlacements)array(r);
@@ -33,7 +36,7 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  v(bool(m.roomDiagnostics));if(m.roomDiagnostics)for(auto &d:m.roomDiagnostics->cells) {
   v(d.floorId);v(d.floorBase);v(d.lowerFloorId);v(d.lowerFloorBase);v(d.lowerFloorDistance);
   v(d.room);v(d.cell);v(d.plane);v(d.background);v(d.uphillDirections);v(d.wall);
-  v(d.heightConflict);v(d.axisUnknown);v(d.planeObserved);v(int(d.wallSource));v(d.wallTemplateOffset);
+   v(d.heightConflict);v(d.axisUnknown);v(d.planeObserved);v(int(d.wallSource));v(d.wallTemplateOffset);v(d.semanticFloorSupport);
  }
  return o.str();
 }

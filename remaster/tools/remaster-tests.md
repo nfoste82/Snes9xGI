@@ -69,6 +69,14 @@ does not launch any benchmark, emulator, or parallel test workers.
 | full adds | `context_location_publication` | `EndFrame`: BG locations remain selectable with zero, one or multiple named contexts; capture roundtrip |
 | full adds | `layer_view` | Exhaustive background enable/forced masks, subscreen-only exposure, OBJ exclusion and frame-boundary inspection latch |
 | full adds | `dungeon_corner_cap_region` | Ordered clipped HIGH-corner cap contacts, transforms, authored preservation and malformed/overwritten/incompatible ownership rejection |
+| full adds | `dungeon_stair_assembly_support` | Complete stair footprint and rail proof, signed landing datums, transforms, ambiguous sources and competing/plane-mismatched ownership rejection |
+| full adds | `doorway_metadata` | Doorway/Door migration, validated directional support and capture roundtrip |
+| full adds | `dungeon_doorway_propagation` | Handler-relative frame bands, nonmask membership, signed relief, flips and split-BG support transport |
+| full adds | `dungeon_doorway_column` | Independently proven surviving inner columns, flipped support direction, signed/plane bases and ambiguous-source rejection |
+| full adds | `npc_floor_support` | Attested follower body contact, delayed producer plane, clipping independence and contradictory-floor rejection |
+| full adds | `npc_transition_floor` | Solver-proven semantic support for transition floors, unchanged traversal denominators and blocked/ambiguous negatives |
+| full adds | `dungeon_door_foot` | Explicit floorward contacts, transforms, signed bases and contradictory support rejection |
+| full adds | `dungeon_authored_stair` | Producer-owned stair bases reach rendering without replacing authored ramps; unowned stairs retain zero-offset policy |
 | full adds | `dungeon_floor_continuity` | Same-BG cardinal floor base continuation despite local relief and narrow strips; preserve flips/local arrays, reject barriers/diagonals/plane and level conflicts without expanding movement |
 | full adds | `dungeon_frame_recognition` | Complete ordinary and 4×4 stair doorway frames, all directions/flips and split BGs; interior artwork independence, overwritten-frame and competing-origin rejection |
 | full adds | `dungeon_oriented_obstacle` | Horizontal authored support ends mirror west/east, V-symmetric claims share ownership, missing outward support stays unknown |

@@ -25,7 +25,7 @@ REFERENCES = ('a4aa6ebd24fefeb7', '503ab068dfa941d3',
 REFERENCES = tuple('v1:4bpp:' + key for key in REFERENCES)
 ROLES = ('cap', 'upper', 'middle', 'foot', 'trim')
 FIELDS = ('height', 'normal_xyz', 'occlusion')
-VETO = {'floor', 'door', 'obstacle', 'stair_top', 'stair_bottom', 'wall_corner'}
+VETO = {'floor', 'door', 'doorway', 'obstacle', 'stair_top', 'stair_bottom', 'wall_corner'}
 
 
 def digest(data):

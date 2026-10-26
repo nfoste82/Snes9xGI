@@ -19,6 +19,15 @@ int main(int argc,char **argv){try {
  auto number=[&](const char *key,int index=0){auto pos=text.find(std::string("\"")+key+"\":");check(pos!=std::string::npos,"missing state key");pos=text.find(':',pos)+1;if(text[pos]=='[')pos++;for(int i=0;i<index;i++)pos=text.find(',',pos)+1;return std::stoull(text.substr(pos));};
  RemasterProfile profile;std::vector<RemasterProfileDiagnostic> errors;check(S9xRemasterLoadProfile(path+".profile.toml",profile,errors),"profile");
  std::string serialized;check(S9xRemasterSerializeProfile(profile,serialized,errors),"serialization");
+ const std::string migratedSerialized=serialized;
+ // Versioned legacy evidence hash, not a substitute current-profile pin. The
+ // parser migrated Door->Doorway; reproduce only the old serialized grammar
+ // when checking an unchanged historical companion profile (<34).
+ if(profile.schemaVersion<34) {
+  const auto lineEnd=serialized.find('\n');serialized.replace(0,lineEnd,"schema_version = "+std::to_string(profile.schemaVersion));
+  for(size_t at=0;(at=serialized.find("tile_role = \"doorway\"",at))!=std::string::npos;)serialized.replace(at,21,"tile_role = \"door\"");
+  for(size_t at=0;(at=serialized.find("doorway_support = false\n",at))!=std::string::npos;)serialized.erase(at,std::string("doorway_support = false\n").size());
+ }
  uint64_t digest=UINT64_C(14695981039346656037);for(unsigned char b:serialized)digest=(digest^b)*UINT64_C(1099511628211);
  std::ostringstream hex;hex<<std::hex<<digest;check(text.find("\"profile_serialized_fnv1a64\":\""+hex.str()+"\"")!=std::string::npos,"profile pin");
  auto captured=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(path,*captured),"packet");
@@ -497,8 +506,9 @@ int main(int argc,char **argv){try {
   std::ofstream pixels(out+"-effective.jsonl");
   for(int which=0;which<2;which++) {
    const auto &f=which?*frame:*captured;
-   for(size_t at=0;at<f.mainPixels.size();at++) {
-    const auto &px=f.mainPixels[at];if(!px.instanceId)continue;const auto &i=f.tileInstances[px.instanceId-1];
+   const auto &geometryPixels=f.scenePixels.empty()?f.mainPixels:f.scenePixels;
+   for(size_t at=0;at<geometryPixels.size();at++) {
+    const auto &px=geometryPixels[at];if(!px.instanceId)continue;const auto &i=f.tileInstances[px.instanceId-1];
     if(i.source!=RemasterSourceType::Background || i.sourceIndex>1)continue;
     const auto *m=S9xRemasterFrameMetadataForTile(f,i.tileId);
     const int local=m && m->hasHeight?m->height[px.tilePixel]:0;
@@ -518,7 +528,7 @@ int main(int argc,char **argv){try {
     <<",\"missing\":["<<m.unknownPlaneCells[0]<<','<<m.unknownPlaneCells[1]<<"],\"geometry_conflicts\":[";
   for(size_t k=0;k<m.geometryConflicts.size();k++){if(k)report<<',';const auto &r=m.geometryConflicts[k];report<<'['<<r.node<<','<<r.other<<','<<r.expected<<','<<r.actual<<']';}report<<"]}";
  }report<<"]}\n";
- std::string after;check(S9xRemasterSerializeProfile(s.activeProfile,after,errors) && after==serialized,"own profile changed");
+ std::string after;check(S9xRemasterSerializeProfile(s.activeProfile,after,errors) && after==migratedSerialized,"own migrated profile changed");
   std::cout<<"PASS room="<<c.roomIndex<<" profile="<<hex.str()<<" matched="<<matched<<'\n';
   return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

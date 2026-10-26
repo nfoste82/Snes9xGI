@@ -94,21 +94,21 @@ class TileSemanticAtlasTests(unittest.TestCase):
 
             # Group semantics must not copy one member's mask onto another,
             # invent an unknown mask, or erase explicit empty authoring.
-            store.save_group(ids, dict(role='door', note='note only'), store.refresh())
-            check(masks, 'door')
+            store.save_group(ids, dict(role='doorway', note='note only'), store.refresh())
+            check(masks, 'doorway')
             store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
-            store.save_group(ids, dict(role='door', note='after reload'), store.refresh())
-            check(masks, 'door')
+            store.save_group(ids, dict(role='doorway', note='after reload'), store.refresh())
+            check(masks, 'doorway')
             # An explicit empty mask is a replacement, not omission.
-            store.save_group(ids, dict(role='door', doorframe_mask='0000000000000000'), store.refresh())
-            check(['0000000000000000'] * 3, 'door')
-            store.save_group(ids, dict(role='door', doorframe_mask='ffffffffffffffff'), store.refresh())
-            check(['ffffffffffffffff'] * 3, 'door')
+            store.save_group(ids, dict(role='doorway', doorframe_mask='0000000000000000'), store.refresh())
+            check(['0000000000000000'] * 3, 'doorway')
+            store.save_group(ids, dict(role='doorway', doorframe_mask='ffffffffffffffff'), store.refresh())
+            check(['ffffffffffffffff'] * 3, 'doorway')
             store.save_group(ids, dict(role='other'), store.refresh())
             check([None] * 3, 'other')
             # Returning to Door must not resurrect a mask removed by role change.
-            store.save_group(ids, dict(role='door'), store.refresh())
-            check([None] * 3, 'door')
+            store.save_group(ids, dict(role='doorway'), store.refresh())
+            check([None] * 3, 'doorway')
 
     def test_registered_schema22_semantic_save_preserves_group_records(self):
         with tempfile.TemporaryDirectory() as directory:

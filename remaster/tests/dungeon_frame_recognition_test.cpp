@@ -17,7 +17,7 @@ int main(){try {
   for(int y=0;y<8;y++)for(int x=0;x<8;x++)for(int b=0;b<4;b++)
    (*graphics)[tile*32+b/2*16+y*2+b%2]|=((p[y*8+x]>>b)&1)<<(7-x);
   RemasterTileContentId id{S9xRemasterHashTile(4,p),1,4};auto &a=profile.assets[id];
-  a.tileId=id;a.tileRole=RemasterTileRole::Door;a.hasHeight=a.hasDoorframeMask=true;
+  a.tileId=id;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=a.hasDoorframeMask=true;
   a.doorframeMask=UINT64_MAX;for(int k=0;k<64;k++)a.height[k]=7-k/8;
  }
  C c;c.indoors=c.verifiedAlttpRom=true;c.graphics=graphics->data();
@@ -92,8 +92,9 @@ int main(){try {
    wall.highCornerFace=false;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"unproved cap handler");wall.highCornerFace=true;
    wall.surface=C::Surface::Floor;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"incompatible cap role");
   }
-  // Full support/attachment solve, independent planes, all axes and flips.
-  // A three-band wall meets ordinary occupied floor at its innermost edge.
+   // Full support/attachment solve, independent planes, all axes and flips.
+   // A wall seam/cap alone is NOT doorway support. Explicit floorward marks
+   // on the two innermost frame members seed the shared assembly datum.
   auto attrs=std::make_unique<std::array<uint8_t,8192>>();
   auto result=std::make_unique<RemasterDungeonHeightMap>();
   C solveContext;solveContext.indoors=solveContext.verifiedAlttpRom=true;
@@ -116,12 +117,38 @@ int main(){try {
    }
    // Independent opening has arbitrary relief, no structural frame ownership.
    for(int u=11;u<13;u++)for(int v=16;v<18;v++){auto &t=(*tiles)[cell(u,v)];t={};t.hasHeight=true;t.height.fill(-31);}
-   need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result),"full cap solve");
-   int count=0;for(auto &a:result->doorframeAttachments){need(a.visible,"cap visibility lost");int expected=0;for(int u=10;u<13;u++)for(int v=15;v<=18;v++)if(a.cell==cell(u,v))expected=(12-u)*8;need(a.base==expected,"cap contextual band base");count++;}
-   need(count==(bg?16:8),"full cap frame denominator / separate structural planes");
-   const auto old=(*tiles)[cell(10,14)].height;(*tiles)[cell(10,14)].height[0]++;
-   need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result) && result->doorframeAttachments.empty(),"noncanonical tangent cap accepted");
-   (*tiles)[cell(10,14)].height=old;
+    need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result),"unmarked cap solve");
+    need(result->doorframeAttachments.empty(),"unmarked wall/cap supplied doorway support");
+    for(int v:{15,18}){
+     auto &t=(*tiles)[cell(12,v)];t.doorwaySupport=true;
+     t.doorwaySupportDirection=axis?RemasterSupportDirection::South:RemasterSupportDirection::East;
+    }
+    need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result),"marked directional doorway solve");
+    auto checkAttachments=[&](){
+     int count=0;
+     for(const auto &a:result->doorframeAttachments){
+      need(a.visible,"marked support attachment lost");
+      need(a.plane==0,"unsupported solid plane supplied doorway datum");
+       const int band=2-(axis?((flip&2)?63-a.cell/64:a.cell/64):((flip&1)?63-a.cell%64:a.cell%64))+10;
+       need(a.base==8*band && a.openingBase==0,"frame band rise must compose with independent landing datum");
+      count++;
+     }
+     need(count==8,"full marked frame denominator / separate support planes");
+    };
+    checkAttachments();
+    const auto authored=(*tiles)[cell(10,15)].height;
+    need(authored[0]==7,"fixture authored frame ramp changed");
+    const auto old=(*tiles)[cell(10,14)].height;(*tiles)[cell(10,14)].height[0]++;
+    need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result),"independent tangent cap solve");
+    checkAttachments(); // wall cap geometry cannot override explicit floorward support
+    need((*tiles)[cell(10,15)].height==authored,"doorway authored ramp flattened");
+    (*tiles)[cell(10,14)].height=old;
+    for(int v:{15,18}){
+     auto &t=(*tiles)[cell(12,v)];
+     t.doorwaySupportDirection=axis?RemasterSupportDirection::North:RemasterSupportDirection::West;
+    }
+    need(S9xRemasterBuildDungeonHeightMap(solveContext,50,*result),"wrong-direction doorway solve");
+    need(result->doorframeAttachments.empty(),"opposite-facing mark borrowed unrelated floor/wall support");
   }
  std::cout<<"PASS "<<cases<<" fixture-free ordinary four axes/stair north-south variants, all flips, split-BG, opening independence, whole-frame overwrite and competing-origin rejection\n";
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

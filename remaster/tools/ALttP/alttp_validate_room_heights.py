@@ -83,7 +83,7 @@ def grounded_floor_hashes(profile):
     result.update(a['tile_hash'] for a in profile.get('assets',[]) if a.get('tile_role')=='floor')
     # Explicit role overrides a stale generated structural group at runtime.
     result.difference_update(a['tile_hash'] for a in profile.get('assets',[])
-                             if a.get('tile_role') in ('wall','wall_corner','obstacle','door'))
+                             if a.get('tile_role') in ('wall','wall_corner','obstacle','door','doorway'))
     result.difference_update(m['tile_hash'] for g in profile.get('obstacle_groups', []) if not g.get('sprite_assembly') for m in g['members'])
     return result
 
@@ -908,7 +908,214 @@ def diagnostic_svg(report: dict, path: Path) -> None:
                     f'<text x="4" y="530" fill="white" font-size="12">{legend}</text></svg>\n')
 
 
+def _doorway_footprints(snapshot, assets, template_data):
+    """Independent complete structural writer proof, including flips/split BG.
+
+    Opening art is not a frame member. Equivalent source templates may prove
+    one footprint, but competing origin/axis claims cannot lend ownership.
+    """
+    if not template_data:
+        return []
+    templates = [(d, off, 3 if d < 2 else 4, 0)
+                 for d, (start, end) in enumerate(((0x2716,0x2926),(0x29f0,0x2be8),(0x2c6a,0x2e32),(0x2e6a,0x3032)))
+                 for off in range(start, end+1, 24)]
+    templates += [(d, off, 4, 1 if d else 0) for d, start in enumerate((0x11a8,0x11e8)) for off in (start,start+32)]
+    claims = []
+    for d, off, stride, skip in templates:
+        w,h = (4,3) if d < 2 else (3,4)
+        parts = [(x,y) for x in range(w) for y in range(h)
+                 if ((x in (0,w-1) or y == (0 if d==0 else h-1)) if d < 2 else
+                     (y in (0,h-1) or x == (0 if d==2 else w-1)))]
+        for split in range(1 if stride==4 else 2):
+            for flip in range(4):
+                direction = d ^ (1 if (flip & (2 if d < 2 else 1)) else 0)
+                for bg in range(2):
+                    expected=[]
+                    for x,y in parts:
+                        layer = (1 if (y == (0 if d==0 else h-1) if d<2 else x == (0 if d==2 else w-1)) else 0) if split else bg
+                        n=off+2*(x*stride+y+skip)
+                        word=int.from_bytes(template_data[n:n+2],'little') ^ (0x4000 if flip&1 else 0) ^ (0x8000 if flip&2 else 0)
+                        expected.append((layer,w-1-x if flip&1 else x,h-1-y if flip&2 else y,word&0xdfff))
+                    first=expected[0]
+                    for oy in range(65-h):
+                        for ox in range(65-w):
+                            if snapshot.cell(first[0],ox+first[1],oy+first[2]).word&0xdfff != first[3]:
+                                continue
+                            members=[snapshot.cell(layer,ox+x,oy+y) for layer,x,y,_ in expected]
+                            if not any(assets.get(c.tile_hash,{}).get('tile_role')=='doorway' for c in members):
+                                continue
+                            if any(c.word&0xdfff != e[3] for c,e in zip(members,expected)):
+                                continue
+                            if any(assets.get(c.tile_hash,{}).get('tile_role') in ('floor','obstacle','stair_top','stair_bottom','door') for c in members):
+                                continue
+                            claims.append(dict(origin=(ox,oy),direction=direction,source=off,split=bool(split),members=members))
+    # Subtype2 lower stairs26..29 use four-word columns. They write all
+    # BG1 words and the terminal row to both BGs, including opening/trim.
+    for d, start in enumerate((0x1228, 0x1268)):
+        for off in (start, start+32):
+            for flip in range(4):
+                expected=[];parts=[]
+                for x in range(4):
+                    for y in range(4):
+                        px=3-x if flip&1 else x;py=3-y if flip&2 else y
+                        word=int.from_bytes(template_data[off+2*(x*4+y):off+2*(x*4+y)+2],'little') ^ (0x4000 if flip&1 else 0) ^ (0x8000 if flip&2 else 0)
+                        for layer in range(2):
+                            if layer==0 or y==(3 if d else 0):
+                                expected.append((layer,px,py,word&0xdfff))
+                                if y!=(0 if d else 3) and (x in (0,3) or y==(3 if d else 0)):
+                                    parts.append((layer,px,py))
+                for oy in range(61):
+                    for ox in range(61):
+                        layer,x,y,word=expected[0]
+                        if snapshot.cell(layer,ox+x,oy+y).word&0xdfff!=word:continue
+                        if any(snapshot.cell(layer,ox+x,oy+y).word&0xdfff!=word for layer,x,y,word in expected):continue
+                        members=[snapshot.cell(layer,ox+x,oy+y) for layer,x,y in parts]
+                        if not any(assets.get(c.tile_hash,{}).get('doorway_support') for c in members):continue
+                        origin=(ox,oy+(1 if (d==0)==bool(flip&2) else 0))
+                        claims.append(dict(origin=origin,direction=d^(1 if flip&2 else 0),source=off,split=True,members=members))
+    return claims
+
+
+def _doorway_columns(snapshot, assets, template_data):
+    """Independent surviving two-band proof; never whole-frame ownership.
+
+    An overwritten outer band cannot authorize its own height, the other jamb,
+    or a split-BG relation. Equivalent ROM descriptions of the SAME final two
+    words collapse. Alternate local selectors remain unsupported by runtime.
+    """
+    from alttp_doorway_metadata import transformed_direction
+    claims = {}
+    if template_data is None:
+        return claims
+    starts = (0x2716, 0x29f0, 0x2c6a, 0x2e6a)
+    ends = (0x2926, 0x2be8, 0x2e32, 0x3032)
+    for layer in range(2):
+        for y in range(64):
+            for x in range(64):
+                foot = snapshot.cell(layer, x, y)
+                a = assets.get(foot.tile_hash, {})
+                if a.get('tile_role') != 'doorway' or not a.get('doorway_support'):
+                    continue
+                facing = transformed_direction(a.get('doorway_support_direction'), bool(foot.word & 0x4000), bool(foot.word & 0x8000))
+                dx, dy = {'north': (0, 1), 'south': (0, -1), 'west': (1, 0), 'east': (-1, 0)}[facing]
+                if not (0 <= x+dx < 64 and 0 <= y+dy < 64):
+                    continue
+                middle = snapshot.cell(layer, x+dx, y+dy)
+                if any(assets.get(c.tile_hash, {}).get('tile_role') != 'doorway' or len(assets.get(c.tile_hash, {}).get('height', [])) != 64 or
+                       assets.get(c.tile_hash, {}).get('geometry_by_flip') or assets.get(c.tile_hash, {}).get('geometry_by_facing') for c in (foot, middle)):
+                    continue
+                for d in range(4):
+                    h = 3 if d < 2 else 4
+                    for off in range(starts[d], ends[d]+1, 24):
+                        for flip in range(4):
+                            direction = d ^ (1 if (flip & (2 if d < 2 else 1)) else 0)
+                            if (dx, dy) != ((0, -1), (0, 1), (-1, 0), (1, 0))[direction]:
+                                continue
+                            for side in (0, 3):
+                                exact = True
+                                for band, c in enumerate((foot, middle)):
+                                    xx = side if d < 2 else (2-band if d == 2 else band)
+                                    yy = (2-band if d == 0 else band) if d < 2 else side
+                                    n = off + 2*(xx*h+yy)
+                                    word = template_data[n] | template_data[n+1] << 8
+                                    word ^= (0x4000 if flip & 1 else 0) | (0x8000 if flip & 2 else 0)
+                                    exact &= (word & 0xdfff) == (c.word & 0xdfff)
+                                if exact:
+                                    for band, c in enumerate((foot, middle)):
+                                        claims.setdefault((layer,c.x,c.y), set()).add((x,y,band,off))
+    return claims
+
+
 def audit_doorframes(solution, snapshot, profile, template_data):
+    """Complete-room directional landing + handler-relative frame-band audit."""
+    from alttp_doorway_metadata import transformed_direction
+    assets={a['tile_hash']:a for a in profile.get('assets',[])}
+    required={}
+    for layer in range(2):
+        for y in range(64):
+            for x in range(64):
+                c=snapshot.cell(layer,x,y);a=assets.get(c.tile_hash,{})
+                if a.get('tile_role')=='doorway' and (int(a.get('doorframe_mask','0'),16) or a.get('doorway_support',False)):
+                    required[layer,x,y]=(c,a)
+    claims=_doorway_footprints(snapshot,assets,template_data)
+    columns=_doorway_columns(snapshot,assets,template_data)
+    ownership={}
+    for claim in claims:
+        for c in claim['members']:
+            key=c.layer,c.x,c.y
+            ownership.setdefault(key,[]).append(claim)
+            a=assets.get(c.tile_hash,{})
+            if a.get('tile_role')=='doorway' and len(a.get('height',[]))==64:
+                required[key]=(c,a)
+    records=solution.get('doorframe_attachments',[]);accepted=set();issues=[];bases={}
+    for r in records:
+        if r.get('visible',True):bases.setdefault((r['layer'],r['x'],r['y']),set()).add(r['frame_base'])
+    floors={layer:{(p,x,y):b for p,x,y,b in solution.get(name,[])} for layer,name in enumerate(('bg1_cells_plane_x_y_base','cells_plane_x_y_base'))}
+    for r in records:
+        key=r['layer'],r['x'],r['y']
+        if key not in required:
+            issues.append(dict(reason='unexpected_frame_region',record=r));continue
+        c,a=required[key];local=a.get('height',[]);mask=int(a.get('doorframe_mask','ffffffffffffffff'),16);opening=r.get('opening_base',255)
+        if r.get('visible',True) and len(bases[key])!=1:
+            issues.append(dict(reason='ambiguous_visible_frame_plane',record=r));continue
+        if len(local)!=64 or int(r['mask'],16)!=mask or r['effective_height'] != [v+(r['frame_base'] if mask>>k&1 else opening if opening!=255 else 0) for k,v in enumerate(local)]:
+            issues.append(dict(reason='frame_mask_or_opening_preservation',record=r));continue
+        own=ownership.get(key,[])
+        identities={(q['origin'],q['direction'],q['split']) for q in own}
+        matching=[q for q in own if q['source']==r['template_offset'] and q['split']==r.get('split_dispatch',False)]
+        if len(identities)!=1 or not matching:
+            partial=columns.get(key,set())
+            owners={(x,y,band) for x,y,band,source in partial}
+            if not own and len(owners)==1 and any(source==r['template_offset'] for x,y,band,source in partial) and not r.get('split_dispatch',False):
+                x,y,band=next(iter(owners));foot=snapshot.cell(c.layer,x,y);asset=assets[foot.tile_hash]
+                facing=transformed_direction(asset['doorway_support_direction'],bool(foot.word&0x4000),bool(foot.word&0x8000))
+                dx,dy={'north':(0,-1),'south':(0,1),'west':(-1,0),'east':(1,0)}[facing]
+                if not (0<=x+dx<64 and 0<=y+dy<64):
+                    issues.append(dict(reason='column_support_out_of_room',record=r));continue
+                base=floors[c.layer].get((r['plane'],x+dx,y+dy))
+                floor=snapshot.cell(c.layer,x+dx,y+dy);support=assets.get(floor.tile_hash,{})
+                heights=support.get('height',[])
+                zero=len(heights)==64
+                for k in range(8):
+                    px=(0 if dx>0 else 7) if dx else k
+                    py=(0 if dy>0 else 7) if dy else k
+                    px=7-px if floor.word&0x4000 else px;py=7-py if floor.word&0x8000 else py
+                    zero &= len(heights)==64 and heights[py*8+px]==0
+                if zero and base==opening and r['frame_base']==opening+8*band:
+                    if r.get('visible',True):accepted.add(key)
+                    continue
+            issues.append(dict(reason='missing_intact_rom_door_template',record=r));continue
+        claim=matching[0];ox,oy=claim['origin'];d=claim['direction']
+        band=(oy+2-c.y if d==0 else c.y-oy if d==1 else ox+2-c.x if d==2 else c.x-ox)
+        landing=set();visible_support=False;hidden_support=False
+        for member in claim['members']:
+            asset=assets.get(member.tile_hash,{})
+            if not asset.get('doorway_support',False):continue
+            facing=transformed_direction(asset.get('doorway_support_direction'),bool(member.word&0x4000),bool(member.word&0x8000))
+            dx,dy={'north':(0,-1),'south':(0,1),'west':(-1,0),'east':(1,0)}[facing]
+            base=floors[member.layer].get((r['plane'],member.x+dx,member.y+dy))
+            if base is not None:
+                landing.add(base)
+                here=snapshot.cell(member.layer,member.x+dx,member.y+dy)
+                other=snapshot.cell(1-member.layer,member.x+dx,member.y+dy)
+                # Basic attribute writer follows actual map identity, not
+                # Link's active plane or the larger of two solved datums.
+                separate=(here.word&0xc3ff)!=(other.word&0xc3ff) and all(
+                    assets.get(v.tile_hash,{}).get('height')==[0]*64 and
+                    assets.get(v.tile_hash,{}).get('tile_role')=='floor' for v in (here,other))
+                hidden=separate and r['plane']!=(0 if member.layer==1 else 1)
+                hidden_support|=hidden;visible_support|=not hidden
+        if landing!={opening} or r['frame_base']!=opening+8*band:
+            issues.append(dict(reason='opening_landing_mismatch',record=r));continue
+        if hidden_support and not visible_support and r.get('visible',True):
+            issues.append(dict(reason='hidden_support_claimed_visible',record=r));continue
+        if r.get('visible',True):accepted.add(key)
+    return dict(required_marked_placements=len(required),solved_marked_placements=len(accepted),
+                missing_marked_placements=[list(k) for k in sorted(required.keys()-accepted)],issues=issues,
+                region_source='placement_rom_directional_doorway_support',opening_contract='authored_relief_at_explicit_directional_datum')
+
+
+def _legacy_audit_doorframes(solution, snapshot, profile, template_data):
     """Inventory all marked placements, independently reject template/mask drift.
 
     Region offsets are not compiled tile-wide map entries. Unmarked pixels
@@ -921,7 +1128,7 @@ def audit_doorframes(solution, snapshot, profile, template_data):
             for x in range(64):
                 c = snapshot.cell(layer, x, y)
                 a = assets.get(c.tile_hash, {})
-                if a.get('tile_role') == 'door' and int(a.get('doorframe_mask', '0'), 16):
+                if a.get('tile_role') == 'doorway' and (int(a.get('doorframe_mask', '0'), 16) or a.get('doorway_support',False)):
                     required[layer, x, y] = (c, a)
     accepted, issues = set(), []
     # Independently attest placement-local FULL outer door bands. Interior
@@ -941,7 +1148,7 @@ def audit_doorframes(solution, snapshot, profile, template_data):
                             if snapshot.cell(layer,ox,oy).word&0xdfff != first:
                                 continue
                             cells=[snapshot.cell(layer,ox+x,oy+y) for x in range(w) for y in range(h)]
-                            if not any(assets.get(c.tile_hash,{}).get('tile_role')=='door' for c in cells):
+                            if not any(assets.get(c.tile_hash,{}).get('tile_role')=='doorway' for c in cells):
                                 continue
                             if not all(c.word&0xdfff==int.from_bytes(template_data[off+2*n:off+2*n+2],'little')&0xdfff for n,c in enumerate(cells)):
                                 continue
@@ -957,7 +1164,7 @@ def audit_doorframes(solution, snapshot, profile, template_data):
             off = r['template_offset']
             direction = next((d for d,(s,e) in enumerate(((0x2716,0x2926),(0x29f0,0x2be8),(0x2c6a,0x2e32),(0x2e6a,0x3032)))
                               if s <= off <= e and (off-s)%24 == 0), None)
-            if direction is None or len(local) != 64 or 'doorframe_mask' in a or a.get('tile_role','unknown') not in ('unknown','door'):
+            if direction is None or len(local) != 64 or 'doorframe_mask' in a or a.get('tile_role','unknown') not in ('unknown','doorway'):
                 continue
             occ = a.get('occlusion', [255]*64)
             if len(occ)!=64 or any(o not in (0,255) or (o==0 and local[k]!=0) for k,o in enumerate(occ)):
@@ -994,7 +1201,7 @@ def audit_doorframes(solution, snapshot, profile, template_data):
         c, a = required[key]
         if r.get('visible', True) and len(bases[key]) != 1:
             issues.append(dict(reason='ambiguous_visible_frame_plane', record=r)); continue
-        mask = int(a['doorframe_mask'], 16)
+        mask = int(a.get('doorframe_mask','0'), 16)
         local = a.get('height', [])
         opening = r.get('opening_base', 255)
         expected = [v + (r['frame_base'] if mask >> k & 1 else opening if opening != 255 else 0)
@@ -1032,19 +1239,25 @@ def audit_doorframes(solution, snapshot, profile, template_data):
                                (int.from_bytes(template_data[off+2*(xx*h+yy):off+2*(xx*h+yy)+2], 'little') & 0xdfff)
                                for xx in range(w) for yy in range(h)):
                         continue
-                    for k in range(4):
-                        x = ox + (k if direction < 2 else 3 if direction == 2 else -1)
-                        y = oy + (k if direction >= 2 else 3 if direction == 0 else -1)
-                        base = floors.get((r['plane'],x,y))
-                        if base is not None:
-                            landing.add(base)
-            if landing != {opening}:
+                    from alttp_doorway_metadata import transformed_direction
+                    for yy in range(h):
+                        for xx in range(w):
+                            member = snapshot.cell(owner_layer(xx,yy),ox+xx,oy+yy)
+                            asset = assets.get(member.tile_hash,{})
+                            if not asset.get('doorway_support',False):
+                                continue
+                            facing = transformed_direction(asset.get('doorway_support_direction'),bool(member.word&0x4000),bool(member.word&0x8000))
+                            dx,dy = {'north':(0,-1),'south':(0,1),'west':(-1,0),'east':(1,0)}[facing]
+                            base = floors.get((r['plane'],member.x+dx,member.y+dy))
+                            if base is not None:
+                                landing.add(base)
+            if landing != {opening} or r['frame_base'] != opening:
                 issues.append(dict(reason='opening_landing_mismatch', record=r)); continue
         if r.get('visible', True):
             accepted.add(key)
     return dict(required_marked_placements=len(required), solved_marked_placements=len(accepted),
                 missing_marked_placements=[list(k) for k in sorted(required.keys()-accepted)], issues=issues,
-                region_source='placement_rom_doorframe_seam', opening_contract='authored_relief_at_connected_landing')
+                region_source='placement_rom_directional_doorway_support', opening_contract='authored_relief_at_explicit_directional_datum')
 
 
 def main() -> int:
@@ -1119,7 +1332,8 @@ def main() -> int:
                                                                   assembly['template_offset']))
             graph['_verified_diagonal_ownership'] = dispatch_ownership
         with args.profile.open("rb") as source:
-            profile = tomllib.load(source)
+            from alttp_doorway_metadata import migrate_profile
+            profile = migrate_profile(tomllib.load(source))
         if args.runtime_solution:
             solution = json.loads(args.runtime_solution.read_text())
             inventory = solution.get('directional_geometry',[])
@@ -1170,6 +1384,20 @@ def main() -> int:
                     graphics_source='exact pinned live snapshot; reference art never substituted',
                     complete_final_words_match=True)
             report['doorframes'] = audit_doorframes(solution, snapshot, profile, graph.get('_verified_rom_template_data'))
+            from alttp_stair_attachments import audit as audit_stairs
+            report['stair_attachments'] = audit_stairs(solution, snapshot, profile, graph.get('_verified_rom_template_data'))
+            if not report['stair_attachments']['success']:
+                report['success'] = False
+            if height_map is not None:
+                mismatches=[]
+                for r in report['stair_attachments']['placements']:
+                    if r['layer']!=1: continue # compiled map format is BG2 only
+                    i=r['y']*64+r['x'];base=r['floor_base']
+                    visible=height_map['visible'] if isinstance(height_map,dict) else height_map
+                    if visible[i]!=base or (isinstance(height_map,dict) and height_map['planes'][r['plane']][i]!=base):
+                        mismatches.append(r)
+                report['stair_attachments']['compiled_map_mismatches']=mismatches
+                if mismatches: report['success']=False
             report['persistent_support'] = dict(required=solution.get('persistent_support_required',[0,0]),
                                                 missing=solution.get('persistent_support_missing',[0,0]),
                                                 placements=solution.get('persistent_support',[]),

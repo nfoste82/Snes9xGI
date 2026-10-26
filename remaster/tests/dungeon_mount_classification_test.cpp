@@ -23,7 +23,7 @@ int main(){try {
  }
  maps->fill(0);tpl->fill(255);for(auto &v:p.assets)v.second.tileRole=RemasterTileRole::Unknown;
  p.assets[ids[4]].tileRole=RemasterTileRole::Wall;
- for(int n=0;n<4;n++){(*tpl)[0x2e82+16+n*2]=n;(*tpl)[0x2e83+16+n*2]=0;p.assets[ids[n]].tileRole=RemasterTileRole::Door;put((20+n)*64+20,n|0x2000);}
+ for(int n=0;n<4;n++){(*tpl)[0x2e82+16+n*2]=n;(*tpl)[0x2e83+16+n*2]=0;p.assets[ids[n]].tileRole=RemasterTileRole::Doorway;put((20+n)*64+20,n|0x2000);}
  put(19*64+20,4);put(24*64+20,4);S9xRemasterDungeonPlacements(c,p,*tiles);
  need(tiles->at(21*64+20).surface==S::Wall && tiles->at(21*64+20).wallTemplateOffset==0x2e82,"complete authored outer door band remains wall geometry");
  put(24*64+20,1023);S9xRemasterDungeonPlacements(c,p,*tiles);need(tiles->at(21*64+20).surface==S::Door,"door missing wall end promoted");

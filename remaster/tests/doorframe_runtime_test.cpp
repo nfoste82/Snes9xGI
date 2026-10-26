@@ -21,16 +21,24 @@ int main()
 		}
 		const int cell=24*64+24;auto &door=tiles->at(cell);
 		door.surface=S::Door;door.hasHeight=door.hasDoorframeMask=true;
-		door.doorTemplateOffset=0x2716;door.doorAssembly=cell+1;door.doorDirection=0;
+		door.doorTemplateOffset=0x2716;door.doorAssembly=cell-2*64+1;door.doorDirection=0;
 		door.hflip=flip&1;door.vflip=flip&2;
 		for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
 			int k=(door.vflip?7-y:y)*8+(door.hflip?7-x:x);
 			door.height[k]=x<4?7-y:39-y; // opening can be an existing stair
 			if(x<4)door.doorframeMask|=UINT64_C(1)<<k;
 		}
+		// Wall seams no longer supply a doorway datum without an explicit
+		// floorward support marker. The direct floor, not the neighboring band,
+		// supplies the placement base; authored opening relief stays unchanged.
+		for(int y=25;y<29;y++)for(int x=24;x<28;x++) {
+			auto &t=tiles->at(y*64+x);t.surface=S::Floor;t.hasHeight=true;attr[y*64+x]=0;
+		}
+		door.doorwaySupport=true;
+		door.doorwaySupportDirection=S9xRemasterTransformSupportDirection(RemasterSupportDirection::South,door.hflip,door.vflip);
 		assert(S9xRemasterBuildDungeonHeightMap(c,rise,*map));
 		assert(map->doorframeAttachments.size()==1 && map->doorframeAttachments[0].cell==cell);
-		assert(map->doorframeAttachments[0].base==8 && map->doorframeAttachments[0].plane==0);
+		assert(map->doorframeAttachments[0].base==0 && map->doorframeAttachments[0].plane==0);
 		// The application accepts signed solved bases, not configured-rise
 		// multiples or a hardcoded floor offset. Pin a translated solved band.
 		map->doorframeAttachments[0].base+=rise;
@@ -42,18 +50,18 @@ int main()
 		RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
 		RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=1;
 		instance.hFlip=door.hflip;instance.vFlip=door.vflip;instance.heightOffset=3;f.tileInstances.push_back(instance);
-		RemasterFrameAssetMetadata a;a.tileRole=RemasterTileRole::Door;a.hasHeight=a.hasDoorframeMask=true;
+		RemasterFrameAssetMetadata a;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=a.hasDoorframeMask=true;
 		a.height=door.height;a.doorframeMask=door.doorframeMask;f.assetMetadata.push_back(a);
 		for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
 			auto &p=f.mainPixels[y*8+x];p.instanceId=1;p.tilePixel=(door.vflip?7-y:y)*8+(door.hflip?7-x:x);
 		}
 		c.backgroundScrollX=24*8;c.backgroundScrollY=24*8;
 		S9xRemasterApplyDungeonHeightMap(f,c,*map);
-		assert(f.tileInstances.size()==2); // mixed frame/opening is not tile-wide
+		assert(f.tileInstances.size()==2); // frame base was translated independently for this projection test
 		for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
 			const auto &p=f.mainPixels[y*8+x];const auto &i=f.tileInstances[p.instanceId-1];
 			assert(!i.hasPlacementHeight);
-			assert(i.heightOffset+f.assetMetadata[0].height[p.tilePixel]==3+int(authored[p.tilePixel])+(x<4?8+rise:0));
+			assert(i.heightOffset+f.assetMetadata[0].height[p.tilePixel]==3+int(authored[p.tilePixel])+(x<4?rise:0));
 		}
 		assert(f.assetMetadata[0].height==authored && door.height==authored);
 		// Two genuinely visible owners disagree: preserve authored geometry.
@@ -66,19 +74,21 @@ int main()
 		// No attachment from absent/empty mask, unsupported dispatch or support.
 		for(int bad=0;bad<4;bad++) {
 			auto saved=door;
-			if(bad==0)door.hasDoorframeMask=false;
-			if(bad==1)door.doorframeMask=0;
+			if(bad==0){door.hasDoorframeMask=false;door.doorwaySupport=false;}
+			if(bad==1){door.doorframeMask=0;door.doorwaySupport=false;}
 			if(bad==2)door.doorTemplateOffset=0;
 			if(bad==3)door.doorDirection=0xfe;
 			assert(S9xRemasterBuildDungeonHeightMap(c,rise,*map));assert(map->doorframeAttachments.empty());door=saved;
 		}
 		for(int y=23;y<26;y++)tiles->at(y*64+23).wallTemplateOffset=0;
+		door.doorwaySupport=false;
 		assert(S9xRemasterBuildDungeonHeightMap(c,rise,*map));assert(map->doorframeAttachments.empty());
 		// The same door seam can be owned by a proved corner branch rather
 		// than the straight perimeter handler. Require exact same seam solve.
 		for(int y=23;y<26;y++)tiles->at(y*64+23).wallTemplateOffset=0xc06;
+		door.doorwaySupport=true;
 		assert(S9xRemasterBuildDungeonHeightMap(c,rise,*map));
-		assert(map->doorframeAttachments.size()==1 && map->doorframeAttachments[0].base==8);
+		assert(map->doorframeAttachments.size()==1 && map->doorframeAttachments[0].base==0);
 	}
 	std::cout<<"PASS doorframe signed band seams, rises37/50/83, H/V masks, stair opening preservation, absent/empty/unsupported/ambiguous ownership rejection\n";
 	// Complete template ownership, priority-only writes, and final overwrites.
@@ -86,7 +96,7 @@ int main()
 	auto gfx=std::make_unique<std::array<uint8_t,65536>>();
 	auto tpl=std::make_unique<std::array<uint8_t,12876>>();tpl->fill(0xff);
 	RemasterProfile profile;uint8_t pixels[64]={};RemasterTileContentId id{S9xRemasterHashTile(4,pixels),1,4};
-	auto &a=profile.assets[id];a.tileId=id;a.tileRole=RemasterTileRole::Door;a.hasHeight=a.hasDoorframeMask=true;a.doorframeMask=~UINT64_C(0);
+	auto &a=profile.assets[id];a.tileId=id;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=a.hasDoorframeMask=true;a.doorframeMask=~UINT64_C(0);
 	c.constructedMaps=maps->data();c.graphics=gfx->data();c.dungeonTemplateData=tpl->data();
 	for(int d=0;d<4;d++) {
 		const int starts[]={0x2716,0x29f0,0x2c6a,0x2e6a};const int w=d<2?4:3,h=d<2?3:4;
@@ -117,9 +127,9 @@ int main()
 		}
 		S9xRemasterDungeonPlacements(c,profile,*tiles);
 		int count=0;for(const auto &t:*tiles)if(t.splitDoorPart){count++;assert(t.doorDirection==d && t.doorTemplateOffset==off);}
-		assert(count==(bg?4:8));
+		assert(count==4); // U-shaped frame only; opening contents do not prove ownership
 		// Opposite-background final overwrite destroys all ownership evidence.
-		const int target=bg?8192:0;(*maps)[target+2*(11*64+11)]=1;
+		const int target=bg?8192:0;const int edge=d==0?11*64+10:d==1?10*64+10:d==2?10*64+11:10*64+10;(*maps)[target+2*edge]=1;
 		S9xRemasterDungeonPlacements(c,profile,*tiles);
 		for(const auto &t:*tiles)assert(!t.splitDoorPart);
 	}

@@ -22,7 +22,7 @@ static RemasterFrame fixture() {
 }
 int main(int argc,char **argv) {
   for(auto role:{RemasterTileRole::Wall,RemasterTileRole::WallCorner,RemasterTileRole::Floor,
-    RemasterTileRole::StairTop,RemasterTileRole::StairBottom})for(int flips=0;flips<4;flips++) {
+    RemasterTileRole::StairTop,RemasterTileRole::StairBottom,RemasterTileRole::Doorway})for(int flips=0;flips<4;flips++) {
    auto f=fixture();f.assetMetadata[0].tileRole=role;auto &i=f.tileInstances[0];i.hFlip=flips&1;i.vFlip=flips&2;
   const auto original=f.originalRgb555;check(S9xRemasterRestoreSceneSubscreenWalls(f)==1,"observed wall restoration");
   check(f.scenePixels[100].instanceId==1 && f.scenePixels[100].tilePixel==13 && f.sceneRgb555[100]==1013,"exact canonical owner/pixel/color");
@@ -50,6 +50,13 @@ int main(int argc,char **argv) {
    check(S9xRemasterRestoreSceneSubscreenWalls(f)==1,"effective context/placement/flip stair source");
    RemasterLightingFieldCache fields;fields.update(f,true);
    check(fields.height[201] && fields.height[200]==S9xRemasterSignedHeightField(24,-3),"effective signed stair field");
+  }
+  // Profile group semantics need not have a matching rendering rule, hence the
+  // observed instance's assetGroup can be empty. Explicit conflicting roles win.
+  for(auto role:{RemasterTileRole::Unknown,RemasterTileRole::Other,RemasterTileRole::Door}) {
+   auto f=fixture();f.assetMetadata[0].tileRole=role;
+   std::set<RemasterTileContentId> members{f.tileInstances[0].tileId};
+   check(S9xRemasterRestoreSceneSubscreenWalls(f,&members)==(role==RemasterTileRole::Unknown?1:0),"canonical group activation/explicit rejection");
   }
   for(int mode=0;mode<14;mode++) {
   auto f=fixture();auto &i=f.tileInstances[0];auto &m=f.assetMetadata[0];
