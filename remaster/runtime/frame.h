@@ -378,9 +378,9 @@ struct RemasterVisibleChannelSelection
 	std::array<RemasterFramePixel, size_t(RemasterMetadataChannel::Count)> donors = {};
 };
 
-inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const RemasterFrame &frame,
-	size_t offset, bool useScene, const std::vector<const RemasterFrameAssetMetadata *> &metadata,
-	bool heightOnly = false)
+template<class Present>
+inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPresence(const RemasterFrame &frame,
+	size_t offset, bool useScene, const Present &present, bool heightOnly, bool alttp)
 {
 	RemasterVisibleChannelSelection result;
 	auto valid = [&](const RemasterFramePixel &p) {
@@ -401,7 +401,7 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 	// BG3 HUD is not a world donor; OBJ is a boundary, never a BG fallback.
 	// Only the verified ALTTP scene contract identifies BG3 as presentation-only.
 	// A third BG in another game is ordinary artwork, not implicitly HUD.
-	const bool hud = frame.profileRomSha256 == "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb" &&
+	const bool hud = alttp &&
 		static_cast<RemasterSourceType>(main.owner >> 24) == RemasterSourceType::Background && ((main.owner >> 16) & 255) == 2;
 	result.visible = valid(main) && !hud ? main : valid(sub) && (!hud || useScene) ? sub : scene;
 	if (hud && !useScene) result.visible = main;
@@ -423,6 +423,13 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 			a.hFlip==b.hFlip && a.vFlip==b.vFlip) result.visible=scene;
 	}
 	const auto &preferred = result.visible;
+	// For the height-only consumer an explicitly present preferred source
+	// (including authored zero) makes every alternate observation irrelevant.
+	// Do not inspect fallback owners/depth again or change the visible sample.
+	if (heightOnly && present(preferred,0)) {
+		result.donors[0]=preferred;
+		return result;
+	}
 	RemasterFramePixel other;
 	if (worldBg(preferred)) {
 		for (const auto *candidate : {&main, &sub, &scene})
@@ -440,8 +447,18 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 		if(a.tileId==b.tileId && a.source==b.source && a.sourceIndex==b.sourceIndex &&
 			a.hFlip==b.hFlip && a.vFlip==b.vFlip)other=scene;
 	}
+	for (size_t c = 0; c < (heightOnly ? 1 : result.donors.size()); c++)
+		result.donors[c] = present(preferred,c) ? preferred : present(other,c) ? other : RemasterFramePixel{};
+	return result;
+}
+
+inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const RemasterFrame &frame,
+	size_t offset, bool useScene, const std::vector<const RemasterFrameAssetMetadata *> &metadata,
+	bool heightOnly = false)
+{
 	auto present = [&](const RemasterFramePixel &p, size_t channel) {
-		if (!valid(p) || p.instanceId > metadata.size() || !metadata[p.instanceId-1]) return false;
+		const bool valid = p.instanceId && p.instanceId <= frame.tileInstances.size() && p.tilePixel < 64;
+		if (!valid || p.instanceId > metadata.size() || !metadata[p.instanceId-1]) return false;
 		const auto &m = *metadata[p.instanceId-1];
 		switch (RemasterMetadataChannel(channel)) {
 		case RemasterMetadataChannel::Height: return m.hasHeight;
@@ -454,10 +471,47 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 		default: return false;
 		}
 	};
-	for (size_t c = 0; c < (heightOnly ? 1 : result.donors.size()); c++)
-		result.donors[c] = present(preferred,c) ? preferred : present(other,c) ? other : RemasterFramePixel{};
-	return result;
+	return S9xRemasterSelectVisibleChannelsWithPresence(frame,offset,useScene,present,heightOnly,
+		frame.profileRomSha256 == "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb");
 }
+
+// Invocation-local borrowed height sources. No authored arrays, material strings,
+// facing/flip tables or unrelated channels are copied for each occurrence.
+// The frame and its instance/context arrays must remain unchanged while selecting.
+struct RemasterFrameHeightResolver
+{
+	struct Source { const std::array<int16_t,64> *height=nullptr; bool hasHeight=false; };
+	std::vector<Source> effective;
+	bool alttp;
+	explicit RemasterFrameHeightResolver(const RemasterFrame &frame) :
+		alttp(frame.profileRomSha256 == "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb") {
+		std::map<RemasterTileContentId,const RemasterFrameAssetMetadata *> assets;
+		for(const auto &m:frame.assetMetadata)assets[m.tileId]=&m;
+		effective.reserve(frame.tileInstances.size());
+		for(size_t n=0;n<frame.tileInstances.size();++n) {
+			const auto &i=frame.tileInstances[n];Source s;
+			auto a=assets.find(i.tileId);
+			if(a!=assets.end()) {
+				const auto &m=*a->second;s={&m.height,m.hasHeight};
+				const RemasterGeometryLayers *g=nullptr;
+				if(m.geometryByFlip)g=&m.flipGeometry[S9xRemasterGeometryFlipIndex(i.hFlip,i.vFlip)];
+				else if(m.geometryByFacing && i.geometryFacing>=1 && i.geometryFacing<=4)g=&m.facingGeometry[i.geometryFacing-1];
+				if(g && g->hasHeight)s={&g->height,true};
+			}
+			if(i.hasPlacementHeight)s={&i.placementHeight,true};
+			auto c=frame.contextGeometry.find(uint32_t(n+1));
+			if(c!=frame.contextGeometry.end())s={&c->second.height,c->second.hasHeight};
+			if(S9xRemasterInstanceGeometryUnresolved(i))s.hasHeight=false;
+			effective.push_back(s);
+		}
+	}
+	RemasterVisibleChannelSelection selectHeight(const RemasterFrame &frame,size_t pixel,bool scene=true) const {
+		auto present=[&](const RemasterFramePixel &p,size_t) {
+			return p.instanceId && p.instanceId<=effective.size() && p.tilePixel<64 && effective[p.instanceId-1].hasHeight;
+		};
+		return S9xRemasterSelectVisibleChannelsWithPresence(frame,pixel,scene,present,true,alttp);
+	}
+};
 
 // Shared immutable effective-source table for inspection, extraction and debug.
 // Occurrence/context precedence is identical to the production field cache.
@@ -626,7 +680,10 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 {
 	frame.contextLocations.clear();
 	if (!frame.area.valid()) return;
-	std::set<uint32_t> conflict;
+	// Instance IDs are dense and invocation-local. Check every observation, but
+	// defer ordered publication until all buffers have had a chance to conflict.
+	struct Observation { RemasterContextLocation at; uint8_t state = 0; };
+	std::vector<Observation> observed(frame.tileInstances.size());
 	for (const auto *pixels : {&frame.mainPixels, &frame.subPixels, &frame.scenePixels})
 		for (size_t p=0;p<pixels->size();p++) {
 			const auto &pixel=(*pixels)[p];
@@ -640,10 +697,16 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 			RemasterContextLocation at;at.area=frame.area.id;at.background=in.sourceIndex;
 			const int mask=frame.area.id<320?511:65535;
 			at.x=(wx&mask)/8;at.y=(wy&mask)/8;
-			auto inserted=frame.contextLocations.emplace(pixel.instanceId,at);
-			if(!inserted.second && (inserted.first->second<at || at<inserted.first->second))conflict.insert(pixel.instanceId);
+			auto &entry=observed[pixel.instanceId-1];
+			if (!entry.state) { entry.at=at; entry.state=1; }
+			else if (entry.at<at || at<entry.at) entry.state=2;
 		}
-	for(auto id:conflict)frame.contextLocations.erase(id);
+	for (size_t i=0;i<observed.size();++i) if (observed[i].state==1) {
+		#ifdef REMASTER_TEST_CONTEXT_LOCATION_PUBLICATION
+		REMASTER_TEST_CONTEXT_LOCATION_PUBLICATION();
+		#endif
+		frame.contextLocations.emplace_hint(frame.contextLocations.end(),static_cast<uint32_t>(i+1),observed[i].at);
+	}
 }
 
 struct RemasterDungeonMovementCache
@@ -3529,11 +3592,52 @@ inline int32_t S9xRemasterLinkFloorHeight(const RemasterDungeonFloorContext &con
 	return matched ? ramp : ordinary;
 }
 
+// Owned by the runtime solve boundary, never by pixels, frame instances, or
+// profile pointers. One variant per room cell bounds storage even under animated
+// or context-selected art. Alternate variants replace, rather than accumulate.
+struct RemasterDungeonFrameRegionIndex {
+	std::array<int,4096> first;
+	std::vector<int> next;
+	explicit RemasterDungeonFrameRegionIndex(const RemasterDungeonHeightMap *m) {
+		first.fill(-1);if(!m)return;next.assign(m->doorframeAttachments.size(),-1);
+		for(int n=int(next.size())-1;n>=0;n--) {
+			const int cell=m->doorframeAttachments[n].cell;if(cell<0 || cell>=4096)continue;
+			next[n]=first[cell];first[cell]=n;
+		}
+	}
+};
+struct RemasterDungeonProjectionCache
+{
+	struct Decision { int32_t offset=0, floor=255; uint8_t directions=0; bool border=false; };
+	struct Cell {
+		bool valid=false;
+		uint64_t generation=0;
+		RemasterTileContentId tileId;
+		uint16_t tileNumber=0;
+		uint8_t palette=0, priority=0, facing=0;
+		bool h=false,v=false,hasMetadata=false;
+		RemasterTileRole role=RemasterTileRole::Unknown;
+		std::string group;
+		std::array<int16_t,64> local={};
+		bool localHeight=false;
+		std::array<Decision,64> decisions;
+	};
+	std::array<std::unique_ptr<Cell>,4096> cells;
+	std::unique_ptr<RemasterDungeonFrameRegionIndex> regions;
+	std::array<int,4096> previews;
+	uint64_t builds=0,hits=0,misses=0,invalidations=0,dynamicVisits=0;
+	void invalidate() { for(auto &c:cells)c.reset(); regions.reset(); ++invalidations; }
+};
+
 inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	const RemasterDungeonFloorContext &context, const RemasterDungeonHeightMap &map,
 	const RemasterDungeonHeightMap *sourceRoomMap = nullptr,
-	RemasterDungeonHeightApplyDiagnostics *diagnostics = nullptr, uint8_t backgroundIndex = 1)
+	RemasterDungeonHeightApplyDiagnostics *diagnostics = nullptr, uint8_t backgroundIndex = 1,
+	RemasterDungeonProjectionCache *retained = nullptr)
 {
+#ifdef ALTTP_TEST_REFERENCE_STATIC_PROJECTION
+	retained=nullptr; // diagnostic differential: the unchanged uncached consumer
+#endif
 	if (map.roomIndex != context.roomIndex)
 		return;
 	const size_t originalCount = frame.tileInstances.size();
@@ -3775,18 +3879,17 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	// Attachments are room placements, not a pixel search domain. Index once per
 	// application and retain every plane/mask claim in original order; do not
 	// choose one owner or collapse ambiguous visible region bases.
-	struct FrameRegionIndex {
-		std::array<int,4096> first;
-		std::vector<int> next;
-		FrameRegionIndex(const RemasterDungeonHeightMap *m) {
-			first.fill(-1);if(!m)return;next.assign(m->doorframeAttachments.size(),-1);
-			for(int n=int(next.size())-1;n>=0;n--) {
-				const int cell=m->doorframeAttachments[n].cell;if(cell<0 || cell>=4096)continue;
-				next[n]=first[cell];first[cell]=n;
-			}
+	using FrameRegionIndex=RemasterDungeonFrameRegionIndex;
+	if(retained && !retained->regions) {
+		retained->regions=std::make_unique<FrameRegionIndex>(&map);
+		retained->previews.fill(-1);
+		for(size_t n=0;n<map.localHeightPreviews.size();++n) {
+			const int cell=map.localHeightPreviews[n].cell;
+			if(cell>=0 && cell<4096 && retained->previews[cell]<0)retained->previews[cell]=int(n);
 		}
-	};
-	auto currentFrames=std::make_unique<FrameRegionIndex>(&map);
+	}
+	auto currentFrameStorage=retained?nullptr:std::make_unique<FrameRegionIndex>(&map);
+	const auto *currentFrames=retained?retained->regions.get():currentFrameStorage.get();
 	auto sourceFrames=std::make_unique<FrameRegionIndex>(sourceRoomMap);
 	auto offsetAt = [&] (const RemasterFramePixel &pixel, uint32_t x, uint32_t y) -> int32_t {
 		if (!pixel.instanceId || pixel.instanceId > originalCount)
@@ -3948,24 +4051,29 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	// Selection is immutable between the observation and splitting passes.
 	// Retain exact per-pixel decisions for this invocation only (including door
 	// masks/source-room ownership), not a camera/animation-sensitive scene cache.
-	struct PixelPlacement {int32_t offset=0,floor=255;uint8_t directions=0;bool border=false;};
+	using PixelPlacement = RemasterDungeonProjectionCache::Decision;
 	// Invocation-local spatial memo, never retained between frames/events. Ordinary
 	// placement selection depends on instance + room cell, not tilePixel. Door
 	// frame/opening compensation does depend on canonical tilePixel and must stay
 	// fresh (including ambiguous/multiple region claims). Preserve traversal and
 	// splitting order; this changes neither ownership proof nor authored geometry.
-	struct LastPlacement { size_t cell=SIZE_MAX; uint16_t room=0xffff; PixelPlacement decision; };
+	struct LastPlacement { size_t cell=SIZE_MAX; uint16_t room=0xffff; PixelPlacement decision;
+		const RemasterDungeonProjectionCache::Cell *retained=nullptr; uint64_t generation=0; };
 #ifndef ALTTP_TEST_REFERENCE_SPATIAL_SELECTION
 	std::vector<LastPlacement> lastPlacements(originalCount);
 #endif
 	std::map<const std::vector<RemasterFramePixel> *,std::vector<PixelPlacement>> pixelPlacements;
+	// A retained descriptor is already an immutable decision source. Consume it
+	// directly in raster order rather than materializing a frame-sized copy and
+	// walking the pixels again. Original instances remain unchanged until the end.
+	const bool directProjection=retained!=nullptr;
 	auto visit = [&] (std::vector<RemasterFramePixel> &pixels, bool assign,
 		std::map<std::tuple<uint32_t, int32_t, uint8_t, int32_t>, uint32_t> &copies) {
 		if (pixels.size() != static_cast<size_t>(frame.width) * frame.height)
 			return;
 		auto &decisions=pixelPlacements[&pixels];
 #ifndef ALTTP_TEST_REFERENCE_PLACEMENT_SELECTION
-		if(!assign)decisions.resize(pixels.size());
+		if(!assign && !directProjection)decisions.resize(pixels.size());
 #endif
 		for (uint32_t y = 0; y < frame.height; y++)
 			for (uint32_t x = 0; x < frame.width; x++)
@@ -3986,10 +4094,52 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				const auto &regions=room==context.roomIndex?*currentFrames:*sourceFrames;
 				auto &last=lastPlacements[originalId-1];
 				const bool pixelDependent=regions.first[cell]>=0;
-				if(!pixelDependent && last.cell==cell && last.room==room)decision=last.decision;
+				if(retained)++retained->dynamicVisits;
+				if(last.cell==cell && last.room==room && last.retained && last.generation==last.retained->generation && pixel.tilePixel<64)
+					decision=last.retained->decisions[pixel.tilePixel];
+				else if(!pixelDependent && !last.retained && last.cell==cell && last.room==room)decision=last.decision;
 				else
 #endif
 				{
+				// Only the caller's validated settled solve may retain decisions.
+				// Door compensation uses selected/context/occurrence local geometry;
+				// compare those actual values, not an asset hash or pixel digest.
+				bool reused=false;
+#ifndef ALTTP_TEST_REFERENCE_SPATIAL_SELECTION
+#ifndef ALTTP_TEST_REFERENCE_STATIC_PROJECTION
+				if(retained && room==context.roomIndex && map.hasRoomGeometry && pixel.tilePixel<64) {
+					const auto &i=frame.tileInstances[originalId-1];
+					if(i.source==RemasterSourceType::Background && i.sourceIndex==backgroundIndex) {
+						const auto *m=instanceMetadata[originalId-1];
+						std::array<int16_t,64> local={};bool hasLocal=false;
+						if(pixelDependent && m) { const auto g=S9xRemasterResolveFrameGeometry(*m,frame,originalId-1);local=g.height;hasLocal=g.hasHeight; }
+						auto &slot=retained->cells[cell];
+						if(!slot)slot=std::make_unique<RemasterDungeonProjectionCache::Cell>();
+						auto &c=*slot;
+						if(c.valid && c.tileId==i.tileId && c.tileNumber==i.tileNumber && c.palette==i.palette &&
+							c.priority==i.ppuPriority && c.facing==i.geometryFacing && c.h==i.hFlip && c.v==i.vFlip &&
+							c.hasMetadata==bool(m) && c.role==(m?m->tileRole:RemasterTileRole::Unknown) &&
+							c.group==i.assetGroup && c.localHeight==hasLocal && c.local==local)++retained->hits;
+						else {
+							++retained->misses;++retained->builds;++c.generation;c.valid=true;c.tileId=i.tileId;c.tileNumber=i.tileNumber;
+							c.palette=i.palette;c.priority=i.ppuPriority;c.facing=i.geometryFacing;c.h=i.hFlip;c.v=i.vFlip;
+							c.hasMetadata=bool(m);c.role=m?m->tileRole:RemasterTileRole::Unknown;c.group=i.assetGroup;c.localHeight=hasLocal;c.local=local;
+							for(int p=0;p<(pixelDependent?64:1);++p) {
+								auto sample=pixel;sample.tilePixel=uint8_t(p);auto &d=c.decisions[p];
+								d.offset=offsetAt(sample,x,y);d.floor=floorAt(sample,x,y);
+								const auto *b=borderAt(sample,x,y);d.border=b!=nullptr;d.directions=b?b->directions:0;
+							}
+							if(!pixelDependent)c.decisions.fill(c.decisions[0]);
+						}
+						last.cell=cell;last.room=room;last.retained=&c;last.generation=c.generation;decision=c.decisions[pixel.tilePixel];last.decision=decision;reused=true;
+					}
+				}
+#endif
+#endif
+				if(!reused) {
+#ifndef ALTTP_TEST_REFERENCE_SPATIAL_SELECTION
+				last.retained=nullptr;
+#endif
 				if(auto *t=RemasterLightingTrace::current())t->projectionDecisions++;
 				decision.offset=offsetAt(pixel,x,y);decision.floor=floorAt(pixel,x,y);
 				const auto *border=borderAt(pixel,x,y);decision.border=border!=nullptr;decision.directions=border?border->directions:0;
@@ -3997,8 +4147,9 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				if(!pixelDependent){last.cell=cell;last.room=room;last.decision=decision;}
 #endif
 				}
+				}
 #ifndef ALTTP_TEST_REFERENCE_PLACEMENT_SELECTION
-				decisions[static_cast<size_t>(y)*frame.width+x]=decision;
+				if(!directProjection)decisions[static_cast<size_t>(y)*frame.width+x]=decision;
 #endif
 			}
 			const int32_t offset=decision.offset,floor=decision.floor;
@@ -4027,7 +4178,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 					firstBorderDirections[originalId - 1] = borderDirections;
 					firstFloor[originalId - 1] = floor;
 				}
-				continue;
+				if(!directProjection)continue;
 			}
 			if (offset == first && borderDirections == firstBorderDirections[originalId - 1] && floor == firstFloor[originalId - 1])
 				continue;
@@ -4050,9 +4201,11 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	visit(frame.mainPixels, false, copies);
 	visit(frame.subPixels, false, copies);
 	for(auto &pixels:frame.observedBgPixels)visit(pixels,false,copies);
-	visit(frame.mainPixels, true, copies);
-	visit(frame.subPixels, true, copies);
-	for(auto &pixels:frame.observedBgPixels)visit(pixels,true,copies);
+	if(!directProjection) {
+		visit(frame.mainPixels, true, copies);
+		visit(frame.subPixels, true, copies);
+		for(auto &pixels:frame.observedBgPixels)visit(pixels,true,copies);
+	}
 	for (size_t i = 0; i < originalCount; i++)
 		if (firstOffset[i] != 255)
 		{
@@ -4075,6 +4228,11 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	{
 		const auto *selected=which ? sourceRoomMap : &map;
 		if (!selected) continue;
+		if(!which && retained) {
+			for(int cell=0;cell<4096;++cell)if(retained->previews[cell]>=0)
+				(*previewIndex)[0][cell]=&map.localHeightPreviews[retained->previews[cell]];
+			continue;
+		}
 		for (const auto &preview:selected->localHeightPreviews)
 			if (preview.cell>=0 && preview.cell<4096 && !(*previewIndex)[which][preview.cell])
 				(*previewIndex)[which][preview.cell]=&preview;
@@ -4638,6 +4796,12 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		frame.materials.push_back(material);
 	}
 
+	// Matching depends only on this complete context, not placement/flip or the
+	// instance's capture-animation name. Keep the authoritative matcher (including
+	// misses and ambiguity) and its profile-owned pointers local to this call so
+	// profile edits/replacement can never leave stale results in a later frame.
+	using MatchKey = std::tuple<RemasterTileContentId, RemasterSourceType, uint8_t, uint8_t>;
+	std::map<MatchKey, RemasterProfileMatch> matches;
 	for (RemasterFrameTileInstance &instance : frame.tileInstances)
 	{
 		RemasterProfileMatchContext context;
@@ -4645,7 +4809,11 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		context.source = instance.source;
 		context.sourceIndex = instance.sourceIndex;
 		context.palette = instance.palette;
-		const RemasterProfileMatch match = S9xRemasterMatchProfile(profile, context);
+		const MatchKey key(context.tileId, context.source, context.sourceIndex, context.palette);
+		auto found = matches.find(key);
+		if (found == matches.end())
+			found = matches.emplace(key, S9xRemasterMatchProfile(profile, context)).first;
+		const RemasterProfileMatch &match = found->second;
 		instance.matchStatus = match.status;
 		instance.ruleLine = match.rule ? static_cast<uint32_t>(match.rule->line) : 0;
 		if (!capturedAnimationNames.count(instance.assetGroup))

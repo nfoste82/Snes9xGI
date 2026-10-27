@@ -188,6 +188,7 @@ struct RemasterState
 	uint64_t runtimeDungeonObservedInputKey = 0;
 	uint64_t runtimeDungeonHeightEpoch = 0;
 	bool runtimeDungeonHeightValid = false;
+	std::unique_ptr<RemasterDungeonProjectionCache> dungeonProjection[2];
 	// Exact evidence key above advances on artwork changes; this key identifies
 	// the last actual solve. Retained classification is heap-backed on small stacks.
 	uint64_t runtimeDungeonSolveGeometryKey = 0;
@@ -321,6 +322,7 @@ inline RemasterState &S9xRemasterState (void)
 inline void S9xRemasterInvalidateDungeonContinuity()
 {
 	auto &s=S9xRemasterState();s.dungeonSession++;
+	for(auto &p:s.dungeonProjection)if(p)p->invalidate();
 	s.transitionSupport={};s.runtimeEntrySupport={};s.runtimeBg1EntrySupport={};s.runtimeEntryRoom=0xffff;
 	s.dungeonSnapshotValid=false;s.runtimeDungeonHeightValid=false;
 	s.dungeonRetainedBg2.reset();s.dungeonRetainedBg1.reset();s.runtimeDungeonSolveGeometryKey=0;
@@ -3241,6 +3243,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 					a.highIsNorth==b.highIsNorth && a.changesPlane==b.changesPlane;
 			}
 			if(!artworkOnlyEligible)state.dungeonArtworkStates.clear();
+			// A validated solve input change revokes projection even when the
+			// keyed solver restores a previous artwork state or an equal profile.
+			if(inputChanged || !state.runtimeDungeonHeightValid)
+				for(auto &p:state.dungeonProjection)if(p)p->invalidate();
 			// Authored semantics/relief are geometry inputs as well as room RAM.
 			if (state.dungeonGeometryProfileDirty)
 			{
@@ -3327,6 +3333,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				// revokes the solve. Equal input keys do not restore validity.
 				if (!state.runtimeDungeonHeightValid || key != state.runtimeDungeonHeightKey)
 				{
+					for(auto &p:state.dungeonProjection)if(p)p->invalidate();
 					bool exactStateReuse=false;
 #ifndef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
 #ifndef ALTTP_TEST_CLASSIFY_ARTWORK_REUSE
@@ -3562,11 +3569,16 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			// No destination writes own pixels during the pre-header departure.
 			// Producer hash+flip still qualifies every frozen outgoing usage.
 			if(departingCurrent){renderContext.submodule=0;renderContext.previousRoomIndex=0xffff;}
+			const bool retainProjection=runtimeInputsPublishable && state.runtimeDungeonHeightValid &&
+				!departingCurrent && !dungeonFloor->submodule && dungeonFloor->module==7 &&
+				reviewMap==&state.runtimeDungeonHeightMap && !state.outgoingGeometry.valid;
+			if(!retainProjection) { for(auto &p:state.dungeonProjection)if(p)p->invalidate(); }
+			else { for(auto &p:state.dungeonProjection)if(!p)p=std::make_unique<RemasterDungeonProjectionCache>(); }
 			if (reviewMap && reviewMap->roomIndex == dungeonFloor->roomIndex)
 			{
 				appliedDungeonHeightMap = reviewMap;
 				S9xRemasterApplyDungeonHeightMap(frame, renderContext, *reviewMap, sourceRoomMap,
-					&dungeonHeightDiagnostics);
+					&dungeonHeightDiagnostics,1,retainProjection?state.dungeonProjection[1].get():nullptr);
 			}
 			else if (sourceRoomMap)
 			{
@@ -3591,7 +3603,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			else if (runtimeInputsPublishable && (!reviewMap || reviewMap == &state.runtimeDungeonHeightMap) &&
 				state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex)
 				S9xRemasterApplyDungeonHeightMap(frame,renderContext,state.runtimeDungeonBg1HeightMap,
-					&state.previousRuntimeDungeonBg1HeightMap,nullptr,0);
+					&state.previousRuntimeDungeonBg1HeightMap,nullptr,0,retainProjection?state.dungeonProjection[0].get():nullptr);
 			else if (state.previousRuntimeDungeonBg1HeightMap.roomIndex == dungeonFloor->previousRoomIndex)
 			{
 				auto pending = std::make_unique<RemasterDungeonHeightMap>();

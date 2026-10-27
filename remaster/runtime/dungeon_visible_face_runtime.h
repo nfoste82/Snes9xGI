@@ -125,7 +125,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	}
 	// Exact selected source and transformed local source at every observed pixel.
 	recognitionTimer.stop();
-	RemasterFrameChannelResolver resolver(frame);
+	RemasterFrameHeightResolver resolver(frame);
 	auto exposureStorage=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();auto &exposed=*exposureStorage;
 	auto exposureBaseStorage=std::make_unique<std::array<std::array<int,4096>,2>>();auto &exposureBase=*exposureBaseStorage;
 	auto visibleStorage=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();auto &visible=*visibleStorage;
@@ -148,7 +148,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		if(checked[bg][cell]!=px.instanceId) {
 			checked[bg][cell]=px.instanceId;const auto &effective=resolver.effective[px.instanceId-1];
 			matches[bg][cell]=inst.tileId.hash==t.tileHash && inst.hFlip==t.hflip && inst.vFlip==t.vflip &&
-				inst.tileNumber==(word&1023) && inst.palette==((word>>10)&7) && effective.hasHeight && effective.height==t.height;
+				inst.tileNumber==(word&1023) && inst.palette==((word>>10)&7) && effective.hasHeight && *effective.height==t.height;
 		}
 		if(!matches[bg][cell] || px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
 		selected[at]=px;exposed[bg][cell]|=UINT64_C(1)<<((y%8)*8+x%8);

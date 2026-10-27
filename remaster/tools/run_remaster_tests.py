@@ -40,6 +40,10 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+	("height_source", "Compact borrowed height sources versus full geometry and frozen selection; allocation work bound"),
+	("static_projection", "Retained room-cell projection versus uncached consumer, BG/HV/masks/mixed/overlap/legacy"),
+	("context_location_accumulation", "Exact legacy location/serialized binding parity and occurrence-bounded map publication"),
+	("profile_match_memo", "Invocation-local rule matching parity, complete keys, misses, ties, groups and profile replacement"),
 	("dungeon_visible_face_template", "Complete ROM section aliases, BG swaps, transforms, owner/plane conflicts and overwrites"),
 	("dungeon_visible_face_solver", "Independent signed visible-region equations, floors and physical-plane isolation"),
 	("dungeon_visible_face_runtime", "Two-BG exposed face, occupied floor and selected-scene publication"),

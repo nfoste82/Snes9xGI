@@ -14,6 +14,7 @@
 #include "controls.h"
 #include "movie.h"
 #include "display.h"
+#include "remaster/runtime/remaster.h"
 #ifdef NETPLAY_SUPPORT
 #include "netplay.h"
 #endif
@@ -1802,6 +1803,9 @@ void S9xResetPPU (void)
 
 void S9xResetPPUFast (void)
 {
+	// Fast defrost bypasses S9xReset/S9xSoftReset; it is still a new
+	// remaster session and must revoke retained room projection/support.
+	S9xRemasterInvalidateDungeonContinuity();
 	PPU.RecomputeClipWindows = TRUE;
 	IPPU.ColorsChanged = TRUE;
 	IPPU.OBJChanged = TRUE;
