@@ -15,7 +15,9 @@ int main()
 		RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=1;
 		instance.hFlip=flip&1;instance.vFlip=flip&2;instance.heightOffset=3;f.tileInstances.push_back(instance);
 		RemasterFrameAssetMetadata a;a.tileRole=RemasterTileRole::Doorway;a.hasHeight=a.hasDoorframeMask=true;a.doorframeMask=mask;
-		for(int k=0;k<64;k++)a.height[k]=(mask>>k&1)?7-k/8:0;
+		// A masked-out pixel can retain nonzero intrinsic frame relief. The
+		// explicit opening owns it; absence from the mask must really select floor.
+		for(int k=0;k<64;k++)a.height[k]=(mask>>k&1)?7-k/8:7;
 		f.assetMetadata.push_back(a);
 		for(auto *pixels:{&f.mainPixels,&f.subPixels})for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
 			auto &p=(*pixels)[y*8+x];p.instanceId=1;p.tilePixel=(instance.vFlip?7-y:y)*8+(instance.hFlip?7-x:x);
@@ -24,7 +26,7 @@ int main()
 		for(const auto *pixels:{&f.mainPixels,&f.subPixels})for(const auto &p:*pixels) {
 			const auto &placed=f.tileInstances[p.instanceId-1];
 			const bool marked=mask&(UINT64_C(1)<<p.tilePixel);
-			const int offset=mode==1?0:marked?rise+8:mode==2?0:rise;
+			const int offset=mode==1?0:marked?rise+8:mode==2?0:rise-a.height[p.tilePixel];
 			assert(!placed.hasPlacementHeight);
 			assert(placed.heightOffset+a.height[p.tilePixel]==3+a.height[p.tilePixel]+offset);
 		}

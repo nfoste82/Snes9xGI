@@ -52,7 +52,8 @@ void DeinitGraphics (void);
 void DrawFreezeDefrostScreen (uint8 *);
 bool DrawRemasterFrame (const RemasterFrame &, RemasterDebugMode,
 	const std::vector<RemasterTileContentId> * = nullptr, bool lighting = false,
-	RemasterLightingView = RemasterLightingView::Composite, bool asynchronous = false);
+	RemasterLightingView = RemasterLightingView::Composite, bool asynchronous = false,
+	bool displayLiveMessages = false);
 void SetLiveRemasterPresentation (bool, RemasterLightingView);
 void SetRemasterHeightPreviewRange (int32_t minimum, int32_t maximum);
 // Diagnostic readback of the last synchronous lighting draw, before selection tint.

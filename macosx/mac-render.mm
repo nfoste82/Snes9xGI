@@ -52,6 +52,7 @@
 #include "mac-screenshot.h"
 #include "mac-render.h"
 #include "remaster-benchmark.h"
+#include "remaster-notification.h"
 
 typedef struct
 {
@@ -75,7 +76,7 @@ struct RemasterGpuStageCounters
 
 	RemasterGpuStageCounters(id<MTLDevice> device)
 	{
-		if ((!RemasterBenchmarkActive() && !S9xRemasterPerformanceMetricsEnabled()) ||
+		if ((!RemasterBenchmarkActive() && !S9xRemasterPerformanceMetricsEnabled() && !RemasterLightingTrace::enabled()) ||
 			std::getenv("S9X_REMASTER_DISABLE_STAGE_COUNTERS")) return;
 		if (@available(macOS 11.0, *))
 			if ([device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
@@ -275,7 +276,9 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1, bool = true,
 	const std::array<float, 3> * = nullptr, int = -1, bool = true,
 	const std::vector<RemasterSurfaceMesh::Cell> * = nullptr, const RemasterFrame * = nullptr,
-	const std::vector<RemasterSurfaceMesh::Sample> * = nullptr);
+	const std::vector<RemasterSurfaceMesh::Sample> * = nullptr,
+	const std::vector<uint8_t> * = nullptr,
+	const std::vector<RemasterVisibleChannelSelection> * = nullptr);
 
 static int					whichBuf          = 0;
 static int					textureNum        = 0;
@@ -368,6 +371,8 @@ struct RemasterMetalResources
 	id<MTLBuffer> directSamples = nil;
 	id<MTLBuffer> emitterPatches = nil;
 	id<MTLBuffer> directPartials = nil;
+	id<MTLBuffer> sceneLights = nil;
+	RemasterFieldUploadCache sceneLightUploads;
 	uint32_t sourceLeafCount = 0;
 	std::array<RemasterFieldUploadCache, 8> fieldUploads;
 };
@@ -389,6 +394,29 @@ static dispatch_queue_t presentationQueue = dispatch_queue_create("org.snes9x.pr
 static std::atomic<uint64_t> droppedRemasterPresentations { 0 };
 static std::mutex remasterResourceMutex;
 static std::condition_variable remasterResourceAvailable;
+
+// Caller must exclusively own the completion-gated resource slot. Both the
+// production renderer and offline GPU lifetime regression use this allocation
+// and exact-record upload path (including the empty dummy record).
+static id<MTLBuffer> UploadRemasterSceneLights(RemasterMetalResources &resources,
+	const std::vector<RemasterGpuLight> &lights, RemasterLightingTrace::Frame *trace)
+{
+	const RemasterGpuLight empty={};
+	const size_t count=std::max<size_t>(1,lights.size()), bytes=count*sizeof(RemasterGpuLight);
+	if(!resources.sceneLights || resources.sceneLights.length<bytes) {
+		if(trace)trace->allocations++;
+		resources.sceneLights=[metalDevice newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+		resources.sceneLightUploads={};
+	}
+	if(!resources.sceneLights)return nil;
+	const void *data=lights.empty()?&empty:lights.data();
+	resources.sceneLightUploads.update(data,sizeof(RemasterGpuLight),count,[&](size_t first,size_t rows) {
+		if(trace)trace->uploadBytes+=rows*sizeof(RemasterGpuLight);
+		memcpy(static_cast<uint8_t*>(resources.sceneLights.contents)+first*sizeof(RemasterGpuLight),
+			static_cast<const uint8_t*>(data)+first*sizeof(RemasterGpuLight),rows*sizeof(RemasterGpuLight));
+	});
+	return resources.sceneLights;
+}
 
 static int AcquireRemasterResourceSlot (bool wait)
 {
@@ -543,11 +571,20 @@ static void TraceRemasterStairPresentation(const char *event, int width, int hei
 
 bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView,
-	bool asynchronous)
+	bool asynchronous, bool displayLiveMessages)
 {
+	auto trace=frame.lightingTrace;
+	trace.bounces=frame.indirectBounceCount;trace.connections=frame.samplesPerFrame;
+	trace.representatives=frame.representativeEmitters;trace.directional=frame.directionalLight.enabled;
+	if(RemasterLightingTrace::enabled() && !trace.id) {
+		trace.id=RemasterLightingTrace::nextId(); trace.begin=RemasterLightingTrace::now();
+	}
+	RemasterLightingTrace::Scope fieldTimer(&trace,RemasterLightingTrace::Fields);
+	RemasterLightingTrace::Scope lockTimer(&trace,RemasterLightingTrace::LockWait);
 	const bool panelMetrics = S9xRemasterPerformanceMetricsEnabled() || std::getenv("S9X_REMASTER_FRAME_METRICS");
 	const auto fieldPreparationStarted = std::chrono::steady_clock::now();
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
+	lockTimer.stop();
 	if (asynchronous && !liveRemasterPresentationEnabled.load(std::memory_order_relaxed))
 		return true;
 	if (frame.width > INT_MAX || frame.height > INT_MAX ||
@@ -566,9 +603,15 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		debugMode = RemasterDebugMode::Original;
 	const bool meshView = lighting && lightingView == RemasterLightingView::Mesh;
 	if (meshView) asynchronous = false;
+	RemasterLightingTrace::Scope slotTimer(&trace,RemasterLightingTrace::SlotWait);
 	const int resourceSlot = lighting && !meshView ? AcquireRemasterResourceSlot(!asynchronous) : -1;
+	slotTimer.stop();
 	if (lighting && !meshView && resourceSlot < 0)
 	{
+		if(trace.id)if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
+			std::ofstream out(std::string(path)+".drops",std::ios::app);
+			out<<"{\"frame_id\":"<<trace.id<<",\"reason\":\"slot_drop\"}\n";
+		}
 		TraceRemasterStairPresentation("slot_drop", frame.width, frame.height, resourceSlot, frame.lights.size());
 		droppedRemasterPresentations.fetch_add(1, std::memory_order_relaxed);
 		return true;
@@ -634,6 +677,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	if (lighting && frame.schemaVersion >= 5)
 	{
 		fieldCache.update(frame, useScene, std::getenv("S9X_REMASTER_FULL_FIELDS") != nullptr);
+		trace.selected=fieldCache.selectedPixels; trace.updated=fieldCache.updatedPixels; trace.resolved=fieldCache.resolvedInstances;
+		RemasterLightingTrace::Scope meshTimer(&trace,RemasterLightingTrace::Mesh);
 		const auto meshStarted = std::chrono::steady_clock::now();
 		// renderMutex serializes cache access. Compare effective inputs even for
 		// moving backgrounds; no game-specific static-tile assumptions are needed.
@@ -660,6 +705,13 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			std::chrono::duration<double, std::milli>(fieldWorkStarted - fieldPreparationStarted).count();
 		state.performanceMetrics.lightingMeshMs = meshMs;
 	}
+	// Snapshot on the live producer, before crossing the asynchronous presentation
+	// boundary. Offline replays must not borrow unrelated live emulator messages.
+	const auto notification = displayLiveMessages && Settings.AutoDisplayMessages ?
+		RemasterNotificationPixels(GFX.InfoString, frame.width, frame.height, Settings.DisplayColor,
+			Settings.DisplayPressedKeys, Settings.ShowOverscan) : std::vector<uint8_t>();
+	fieldTimer.stop();
+	RemasterLightingTrace::Scope setupTimer(&trace,RemasterLightingTrace::Setup);
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		useScene ? sceneColors.data() : frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
@@ -668,7 +720,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		lighting && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
-		resourceSlot, !asynchronous, &mesh, &frame, &meshSamples);
+		resourceSlot, !asynchronous, &mesh, &frame, &meshSamples, &notification,
+		useScene==!frame.scenePixels.empty()?&fieldCache.channelSources:nullptr);
 }
 
 void SetLiveRemasterPresentation (bool enabled, RemasterLightingView lightingView)
@@ -685,6 +738,7 @@ void SetRemasterHeightPreviewRange (int32_t minimum, int32_t maximum)
 	remasterHeightPreviewRange.store((uint64_t(uint32_t(maximum)) << 32) | uint32_t(minimum), std::memory_order_relaxed);
 }
 
+static void InitializeRemasterMetalPipelines(id<MTLLibrary>, MTLPixelFormat);
 static void S9xInitMetal (void)
 {
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
@@ -704,11 +758,17 @@ static void S9xInitMetal (void)
 	
 	NSError *error = nil;
 	id<MTLLibrary> defaultLibrary = [metalDevice newDefaultLibraryWithBundle:[NSBundle bundleForClass:[S9xEngine class]] error:&error];
+	InitializeRemasterMetalPipelines(defaultLibrary, s9xView.colorPixelFormat);
+}
+
+static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLPixelFormat format)
+{
+	NSError *error = nil;
 
 	MTLRenderPipelineDescriptor *pipelineDescriptor = [MTLRenderPipelineDescriptor new];
 	pipelineDescriptor.label = @"Snes9x Pipeline";
 	pipelineDescriptor.vertexFunction = [defaultLibrary newFunctionWithName:@"vertexShader"];
-	pipelineDescriptor.colorAttachments[0].pixelFormat = s9xView.colorPixelFormat;
+	pipelineDescriptor.colorAttachments[0].pixelFormat = format;
 	pipelineDescriptor.fragmentFunction = [defaultLibrary newFunctionWithName:@"fragmentShader"];
 	
 	metalPipelineState = [metalDevice newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
@@ -964,13 +1024,14 @@ void S9xPutImage (int width, int height)
 	if ((S9xRemasterGetDebugMode() == RemasterDebugMode::TileTypes ||
 		S9xRemasterGetDebugMode() == RemasterDebugMode::FloorWalls) && liveFrame &&
 		S9xRemasterFrameHasPixelData(*liveFrame, static_cast<uint32_t>(width), static_cast<uint32_t>(height)) &&
-		DrawRemasterFrame(*liveFrame, S9xRemasterGetDebugMode(), nullptr, false))
+		DrawRemasterFrame(*liveFrame, S9xRemasterGetDebugMode(), nullptr, false,
+			RemasterLightingView::Composite, false, true))
 		return;
 	if (liveRemasterPresentationEnabled.load(std::memory_order_relaxed) &&
 		width == SNES_WIDTH && height > 0 && liveFrame &&
 		S9xRemasterFrameHasPixelData(*liveFrame, static_cast<uint32_t>(width), static_cast<uint32_t>(height)) &&
 		DrawRemasterFrame(*liveFrame, S9xRemasterGetDebugMode(), nullptr, true,
-			liveRemasterLightingView.load(std::memory_order_relaxed), !RemasterBenchmarkDeterministicPresentation()))
+			liveRemasterLightingView.load(std::memory_order_relaxed), !RemasterBenchmarkDeterministicPresentation(), true))
 		return;
 
 	TraceRemasterStairPresentation("stock_fallback", width, height, -1, liveFrame ? liveFrame->lights.size() : 0);
@@ -989,9 +1050,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	uint8_t samplesPerFrame, bool sampleAccumulation,
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion,
 	const std::vector<RemasterSurfaceMesh::Cell> *mesh, const RemasterFrame *frame,
-	const std::vector<RemasterSurfaceMesh::Sample> *meshSamples)
+	const std::vector<RemasterSurfaceMesh::Sample> *meshSamples,
+	const std::vector<uint8_t> *notification,
+	const std::vector<RemasterVisibleChannelSelection> *selectedChannels)
 {
 	RemasterResourceSlotGuard resourceGuard(resourceSlot);
+	auto *trace=RemasterLightingTrace::current();
 	std::lock_guard<std::recursive_mutex> lock(renderMutex);
 	const bool panelMetrics = S9xRemasterPerformanceMetricsEnabled() || std::getenv("S9X_REMASTER_FRAME_METRICS");
 	const auto lightingPreparationStarted = std::chrono::steady_clock::now();
@@ -1002,6 +1066,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	uint32_t frameEmitterCount = 0, frameDirectSampleCount = 0;
 	uint32_t frameSphereCount = 0, frameSphereSampleCount = 0, frameDirectBatchSize = 0;
 	uint32_t frameDepthEmitterCount = 0;
+	uint32_t framePatchCount = 0;
 	uint64_t frameEmitterSignature = 14695981039346656037ull;
 	double sourceBuildMs = 0;
 	static uint8 *buffer = nil;
@@ -1125,6 +1190,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		{
 			MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
 				width:sourceWidth height:sourceHeight mipmapped:NO];
+			if(trace)trace->allocations++;
 			sourceTexture = [metalDevice newTextureWithDescriptor:textureDescriptor];
 			if (resources)
 				resources->source = sourceTexture;
@@ -1134,6 +1200,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		
 		[sourceTexture replaceRegion:MTLRegionMake2D(0, 0, sourceWidth, sourceHeight) mipmapLevel:0
 			withBytes:diagram.empty() ? buffer : diagram.data() bytesPerRow:sourceWidth * 4];
+		if(trace)trace->uploadBytes+=size_t(sourceWidth)*sourceHeight*4;
 		
 		float vWidth = layerSize.width / 2.0;
 		float vHeight = layerSize.height / 2.0;
@@ -1173,10 +1240,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				resources->height != static_cast<NSUInteger>(height);
 			if (rebuildTextures)
 			{
+				if(trace) trace->allocations+=18;
 				resources->fieldUploads = {};
 				resources->directSources = resources->directSamples = nil;
 				resources->emitterPatches = nil;
 				resources->directPartials = nil;
+				resources->sceneLights = nil;
+				resources->sceneLightUploads = {};
 				resources->device = metalDevice;
 				resources->width = width;
 				resources->height = height;
@@ -1226,7 +1296,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			}
 			id<MTLTexture> occlusionTexture = resources->occlusion;
 			auto uploadField = [&](size_t index, id<MTLTexture> texture, const void *data, size_t stride) {
+				RemasterLightingTrace::Scope uploadTimer(trace,RemasterLightingTrace::Upload);
 				return resources->fieldUploads[index].update(data, stride, height, [&](size_t y, size_t rows) {
+					if(trace) trace->uploadBytes+=rows*stride;
 					[texture replaceRegion:MTLRegionMake2D(0, y, width, rows) mipmapLevel:0
 						withBytes:static_cast<const uint8_t *>(data)+y*stride bytesPerRow:stride];
 				});
@@ -1248,6 +1320,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			if (!resources->mesh || !mesh || mesh->size() != static_cast<size_t>(width * height)) return false;
 			visibilityDirty |= resources->fieldUploads[7].update(mesh->data(), width*sizeof(RemasterSurfaceMesh::Cell), height,
 				[&](size_t y, size_t rows) { const size_t stride = width*sizeof(RemasterSurfaceMesh::Cell);
+					if(trace)trace->uploadBytes+=rows*stride;
 					memcpy(static_cast<uint8_t *>(resources->mesh.contents)+y*stride,
 						reinterpret_cast<const uint8_t *>(mesh->data())+y*stride, rows*stride); });
 			if (!visibilityBlocksTexture || !resources->sourcePower)
@@ -1276,6 +1349,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				radianceDescriptor.storageMode = MTLStorageModeShared;
 			id<MTLTexture> directTexture = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : resources->direct;
 			const auto sourceBuildStarted = std::chrono::steady_clock::now();
+			RemasterLightingTrace::Scope scanTimer(trace,RemasterLightingTrace::Scan);
 			// Retain all authored emitting pixels before optional patch aggregation.
 			std::vector<uint32_t> emitterPixels;
 			for (uint32_t pixel = 0; pixel < static_cast<uint32_t>(width * height); pixel++)
@@ -1297,6 +1371,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					}
 				}
 			const uint32_t emitterCount = static_cast<uint32_t>(emitterPixels.size());
+			scanTimer.stop();
+			RemasterLightingTrace::Scope sphereTimer(trace,RemasterLightingTrace::Spheres);
 			const RemasterDebugLight light = GetRemasterDebugLight();
 			// Immutable authored/adapter lights use the same physical sphere transport
 			// as the session light, independently of whether that light is enabled.
@@ -1326,9 +1402,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							frameEmitterSignature = (frameEmitterSignature ^ bytes[j]) * 1099511628211ull;
 					}
 				}
-			const RemasterGpuLight emptySceneLight = {};
-			id<MTLBuffer> sceneLightBuffer = [metalDevice newBufferWithBytes:sceneLights.empty() ? &emptySceneLight : sceneLights.data()
-				length:std::max<size_t>(1, sceneLights.size()) * sizeof(RemasterGpuLight) options:MTLResourceStorageModeShared];
+			id<MTLBuffer> sceneLightBuffer=UploadRemasterSceneLights(*resources,sceneLights,trace);
 			if (!sceneLightBuffer) return false;
 			// Connections per receiver controls indirect transport. Stochastic Direct
 			// remains an explicit experiment, never the default live shadow path.
@@ -1348,13 +1422,19 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			const bool clustered = frame && frame->representativeEmitters > 0 &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
+			sphereTimer.stop();
+			RemasterLightingTrace::Scope hiddenTimer(trace,RemasterLightingTrace::Hidden);
 			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clustered) : std::vector<RemasterHiddenDirectSample>{};
+			hiddenTimer.stop();
 			if (panelMetrics) for (const auto &s:hiddenSamples) {
 				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
 				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
 			}
 			std::vector<RemasterEmitterPatch> patches;
-			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, *mesh);
+			RemasterLightingTrace::Scope clusterTimer(trace,RemasterLightingTrace::Cluster);
+			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, *mesh, selectedChannels);
+			clusterTimer.stop(); framePatchCount=static_cast<uint32_t>(patches.size());
+			RemasterLightingTrace::Scope sourcesTimer(trace,RemasterLightingTrace::Sources);
 			std::vector<vector_uint2> directSources;
 			if (clustered) {
 				for (uint32_t p = 0; p < patches.size(); p++) {
@@ -1381,18 +1461,29 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			const size_t sourceBytes = std::max<size_t>(1, directSampleCount) * sizeof(vector_uint2);
 			const size_t sampleBytes = std::max<size_t>(1, directSampleCount) * sizeof(vector_float4) * 4;
 			if (!resources->directSources || resources->directSources.length < sourceBytes)
+			{
+				if(trace)trace->allocations++;
 				resources->directSources = [metalDevice newBufferWithLength:sourceBytes options:MTLResourceStorageModeShared];
+			}
 			if (!resources->directSamples || resources->directSamples.length < sampleBytes)
+			{
+				if(trace)trace->allocations++;
 				resources->directSamples = [metalDevice newBufferWithLength:sampleBytes options:MTLResourceStorageModePrivate];
+			}
 			if (!resources->directSources || !resources->directSamples) return false;
-			if (directSampleCount) memcpy(resources->directSources.contents, directSources.data(), sourceBytes);
+			if (directSampleCount) {memcpy(resources->directSources.contents, directSources.data(), sourceBytes);if(trace)trace->uploadBytes+=sourceBytes;}
 			if (clustered) {
 				size_t bytes = std::max<size_t>(1, patches.size())*sizeof(RemasterEmitterPatch);
 				if (!resources->emitterPatches || resources->emitterPatches.length < bytes)
+				{
+					if(trace)trace->allocations++;
 					resources->emitterPatches = [metalDevice newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+				}
 				if (!resources->emitterPatches) return false;
-				if (!patches.empty()) memcpy(resources->emitterPatches.contents, patches.data(), bytes);
+				if (!patches.empty()) {memcpy(resources->emitterPatches.contents, patches.data(), bytes);if(trace)trace->uploadBytes+=bytes;}
 			}
+			sourcesTimer.stop();
+			RemasterLightingTrace::Scope encodeTimer(trace,RemasterLightingTrace::Encode);
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
 				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
 				heightPreviewMultiplier, 0.0f, 0,
@@ -1810,6 +1901,21 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			state.performanceMetrics.directSourceBuildMs = sourceBuildMs;
 		}
 
+		// Notifications are composited only in the final presentation shader: no
+		// albedo, transport, temporal accumulation or capture pixels are modified.
+		id<MTLTexture> notificationTexture = nil;
+		const int hasNotification = notification && notification->size() == requiredSize;
+		if (hasNotification)
+		{
+			MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+				width:width height:height mipmapped:NO];
+			descriptor.usage = MTLTextureUsageShaderRead;
+			notificationTexture = [metalDevice newTextureWithDescriptor:descriptor];
+			if (!notificationTexture) return false;
+			[notificationTexture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0
+				withBytes:notification->data() bytesPerRow:width * 4];
+		}
+
 		// Only retained Metal objects and copied values cross this boundary. Frame
 		// pixels and temporary CPU fields have already been uploaded on the producer.
 		CAMetalLayer *presentationLayer = metalLayer;
@@ -1824,17 +1930,35 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		const RemasterState::PerformanceMetrics benchmarkMetrics = benchmarkTag.measured || logFrameMetrics ?
 			S9xRemasterGetPerformanceMetrics() : RemasterState::PerformanceMetrics{};
 		const auto queuedAt = std::chrono::steady_clock::now();
+		// Finish CPU setup before queue/drawable/GPU waits. Copy lineage into the
+		// completion block; never read mutable latest-frame metrics for this trace.
+		if(RemasterLightingTrace::activeScope() && RemasterLightingTrace::activeScope()->frame==trace)
+			RemasterLightingTrace::activeScope()->stop();
+		const auto traceCopy=trace?*trace:RemasterLightingTrace::Frame{};
+		const double traceBeginUptime=[NSProcessInfo processInfo].systemUptime-(RemasterLightingTrace::now()-traceCopy.begin);
 		const auto callbackGate = presentationCallbackGate;
 		bool (^present)(void) = ^bool {
 			@autoreleasepool {
 				RemasterResourceSlotGuard queuedGuard(waitForCompletion ? -1 : resourceSlot);
 				const auto drawableStart = std::chrono::steady_clock::now();
+#ifdef REMASTER_OFFLINE_RENDERER
+				id<CAMetalDrawable> drawable = nil;
+#else
 				id<CAMetalDrawable> drawable = [presentationLayer nextDrawable];
+#endif
 				const auto drawableEnd = std::chrono::steady_clock::now();
+#ifndef REMASTER_OFFLINE_RENDERER
 				if (!drawable)
 					return false;
+#endif
 				MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+#ifdef REMASTER_OFFLINE_RENDERER
+				MTLTextureDescriptor *offlineDescriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+				offlineDescriptor.usage=MTLTextureUsageRenderTarget;
+				renderPassDescriptor.colorAttachments[0].texture=[metalDevice newTextureWithDescriptor:offlineDescriptor];
+#else
 				renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
+#endif
 				renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
 				renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 				id<MTLRenderCommandEncoder> renderEncoder =
@@ -1849,16 +1973,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				[renderEncoder setVertexBytes:verticies.data() length:sizeof(verticies) atIndex:0];
 				[renderEncoder setVertexBytes:&viewportSize length:sizeof(viewportSize) atIndex:1];
 				[renderEncoder setFragmentTexture:presentationTexture atIndex:0];
+				[renderEncoder setFragmentTexture:notificationTexture atIndex:1];
 				[renderEncoder setFragmentBytes:&presentationVideoMode length:sizeof(presentationVideoMode) atIndex:1];
+				[renderEncoder setFragmentBytes:&hasNotification length:sizeof(hasNotification) atIndex:2];
 				[renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 				[renderEncoder endEncoding];
+#ifndef REMASTER_OFFLINE_RENDERER
 				[commandBuffer presentDrawable:drawable];
-				if (measureFrames)
+#endif
+				if (measureFrames || traceCopy.id)
 				{
 					const double submittedUptime = [NSProcessInfo processInfo].systemUptime;
 					const double queuedMs = std::chrono::duration<double, std::milli>(drawableStart - queuedAt).count();
 					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
+					const double presentationCpuMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drawableEnd).count();
 					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+						if (@available(macOS 10.15, *)) if(traceCopy.id) if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
+							static std::mutex traceMutex; std::lock_guard<std::mutex> guard(traceMutex);
+							std::ofstream out(path,std::ios::app); out<<std::setprecision(15);
+							RemasterLightingTrace::write(out,traceCopy,completed.GPUStartTime,completed.GPUEndTime,
+								traceBeginUptime,submittedUptime,queuedMs,drawableMs,presentationCpuMs,
+								width,height,frameSphereCount,frameDirectSampleCount+frameSphereSampleCount,framePatchCount,int(completed.status));
+						}
 						double gpuMs = 0.0;
 						if (@available(macOS 10.15, *))
 							if (completed.GPUEndTime > completed.GPUStartTime)
@@ -1877,9 +2013,16 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 										if (times[i * 2].timestamp != MTLCounterErrorValue && times[i * 2 + 1].timestamp != MTLCounterErrorValue &&
 											times[i * 2 + 1].timestamp >= times[i * 2].timestamp)
 											sums[stageNames[i]] += (times[i * 2 + 1].timestamp - times[i * 2].timestamp) / 1e6;
-									for (const auto &stage : sums) gpuStages.push_back(stage);
-								}
+								for (const auto &stage : sums) gpuStages.push_back(stage);
 							}
+						}
+						if(traceCopy.id && !gpuStages.empty())if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
+							static std::mutex stagesMutex;std::lock_guard<std::mutex> guard(stagesMutex);
+							std::ofstream out(std::string(path)+".stages",std::ios::app);
+							out<<"{\"frame_id\":"<<traceCopy.id<<",\"gpu_stages_ms\":{";
+							for(size_t i=0;i<gpuStages.size();i++)out<<(i?",":"")<<'"'<<gpuStages[i].first<<"\":"<<gpuStages[i].second;
+							out<<"}}\n";
+						}
 						if (benchmarkTag.measured)
 						{
 							RemasterBenchmarkSample sample;

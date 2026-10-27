@@ -31,7 +31,19 @@ inline void S9xRemasterTintTileTypePixel(const RemasterFrame &frame,
 	// BG3 is the HUD; backdrop and unsupported pixels are not decoded tiles.
 	if (instance.source != RemasterSourceType::Object &&
 		(instance.source != RemasterSourceType::Background || instance.sourceIndex == 2)) return;
-	const uint32_t color = S9xRemasterTileRoleColor(roles[pixel.instanceId - 1]);
+	// Role is an independent channel: Unknown is absence, not permission to
+	// erase a known role on the other observed BG. Do not change artwork picking.
+	auto role=roles[pixel.instanceId-1];
+	if(role==RemasterTileRole::Unknown && instance.source==RemasterSourceType::Background) {
+		for(const auto *buffer:{&frame.subPixels,&frame.scenePixels})if(index<buffer->size()) {
+			const auto &p=(*buffer)[index];
+			if(!p.instanceId || p.instanceId>roles.size() || p.instanceId>frame.tileInstances.size() || p.tilePixel>=64)continue;
+			const auto &other=frame.tileInstances[p.instanceId-1];
+			if(other.source==RemasterSourceType::Background && other.sourceIndex<2 && other.sourceIndex!=instance.sourceIndex &&
+				roles[p.instanceId-1]!=RemasterTileRole::Unknown){role=roles[p.instanceId-1];break;}
+		}
+	}
+	const uint32_t color = S9xRemasterTileRoleColor(role);
 	red = (red + 2 * ((color >> 16) & 255)) / 3;
 	green = (green + 2 * ((color >> 8) & 255)) / 3;
 	blue = (blue + 2 * (color & 255)) / 3;

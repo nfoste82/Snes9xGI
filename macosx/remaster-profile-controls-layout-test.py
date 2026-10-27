@@ -16,6 +16,15 @@ def frame(name):
 
 
 class ProfileControlsLayoutTests(unittest.TestCase):
+    def test_escape_does_not_close_profile_controls(self):
+        self.assertIn("[[S9xRemasterProfilePanel alloc]", SECTION)
+        panel = SOURCE.split("@implementation S9xRemasterProfilePanel\n", 1)[1].split(
+            "@end", 1)[0]
+        cancel = re.search(r"- \(void\)cancelOperation:\(id\)sender\s*\{([^}]*)\}", panel)
+        self.assertIsNotNone(cancel)
+        self.assertEqual(re.sub(r"//[^\n]*", "", cancel[1]).strip(), "")
+        self.assertIn("NSWindowStyleMaskClosable", SECTION)
+
     def test_area_scene_controls_have_separate_rows_and_fixed_restore_size(self):
         area = SOURCE.split("- (void)showRemasterAreaSettings\n", 1)[1].split(
             "- (void)refreshRemasterAreaSettings\n", 1)[0]

@@ -74,6 +74,15 @@ class RoomHeightValidationTests(unittest.TestCase):
         fixture['elevation']['structural_placements']=records
         report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
         self.assertEqual(sum(p.get('local_source')=='placement_wall_mount_backing' for p in report['placements']),8)
+        # Corners agree at the contacting edge but differ elsewhere. Preserve
+        # the independent expected backing ramp, not the full corner arrays.
+        profile['assets'] += [dict(tile_hash='corner_top',height=[max(7-x,7-y) for y in range(8) for x in range(8)],tile_role='wall'),
+                              dict(tile_hash='corner_bottom',height=[max(7-x,y) for y in range(8) for x in range(8)],tile_role='wall')]
+        for x in range(2):
+            snapshot.cell(1,20+x,19).tile_hash='corner_top'
+            snapshot.cell(1,20+x,24).tile_hash='corner_bottom'
+        report=validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
+        self.assertEqual(sum(p.get('local_source')=='placement_wall_mount_backing' for p in report['placements']),8)
         snapshot.cell(1,20,20).word^=1
         with self.assertRaisesRegex(ValueError,'mounted fixture'):validate(fixture,50,snapshot=snapshot,attributes=attrs(),profile=profile)
         snapshot.cell(1,20,20).word^=1

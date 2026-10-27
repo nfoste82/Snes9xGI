@@ -31,7 +31,9 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  v(m.relativeAnchors.size());for(auto &r:m.relativeAnchors){v(r.node);v(r.minimum);v(r.supportNodes);v(r.isolatedFlat);}
  v(m.geometryGroupIssues.size());for(auto &r:m.geometryGroupIssues){v(r.start);v(r.nodes);v(r.mismatches);v(r.negative);v(r.overflow);v(r.isolatedFlat);}
  v(m.authoredSupportRelations.size());for(auto &r:m.authoredSupportRelations){v(r.a);v(r.b);v(r.rise);}
- v(m.authoredWallSupportRelations.size());for(auto &r:m.authoredWallSupportRelations){v(r.wall);v(r.support);v(r.rise);v(r.word);array(r.height);}
+ v(m.authoredWallSupportRelations.size());for(auto &r:m.authoredWallSupportRelations){v(r.wall);v(r.support);v(r.rise);v(r.word);array(r.height);v(r.terminalLowPath);v(r.source);v(r.hflip);v(r.vflip);v(r.path.size());array(r.path);}
+ v(m.shellMapIdentity);v(m.visibleShellContacts);v(m.visibleShellRejected);
+ v(m.visibleShellCandidates.size());for(auto &r:m.visibleShellCandidates){v(r.bg);v(r.plane);v(r.cell);v(r.peer);v(r.dx);v(r.dy);v(r.source);v(r.peerSource);v(r.peerBase);v(r.proposed);v(r.support);v(r.occupied);v(r.relation);v(r.gradient);v(r.uniform);array(r.edge);array(r.peerEdge);array(r.slope);array(r.peerSlope);o<<r.reason<<' ';}
  v(m.sharedStructuralFaces);v(m.configuredStairFallbacks);v(m.entrySupportConsumed);
  v(bool(m.roomDiagnostics));if(m.roomDiagnostics)for(auto &d:m.roomDiagnostics->cells) {
   v(d.floorId);v(d.floorBase);v(d.lowerFloorId);v(d.lowerFloorBase);v(d.lowerFloorDistance);

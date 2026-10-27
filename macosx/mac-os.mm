@@ -4459,6 +4459,16 @@ void QuitWithFatalError ( NSString *message)
 
 @class S9xEngine;
 
+@interface S9xRemasterProfilePanel : NSPanel
+@end
+
+@implementation S9xRemasterProfilePanel
+- (void)cancelOperation:(id)sender
+{
+	// Escape may cancel editing, but must not dismiss Profile Controls.
+}
+@end
+
 @interface S9xRemasterTileView : NSImageView
 @property (nonatomic, weak) S9xEngine *editor;
 @property (nonatomic) BOOL showsNormalAxes;
@@ -6067,7 +6077,7 @@ void QuitWithFatalError ( NSString *message)
 		[contentView addSubview:remasterDoorframeAnimationButton];
 		remasterSemanticsView = [[NSView alloc] initWithFrame:NSMakeRect(168, 287, 570, 260)];
 		[contentView addSubview:remasterSemanticsView];
-		NSArray *titles = @[@"Tile role", @"Canonical wall facing", @"Second corner facing", @"Corner type"];
+		NSArray *titles = @[@"Tile role", @"Canonical wall / door facing", @"Second corner facing", @"Corner type"];
 		NSPopUpButton * __strong *menus[] = { &remasterRoleSelector, &remasterFacingSelector, &remasterSecondFacingSelector, &remasterCornerSelector };
 		for (NSUInteger i = 0; i < 4; i++)
 		{
@@ -7171,6 +7181,17 @@ void QuitWithFatalError ( NSString *message)
 		asset ? @"decoded indices" : @"not decoded in capture", static_cast<unsigned long>(occurrences.size()),
 		remasterSelectedTiles.size() > 1 ? [NSString stringWithFormat:@", %lu selected types",
 			static_cast<unsigned long>(remasterSelectedTiles.size())] : @"", layerStatus];
+	// Editing stays asset-local; report actual composed screen donors separately
+	// so fallback metadata is never silently painted into the selected artwork.
+	for(size_t at=0;at<remasterReplayFrame.mainPixels.size();at++) {
+		const auto *p=S9xRemasterFrameVisibleTilePixelAt(remasterReplayFrame,
+			uint32_t(at%remasterReplayFrame.width),uint32_t(at/remasterReplayFrame.width));
+		if(!p || p->instanceId!=heightInstance || (remasterTilePixelSelected && p->tilePixel!=remasterSelectedTilePixel))continue;
+		const auto provenance=S9xRemasterChannelProvenance(remasterReplayFrame,at);
+		remasterVariantLabel.toolTip=[NSString stringWithUTF8String:provenance.c_str()];
+		remasterValueLabel.toolTip=remasterVariantLabel.toolTip;
+		break;
+	}
 	remasterPreviousVariantButton.enabled = remasterVariants.size() > 1;
 	remasterNextVariantButton.enabled = remasterVariants.size() > 1;
 	[self refreshRemasterEditingControls];
@@ -7222,6 +7243,12 @@ void QuitWithFatalError ( NSString *message)
 	remasterDoorwaySupportButton.enabled = doorway && editable;
 	remasterDoorwaySupportDirectionSelector.enabled = remasterDoorwaySupportButton.enabled &&
 		remasterDoorwaySupportButton.state == NSControlStateValueOn;
+	const bool door = remasterRoleSelector.indexOfSelectedItem == static_cast<NSInteger>(RemasterTileRole::Door);
+	// Walls retain diagonal choices; a door facing is cardinal only. Keep an
+	// unset direction valid so editing older doors does not invent metadata.
+	remasterFacingSelector.autoenablesItems = NO;
+	for (NSInteger i = 5; i < remasterFacingSelector.numberOfItems; ++i)
+		[remasterFacingSelector itemAtIndex:i].enabled = !door;
 }
 
 - (void)updateRemasterSemantics:(id)sender
@@ -7241,11 +7268,14 @@ void QuitWithFatalError ( NSString *message)
 				annotation.doorwaySupportDirection = static_cast<RemasterSupportDirection>(d);
 		if (annotation.doorwaySupportDirection == RemasterSupportDirection::Unknown) { NSBeep(); return; }
 	}
+	const bool door = annotation.tileRole == RemasterTileRole::Door;
 	const size_t expected = annotation.tileRole == RemasterTileRole::Wall ? 1 :
-		(annotation.tileRole == RemasterTileRole::WallCorner ? 2 : 0);
+		(annotation.tileRole == RemasterTileRole::WallCorner ? 2 :
+		 (door && remasterFacingSelector.indexOfSelectedItem > 0 ? 1 : 0));
 	if (expected)
 	{
 		if (remasterFacingSelector.indexOfSelectedItem <= 0) { NSBeep(); return; }
+		if (door && remasterFacingSelector.indexOfSelectedItem > 4) { NSBeep(); return; }
 		annotation.tileSemanticNormals.push_back(remasterFacingSelector.titleOfSelectedItem.UTF8String);
 	}
 	if (expected == 2)
@@ -9879,7 +9909,7 @@ void QuitWithFatalError ( NSString *message)
 	[self savePreviousWorkspace];
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1166)
+		remasterProfileSettingsPanel = [[S9xRemasterProfilePanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1166)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Profile Controls";

@@ -1,7 +1,7 @@
 import unittest
 import struct
 from unittest.mock import patch
-from alttp_doorway_detection import check_assembly, displayed, candidates, audit
+from alttp_doorway_detection import check_assembly, check_closed_authored_assembly, displayed, candidates, audit
 from alttp_room_geometry import RoomProvenance
 
 
@@ -31,6 +31,24 @@ class DoorwayDetectionTests(unittest.TestCase):
         a,c=self.fixture();c[0,10,11]=dict(role='door',local=[3]*64,actual=[27]*64)
         r=next(r for r in check_assembly(a,c) if r['rule']=='closed_door_assembly')
         self.assertEqual(r['status'],'pass');self.assertEqual(r['expected'],[27]*64)
+
+    def test_closed_barrier_keeps_authored_zero_and_ignores_open_frame_holes(self):
+        a,c=self.fixture(split=False,base=0)
+        c[1,10,11]=dict(role='door',local=[i%8 for i in range(64)],actual=[i%8 for i in range(64)])
+        # Outer band contains complete authored relief but an open-state mask.
+        c[1,12,11]['mask']=(1<<32)-1
+        c[1,12,11]['actual'][40]=0
+        r=next(r for r in check_closed_authored_assembly(a,c) if (r['x'],r['y'])==(12,11))
+        self.assertEqual(r['status'],'fail');self.assertEqual(r['expected'][40],23)
+        c[1,12,11]['actual']=r['expected']
+        r=next(r for r in check_closed_authored_assembly(a,c) if (r['x'],r['y'])==(12,11))
+        self.assertEqual(r['status'],'pass')
+
+    def test_open_assembly_and_ambiguous_closed_band_not_guessed(self):
+        a,c=self.fixture();self.assertEqual(check_closed_authored_assembly(a,c),[])
+        c[0,10,11]['role']='door';c[0,10,11]['local']=[24]*64
+        r=next(r for r in check_closed_authored_assembly(a,c) if (r['x'],r['y'])==(10,11))
+        self.assertEqual(r['status'],'unresolved');self.assertIsNone(r['expected'])
 
     def test_conflicting_landing_is_unknown_not_max(self):
         a,c=self.fixture();c[0,9,12]['actual']=[0]*64

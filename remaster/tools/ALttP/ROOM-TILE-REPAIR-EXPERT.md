@@ -1,12 +1,41 @@
 # Room agents: discovery versus repair
 
-Both project definitions live in `.opencode/agents/` and use
-`litellm/gpt-6.1-sol`.
+Project definitions live in `.opencode/agents/`. The auditor uses
+`litellm/gpt-6.1-terra#medium`, the repair expert uses
+`litellm/gpt-6.1-terra#high`, and their shared coding specialist uses
+`litellm/gpt-6.1-sol#medium`.
 
 | Agent | Input | Responsibility | Output |
 |---|---|---|---|
 | `room-height-auditor` | One or more rooms, optional states/captures | Run deterministic tools to discover issues, manage evidence, improve detection gaps | Issue groups, exact evidence, coverage and repair-ready handoff; no production repairs |
 | `room-tile-repair-expert` | Specific reported tile issues, audit findings or reproduction | Diagnose and, when requested, fix shared causes that do not require human authoring | Regression-backed repairs, before/after evidence, remaining blockers and human-authoring requests |
+| `room-code-engineer` | Scoped coding request, role/authorization, pinned evidence and acceptance criteria | Implement tool/test changes or authorized engine repairs; no further delegation | Patch, baseline-fail/after-pass regressions, completed gates and explicit gaps |
+
+The top-level orchestrator assigns audit/repair scope and schedules independent
+re-audits. The auditor and repair expert run tools and interpret evidence, but
+delegate **all code changes** to the engineer. They may write reports and run
+artifacts; executable scripts are code even inside build/. Shell writes must not
+bypass this division. The auditor may commission tooling-only work, never
+production repairs. The repair expert must convey the user's repair authorization.
+The engineer preserves authored profiles and cannot delegate further.
+
+Coding handoffs include issue IDs, requesting role and authorization, immutable
+input/source pins, reproduction commands, expected/actual samples, allowed files,
+negative tests, acceptance gates and known concurrent work. Each parent runs at
+most one coding child at a time and verifies its output. The orchestrator must
+serialize coding children with overlapping files; parents do not concurrently
+edit child-owned files. If delegation is unavailable, return the handoff to the
+orchestrator rather than switching models or implementing directly. Existing
+running sessions may retain their old instructions; start fresh role sessions
+for this workflow.
+
+**Current harness limitation:** nested calls have failed with `Subagent depth
+limit reached (1)`. Permissions alone do not override that execution limit.
+Until nested execution is confirmed available, auditor/repair expert return
+coding handoffs to the top-level orchestrator. It launches the same engineer as
+a direct child, then routes the result back for role review and independent
+verification. Do not repeatedly attempt blocked nested calls or code directly
+as a workaround. The model/role split remains unchanged.
 
 `room-tile-repair-expert` replaces `room-height-expert`; the old agent ID is no
 longer a separate definition. The auditor's name remains height-focused; the
@@ -93,6 +122,8 @@ available corpus and before/after results → actual runtime versus debug outcom
 from “room approved.” A targeted repair may be complete while unrelated room
 defects remain; never call the room successful until all applicable gates pass.
 
-Repair verification runs the tools directly rather than recursively launching
-the auditor. A caller may subsequently request a fresh independent auditor run.
-This keeps discovery and repair separate without creating agent delegation loops.
+Repair verification runs the tools directly after the engineer returns, rather
+than recursively launching the auditor. A caller subsequently requests a fresh
+independent auditor run. Only auditor/repair-expert → code-engineer delegation
+is allowed; the engineer is a leaf. This preserves discovery/repair separation
+without creating delegation loops.

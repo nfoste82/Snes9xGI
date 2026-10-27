@@ -13,13 +13,15 @@ int main(){try {
    t.semanticSoutheastWall=true;t.surface=RemasterDungeonFloorContext::Surface::Wall;
    t.hflip=flip&1;t.vflip=flip&2;t.height.fill(24); // repeated authored internal cap
    t.tileHash=100+row; // canonical same-band identity, transformed by placement
+   t.diagonalAuthoredPreserved=true; // prior intrinsic-shell classification
    if(!row)t.groundedFloorMask=1;
   }
   const auto original=*tiles;
   S9xRemasterSemanticDiagonalExtents(*tiles);
   for(int col=0;col<width;col++)for(int row=0;row<extent;row++) {
    const auto &t=(*tiles)[(start+col*tangent+row*up)*64+10+col];
-   check(t.diagonalHeightPreview,"actual placed semantic extent activated");
+    check(t.diagonalHeightPreview,"actual placed semantic extent activated");
+    check(!t.diagonalAuthoredPreserved,"derived extent must publish its replacement local source");
    for(int y=0;y<8;y++)for(int x=0;x<8;x++)check(t.height[y*8+x]==std::max(0,std::min((extent-1)*8,7+row*8-x-y)),"no fixed cap repeated intrinsic");
   }
   *tiles=original;(*tiles)[(start+extent*up)*64+10].semanticBoundaryKnown=false;

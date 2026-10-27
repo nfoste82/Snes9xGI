@@ -67,16 +67,22 @@ int main(int argc, char **argv)
 		std::array<uint16_t, 4096> tileWords = {};
 		for (int i = 0; i < 4096; i++) tileWords[i] = maps[i * 2] | (maps[i * 2 + 1] << 8);
 		RemasterDungeonHeightMap map;
+		auto independentMap=std::make_unique<RemasterDungeonHeightMap>();
+		if(!S9xRemasterBuildDungeonHeightMap(context,profile.upperFloorHeight,*independentMap))throw std::runtime_error("independent BG2 solve failed");
+		auto independentTiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>(tiles);
 		// Reproduce the runtime's other-BG evidence pass before solving BG2.
 		auto lowerMap=std::make_unique<RemasterDungeonHeightMap>();
 		std::rotate(maps.begin(),maps.begin()+8192,maps.end());
 		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=0;
 		S9xRemasterDungeonPlacements(context,profile,tiles);
+		context.peerShellPlacements=independentTiles->data();context.peerShellMap=independentMap.get();
 		if(!S9xRemasterBuildDungeonHeightMap(context,profile.upperFloorHeight,*lowerMap))throw std::runtime_error("BG1 solve failed");
+		auto peerTiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>(tiles);
 		std::rotate(maps.begin(),maps.begin()+8192,maps.end());
 		std::swap(context.graphicsBase,context.bg1GraphicsBase);context.placementBackgroundIndex=1;
 		context.supportRelations=&lowerMap->authoredSupportRelations;
 		context.wallSupportRelations=&lowerMap->authoredWallSupportRelations;
+		context.peerShellPlacements=peerTiles->data();context.peerShellMap=lowerMap.get();
 		context.doorwaySupportRelations=&lowerMap->doorwaySupportRelations;
 		S9xRemasterDungeonPlacements(context,profile,tiles);
 		// Read-only failure-class ablation; never a published/runtime policy.
@@ -100,7 +106,18 @@ int main(int argc, char **argv)
 			<< ",\"other_bg_wall_support_relations\":[";
 		for(size_t n=0;n<lowerMap->authoredWallSupportRelations.size();n++) {
 			if(n)std::cout<<',';const auto &r=lowerMap->authoredWallSupportRelations[n];
-			std::cout<<"{\"wall\":"<<r.wall<<",\"support\":"<<r.support<<",\"rise\":"<<r.rise<<",\"word\":"<<r.word<<'}';
+			std::cout<<"{\"wall\":"<<r.wall<<",\"support\":"<<r.support<<",\"rise\":"<<r.rise<<",\"word\":"<<r.word
+				<<",\"terminal_low_path\":"<<r.terminalLowPath<<",\"source\":"<<r.source<<",\"hflip\":"<<r.hflip<<",\"vflip\":"<<r.vflip<<",\"path\":[";
+			for(size_t k=0;k<r.path.size();k++){if(k)std::cout<<',';std::cout<<r.path[k];}std::cout<<"]}";
+		}
+		std::cout<<"],\"visible_shell_contacts\":"<<map.visibleShellContacts<<",\"visible_shell_candidates\":[";
+		for(size_t k=0;k<map.visibleShellCandidates.size();k++) {
+			if(k)std::cout<<',';const auto&r=map.visibleShellCandidates[k];
+			std::cout<<"{\"bg\":"<<r.bg<<",\"plane\":"<<r.plane<<",\"cell\":"<<r.cell<<",\"peer\":"<<r.peer<<",\"dx\":"<<r.dx<<",\"dy\":"<<r.dy
+				<<",\"source\":"<<r.source<<",\"peer_source\":"<<r.peerSource<<",\"support\":"<<r.support<<",\"peer_base\":"<<r.peerBase<<",\"proposed\":"<<r.proposed
+				<<",\"reason\":\""<<r.reason<<"\",\"gradient\":"<<r.gradient<<",\"uniform\":"<<r.uniform;
+			auto samples=[](const char*name,const auto&a){std::cout<<",\""<<name<<"\":[";for(int n=0;n<8;n++){if(n)std::cout<<',';std::cout<<a[n];}std::cout<<']';};
+			samples("edge",r.edge);samples("peer_edge",r.peerEdge);samples("slope",r.slope);samples("peer_slope",r.peerSlope);std::cout<<'}';
 		}
 		std::cout<<"],\"authored_obstacle_evidence\":[";
 		for(size_t n=0;n<map.authoredObstacleEvidence.size();n++) {
@@ -342,7 +359,8 @@ int main(int argc, char **argv)
 					const auto &applied=frame.tileInstances[pixel.instanceId-1];
 					const int effective=applied.heightOffset+(applied.hasPlacementHeight?applied.placementHeight[pixel.tilePixel]:t.height[pixel.tilePixel]);
 					int base=255;for(const auto &region:map.doorframeAttachments)if(region.cell==a.cell && region.visible) {
-						const int value=(region.mask&(UINT64_C(1)<<pixel.tilePixel))?region.base:region.openingBase;
+						const bool marked=region.mask&(UINT64_C(1)<<pixel.tilePixel);
+						const int value=marked?region.base:region.openingBase==255?255:region.openingBase-t.height[pixel.tilePixel];
 						if(value==255)continue;
 						if(base!=255 && base!=value){base=255;break;}base=value;
 					}
@@ -352,7 +370,7 @@ int main(int argc, char **argv)
 				std::cout<<"{\"layer\":"<<layer<<",\"plane\":"<<a.plane<<",\"x\":"<<a.cell%64<<",\"y\":"<<a.cell/64
 					<<",\"frame_base\":"<<a.base<<",\"opening_base\":"<<a.openingBase<<",\"visible\":"<<(a.visible?"true":"false")<<",\"split_dispatch\":"<<(t.splitDoorPart?"true":"false")<<",\"template_offset\":"<<a.source<<",\"mask\":\""<<std::hex<<a.mask<<std::dec
 					<<"\",\"local_source\":\"placement_rom_directional_doorway_support\",\"ownership_scope\":\""<<(t.doorwayColumnContact?"surviving_inner_column":"complete_frame")<<"\",\"effective_height\":[";
-				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<int(t.height[k])+((a.mask&(UINT64_C(1)<<k))?a.base:a.openingBase==255?0:a.openingBase);}std::cout<<"]}";
+				for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<((a.mask&(UINT64_C(1)<<k))?int(t.height[k])+a.base:a.openingBase==255?int(t.height[k]):a.openingBase);}std::cout<<"]}";
 			}
 		}
 		std::cout << "],\"doorframe_ownership\":[";first=true;

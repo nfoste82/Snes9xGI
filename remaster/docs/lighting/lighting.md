@@ -119,6 +119,28 @@ energy and opaque/fractional blocker fixtures, 456 visibility reference comparis
 and 65,536 patch probes. Release arm64 app builds. Live moving shadow/penumbra
 appearance and clean same-settings GPU timing still require user review.
 
+October 26 `_038` regression investigation: own packet, representatives3,
+directional disabled, zero bounces, current runtime source and no profile
+substitution. `_007` -> `_038`: visible emitting pixels1721 ->2059, hidden
+pixels584 ->1333, visible patches292 ->72, total prepared records1492 ->300.
+The new visible source inventory has zero emission depth and combined-emitter
+links; the depth optimization remains present but does not benefit those planar
+sources. Current matched replay medians80.59 ->46.03 ms do not reproduce the
+reported live130 ms. On `_038`, on-disk Release metallib44.47 ms/current source
+43.99 ms/older `e99b2841` shader42.03 ms, all half-float Direct outputs byte-identical.
+These separate17-run tests discard five warmups, use shared diagnostic resources,
+and competed with a running emulator: not clean interleaved regression evidence
+or live-frame predictions. Representatives1 measured104 records/16.62 ms;
+representatives3 forced serial measured72.84 ms. No production change made.
+At investigation time the running app started15:08, before its on-disk metallib
+mtime15:54; loaded binary/library identity is unverified. Restart and compare
+the exact retained capture, then producing-frame source counts/stage metrics if
+130 ms persists. Live metrics/GUI/debug-sphere state and other animation phases
+are not recorded in this packet; no definitive live root cause is established.
+Logs/artifacts: `build/remaster-tests/room012-038-*`. The standalone probe accepts
+`ALTTP_PERF_METALLIB=/path/default.metallib` and `ALTTP_PERF_SERIAL_DIRECT=1`
+for matched compiled-library/serial diagnostics (neither is an application setting).
+
 Sampled Direct now prepares one base record per pixel/patch, including positive
 emission depth. Exhaustive Direct retains four quarter-energy depth records.
 The source record's high bit in `y` marks sampled base preparation; it is masked

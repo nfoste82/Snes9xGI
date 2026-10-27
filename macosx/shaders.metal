@@ -1591,9 +1591,19 @@ vertexShader(uint vertexID [[ vertex_id ]], constant MetalVertex *vertexArray [[
 }
 
 fragment float4
-fragmentShader(RasterizerData in [[stage_in]], texture2d<half> colorTexture [[ texture(0) ]], constant int *videoModePointer [[ buffer(1) ]])
+fragmentShader(RasterizerData in [[stage_in]], texture2d<half> colorTexture [[ texture(0) ]],
+	constant int *videoModePointer [[ buffer(1) ]], texture2d<half> notificationTexture [[ texture(1) ]],
+	constant int &hasNotification [[ buffer(2) ]])
 {
 	int videoMode = int(*videoModePointer);
+	// Host text is display-space UI, not a lit scene surface. Nearest sampling
+	// keeps its stock pixel font crisp in every lighting/debug view.
+	if (hasNotification)
+	{
+		constexpr sampler notificationSampler (mag_filter::nearest, min_filter::nearest);
+		const half4 notification = notificationTexture.sample(notificationSampler, in.textureCoordinate);
+		if (notification.a > 0.0h) return float4(notification);
+	}
 	
 	if ( videoMode == 0)
 	{

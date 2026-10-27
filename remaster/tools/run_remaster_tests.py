@@ -40,6 +40,20 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+	("dungeon_visible_face_template", "Complete ROM section aliases, BG swaps, transforms, owner/plane conflicts and overwrites"),
+	("dungeon_visible_face_solver", "Independent signed visible-region equations, floors and physical-plane isolation"),
+	("dungeon_visible_face_runtime", "Two-BG exposed face, occupied floor and selected-scene publication"),
+	("dungeon_visible_shell", "Complementary shell contacts without physical support or cross-plane substitution"),
+	("visible_channel_integration", "Common range/emission/replay/raster donors and alternate solved-datum conservation"),
+	("lighting_selection_cache", "Exact selection/occurrence cache invalidation, authored zeros and switchback"),
+	("visible_channel_policy", "Game-independent visible-first independent channel donors and contextual bases"),
+    ("dungeon_pot_scene", "Exact SinglePot occurrence admission, BG/plane/HV sources, overwrite and channelwise presence"),
+    ("scene_channel_transport", "Channelwise physical scene transport, authored zero, opaque owners and HUD occluders"),
+    ("dungeon_wall_mount_contact", "ROM mount contact-edge sections, corners, axes/HV/BGs, plane ambiguity and overwrite rejection"),
+    ("tile_semantics", "Wall/corner and optional cardinal Door semantics, strict profile save/reload and capture role IDs"),
+    ("dungeon_opening_owner", "Exact terminal opening ownership, stair relief, flips, overwritten and ambiguous-source rejection"),
+    ("dungeon_closed_door", "Complete final closed dispatch ownership, leaf band and cap mask, all axes/flips and overwrite negatives"),
+    ("dungeon_semantic_diagonal", "Placed diagonal extents publish derived sources, all flips, overwritten feet and ambiguous boundaries"),
     ("npc_transition_floor", "Proven transition-marker floor support without movement ownership, transforms and unsafe-source rejection"),
     ("npc_floor_support", "Follower producer-body contacts, delayed gameplay plane and clipped/contradictory support rejection"),
     ("dungeon_doorway_column", "Surviving directional doorway columns, transforms, per-plane support and cache invalidation"),
@@ -66,6 +80,10 @@ FULL_EXTRA = (
     ("dungeon_terrain_lifecycle", "Pickup/carried/thrown/landed support, OAM ownership and ambiguity"),
     ("dungeon_persistent_support_rejection", "Dual-owner body rejection without component/constraint corruption"),
     ("emitter_patches", "Production visible source clustering, area, transforms and animation links"),
+    ("emitter_preselected", "Exact production emission donors without repeated full-frame selection"),
+    ("lighting_trace", "Producing-frame timer lineage and exclusive wait accounting"),
+    ("lighting_projection_work", "Invocation-local projection avoids repeated ordinary placement decisions"),
+    ("lighting_projection_parity", "Pixel-dependent doorway compensation stays fresh across H/V and BGs"),
     ("sphere_samples", "Production distance-based sphere sample budgets and invalid-input defaults"),
 )
 BASE_FLAGS = ["-std=c++17", "-Wall", "-Wextra", "-pedantic", "-O0", "-g", "-UNDEBUG"]
@@ -96,6 +114,13 @@ def test_specs(args):
                           description="Opt-in stale monolithic fixture; failure is a real gate failure",
                           flags=[], arguments=[], kind="legacy"))
     if args.metal:
+        specs.append(dict(name="metal_lighting_slots", source="remaster/tests/lighting_slot_metal_test.mm",
+                          description="Actual renderer completion-gated slots, delayed GPU byte readback and buffer growth/reset",
+                          flags=["-O2", "-fobjc-arc", "-D__MACOSX__", "-DHAVE_STDINT_H", "-I.", "-Imacosx",
+                                 "-Iapu", "-Ifilter", "-Iapu/bapu", "-Imacosx/snes9x framework",
+                                 "-ffunction-sections", "-fdata-sections", "-Wl,-dead_strip",
+                                 "-framework", "Cocoa", "-framework", "Metal", "-framework", "MetalKit",
+                                 "-framework", "QuartzCore", "-framework", "Carbon"], arguments=[], kind="metal"))
         specs.append(dict(name="metal_lighting", source="macosx/remaster-lighting-test.mm",
                           description="Production shaders, synthetic GPU transport/visibility comparisons",
                           flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],
@@ -115,6 +140,9 @@ def source_snapshot(spec):
     if spec["arguments"]:
         paths.add(ROOT / PROFILE)
     if spec["kind"] == "metal":
+        if spec["name"] == "metal_lighting_slots":
+            paths.add(ROOT / "macosx/mac-render.mm")
+            paths.add(ROOT / "remaster/tools/lighting_critical_path_probe.mm")
         paths.add(ROOT / "macosx/shaders.metal")
         paths.add(ROOT / "macosx/remaster-debug-pixels-test.h")
     files = {str(p.relative_to(ROOT)): sha256(p) for p in sorted(paths)}

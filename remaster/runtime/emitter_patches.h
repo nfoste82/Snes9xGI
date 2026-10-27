@@ -18,16 +18,38 @@ struct RemasterEmitterPatch
 };
 static_assert(sizeof(RemasterEmitterPatch) == 1032 && offsetof(RemasterEmitterPatch, members) == 8, "Emitter patch ABI");
 
+#define REMASTER_PRESELECTED_EMITTERS 1
+struct RemasterEmitterSelectionWork { size_t selectedPixels=0, resolvedInstances=0; };
+
 inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const RemasterFrame &frame,
 	const uint8_t *emission, const uint8_t *participation,
-	const std::vector<RemasterSurfaceMesh::Cell> &mesh)
+	const std::vector<RemasterSurfaceMesh::Cell> &mesh,
+	const std::vector<RemasterVisibleChannelSelection> *selected=nullptr,
+	RemasterEmitterSelectionWork *work=nullptr)
 {
 	const size_t size = frame.mainPixels.size();
 	std::vector<std::array<float, 3>> colors(size);
 	std::vector<RemasterEmitterPatch> result;
+	if(work)*work={};
+	if(selected && selected->size()!=size)selected=nullptr;
+	// Emission presence is inherited unchanged by geometry resolution. Avoid
+	// resolving every occurrence merely to answer this asset-level question.
+	const bool authoredSources=std::any_of(frame.tileInstances.begin(),frame.tileInstances.end(),[&](const auto &i){
+		const auto *m=S9xRemasterFrameMetadataForTile(frame,i.tileId);return m && m->hasEmission;});
+	std::unique_ptr<RemasterFrameChannelResolver> resolver;
+	if(authoredSources && !selected){resolver=std::make_unique<RemasterFrameChannelResolver>(frame);if(work)work->resolvedInstances=frame.tileInstances.size();}
+	std::vector<RemasterFramePixel> emitterPixels(size);
+	for(size_t i=0;i<size;i++) {
+		// Source-only support grids already supply resolved emission externally
+		// and deliberately have no asset/instance table. Keep that explicit ABI.
+		if(!authoredSources) {
+			const auto &main=frame.mainPixels[i];
+			emitterPixels[i]=!main.instanceId && uint8_t(main.owner>>24)==uint8_t(RemasterSourceType::Backdrop) && i<frame.subPixels.size()?frame.subPixels[i]:main;
+		} else if(selected)emitterPixels[i]=(*selected)[i].donors[size_t(RemasterMetadataChannel::Emission)];
+		else {emitterPixels[i]=resolver->select(frame,i,!frame.scenePixels.empty()).donors[size_t(RemasterMetadataChannel::Emission)];if(work)++work->selectedPixels;}
+	}
 	auto pixelAt = [&](size_t i) -> const RemasterFramePixel & {
-		const auto &main = frame.mainPixels[i];
-		return (!main.instanceId || main.instanceId > frame.tileInstances.size()) && uint8_t(main.owner >> 24) == uint8_t(RemasterSourceType::Backdrop) ? frame.subPixels[i] : main;
+		return emitterPixels[i];
 	};
 	auto active = [&](size_t i) { return participation[i*2] > 127 && emission[i*4+3] &&
 		(emission[i*4] || emission[i*4+1] || emission[i*4+2]); };
@@ -41,7 +63,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 		std::map<std::tuple<bool, uint32_t, uint32_t, bool>, std::vector<uint32_t>> instances;
 		bool hasLinks = std::any_of(frame.assetMetadata.begin(),frame.assetMetadata.end(),
 			[](const RemasterFrameAssetMetadata &m) { return !m.combineEmitters.empty(); });
-		auto placements = hasLinks ? S9xRemasterEmitterPlacements(frame) : std::vector<RemasterEmitterPlacement>{};
+		auto placements = hasLinks ? S9xRemasterEmitterPlacements(frame,authoredSources,&emitterPixels) : std::vector<RemasterEmitterPlacement>{};
 		placements.erase(std::remove_if(placements.begin(),placements.end(),[&](const RemasterEmitterPlacement &p) {
 			auto m = S9xRemasterFrameMetadataForTile(frame,p.tileId); return !m || m->combineEmitters.empty();
 		}),placements.end());
@@ -75,7 +97,7 @@ inline std::vector<RemasterEmitterPatch> S9xRemasterEmitterPatches(const Remaste
 				RemasterEmitterPatch singleton; singleton.count = 1; singleton.mode = 1u | (mesh[i].emissionDepth > 0 ? 2u : 0u);
 				singleton.members[0] = i; result.push_back(singleton); continue;
 			}
-			bool sub = &p == &frame.subPixels[i];
+			bool sub = i<frame.subPixels.size() && p.instanceId==frame.subPixels[i].instanceId && p.owner==frame.subPixels[i].owner;
 			auto placement = placementIndex.find({sub,p.instanceId});
 			if (placement != placementIndex.end()) {
 				const auto &group = placements[root(placement->second)];

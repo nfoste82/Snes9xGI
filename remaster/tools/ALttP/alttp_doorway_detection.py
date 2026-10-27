@@ -163,6 +163,33 @@ def check_assembly(assembly, cells):
     return records
 
 
+def check_closed_authored_assembly(assembly, cells):
+    """Additional closed-state contract, never an open-frame mask repair.
+
+    Only intact caller-proved assemblies with explicit Door panels and complete
+    single-band authored arrays qualify. A closed barrier must not infer holes
+    from a Doorway-only mask or from authored zero samples. Absolute datum remains
+    conditional on the same explicit landing evidence as the ordinary contract.
+    Multiband/contextual or missing content is unsupported, not filled/normalized.
+    """
+    if not any(cells.get(tuple(k),{}).get('role')=='door' for k in assembly['members']):
+        return []
+    ordinary=check_assembly(assembly,cells)
+    out=[];ox,oy=assembly['origin'];d=assembly['direction'];w=assembly['width'];h=assembly['height']
+    for r in ordinary:
+        c=cells.get((r['layer'],r['x'],r['y']),{});local=c.get('local',[])
+        record=dict(r,rule='closed_assembly_authored_relief',
+                    expectation_kind='conditional_closed_barrier_authored_single_band_no_open_cutouts')
+        if r.get('support_datum') is None or c.get('role') not in ('door','doorway') or len(local)!=64 or not all(0<=v<=7 for v in local):
+            out.append(dict(record,status='unresolved',expected=None,reason='closed_authored_band_or_datum_unsupported'));continue
+        x,y=r['x'],r['y'];band=(oy+h-1-y if d==0 else y-oy if d==1 else ox+w-1-x if d==2 else x-ox)
+        expected=[r['support_datum']+8*band+v for v in local]
+        mismatch=[k for k,(a,b) in enumerate(zip(c['actual'],expected)) if a!=b]
+        out.append(dict(record,status='fail' if mismatch else 'pass',expected=expected,
+                        mismatch_pixels=mismatch,closed_state_assumption='explicit Door panel metadata in intact final template; dynamic dispatch history not captured'))
+    return out
+
+
 def audit(snapshot, provenance, profile, templates, terminal):
     if len(terminal)!=8192 or len({(t['bg'],t['x'],t['y']) for t in terminal})!=8192:
         raise ValueError('terminal inventory must contain both complete BG maps (8192 unique placements)')
@@ -187,7 +214,8 @@ def audit(snapshot, provenance, profile, templates, terminal):
             records.extend(dict(layer=k[0],x=k[1],y=k[2],rule='assembly_ownership',status='unresolved',
                 reason='competing_intact_templates',expected=None,actual=cells[tuple(k)]['actual']) for k in a['members'])
         else:
-            records.extend(check_assembly(a,cells));accepted.append(a)
+            records.extend(check_assembly(a,cells))
+            records.extend(check_closed_authored_assembly(a,cells));accepted.append(a)
     covered={tuple(k) for a in accepted for k in a['members']}
     unsupported=[]
     for writer,keys in sorted(writers.items()):

@@ -153,9 +153,11 @@ def build_usage(graph: dict, rise: int, snapshot: RoomSnapshot, attributes: tupl
                         ca,cb=[snapshot.cell(1,*v) for v in ends];ha,hb=[assets.get(c.tile_hash,[]) for c in (ca,cb)]
                         if len(ha)!=64 or len(hb)!=64:break
                         def sample(c,h,xx,yy):return h[(7-yy if c.vflip else yy)*8+(7-xx if c.hflip else xx)]
-                        aa=[contacts[0]['floor_base']+sample(ca,ha,px,py) for py in range(8) for px in range(8)]
-                        bb=[contacts[1]['floor_base']+sample(cb,hb,px,py) for py in range(8) for px in range(8)]
-                        if aa!=bb or any(sample(ca,ha,px,py)!=sample(ca,ha,0 if north else px,py if north else 0) for py in range(8) for px in range(8)):break
+                        # Independently evaluate the actual two contacting edges.
+                        # A corner's other face is not part of the backing seam.
+                        aa=[contacts[0]['floor_base']+sample(ca,ha,7 if north else px,py if north else 7) for py in range(8) for px in range(8)]
+                        bb=[contacts[1]['floor_base']+sample(cb,hb,0 if north else px,py if north else 0) for py in range(8) for px in range(8)]
+                        if aa!=bb:break
                         common=set(contacts[0].get('planes',[])) & set(contacts[1].get('planes',[]))
                         if not common:break
                         base=contacts[0]['floor_base']

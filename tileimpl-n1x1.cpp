@@ -14,6 +14,9 @@ namespace TileImpl {
 	void Normal1x1Base<MATH, BPSTART>::Draw(int N, int M, uint32 Offset, uint32 OffsetInLine, uint8 Pix, uint8 Z1, uint8 Z2)
 	{
 		(void) OffsetInLine;
+		// Observe real clipped, nontransparent BG ink independently of OBJ/other
+		// BG occlusion. Stock color and depth decisions below remain untouched.
+		if(M && Pix) S9xRemasterObserveBackgroundPixel(Offset+N,Z1);
 		if (Z1 > GFX.DB[Offset + N] && (M))
 		{
 			GFX.S[Offset + N] = S9xRemasterState().scenePass ? GFX.RealScreenColors[Pix] :

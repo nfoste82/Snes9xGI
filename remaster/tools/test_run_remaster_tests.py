@@ -17,7 +17,7 @@ class RunnerTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(runner.main(["--list", "--suite", "full", "--metal"]), 0)
-            expected = len(runner.QUICK) + len(runner.FULL_EXTRA) + 3  # Two stack modes + Metal.
+            expected = len(runner.QUICK) + len(runner.FULL_EXTRA) + 4  # Two stack modes + two Metal consumers.
             self.assertIn(f"{expected} selected; no tests executed", output.getvalue())
             self.assertIn("remaster/tests/dungeon_transition_attributes_test.cpp", output.getvalue())
             self.assertIn("dungeon_oriented_obstacle", output.getvalue())

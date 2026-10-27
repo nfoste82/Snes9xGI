@@ -15,7 +15,46 @@ int main(){using C=RemasterDungeonFloorContext;using S=C::Surface;
   door.doorwaySupportDirection=S9xRemasterTransformSupportDirection(displayed,door.hflip,door.vflip);
   for(int py=0;py<8;py++)for(int px=0;px<8;px++){int k=(door.vflip?7-py:py)*8+(door.hflip?7-px:px);door.height[k]=dx?(dx>0?7-px:px):(dy>0?7-py:py);}
   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));assert(m->doorframeAttachments.size()==1 && m->doorframeAttachments[0].base==0 && m->doorframeAttachments[0].visible);
-  assert(m->doorframeAttachments[0].openingBase==0);
+   assert(m->doorframeAttachments[0].openingBase==0);
+   // A distinct flat counterpart belongs to the other BG/gameplay plane,
+   // even when this map's landing is diagnostic Unknown rather than Floor.
+   const int landing=(y+dy)*64+x+dx;
+   auto savedLanding=(*t)[landing];
+   (*t)[landing].distinctLowerUsage=true;(*t)[landing].floorPlaneMask=2;
+   (*t)[landing].surface=S::Unknown;(*t)[landing].diagnosticAuthoredFloor=true;
+   c->placementBackgroundIndex=1;
+   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
+   assert(!m->doorframeAttachments.empty() && m->doorframeAttachments[0].visible);
+   std::copy(a->begin(),a->begin()+4096,a->begin()+4096);
+   c->stairCount=1;c->stairs[0].changesPlane=true;
+   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
+   bool visibleUpper=false,hiddenLower=false;
+   for(const auto &r:m->doorframeAttachments) {
+    visibleUpper|=r.plane==0 && r.visible;
+    hiddenLower|=r.plane==1 && !r.visible;
+   }
+   assert(visibleUpper && hiddenLower);
+   c->stairCount=0;std::fill(a->begin()+4096,a->end(),1);
+   (*t)[landing]=savedLanding;c->placementBackgroundIndex=0;
+   // Outer-band intrinsic phase must not be applied twice. Zero cutouts
+   // select the opening floor even if the legacy metadata mask is full.
+   const int outer=cell-2*(dx+64*dy);auto &cap=(*t)[outer];cap=door;
+   cap.doorwaySupport=false;cap.doorwaySupportDirection=RemasterSupportDirection::Unknown;
+   for(int k=0;k<64;k++)cap.height[k]=16+k%8;cap.height[9]=0;
+   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
+   bool capSeen=false;for(const auto &r:m->doorframeAttachments)if(r.cell==outer) {
+    capSeen=true;assert(r.base==0 && r.openingBase==0 && !(r.mask&(UINT64_C(1)<<9)));
+   }assert(capSeen);cap={};
+   // A proved opening can retain nonflat floor/stair relief, and its terminal
+   // datum does not alter movement support or silently choose another plane.
+   const int inside=cell+(dx?64:1);auto &opening=(*t)[inside];opening.hasHeight=true;
+   opening.surface=S::Unknown;opening.diagnosticAuthoredFloor=true;opening.height.fill(11);
+   opening.doorAssembly=door.doorAssembly;opening.doorDirection=d;opening.doorTemplateOffset=door.doorTemplateOffset;
+   assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
+   bool openingSeen=false;for(const auto &r:m->doorframeAttachments)if(r.cell==inside){openingSeen=true;assert(r.base==0);}
+   assert(openingSeen && opening.height[0]==11);
+   opening.doorDirection=0xfe;assert(S9xRemasterBuildDungeonHeightMap(*c,50,*m));
+   for(const auto &r:m->doorframeAttachments)assert(r.cell!=inside);opening={};
   const int neighbor=(y+dy)*64+x+dx;
   // Hidden/exterior support may exist at the opposite end. It is not a vote.
   for(int yy=20;yy<=28;yy++)for(int xx=20;xx<=28;xx++)if((dx && (xx-x)*dx<0) || (dy && (yy-y)*dy<0)) {

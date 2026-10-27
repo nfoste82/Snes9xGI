@@ -179,6 +179,17 @@ local-source transport, and intact inter-room stair datums. Expectations may be
 conditional on external floor observations; say so. Unsupported dispatches and
 partial overwrites are not passes. Both may exit1 for expected findings/gaps.
 
+An intact assembly containing explicit `Door` panels additionally emits
+`closed_assembly_authored_relief` records when its complete authored member arrays
+are single-band (0..7). This **separate conditional closed-barrier contract** does
+not treat Doorway-only masks or authored zero samples as open-state cutouts.
+Keep ordinary/open-frame and closed-barrier records separate when counting unique
+placements. Dynamic writer history is not established by a Door role or equal map
+words; missing/contextual/multiband authoring stays unsupported. For a smaller
+datum-independent source/relief diagnostic, run `alttp_authored_door_detection.py
+--profile PROFILE --terminal TERMINAL_JSONL --output REPORT.json`; constant
+authored-to-actual residual is not proof of a correct absolute placement datum.
+
 ### Actual capture geometry and source admission
 
 ```sh
@@ -213,7 +224,16 @@ repeated scene/sub physical pixels while retaining their source identities.
 known Room061 detector outputs, exact arrays/mismatch indices and BG1 evidence.
 This is a **test oracle**, not a production room-coordinate rule. Read its input
 requirements and generate fresh shared detector outputs; do not reuse historic
-JSON as a current regression pass. Also run relevant `test_alttp_*detection.py`,
+JSON as a current regression pass. The historical oracle asserts defects and
+must not be used as a post-repair green gate. For before/after acceptance use
+`alttp_compare_height_contracts.py --before BASELINE_REPORT --after FRESH_REPORT
+--terminal FRESH_TERMINAL_JSONL --snapshot PINNED_RAW --output COMPARISON_JSON`
+separately for each detector family. It retains every baseline pass/fail member's
+exact expected array, transforms canonical terminal samples using pinned map
+flips, requires actual selected-source availability, and rejects changed/missing
+expectations. Exit1 on baseline-as-after is a useful negative control, not a test
+failure to suppress. It is a regression comparator, not new room discovery.
+Also run relevant `test_alttp_*detection.py`,
 `test_alttp_capture_structure_join.py`, `test_alttp_verify_room061_detection.py`
 and `test_alttp_validate_room_heights.py` with unittest discovery. Source/scene
 regressions are in `remaster/tests/dungeon_diagonal_source_detection_test.cpp`
@@ -222,6 +242,48 @@ Run `git diff --check`. Tool changes require targeted tests; runtime changes,
 if separately authorized, additionally require the curated full gate and v2.
 
 ## Tool limitations not to hide
+
+Additional detection-only diagnostics (inspect `--help`):
+
+* `alttp_layered_trace.h` is a read-only callback for isolated capture probes;
+  trace before/after profile selection, scene admissions and final EndFrame.
+  `alttp_layered_channel_detection.py --trace TRACE.jsonl --output REPORT` groups
+  independent opaque BG1 subscreen donors against decoded BG2 ink and actual
+  scene ownership, retaining channel absence separately. A missing normal must
+  not conceal a present height; absent metadata is not transparent artwork.
+  Legitimate opaque BG2 and different owners are not automatic borrowing cases.
+  This is a source-conservation diagnostic, not an absolute datum/semantic
+  admission oracle. Keep capture-own assertions before research overrides.
+
+* `alttp_capture_source_activation.py --profile PROFILE --pixels DEBUG_JSONL
+  --state LIVE_JSON --output REPORT`: inventories authored versus selected height
+  and normal availability across opaque captured BG buffers. Missing authoring is
+  separate from failed activation; buffer duplication retains ownership.
+* `alttp_surviving_provenance.py --reference REF_RAW --live LIVE_RAW --output
+  NEW_RAW`: explicit **research-only** ownership transfer. Uses live maps/graphics,
+  invalidates every changed word (including priority changes), and records its
+  transfer manifest. Equal words do not prove live/dynamic writer history. Never
+  replace replay identity assertions or label this captured provenance.
+* `alttp_door_extension_detection.py --snapshot RAW --terminal TERMINAL_JSONL
+  --profile PROFILE --doorways DOOR_REPORT --output REPORT`: conditional same-writer
+  full-width outer wall bands beyond the ordinary twelve-member door. Exact
+  landing, single-band linear authored relief and uninterrupted ownership required.
+* `alttp_cardinal_band_detection.py --snapshot RAW --rom ROM --atlas ATLAS
+  --terminal TERMINAL_JSONL --output REPORT`: internal same-writer linear-band
+  discontinuity **diagnostic**, not a general correctness oracle. Reused cardinal
+  dispatches can legitimately meet stair/overlay ownership. Keep candidate failures
+  conditional/unobserved until independent surface ownership and exposure exist;
+  in particular do not contradict a user-approved room from map-only candidates.
+
+* `alttp_scene_cardinal_continuity.py --snapshot RAW --rom ROM --atlas ATLAS
+  --terminal TERMINAL_JSONL --profile PROFILE --pixels DEBUG_JSONL --state LIVE_JSON
+  --output REPORT`: conditional same-writer observed cardinal-band edge continuity
+  using the actual selected scene/main source and independent transformed authored
+  slopes. It retains terminal bases for diagnosing selection rather than treating
+  the standalone terminal as the captured scene. It is not a floor-anchored whole
+  assembly oracle; nonunit artwork, hidden edges, cross-writer joins, corners and
+  offscreen surfaces remain unsupported. Authenticate capture/PPU/map/scroll first.
+  Reference-transferred writers are conditional, not captured dynamic history.
 
 * No turnkey arbitrary-room/all-state proof exists. A blocked rule must appear
   in the report with the exact missing input or general tooling capability.

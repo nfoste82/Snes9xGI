@@ -55,6 +55,29 @@ int main ()
 	assert(decoded.assets.at(id).tileRole == RemasterTileRole::Particle);
 	assert(decoded.assets.at(id).tileSemanticNote == asset.tileSemanticNote);
 
+	// Door facing is optional for existing assets, but an authored facing must
+	// survive the same profile save/reload path as wall semantics.
+	asset.tileRole = RemasterTileRole::Door;
+	for (const auto &direction : { "north", "east", "south", "west" })
+	{
+		asset.tileSemanticNormals = { direction };
+		assert(S9xRemasterSerializeProfile(profile, text, diagnostics));
+		assert(S9xRemasterParseProfile(text, decoded, diagnostics));
+		assert(decoded.schemaVersion >= 34);
+		assert(decoded.assets.at(id).tileRole == RemasterTileRole::Door);
+		assert(decoded.assets.at(id).tileSemanticNormals == asset.tileSemanticNormals);
+	}
+	for (const auto &invalid : { std::vector<std::string>{"north_east"},
+		std::vector<std::string>{"north", "east"}, std::vector<std::string>{"north", "north"} })
+	{
+		asset.tileSemanticNormals = invalid;
+		assert(!S9xRemasterSerializeProfile(profile, text, diagnostics));
+	}
+	asset.tileSemanticNormals.clear();
+	assert(S9xRemasterSerializeProfile(profile, text, diagnostics));
+	assert(S9xRemasterParseProfile(text, decoded, diagnostics));
+	assert(decoded.assets.at(id).tileSemanticNormals.empty());
+
 	RemasterFrame frame, captured;
 	frame.width = frame.height = 1;
 	frame.originalRgb555.resize(1);

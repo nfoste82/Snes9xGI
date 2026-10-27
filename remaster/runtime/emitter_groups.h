@@ -15,8 +15,13 @@ struct RemasterEmitterPlacement
 	uint8_t sourceIndex = 0;
 };
 
-inline std::vector<RemasterEmitterPlacement> S9xRemasterEmitterPlacements(const RemasterFrame &frame)
+inline std::vector<RemasterEmitterPlacement> S9xRemasterEmitterPlacements(const RemasterFrame &frame,bool channelDonors=false,
+	const std::vector<RemasterFramePixel> *selectedEmission=nullptr)
 {
+	// A supplied raster is the exact production emission donor raster, not a
+	// cached visible winner. The fallback keeps tools/source-only callers intact.
+	std::unique_ptr<RemasterFrameChannelResolver> resolver;
+	if(channelDonors && !selectedEmission)resolver=std::make_unique<RemasterFrameChannelResolver>(frame);
 	std::map<std::pair<bool,uint32_t>, RemasterEmitterPlacement> placements;
 	std::set<std::pair<bool,uint32_t>> inconsistent;
 	for (size_t i = 0; i < frame.mainPixels.size(); i++) {
@@ -24,7 +29,8 @@ inline std::vector<RemasterEmitterPlacement> S9xRemasterEmitterPlacements(const 
 		bool sub = (!main.instanceId || main.instanceId > frame.tileInstances.size()) &&
 			uint8_t(main.owner >> 24) == uint8_t(RemasterSourceType::Backdrop);
 		if (sub && i >= frame.subPixels.size()) continue;
-		const auto &p = sub ? frame.subPixels[i] : main;
+		const auto p = channelDonors ? selectedEmission ? (*selectedEmission)[i] : resolver->select(frame,i,!frame.scenePixels.empty()).donors[size_t(RemasterMetadataChannel::Emission)] : sub ? frame.subPixels[i] : main;
+		if(channelDonors)sub=i<frame.subPixels.size() && p.instanceId==frame.subPixels[i].instanceId && p.owner==frame.subPixels[i].owner;
 		if (!p.instanceId || p.instanceId > frame.tileInstances.size() || p.tilePixel >= 64) continue;
 		const auto &instance = frame.tileInstances[p.instanceId-1];
 		int localX = p.tilePixel%8, localY = p.tilePixel/8;

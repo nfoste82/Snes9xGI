@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import shutil
+import subprocess
 import tempfile
 import unittest
 import tomllib
@@ -16,7 +18,7 @@ import urllib.error
 
 from alttp_tile_semantic_atlas import (AnnotationStore, AtlasError, ROOM_INDEX_FORMAT,
                                        RoomOccurrenceIndex, TileCatalog,
-                                       validate_annotation, make_handler)
+                                       validate_annotation, make_handler, PAGE)
 
 
 ROM_SHA256 = "1" * 64
@@ -50,6 +52,67 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'browser control regression requires node')
+    def test_browser_door_cardinal_buttons_and_completion(self):
+        # Execute the real embedded control functions without a browser/ROM.
+        functions = '\n'.join(line for line in PAGE.splitlines()
+                              if line.startswith(('function renderNormals(', 'function complete(',
+                                                  'function changeRole(')))
+        self.assertIn("['wall','wall_corner','door'].includes(a.role)", PAGE)
+        script = r'''
+const assert=require('node:assert/strict');
+function element(){return {children:[],append(...items){this.children.push(...items)}}}
+const document={createElement:element}, detail=element();
+let current={role:'door',normals:[]}, selected='tile', saves=0;
+const byId=new Map([[selected,{annotation:current}]]);
+function annotation(){return byId.get(selected).annotation}
+function renderDetail(){}
+function scheduleSave(){saves++}
+'''+functions+r'''
+renderNormals(current);
+let buttons=detail.children[0].children[0].children;
+assert.deepEqual(buttons.map(b=>b.textContent),['N','E','S','W']);
+for(let [i,n] of ['north','east','south','west'].entries()){
+  buttons[i].onclick();
+  assert.deepEqual(annotation().normals,[n]);
+  assert(complete(annotation()));
+}
+assert.equal(saves,4);
+buttons[3].onclick();
+assert.deepEqual(annotation().normals,[]);
+assert(complete(annotation()));
+assert(!complete({role:'door',normals:['north_east']}));
+assert(!complete({role:'door',normals:['north','east']}));
+assert(complete({role:'wall',normals:['north_east']}));
+'''
+        subprocess.run([shutil.which('node'), '-e', script], check=True, capture_output=True, text=True)
+
+    def test_door_cardinal_facing_profile_and_sidecar_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, marker = root / 'profile.toml', root / 'marker.json'
+            key = 'v1:4bpp:0123456789abcdef'
+            profile.write_text(f'schema_version = 34\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                               f'[[assets]]\ntile_hash = "{key}"\ntile_role = "door"\n'
+                               'height = [7]\nnormal_xyz = [128, 128, 255]\n')
+            marker.write_text(json.dumps(dict(profile=str(profile))))
+            for direction in ('north', 'east', 'south', 'west'):
+                store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
+                store.save_group([key], dict(role='door', normals=[direction]), store.refresh())
+                asset = tomllib.loads(profile.read_text())['assets'][0]
+                self.assertEqual(asset['tile_semantic_normals'], [direction])
+                self.assertEqual(asset['height'], [7])
+                self.assertEqual(asset['normal_xyz'], [128, 128, 255])
+                reloaded = AnnotationStore(store.path, ROM_SHA256, marker)
+                reloaded.refresh()
+                self.assertEqual(reloaded.tiles[key]['normals'], [direction])
+            # No direction is also valid: do not invent facing on older doors.
+            store.save_group([key], dict(role='door'), store.refresh())
+            self.assertEqual(tomllib.loads(profile.read_text())['assets'][0]['tile_semantic_normals'], [])
+        for normals in (['north_east'], ['north', 'east'], ['north', 'north']):
+            with self.assertRaises(AtlasError):
+                validate_annotation(dict(role='door', normals=normals))
+
     def test_particle_semantic_save_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'annotations.json'

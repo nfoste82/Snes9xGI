@@ -5,6 +5,19 @@ actual door leaf or closed/locked barrier; it is not a synonym for the frame.
 Existing legacy `door` annotations are migrated to `doorway`, preserving their
 authored height, normal, occlusion and frame-mask data.
 
+## Door facing
+
+For the **door** role, choose **Canonical wall / door facing** in Metadata,
+click **Apply Metadata to Selected Tiles**, then save the profile. Door supports
+one cardinal direction (north, east, south or west), stored in the same
+`tile_semantic_normals` field used by walls. The browser atlas offers N/E/S/W
+buttons too. Leaving facing unset remains valid for existing doors; no migration
+guesses a direction. Diagonal and multiple Door facings are rejected.
+
+This is canonical artwork metadata, not a gameplay-space override or a doorway
+support contact. It does not generate geometry, change placement offsets, or
+infer assembly ownership. Height/normal layers remain independent.
+
 ## Directional support contacts
 
 In the inspector's **Metadata** layer:

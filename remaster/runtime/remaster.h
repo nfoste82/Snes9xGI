@@ -17,6 +17,7 @@
 #include "offscreen_emitters.h"
 #include "diagonal_assembly.h"
 #include "sprite_obstacle.h"
+#include "dungeon_visible_face_runtime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -157,6 +158,8 @@ struct RemasterState
 	std::vector<uint16_t> mainPreMathRgb;
 	std::vector<uint8_t> sceneDepth;
 	std::vector<RemasterFramePixel> scenePixels;
+	std::array<std::vector<RemasterFramePixel>,4> observedBgPixels;
+	std::array<std::vector<uint8_t>,4> observedBgDepth;
 	std::vector<uint32_t> subOwners;
 	std::vector<uint64_t> mainTileHashes;
 	std::vector<uint64_t> subTileHashes;
@@ -192,6 +195,7 @@ struct RemasterState
 	uint64_t dungeonClassifiedChangedCells = 0;
 	std::unique_ptr<std::array<RemasterDungeonFloorContext::Placement,4096>> dungeonRetainedBg2;
 	std::unique_ptr<std::array<RemasterDungeonFloorContext::Placement,4096>> dungeonRetainedBg1;
+	std::unique_ptr<RemasterVisibleFaceTemplateCache> visibleFaceTemplateCache;
 	// Bounded exact-evidence animation states. Unlike equivalent reuse, this can
 	// retain genuinely different solved geometry without merging those states.
 	struct DungeonSolvedArtworkState {
@@ -928,6 +932,10 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 	}
 
 	state.mainOwners.assign(pixelCount, REMASTER_OWNER_UNSUPPORTED);
+	for(unsigned n=0;n<4;n++) {
+		state.observedBgPixels[n].assign(S9xRemasterFramePacketActive()?pixelCount:0,RemasterFramePixel{});
+		state.observedBgDepth[n].assign(S9xRemasterFramePacketActive()?pixelCount:0,0);
+	}
 	state.subOwners.assign(pixelCount, REMASTER_OWNER_UNSUPPORTED);
 	S9xRemasterCurrentOwner = REMASTER_OWNER_UNSUPPORTED;
 	S9xRemasterCurrentOwners = nullptr;
@@ -944,6 +952,11 @@ inline void S9xRemasterClearSpan (size_t offset, size_t width, uint32_t owner = 
 		const size_t ownerWidth = width < state.mainOwners.size() - offset ? width : state.mainOwners.size() - offset;
 		std::fill_n(state.mainOwners.begin() + offset, ownerWidth, owner);
 		std::fill_n(state.subOwners.begin() + offset, ownerWidth, owner);
+		for(unsigned n=0;n<4;n++)if(offset<state.observedBgPixels[n].size()) {
+			const auto count=std::min(ownerWidth,state.observedBgPixels[n].size()-offset);
+			std::fill_n(state.observedBgPixels[n].begin()+offset,count,RemasterFramePixel{});
+			std::fill_n(state.observedBgDepth[n].begin()+offset,count,0);
+		}
 	}
 	if (S9xRemasterFramePacketActive() && offset < state.mainInstanceIds.size())
 	{
@@ -1053,6 +1066,7 @@ inline void S9xRemasterRememberDungeonClassification(const RemasterDungeonFloorC
 inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &context,
 	const RemasterProfile &profile, std::array<RemasterDungeonFloorContext::Placement, 4096> &output)
 {
+	RemasterLightingTrace::Scope lightingTimer(RemasterLightingTrace::current(), RemasterLightingTrace::Classification);
 #ifdef ALTTP_TEST_CACHE_STAGES
 	auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.classifyMs,stages.classifications);
 #endif
@@ -1338,7 +1352,25 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				for(int xx=0;xx<w;xx++)for(int yy=0;yy<h;yy++) {
 					const bool structuralPart=d<2?(xx==0 || xx==w-1 || (d==0?yy==0:yy==h-1)):
 						(yy==0 || yy==h-1 || (d==2?xx==0:xx==w-1));
-					if(!structuralPart)continue;
+					// Opening floors are terminal consumers of this exact dispatch,
+					// not independent plateau datums. Unlike frame recognition, their
+					// final word must match too: an overwritten opening has no owner.
+					if(!structuralPart) {
+						const int px=flip&1?w-1-xx:xx,py=flip&2?h-1-yy:yy,i=(y+py)*64+x+px;
+						const int n=off+2*(xx*(family?4:h)+yy+(family && d==1?1:0));
+						const int expected=(context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+						auto &t=output[i];
+						// High-range dispatch owns its opening on BG1 too. The BG2
+						// counterpart at this coordinate is not an opening write.
+						if((!split || context.placementBackgroundIndex==0) && (t.surface==Surface::Floor || (t.surface==Surface::Unknown && t.diagnosticAuthoredFloor)) && t.hasHeight && !t.stairSourceAmbiguous &&
+							((context.constructedMaps[2*i]|context.constructedMaps[2*i+1]<<8)&0xdfff)==(expected&0xdfff) &&
+							(family || std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;}))) {
+							if(t.doorAssembly && (t.doorAssembly!=y*64+x+1 || t.doorDirection!=direction)) {
+								ambiguousFrames.insert(t.doorAssembly);ambiguousFrames.insert(y*64+x+1);
+							} else {t.doorAssembly=y*64+x+1;t.doorDirection=direction;t.doorTemplateOffset=off;t.splitDoorPart=split!=0;}
+						}
+						continue;
+					}
 					const int bg=split ? ((d==0?yy==0:d==1?yy==h-1:d==2?xx==0:xx==w-1)?1:0) : context.placementBackgroundIndex;
 					if(bg!=context.placementBackgroundIndex)continue;
 					const int px=flip&1?w-1-xx:xx,py=flip&2?h-1-yy:yy;
@@ -1380,6 +1412,39 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// just its shared member. Do not leave a partially proved U-shaped frame.
 		for(const auto &t:output)if(t.doorDirection==0xfe)ambiguousFrames.insert(t.doorAssembly);
 		for(auto &t:output)if(ambiguousFrames.count(t.doorAssembly))t.doorDirection=0xfe;
+		// A closed leaf is not an open threshold. Prove all twelve surviving
+		// words (including the leaf), not only the structural U. The ROM's
+		// normal-range final draw uses these column-major sources; animation
+		// sources at 306a..31d2 are deliberately not accepted as settled doors.
+		// Equivalent templates may name the same origin/axis, never a second
+		// overlapping owner. No artwork, collision-plane or nearest-floor vote.
+		std::map<int,std::set<std::pair<int,int>>> closedClaims;
+		std::map<std::pair<int,int>,uint16_t> closedSources;
+		for(int d=0;d<4;d++)for(int off=starts[d];off<=ends[d];off+=24)
+		for(int flip=0;flip<4;flip++) {
+			const int w=d<2?4:3,h=d<2?3:4,direction=d^((flip&(d<2?2:1))?1:0);
+			for(int y=0;y<=64-h;y++)for(int x=0;x<=64-w;x++) {
+				bool exact=true,leaf=false,frame=false;
+				for(int xx=0;exact && xx<w;xx++)for(int yy=0;exact && yy<h;yy++) {
+					const int i=(y+(flip&2?h-1-yy:yy))*64+x+(flip&1?w-1-xx:xx),n=off+2*(xx*h+yy);
+					const int expected=(context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+					const auto &t=output[i];
+					exact=((context.constructedMaps[2*i]|context.constructedMaps[2*i+1]<<8)&0xdfff)==(expected&0xdfff) &&
+						t.hasHeight && !t.stairSourceAmbiguous && (t.surface==Surface::Door || t.surface==Surface::ClosedDoor);
+					leaf|=t.surface==Surface::ClosedDoor;frame|=t.surface==Surface::Door;
+				}
+				if(!exact || !leaf || !frame)continue;
+				const auto owner=std::make_pair(y*64+x+1,direction);closedSources.emplace(owner,off);
+				for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)closedClaims[(y+yy)*64+x+xx].insert(owner);
+			}
+		}
+		for(const auto &entry:closedClaims)if(entry.second.size()==1) {
+			const auto owner=*entry.second.begin();const int w=owner.second<2?4:3,h=owner.second<2?3:4,origin=owner.first-1;
+			bool unique=true;for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)unique &= closedClaims[origin+yy*64+xx].size()==1;
+			if(!unique)continue;
+			auto &t=output[entry.first];t.doorAssembly=owner.first;t.doorDirection=owner.second;
+			t.doorTemplateOffset=closedSources.at(owner);t.closedDoorAssembly=true;t.splitDoorPart=false;
+		}
 		#ifndef ALTTP_TEST_PRIOR_LOWER_DOOR_WRITER
 		// Lower inter-room staircase handlers26..29 use FOUR-word columns,
 		// unlike ordinary three-word doors. The terminal band is written to
@@ -1818,12 +1883,14 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// A surviving complete outer door band can be authored as ordinary wall
 		// ramp. Require all four final words AND both adjoining authored wall ends;
 		// mixed opening pixels remain Door and retain region ownership semantics.
+		// A previously proved complete door owns this band more specifically:
+		// wall-end adjacency must not discard its landing or split-BG transport.
 		for(int off=0x2e6a;off<=0x3032;off+=24)for(int y=1;y<60;y++)for(int x=0;x<64;x++) {
 			bool exact=true;
 			for(int k=0;exact && k<4;k++) {
 				int i=(y+k)*64+x,n=off+16+k*2,word=context.constructedMaps[i*2]|context.constructedMaps[i*2+1]<<8;
 				const auto &t=output[i];int expected=context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8;
-				if((word&0xdfff)!=(expected&0xdfff) || t.surface!=Surface::Door || !t.hasHeight)exact=false;
+				if((word&0xdfff)!=(expected&0xdfff) || t.surface!=Surface::Door || !t.hasHeight || t.doorAssembly)exact=false;
 				for(int py=0;exact && py<8;py++)for(int px=0;exact && px<8;px++)if(t.height[py*8+px]!=7-px)exact=false;
 			}
 			const auto &a=output[(y-1)*64+x],&b=output[(y+4)*64+x];
@@ -2693,6 +2760,10 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 			subPixel.instanceId = state.subInstanceIds[sourceOffset];
 			subPixel.tilePixel = state.subTilePixels[sourceOffset];
 			result.subPixels.push_back(subPixel);
+			for(unsigned n=0;n<4;n++)if(sourceOffset<state.observedBgPixels[n].size()) {
+				result.observedBgPixels[n].push_back(state.observedBgPixels[n][sourceOffset]);
+				result.observedBgDepth[n].push_back(state.observedBgDepth[n][sourceOffset]);
+			}
 			if (!state.sceneRgb.empty())
 			{
 				// Ordinary world geometry must not replace stock color math/artwork.
@@ -2784,6 +2855,66 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	return true;
 }
 
+// SinglePot writes an exact light/dark 2x2 template and an indexed collision
+// footprint. This proves a physical occurrence, NOT a hash role or floor datum.
+// Same-value write history is unavailable: final identity is the explicit limit.
+inline size_t S9xRemasterRestoreSceneDungeonPots(RemasterFrame &frame,
+	const RemasterDungeonFloorContext &c)
+{
+	if(!c.verifiedAlttpRom || !c.indoors || !c.constructedMaps || !c.collisionAttributes ||
+		!c.dungeonTemplateData || !c.graphics || c.submodule ||
+		frame.profileRomSha256!="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb" ||
+		frame.scenePixels.size()!=frame.mainPixels.size() || frame.subPixels.size()!=frame.mainPixels.size() ||
+		frame.sceneRgb555.size()!=frame.mainPixels.size() || !frame.width)return 0;
+	using Claim=std::pair<int,int>; // origin, independent plane (exact H symmetry is the same footprint)
+	std::map<int,std::set<Claim>> claims;
+	for(int off:{0xe82,0xe92})for(int flip=0;flip<4;flip++)for(int y=0;y<63;y++)for(int x=0;x<63;x++) {
+		bool exact=true;
+		for(int xx=0;exact && xx<2;xx++)for(int yy=0;exact && yy<2;yy++) {
+			int sx=flip&1?1-xx:xx,sy=flip&2?1-yy:yy,n=off+2*(sx*2+sy),i=(y+yy)*64+x+xx;
+			int expected=(c.dungeonTemplateData[n]|c.dungeonTemplateData[n+1]<<8)^(flip<<14);
+			exact=(c.constructedMaps[8192+2*i]|c.constructedMaps[8193+2*i]<<8)==expected;
+		}if(!exact)continue;
+		int plane=-1;bool ambiguous=false;
+		for(int p=0;p<2;p++) {
+			int attr=c.collisionAttributes[p*4096+y*64+x];bool indexed=attr>=0x70 && attr<=0x7f;
+			for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)indexed &= c.collisionAttributes[p*4096+(y+yy)*64+x+xx]==attr;
+			if(indexed){if(plane>=0)ambiguous=true;plane=p;}
+		}if(plane<0 || ambiguous)continue;
+		for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)claims[(y+yy)*64+x+xx].insert({y*64+x,plane});
+	}
+	auto backdrop=[](const RemasterFramePixel &p){return !p.instanceId && RemasterSourceType(p.owner>>24)==RemasterSourceType::Backdrop;};
+	size_t restored=0;
+	for(size_t k=0;k<frame.mainPixels.size();k++) {
+		const auto &main=frame.mainPixels[k];
+		const bool presentation=RemasterSourceType(main.owner>>24)==RemasterSourceType::Background && ((main.owner>>16)&255)==2;
+		if((!backdrop(main) && !presentation) || !backdrop(frame.scenePixels[k]))continue;
+		const auto &pixel=frame.subPixels[k];if(!pixel.instanceId || pixel.instanceId>frame.tileInstances.size() || pixel.tilePixel>=64 ||
+			RemasterSourceType(pixel.owner>>24)!=RemasterSourceType::Background || ((pixel.owner>>16)&255)!=0)continue;
+		const int x=(c.backgroundScrollX+k%frame.width)&511,y=(c.backgroundScrollY+k/frame.width)&511,i=y/8*64+x/8;
+		auto found=claims.find(i);if(found==claims.end() || found->second.size()!=1)continue;
+		const auto [origin,plane]=*found->second.begin();bool unique=true;
+		for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)unique &= claims[origin+yy*64+xx]==found->second;
+		if(!unique)continue;
+		const auto &inst=frame.tileInstances[pixel.instanceId-1];const int word=c.constructedMaps[8192+2*i]|c.constructedMaps[8193+2*i]<<8;
+		if(inst.source!=RemasterSourceType::Background || inst.sourceIndex!=0 || !inst.hasPaletteArtwork ||
+			S9xRemasterInstanceGeometryUnresolved(inst) || inst.hFlip!=bool(word&0x4000) || inst.vFlip!=bool(word&0x8000) ||
+			pixel.tilePixel!=(word&0x8000?7-y%8:y%8)*8+(word&0x4000?7-x%8:x%8))continue;
+		uint8_t decoded[64];const int base=c.bg1GraphicsBase==0xffff?c.graphicsBase:c.bg1GraphicsBase;
+		for(int py=0;py<8;py++)for(int px=0;px<8;px++){int v=0;for(int b=0;b<4;b++)v|=((c.graphics[uint16_t(base+(word&1023)*32+b/2*16+py*2+b%2)]>>(7-px))&1)<<b;decoded[py*8+px]=v;}
+		if(inst.tileId.hash!=S9xRemasterHashTile(4,decoded))continue;
+		const auto *md=S9xRemasterFrameMetadataForTile(frame,inst.tileId);if(!md)continue;
+		const auto g=S9xRemasterResolveFrameGeometry(*md,frame,pixel.instanceId-1);
+		// Exact ROM occurrence ownership above is independent of channel authoring.
+		// A missing normal must not discard authored height (including local zero),
+		// and absent channels stay absent in the selected donor metadata.
+		if(!(g.hasHeight || g.hasNormals || g.hasOcclusion || g.hasEmission || g.hasMaterialSelectors || g.hasDoorframeMask) ||
+			(g.tileRole!=RemasterTileRole::Unknown && g.tileRole!=RemasterTileRole::Obstacle))continue;
+		frame.scenePixels[k]=pixel;frame.sceneRgb555[k]=inst.paletteRgb555[pixel.tilePixel];restored++;
+	}
+	return restored;
+}
+
 inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t screenPitch = 0,
 	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr,
 	const RemasterDungeonFloorContext *dungeonFloor = nullptr,
@@ -2791,7 +2922,16 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr,
 	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr)
 {
+	RemasterLightingTrace::Frame lightingTrace;
+	if (RemasterLightingTrace::enabled()) {
+		lightingTrace.id=RemasterLightingTrace::nextId(); lightingTrace.begin=RemasterLightingTrace::now();
+		if(dungeonFloor) { lightingTrace.room=dungeonFloor->roomIndex; lightingTrace.plane=dungeonFloor->linkPlane;
+			lightingTrace.submodule=dungeonFloor->submodule; lightingTrace.collision=dungeonFloor->collisionMode;
+			lightingTrace.scrollX=dungeonFloor->backgroundScrollX; lightingTrace.scrollY=dungeonFloor->backgroundScrollY; }
+	}
+	RemasterLightingTrace::Scope lightingTimer(&lightingTrace,RemasterLightingTrace::EndFrame);
 	RemasterState &state = S9xRemasterState();
+	lightingTrace.epochBefore=state.runtimeDungeonHeightEpoch;
 	state.currentArea.store(area ? uint32_t(area->id) | (uint32_t(area->romDark) << 16) : 0xffff);
 	uint8_t result = RemasterCaptureNone;
 	if (completedFrame)
@@ -2949,7 +3089,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	}
 
 	RemasterFrame frame;
+	RemasterLightingTrace::Scope finalizeTimer(&lightingTrace,RemasterLightingTrace::Finalize);
 	const bool frameFinalized = S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight);
+	finalizeTimer.stop();
+	if(frameFinalized && dungeonFloor && !state.activeLayerView)S9xRemasterRestoreSceneDungeonPots(frame,*dungeonFloor);
 	if (frameFinalized && area)
 	{
 		frame.area = *area;
@@ -2988,6 +3131,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		}
 		if (dungeonFloor)
 		{
+			RemasterLightingTrace::Scope roomTimer(&lightingTrace,RemasterLightingTrace::Room);
 			S9xRemasterObserveDungeonTransition(*dungeonFloor);
 			S9xRemasterObserveOutgoingGeometry(*dungeonFloor);
 			liveContext=*dungeonFloor;
@@ -3316,6 +3460,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 							// placements alive for all solves at this boundary instead
 							// of overwriting BG2 and rescanning its room assemblies.
 							auto lowerMap = std::make_unique<RemasterDungeonHeightMap>();
+							// Reverse-BG transport uses the independent first BG2 solve.
+							// Exports precede shell imports, so this is not iterative feedback.
+							lower.peerShellPlacements=placements->data();
+							lower.peerShellMap=&state.runtimeDungeonHeightMap;
 							if (S9xRemasterBuildDungeonHeightMap(lower,state.activeProfile.upperFloorHeight,*lowerMap))
 								state.runtimeDungeonBg1HeightMap = std::move(*lowerMap);
 							else state.runtimeDungeonBg1HeightMap = std::move(*std::make_unique<RemasterDungeonHeightMap>());
@@ -3325,6 +3473,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 								!state.runtimeDungeonBg1HeightMap.doorwaySupportRelations.empty()) {
 								constructed.supportRelations=&state.runtimeDungeonBg1HeightMap.authoredSupportRelations;
 								constructed.wallSupportRelations=&state.runtimeDungeonBg1HeightMap.authoredWallSupportRelations;
+								constructed.peerShellPlacements=lowerPlacements->data();
+								constructed.peerShellMap=&state.runtimeDungeonBg1HeightMap;
 								constructed.doorwaySupportRelations=&state.runtimeDungeonBg1HeightMap.doorwaySupportRelations;
 								if(S9xRemasterBuildDungeonHeightMap(constructed,state.activeProfile.upperFloorHeight,*candidate))
 									state.runtimeDungeonHeightMap=std::move(*candidate);
@@ -3393,6 +3543,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				}
 			}
 			dungeonFloor=&liveContext;
+			roomTimer.stop();
+			RemasterLightingTrace::Scope applyTimer(&lightingTrace,RemasterLightingTrace::Apply);
 			if (!reviewMap && runtimeInputsPublishable && state.runtimeDungeonHeightValid &&
 				state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->roomIndex)
 				reviewMap = &state.runtimeDungeonHeightMap;
@@ -3521,6 +3673,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				}
 			}
 		}
+		RemasterLightingTrace::Scope actorTimer(&lightingTrace,RemasterLightingTrace::Actors);
 		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		// Compiled review geometry may render BGs but cannot attest actor floor
 		// components. Dynamic assemblies consume only the current complete solve.
@@ -3528,15 +3681,26 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			runtimeInputsPublishable && state.runtimeDungeonHeightValid && dungeonFloor &&
 			state.runtimeDungeonHeightMap.roomIndex==dungeonFloor->roomIndex ? &state.runtimeDungeonHeightMap : nullptr);
 		if (hasScene) frame.mainPixels.swap(frame.scenePixels);
+		actorTimer.stop();
+		if(hasScene && dungeonFloor && runtimeInputsPublishable &&
+			appliedDungeonHeightMap==&state.runtimeDungeonHeightMap &&
+			state.runtimeDungeonHeightValid && state.dungeonRetainedBg1 && state.dungeonRetainedBg2) {
+			if(!state.visibleFaceTemplateCache)state.visibleFaceTemplateCache=std::make_unique<RemasterVisibleFaceTemplateCache>();
+			RemasterLightingTrace::Scope visibleTimer(&lightingTrace,RemasterLightingTrace::Visible);
+			S9xRemasterApplyVisibleDungeonFaces(frame,*dungeonFloor,state.dungeonRetainedBg1->data(),
+				state.dungeonRetainedBg2->data(),state.runtimeDungeonBg1HeightMap,state.runtimeDungeonHeightMap,state.visibleFaceTemplateCache.get());
+		}
 		if(dungeonFloor && state.requestedRoomDiagnostics.load(std::memory_order_relaxed))
 			S9xRemasterProjectRoomDiagnostics(frame,*dungeonFloor,appliedDungeonHeightMap,
 				appliedDungeonHeightMap==&state.runtimeDungeonHeightMap ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				&state.previousRuntimeDungeonHeightMap,&state.previousRuntimeDungeonBg1HeightMap);
-		if (dungeonFloor)
+		if (dungeonFloor) {
+			RemasterLightingTrace::Scope offscreenTimer(&lightingTrace,RemasterLightingTrace::Offscreen);
 			S9xRemasterAppendOffscreenRoomLights(frame, *dungeonFloor, state.activeProfile,
 				appliedDungeonHeightMap,
 				state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				S9xRemasterHashTile);
+		}
 		if (heldLamp)
 		{
 			RemasterHeldLampState lamp = *heldLamp;
@@ -3662,6 +3826,13 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			state.completedFrame = std::move(frame);
 			state.completedFrameAvailable = true;
 		}
+		lightingTimer.stop();
+		if(lightingTrace.id)lightingTrace.producerEnd=RemasterLightingTrace::now();
+		lightingTrace.epochAfter=state.runtimeDungeonHeightEpoch;
+		lightingTrace.inputKey=state.runtimeDungeonObservedInputKey;
+		lightingTrace.profileKey=state.dungeonGeometryProfileKey;
+		if(completedFrame)completedFrame->lightingTrace=lightingTrace;
+		if(state.liveFramesActive)state.completedFrame.lightingTrace=lightingTrace;
 	}
 	else if (state.frameCaptureActive)
 	{
@@ -3676,6 +3847,17 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 inline void S9xRemasterSetTilePixel (uint8_t tilePixel)
 {
 	S9xRemasterState().currentTilePixel = tilePixel;
+}
+
+inline void S9xRemasterObserveBackgroundPixel(size_t offset,uint8_t depth)
+{
+	auto &s=S9xRemasterState();
+	if(s.scenePass || !s.currentTileHashValid || s.currentSource!=RemasterSourceType::Background ||
+		s.currentSourceIndex>1 || s.currentTilePixel>=64)return;
+	const unsigned n=(s.currentSubscreen?2:0)+s.currentSourceIndex;
+	if(offset>=s.observedBgPixels[n].size() || depth<=s.observedBgDepth[n][offset])return;
+	s.observedBgDepth[n][offset]=depth;
+	s.observedBgPixels[n][offset]={S9xRemasterCurrentOwner,static_cast<uint32_t>(s.tileInstances.size()),s.currentTilePixel};
 }
 
 inline void S9xRemasterWriteOwner (size_t offset)

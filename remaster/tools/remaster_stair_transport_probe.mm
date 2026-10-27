@@ -21,7 +21,14 @@ int main(int argc,char **argv){@autoreleasepool {try {
   auto source=[NSString stringWithContentsOfFile:shaderPath?[NSString stringWithUTF8String:shaderPath]:@"macosx/shaders.metal" encoding:NSUTF8StringEncoding error:&error];check(source,"shader source");
   if(std::getenv("ALTTP_STAIR_UNOCCLUDED"))source=[source stringByReplacingOccurrencesOfString:@"return visibility;" withString:@"return 1.0;" ];
   if(std::getenv("ALTTP_PERF_NO_VISIBILITY"))source=[source stringByReplacingOccurrencesOfString:@"float3 segment = to - from;" withString:@"return 1.0;\n float3 segment = to - from;" ];
- id<MTLLibrary> libraries[2];for(int ref=0;ref<2;ref++){auto options=[MTLCompileOptions new];if(ref)options.preprocessorMacros=@{@"REMASTER_REFERENCE_VISIBILITY":@1};libraries[ref]=[device newLibraryWithSource:source options:options error:&error];if(!libraries[ref])throw std::runtime_error(error.localizedDescription.UTF8String);}
+  id<MTLLibrary> libraries[2];for(int ref=0;ref<2;ref++){auto options=[MTLCompileOptions new];if(ref)options.preprocessorMacros=@{@"REMASTER_REFERENCE_VISIBILITY":@1};libraries[ref]=[device newLibraryWithSource:source options:options error:&error];if(!libraries[ref])throw std::runtime_error(error.localizedDescription.UTF8String);}
+  // Compare the app's compiled kernels with current source using identical
+  // packet/field/source inputs. Reference mode still uses the source oracle.
+  if(const char *path=std::getenv("ALTTP_PERF_METALLIB")){
+   libraries[0]=[device newLibraryWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]] error:&error];
+   if(!libraries[0])throw std::runtime_error(error.localizedDescription.UTF8String);
+   std::cout<<"compiled_library="<<path<<'\n';
+  }
  for(int arg=1;arg<argc;arg++) {
   auto f=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(argv[arg],*f),"packet");const int w=f->width,h=f->height;const size_t count=w*h;
    if(const char *k=std::getenv("ALTTP_PERF_REPRESENTATIVES")){int value=std::atoi(k);check(value>=0 && value<=8,"representatives 0..8");f->representativeEmitters=value;}
@@ -68,7 +75,7 @@ int main(int argc,char **argv){@autoreleasepool {try {
   if(std::getenv("ALTTP_STAIR_FAST_ROI") && (ref || full || !clustered || !batchMode))continue;
   const unsigned connections=std::getenv("S9X_REMASTER_DIRECT_SAMPLES")?std::strtoul(std::getenv("S9X_REMASTER_DIRECT_SAMPLES"),nullptr,10):0;
   const bool sampled=connections>0,collapsed=sampled && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
-   const bool batched=!sampled && batchMode;
+   const bool batched=!sampled && batchMode && !std::getenv("ALTTP_PERF_SERIAL_DIRECT");
    variant=std::to_string(full)+std::to_string(clustered)+std::to_string(batched);
  std::vector<Light> lights;uint32_t sphereCount=0;for(auto &l:f->lights){Light a={};a.position={l.x,l.y,l.z};a.radius=l.radius;a.intensity=l.intensity/25;a.color={std::pow(l.red,2.2f),std::pow(l.green,2.2f),std::pow(l.blue,2.2f)};a.sampleCount=full?128:S9xRemasterSphereSamples(l.x,l.y,l.radius,w,h);a.firstSample=sphereCount;sphereCount+=a.sampleCount;lights.push_back(a);}Light emptyLight={};auto lightBuffer=buffer(lights.empty()?&emptyLight:lights.data(),std::max<size_t>(1,lights.size())*sizeof(Light));
   auto patches=clustered?S9xRemasterEmitterPatches(*f,fields.emission.data(),fields.participation.data(),mesh):std::vector<RemasterEmitterPatch>{};RemasterEmitterPatch dummy={};auto patchBuffer=buffer(patches.empty()?&dummy:patches.data(),std::max<size_t>(1,patches.size())*sizeof(dummy));

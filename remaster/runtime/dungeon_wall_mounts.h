@@ -21,7 +21,7 @@ inline void S9xRemasterAttachWallMounts(const RemasterDungeonFloorContext &c,
     palette=delta;seed|=t.surface==RemasterDungeonFloorContext::Surface::Wall;
    }
    if(!exact || !seed || (north?(x==0 || x+w>=64):(y==0 || y+h>=64)))continue;
-   // Tangent ends must each carry the same displayed cross section and solved
+   // Tangent ends must each carry the same contacting cross section and solved
    // structural plane. No nearest-wall search or propagation through a gap.
    struct Part{int cell,base;std::array<int16_t,64> local;int plane;};std::vector<Part> parts;
    bool complete=true;
@@ -36,12 +36,13 @@ inline void S9xRemasterAttachWallMounts(const RemasterDungeonFloorContext &c,
     for(int p=0;p<2;p++) {
      int ba=map.structuralPlaneOffsets[p][a],bb=map.structuralPlaneOffsets[p][b];if(ba==255 || bb==255)continue;
      bool compatible=true;std::array<int,64> values={};
-     for(int py=0;py<8;py++)for(int px=0;px<8;px++) {
-      values[py*8+px]=ba+sample(ta,px,py);
-      if(values[py*8+px]!=bb+sample(tb,px,py))compatible=false;
-      // Backing has no tangent rise: preserve its authored normal-axis ramp.
-      if(sample(ta,px,py)!=sample(ta,north?0:px,north?py:0))compatible=false;
-     }
+      for(int py=0;py<8;py++)for(int px=0;px<8;px++) {
+       // A corner can carry a perpendicular face away from this contact.
+       // Only its actual touching edge constrains the backing face. Extrude
+       // that section along the mount's tangent; never copy the other face.
+       values[py*8+px]=ba+sample(ta,north?7:px,north?py:7);
+       if(values[py*8+px]!=bb+sample(tb,north?0:px,north?py:0))compatible=false;
+      }
      if(!compatible){complete=false;break;}
      if(plane>=0 && values!=effective){complete=false;break;}
      plane=p;base=ba;effective=values;

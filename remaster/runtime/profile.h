@@ -1682,14 +1682,17 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			fail(0, "tile semantic fields require tile_semantics_authored = true");
 		if (item.hasTileSemantics)
 		{
+			// Door facing is optional for backward compatibility. When supplied it
+			// is one canonical cardinal, not a wall ramp or doorway support hint.
+			const bool door = item.tileRole == RemasterTileRole::Door;
 			const size_t expected = item.tileRole == RemasterTileRole::Wall ? 1 :
-				(item.tileRole == RemasterTileRole::WallCorner ? 2 : 0);
+				(item.tileRole == RemasterTileRole::WallCorner ? 2 : (door && !item.tileSemanticNormals.empty() ? 1 : 0));
 			std::set<std::string> unique;
 			for (const auto &normal : item.tileSemanticNormals)
 			{
 				const bool cardinal = normal == "north" || normal == "east" || normal == "south" || normal == "west";
 				const bool diagonal = normal == "north_east" || normal == "south_east" || normal == "south_west" || normal == "north_west";
-				if ((!cardinal && !diagonal) || (expected == 2 && !cardinal) || !unique.insert(normal).second)
+				if ((!cardinal && !diagonal) || ((expected == 2 || door) && !cardinal) || !unique.insert(normal).second)
 					fail(0, "invalid or duplicate tile semantic normal");
 			}
 			if (item.tileSemanticNormals.size() != expected) fail(0, "tile role requires its exact wall normal count");

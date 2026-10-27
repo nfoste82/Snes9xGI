@@ -99,6 +99,10 @@ inline void S9xRemasterSemanticDiagonalExtents(Placements &tiles)
 	for(int i=0;i<4096;i++) {
 		const auto &claim=claims[i];if(!claim.set || claim.conflict)continue;
 		auto &t=tiles[i];t.surface=decltype(t.surface)::Wall;t.diagonalHeightPreview=true;t.diagonalIntercept=claim.intercept;
+		// This pass replaces the intrinsic short shell with a placed extent.
+		// A preceding four-band proof may have preserved authored samples;
+		// that source flag no longer describes the array we are publishing.
+		t.diagonalAuthoredPreserved=false;
 		t.diagonalMinimum=claim.minimum;t.diagonalMaximum=claim.maximum;
 		for(int y=0;y<8;y++)for(int x=0;x<8;x++)
 			t.height[y*8+x]=std::max(claim.minimum,std::min(claim.maximum,claim.intercept-x-y));

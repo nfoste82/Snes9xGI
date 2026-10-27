@@ -77,7 +77,9 @@ int main(int argc,char **argv) {
    case 13: {RemasterTileContext c;c.hasHeight=false;c.hasNormals=false;f.contextGeometry[1]=c;break;}
   }
   const auto color=f.sceneRgb555;const auto id=f.scenePixels[100].instanceId;
-  check(!S9xRemasterRestoreSceneSubscreenWalls(f) && color==f.sceneRgb555 && id==f.scenePixels[100].instanceId,"negative eligibility/priority");
+   if(mode==1 || mode==2 || mode==7) {
+    check(S9xRemasterRestoreSceneSubscreenWalls(f)==1,"independent channel/HUD admission");
+   } else check(!S9xRemasterRestoreSceneSubscreenWalls(f) && color==f.sceneRgb555 && id==f.scenePixels[100].instanceId,"negative eligibility/priority");
  }
  for(int a=1;a<argc;a++) {
   auto f=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(argv[a],*f),"capture read");

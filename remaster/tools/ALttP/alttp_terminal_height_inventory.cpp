@@ -33,15 +33,35 @@ int main(int argc,char **argv) { try {
  c.constructedMaps=maps.data();
  for(int i=7;i<argc;i+=4){if(c.stairCount==32)throw std::runtime_error("too many stairs");auto &s=c.stairs[c.stairCount++];s.x=std::stoi(argv[i]);s.y=std::stoi(argv[i+1]);s.highIsNorth=std::stoi(argv[i+2]);s.changesPlane=std::stoi(argv[i+3]);}
  S9xRemasterDungeonStairsFromAttributes(c);
- auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();
- auto lower=std::make_unique<RemasterDungeonHeightMap>();
- for(int bg=0;bg<2;bg++){
-  std::rotate(maps.begin(),maps.begin()+8192,maps.end());std::swap(c.graphicsBase,c.bg1GraphicsBase);c.placementBackgroundIndex=bg;
-  if(bg){c.supportRelations=&lower->authoredSupportRelations;c.wallSupportRelations=&lower->authoredWallSupportRelations;c.doorwaySupportRelations=&lower->doorwaySupportRelations;}
-  S9xRemasterDungeonPlacements(c,p,*tiles);c.placements=tiles->data();auto m=std::make_unique<RemasterDungeonHeightMap>();
-  if(!S9xRemasterBuildDungeonHeightMap(c,p.upperFloorHeight,*m))throw std::runtime_error("unsupported room solve");
+  // Match the settled EndFrame solve order: independent BG2, BG1 with that
+  // peer's signed shells, then BG2 with the resulting BG1 relations. A simple
+  // BG1->BG2 solve can select a different plane while falsely passing seams.
+  // This adapter has no transition entry evidence; captured transitions need a
+  // full EndFrame replay rather than pretending to reproduce that state here.
+  auto bg2Tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();
+  auto bg1Tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();
+  auto bg2=std::make_unique<RemasterDungeonHeightMap>();
+  auto bg1=std::make_unique<RemasterDungeonHeightMap>();
+  S9xRemasterDungeonPlacements(c,p,*bg2Tiles);c.placements=bg2Tiles->data();
+  if(!S9xRemasterBuildDungeonHeightMap(c,p.upperFloorHeight,*bg2))throw std::runtime_error("unsupported independent BG2 solve");
+  auto lowerMaps=maps;std::rotate(lowerMaps.begin(),lowerMaps.begin()+8192,lowerMaps.end());
+  auto lower=c;lower.constructedMaps=lowerMaps.data();lower.placementBackgroundIndex=0;
+  std::swap(lower.graphicsBase,lower.bg1GraphicsBase);
+  S9xRemasterDungeonPlacements(lower,p,*bg1Tiles);lower.placements=bg1Tiles->data();
+  lower.peerShellPlacements=bg2Tiles->data();lower.peerShellMap=bg2.get();
+  if(!S9xRemasterBuildDungeonHeightMap(lower,p.upperFloorHeight,*bg1))throw std::runtime_error("unsupported BG1 solve");
+  if(!bg1->authoredSupportRelations.empty() || !bg1->authoredWallSupportRelations.empty() || !bg1->doorwaySupportRelations.empty()) {
+   c.supportRelations=&bg1->authoredSupportRelations;c.wallSupportRelations=&bg1->authoredWallSupportRelations;
+   c.doorwaySupportRelations=&bg1->doorwaySupportRelations;c.peerShellPlacements=bg1Tiles->data();c.peerShellMap=bg1.get();
+   auto finalMap=std::make_unique<RemasterDungeonHeightMap>();
+   if(S9xRemasterBuildDungeonHeightMap(c,p.upperFloorHeight,*finalMap))bg2=std::move(finalMap);
+  }
+  for(int bg=0;bg<2;bg++){
+   const auto &tiles=bg?*bg2Tiles:*bg1Tiles;
+   const auto *m=bg?bg2.get():bg1.get();
+   const auto &applyContext=bg?c:lower;
   for(int i=0;i<4096;i++){
-   const auto &t=(*tiles)[i];RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
+    const auto &t=tiles[i];RemasterFrame f;f.width=f.height=8;f.mainPixels.resize(64);f.subPixels.resize(64);
    RemasterFrameTileInstance inst;inst.source=RemasterSourceType::Background;inst.sourceIndex=bg;inst.tileId={t.tileHash,1,4};inst.hFlip=t.hflip;inst.vFlip=t.vflip;f.tileInstances.push_back(inst);
    RemasterFrameAssetMetadata md;md.tileId=inst.tileId;md.hasHeight=t.hasHeight;md.height=t.height;md.doorframeMask=t.doorframeMask;md.hasDoorframeMask=t.hasDoorframeMask;
     // The classifier's t.height may already be a derived seven-band shell.
@@ -57,7 +77,7 @@ int main(int argc,char **argv) { try {
     }
     f.assetMetadata.push_back(md);
    for(int k=0;k<64;k++){f.mainPixels[k].instanceId=1;f.mainPixels[k].tilePixel=k;}
-   auto apply=c;apply.backgroundScrollX=i%64*8;apply.backgroundScrollY=i/64*8;S9xRemasterApplyDungeonHeightMap(f,apply,*m,nullptr,nullptr,bg);
+    auto apply=applyContext;apply.backgroundScrollX=i%64*8;apply.backgroundScrollY=i/64*8;S9xRemasterApplyDungeonHeightMap(f,apply,*m,nullptr,nullptr,bg);
    std::cout<<"{\"bg\":"<<bg+1<<",\"x\":"<<i%64<<",\"y\":"<<i/64<<",\"hash\":\""<<std::hex<<t.tileHash<<std::dec<<"\",\"local\":[";
    for(int k=0;k<64;k++){if(k)std::cout<<',';std::cout<<t.height[k];}
    std::cout<<"],\"actual\":[";
@@ -68,9 +88,12 @@ int main(int argc,char **argv) { try {
      <<",\"asset_has_height\":"<<md.hasHeight<<",\"placement_height\":"<<applied.hasPlacementHeight
      <<",\"context_height\":"<<f.contextGeometry.count(f.mainPixels[0].instanceId)
      <<",\"base\":"<<applied.heightOffset<<",\"geometry_status\":"<<int(applied.geometryStatus)
-     <<",\"plane_bases\":["<<int(m->planeOffsets[0][i])<<','<<int(m->planeOffsets[1][i])<<"]}\n";
+      <<",\"plane_bases\":["<<int(m->planeOffsets[0][i])<<','<<int(m->planeOffsets[1][i])<<']'
+      <<",\"occupied_floor_owners\":["<<m->occupiedFloorOwners[0][i]<<','<<m->occupiedFloorOwners[1][i]<<']'
+      <<",\"collision\":["<<int(c.collisionAttributes[i])<<','<<int(c.collisionAttributes[4096+i])<<']'
+     <<",\"structural_plane_bases\":["<<int(m->structuralPlaneOffsets[0][i])<<','<<int(m->structuralPlaneOffsets[1][i])<<']'
+     <<",\"selected_map_base\":"<<int(m->offsets[i])<<"}\n";
   }
-  if(!bg)lower=std::move(m);
  }
  return 0;
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 2;}}
