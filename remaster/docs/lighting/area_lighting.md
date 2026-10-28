@@ -40,6 +40,25 @@ Area decoding is gated by the existing verified ALTTP US ROM hash.
 
 ## Persistence
 
+### Per-area reflected light boost (profile v35)
+
+**Window > Area Settings** includes **Reflected Light Boost** (0–8), with a
+slider, numeric entry and **Use profile default** checkbox. Each indoor room
+has its own override; both outdoor worlds share the `overworld` override, like
+the other area scene controls. Unset overrides inherit **Reflected Light Boost
+[Default]** in Profile Controls. Uncheck the checkbox to pin the displayed value;
+check it again to resume inheritance. Editing other area settings does not pin
+the inherited boost. Changes preview immediately and Save persists them with
+the other pending profile edits.
+
+The optional `reflectance_boost` key in `[area_scene_settings.room_NNN]` or
+`[area_scene_settings.overworld]` requires schema 35. Saves promote the schema
+only when an override is present. Existing profiles retain their global boost
+until an override is authored. Captures store the effective boost in their
+existing field; no frame-format change is needed. Tests cover inheritance,
+explicit zero/max overrides, strict parsing, serialization, live/replay/capture
+application, default updates and save merging.
+
 ### Per-area scene controls (profile v33)
 
 **Window > Area Settings** also contains **Original Scene RGB Contribution**
@@ -51,8 +70,10 @@ and Dark World; directional lights retain their separate world settings.
 Areas without a saved RGB value use **0.035**, regardless of the old global RGB
 setting. Missing representative-emitter values inherit the existing Profile
 Controls default. Editing RGB alone does not pin that inherited emitter count.
-Profile Controls labels the legacy global RGB value as applying to unknown areas
-only (other games or captures without area identity).
+Profile Controls labels the global controls **Original Scene RGB Contribution
+[Default]** and **Representative Emitters Per Tile [Default]**. The RGB control's
+tooltip notes that it applies to unknown areas only (other games or captures
+without area identity); identified areas retain their fixed 0.035 RGB fallback.
 
 ```toml
 [area_scene_settings.room_061]

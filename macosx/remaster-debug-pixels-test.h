@@ -23,10 +23,10 @@ static void TestRemasterDebugPixels(id<MTLDevice> device, id<MTLLibrary> library
 	size_t checked=0;
 	// Same production GPU kernel must display the composed donor field, not
 	// stale scene ownership. Optional immutable packet exercises actual gameplay.
-	for(int fixture=0;fixture<2;fixture++) {
+	for(int fixture=0;fixture<5;fixture++) {
 		RemasterFrame layered=frame;
 		if(fixture) {
-			const char *path=std::getenv("S9X_REMASTER_POLICY_CAPTURE");if(!path)continue;
+			const char *path=std::getenv(fixture==4?"REMASTER_OOB_E2E_CAPTURE":fixture==3?"REMASTER_OOB_CAPTURE_23":fixture==2?"REMASTER_OOB_CAPTURE":"S9X_REMASTER_POLICY_CAPTURE");if(!path)continue;
 			check(S9xReadRemasterFrame(path,layered));
 		} else {
 			layered.tileInstances[0].source=RemasterSourceType::Background;
@@ -40,6 +40,14 @@ static void TestRemasterDebugPixels(id<MTLDevice> device, id<MTLLibrary> library
 			layered.scenePixels=layered.mainPixels;layered.sceneRgb555=layered.originalRgb555;
 		}
 		RemasterLightingFieldCache fields;fields.update(layered,!layered.scenePixels.empty());
+		const auto mesh=RemasterSurfaceMesh::build(layered.width,layered.height,fields.samples,layered.lightingCoordinateScale/255);
+		if(fixture>=2)for(size_t p=0;p<mesh.size();p++) {
+			const auto px=fields.channelSources[p].visible;
+			if(!px.instanceId || !layered.tileInstances[px.instanceId-1].visualClaim.published ||
+				!fields.semanticNormals[p])continue;
+			check(mesh[p].thickness==0 && mesh[p].solidWall==0 && std::abs(mesh[p].normal[2]-1)<1e-6);
+			for(float h:mesh[p].corners)check(std::abs(h-fields.surface[p*4])<1e-6);
+		}
 		id<MTLTexture> textures[9];const auto w=layered.width,h=layered.height;
 		for(int i=0;i<9;i++) {
 			const auto format=i==2?MTLPixelFormatRGBA8Unorm:i==4?MTLPixelFormatRG32Float:MTLPixelFormatRGBA32Float;
@@ -60,6 +68,19 @@ static void TestRemasterDebugPixels(id<MTLDevice> device, id<MTLLibrary> library
 			for(int c=0;c<3;c++){check(std::abs(int(px[p*4+c])-expected)<=1);checked++;}
 		}
 		std::printf("Visible policy GPU Height parity: %ux%u fixture=%d\n",w,h,fixture);
+		if(fixture>=2) {
+			u.view=7;auto normalsCommand=[queue commandBuffer];auto normalsEncoder=[normalsCommand computeCommandEncoder];
+			[normalsEncoder setComputePipelineState:pipeline];for(int i=0;i<9;i++)[normalsEncoder setTexture:textures[i] atIndex:i];
+			[normalsEncoder setBytes:&u length:sizeof(u) atIndex:0];[normalsEncoder setBytes:&light length:sizeof(light) atIndex:1];
+			[normalsEncoder dispatchThreads:MTLSizeMake(w,h,1) threadsPerThreadgroup:MTLSizeMake(8,8,1)];[normalsEncoder endEncoding];
+			[normalsCommand commit];[normalsCommand waitUntilCompleted];check(normalsCommand.status==MTLCommandBufferStatusCompleted);
+			[textures[2] getBytes:px.data() bytesPerRow:w*4 fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0];
+			for(size_t p=0;p<size_t(w)*h;p++)if(fields.authoredNormals[p])for(int c=0;c<3;c++) {
+				const int expected=std::lround((fields.surface[p*4+c+1]*.5f+.5f)*255);
+				check(std::abs(int(px[p*4+c])-expected)<=1);checked++;
+			}
+			std::printf("OOB production GPU normals and CPU planar mesh parity: %ux%u\n",w,h);
+		}
 	}
 	for(int flip=0;flip<4;flip++) for(auto status:{RemasterOccurrenceGeometryStatus::Unresolved,
 		RemasterOccurrenceGeometryStatus::Resolved,RemasterOccurrenceGeometryStatus::Conflict}) {

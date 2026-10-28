@@ -461,10 +461,14 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPrese
 			a.hFlip==b.hFlip && a.vFlip==b.vFlip) result.visible=scene;
 	}
 	const auto &preferred = result.visible;
+	// Explicit OOB is a visible surface claim, not permission to borrow the
+	// lower layer's geometry. Presence remains per-channel (zero is present).
+	const bool terminal = present(preferred,size_t(RemasterMetadataChannel::Count));
+	const bool terminalUnknown = terminal && !S9xRemasterPixelVisualClaim(frame,preferred).published;
 	// For the height-only consumer an explicitly present preferred source
 	// (including authored zero) makes every alternate observation irrelevant.
 	// Do not inspect fallback owners/depth again or change the visible sample.
-	if (heightOnly && present(preferred,0)) {
+	if (heightOnly && !terminalUnknown && present(preferred,0)) {
 		result.donors[0]=preferred;
 		return result;
 	}
@@ -486,7 +490,9 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPrese
 			a.hFlip==b.hFlip && a.vFlip==b.vFlip)other=scene;
 	}
 	for (size_t c = 0; c < (heightOnly ? 1 : result.donors.size()); c++)
-		result.donors[c] = present(preferred,c) ? preferred : present(other,c) ? other : RemasterFramePixel{};
+		result.donors[c] = terminalUnknown && c==0 ? RemasterFramePixel{} : present(preferred,c) ? preferred :
+			terminal && c<=size_t(RemasterMetadataChannel::Occlusion) ? RemasterFramePixel{} :
+			present(other,c) ? other : RemasterFramePixel{};
 	return result;
 }
 
@@ -506,6 +512,7 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 		case RemasterMetadataChannel::Material: return m.hasMaterialSelectors || !frame.tileInstances[p.instanceId-1].material.empty();
 		case RemasterMetadataChannel::Doorframe: return m.hasDoorframeMask;
 		case RemasterMetadataChannel::Role: return m.tileRole != RemasterTileRole::Unknown;
+		case RemasterMetadataChannel::Count: return m.tileRole == RemasterTileRole::OutOfBounds;
 		default: return false;
 		}
 	};
@@ -518,7 +525,7 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannels(const Re
 // The frame and its instance/context arrays must remain unchanged while selecting.
 struct RemasterFrameHeightResolver
 {
-	struct Source { const std::array<int16_t,64> *height=nullptr; bool hasHeight=false; };
+	struct Source { const std::array<int16_t,64> *height=nullptr; bool hasHeight=false; bool terminal=false; };
 	std::vector<Source> effective;
 	bool alttp;
 	explicit RemasterFrameHeightResolver(const RemasterFrame &frame) :
@@ -540,12 +547,15 @@ struct RemasterFrameHeightResolver
 			auto c=frame.contextGeometry.find(uint32_t(n+1));
 			if(c!=frame.contextGeometry.end())s={&c->second.height,c->second.hasHeight};
 			if(S9xRemasterInstanceGeometryUnresolved(i))s.hasHeight=false;
+			s.terminal=i.geometryStatus==RemasterOccurrenceGeometryStatus::Resolved ? i.placementTileRole==RemasterTileRole::OutOfBounds :
+				a!=assets.end() && a->second->tileRole==RemasterTileRole::OutOfBounds;
 			effective.push_back(s);
 		}
 	}
 	RemasterVisibleChannelSelection selectHeight(const RemasterFrame &frame,size_t pixel,bool scene=true) const {
-		auto present=[&](const RemasterFramePixel &p,size_t) {
-			return p.instanceId && p.instanceId<=effective.size() && p.tilePixel<64 && effective[p.instanceId-1].hasHeight;
+		auto present=[&](const RemasterFramePixel &p,size_t channel) {
+			return p.instanceId && p.instanceId<=effective.size() && p.tilePixel<64 &&
+				(channel==size_t(RemasterMetadataChannel::Count)?effective[p.instanceId-1].terminal:effective[p.instanceId-1].hasHeight);
 		};
 		return S9xRemasterSelectVisibleChannelsWithPresence(frame,pixel,scene,present,true,alttp);
 	}
@@ -581,6 +591,8 @@ inline std::string S9xRemasterChannelProvenance(const RemasterFrame &frame,size_
 	RemasterFrameChannelResolver resolver(frame);const auto s=resolver.select(frame,pixel,!frame.scenePixels.empty());
 	static const char *names[]={"height","normal","occlusion","emission","material","doorframe","role"};
 	std::ostringstream text;text<<"Visible instance "<<s.visible.instanceId;
+	const auto visibleClaim=S9xRemasterPixelVisualClaim(frame,s.visible);
+	text<<" visual "<<S9xRemasterVisualClaimName(visibleClaim.status)<<" graph-base-published "<<visibleClaim.published;
 	for(size_t c=0;c<s.donors.size();c++) {
 		text<<"\n"<<names[c]<<": ";const auto &p=s.donors[c];
 		if(!p.instanceId){text<<"absent";continue;}
@@ -590,6 +602,10 @@ inline std::string S9xRemasterChannelProvenance(const RemasterFrame &frame,size_
 		const auto v=S9xRemasterPixelVisualClaim(frame,p);
 		text<<" visual "<<S9xRemasterVisualClaimName(v.status)<<" cell "<<v.cell<<" component "<<v.component
 			<<" graph-base-published "<<v.published;
+		if(resolver.effective[p.instanceId-1].tileRole==RemasterTileRole::OutOfBounds && v.published) {
+			if(c==0 && i.hasPlacementHeight)text<<" source explicit-role semantic plane (not authored)";
+			if(c==1 && i.hasPlacementNormals)text<<" source explicit-role geometric up normal (not authored)";
+		}
 	}
 	return text.str();
 }
@@ -632,6 +648,7 @@ inline size_t S9xRemasterRestoreSceneSubscreenWalls(RemasterFrame &frame,
 					effective.hasEmission || effective.hasMaterialSelectors || effective.hasDoorframeMask;
 				physical = available &&
 					(effective.tileRole == RemasterTileRole::Wall || effective.tileRole == RemasterTileRole::WallCorner || effective.tileRole == RemasterTileRole::Doorway);
+				physical = physical || effective.tileRole == RemasterTileRole::OutOfBounds;
 				// Preserve the approved floor/stair receiver contract. In particular,
 				// height-only landing art is not authorization to change stair appearance.
 				physical = physical || (effective.hasHeight && effective.hasNormals &&
@@ -769,7 +786,7 @@ struct RemasterDungeonFloorContext
 	uint16_t retainedOutgoingRoom = 0xffff;
 	// Read-only USA attribute builder completed independently of game timing.
 	bool hasCompletedTransitionAttributes = false;
-	enum class Surface : uint8_t { Unknown, Floor, Wall, Obstacle, Stair, Door, ClosedDoor };
+	enum class Surface : uint8_t { Unknown, Floor, Wall, Obstacle, Stair, Door, ClosedDoor, OutOfBounds };
 	struct Placement
 	{
 		Surface surface = Surface::Unknown;
@@ -3403,7 +3420,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			}
 			if (tile.surface == RemasterDungeonFloorContext::Surface::Floor || tile.surface == RemasterDungeonFloorContext::Surface::Stair ||
 				tile.surface == RemasterDungeonFloorContext::Surface::Door ||
-				tile.surface == RemasterDungeonFloorContext::Surface::ClosedDoor) continue; // no guessed doorway/closed-leaf border ramp
+				tile.surface == RemasterDungeonFloorContext::Surface::ClosedDoor ||
+				tile.surface == RemasterDungeonFloorContext::Surface::OutOfBounds) continue; // terminal visual roles never receive guessed border ramps
 			// Ordinary occupied support is not a collidable-border candidate on
 			// another plane. Otherwise lower colliders overwrite an upper floor
 			// with a 0..7 fallback (exact008's two neutral floor hashes).
@@ -3718,7 +3736,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	for(const auto &metadata:frame.assetMetadata)if(metadata.tileRole==RemasterTileRole::Obstacle)authoredObstacles.insert(metadata.tileId);
 	for (size_t instanceId = 0; instanceId < originalCount; instanceId++)
 		for (const RemasterFrameAssetMetadata &metadata : frame.assetMetadata)
-			if (metadata.tileId == frame.tileInstances[instanceId].tileId && metadata.hasHeight)
+			if (metadata.tileId == frame.tileInstances[instanceId].tileId &&
+				(metadata.hasHeight || metadata.tileRole==RemasterTileRole::OutOfBounds))
 			{
 				instanceMetadata[instanceId] = &metadata;
 				break;
@@ -3737,7 +3756,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				if (S9xRemasterDungeonRoomForScreenPosition(context, x, y) != context.roomIndex) continue;
 				const RemasterFrameAssetMetadata *metadata = instanceMetadata[pixel.instanceId - 1];
 				if (!metadata) continue;
-				if(metadata->tileRole==RemasterTileRole::Obstacle || instance.assetGroup=="obstacles")continue;
+				if(!metadata->hasHeight || metadata->tileRole==RemasterTileRole::OutOfBounds || metadata->tileRole==RemasterTileRole::Obstacle || instance.assetGroup=="obstacles")continue;
 				int north = 0, south = 0, west = 0, east = 0;
 				int16_t minimum = INT16_MAX;
 				for (int i = 0; i < 8; i++)
@@ -3955,6 +3974,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		if(pixelRoom==context.roomIndex && !currentPlacementMatches(instance,cell))return 0;
 		if (producer && producer->producerHashes[cell] && (producer->producerHashes[cell] != instance.tileId.hash ||
 			producer->producerFlips[cell] != (instance.hFlip | (instance.vFlip<<1)))) return 0;
+		if(metadata && metadata->tileRole==RemasterTileRole::OutOfBounds)return 0; // visual crest pass owns this datum, never a physical floor
 		if(producer && producer->producerAuthoredObstacle[cell])return producer->offsets[cell]==255?0:producer->offsets[cell];
 		if(producer && producer->producerOwnedStair[cell] && producer->producerHashes[cell])
 			return producer->offsets[cell]==255?0:producer->offsets[cell];
@@ -4009,7 +4029,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		if (!pixel.instanceId || pixel.instanceId > originalCount) return nullptr;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
 		const auto *metadata=instanceMetadata[pixel.instanceId-1];
-		if((metadata && metadata->tileRole==RemasterTileRole::Obstacle) || instance.assetGroup=="obstacles")return nullptr;
+		if((metadata && (metadata->tileRole==RemasterTileRole::Obstacle || metadata->tileRole==RemasterTileRole::OutOfBounds)) || instance.assetGroup=="obstacles")return nullptr;
 		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != backgroundIndex ||
 			(metadata && (metadata->tileRole==RemasterTileRole::StairTop || metadata->tileRole==RemasterTileRole::StairBottom)) ||
 			instance.assetGroup == "stair_treads" || instance.assetGroup == "stair_rails") return nullptr;
@@ -4062,7 +4082,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		const auto &instance=frame.tileInstances[pixel.instanceId-1];
 		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != backgroundIndex) return 255;
 		const auto *metadata=instanceMetadata[pixel.instanceId-1];
-		if((metadata && metadata->tileRole==RemasterTileRole::Obstacle) || instance.assetGroup=="obstacles")return 255;
+		if((metadata && (metadata->tileRole==RemasterTileRole::Obstacle || metadata->tileRole==RemasterTileRole::OutOfBounds)) || instance.assetGroup=="obstacles")return 255;
 		const auto room=S9xRemasterDungeonRoomForScreenPosition(context,x,y);
 		const auto *selected=room==context.roomIndex ? &map : sourceRoomMap;
 		if (!selected || selected->roomIndex != room || !selected->hasRoomGeometry) return 255;
@@ -4123,6 +4143,11 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 			if (!pixel.instanceId || pixel.instanceId > originalCount)
 				continue;
 			const uint32_t originalId = pixel.instanceId;
+			// Terminal semantics precede retained decisions as well as fresh map
+			// sampling. A cached border/floor tuple cannot bypass this role guard.
+			const auto *terminalMetadata=instanceMetadata[originalId-1];
+			if((terminalMetadata && terminalMetadata->tileRole==RemasterTileRole::OutOfBounds) ||
+				frame.tileInstances[originalId-1].placementTileRole==RemasterTileRole::OutOfBounds)continue;
 			PixelPlacement decision;
 #ifndef ALTTP_TEST_REFERENCE_PLACEMENT_SELECTION
 			if(assign)decision=decisions[static_cast<size_t>(y)*frame.width+x];
@@ -4279,10 +4304,13 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				(*previewIndex)[which][preview.cell]=&preview;
 	}
 	std::map<std::pair<uint32_t,int>,uint32_t> previewCopies;
+	std::set<RemasterTileContentId> terminalSheets;
+	for(const auto &m:frame.assetMetadata)if(m.tileRole==RemasterTileRole::OutOfBounds)terminalSheets.insert(m.tileId);
 	for(auto *pixels:{&frame.mainPixels,&frame.subPixels})for(size_t at=0;at<pixels->size();at++) {
 		if (at>=static_cast<size_t>(frame.width)*frame.height) break;
 		auto &px=(*pixels)[at];if(!px.instanceId || px.instanceId>frame.tileInstances.size())continue;
 		const auto &instance=frame.tileInstances[px.instanceId-1];
+		if(terminalSheets.count(instance.tileId))continue;
 		if(instance.source!=RemasterSourceType::Background || instance.sourceIndex!=backgroundIndex)continue;
 		// Bounds above guarantee both screen coordinates fit the signed camera API.
 		const int x=static_cast<int>(at%frame.width),y=static_cast<int>(at/frame.width);
@@ -4566,10 +4594,13 @@ inline void S9xRemasterApplyDungeonFloorHeight (RemasterFrame &frame,
 		return;
 	const size_t originalCount = frame.tileInstances.size();
 	std::vector<uint8_t> region(originalCount, 0);
+	std::set<RemasterTileContentId> terminalSheets;
+	for(const auto &m:frame.assetMetadata)if(m.tileRole==RemasterTileRole::OutOfBounds)terminalSheets.insert(m.tileId);
 	auto upper = [&] (const RemasterFramePixel &pixel, uint32_t x, uint32_t y) {
 		if (!pixel.instanceId || pixel.instanceId > originalCount)
 			return false;
 		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
+		if(terminalSheets.count(instance.tileId) || instance.placementTileRole==RemasterTileRole::OutOfBounds)return false;
 		if (instance.source != RemasterSourceType::Background || instance.sourceIndex != 1 ||
 			instance.assetGroup == "stair_treads" || instance.assetGroup == "stair_rails" ||
 			instance.tileId.hash == UINT64_C(0xc40518b112d0814e))
@@ -4739,10 +4770,10 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.cameraDirection = profile.cameraDirection;
 	frame.indirectBounceCount = profile.indirectBounceCount;
 	frame.indirectRoughness = profile.indirectRoughness;
-	frame.reflectanceBoost = profile.reflectanceBoost;
 	if (frame.heldLampLightIndex < frame.lights.size())
 		frame.lights[frame.heldLampLightIndex].intensity = profile.linkLampBrightness;
 	const auto areaSettings = S9xRemasterAreaSceneSettings(profile, frame.area);
+	frame.reflectanceBoost = areaSettings.reflectanceBoost;
 	frame.originalSceneContribution = areaSettings.originalSceneContribution;
 	if (frame.area.valid()) frame.directionalLight = S9xRemasterAreaLight(profile, frame.area);
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
@@ -4798,7 +4829,8 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.tileRole = source.tileSemanticContextDependent ? RemasterTileRole::Unknown : source.tileRole;
 		// Door authoring is preserved even when contextual use is unresolved. It is
 		// not consumed by placement solving or lighting geometry.
-		if (source.tileRole == RemasterTileRole::Doorway || source.tileRole == RemasterTileRole::Door) metadata.tileRole = source.tileRole;
+		if (source.tileRole == RemasterTileRole::Doorway || source.tileRole == RemasterTileRole::Door ||
+			source.tileRole == RemasterTileRole::OutOfBounds) metadata.tileRole = source.tileRole;
 		metadata.doorframeMask = source.doorframeMask;
 		metadata.hasDoorframeMask = source.hasDoorframeMask;
 		metadata.doorwaySupport = source.doorwaySupport;

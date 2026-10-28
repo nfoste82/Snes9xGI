@@ -11,6 +11,10 @@
 struct RemasterLightingFieldCache
 {
 	std::vector<uint8_t> occlusion, emission, participation, opposite, authoredNormals;
+	// authoredNormals is the historical renderer override bit (explicit normal,
+	// including semantic geometry). Separate provenance prevents inventory tools
+	// from counting a proved geometric +Z as human-authored metadata.
+	std::vector<uint8_t> semanticNormals;
 	std::vector<float> height, surface, reflectance, depths, omnidirectional;
 	std::vector<RemasterSurfaceMesh::Sample> samples;
 	// Runtime diagnostics: exact observed per-channel donors, including absence.
@@ -71,6 +75,7 @@ struct RemasterLightingFieldCache
 			keys_.resize(count); occlusion.resize(count*2); emission.resize(count*4);
 			participation.resize(count*2); opposite.resize(count); authoredNormals.resize(count);
 			height.resize(count*2); surface.resize(count*4); reflectance.resize(count*4);
+			semanticNormals.resize(count);
 			depths.resize(count); omnidirectional.resize(count); samples.resize(count); channelSources.resize(count);
 			visualClaims.resize(count);
 		}
@@ -217,6 +222,7 @@ struct RemasterLightingFieldCache
 			height[i*2] = height[i*2+1] = 0;
 			participation[i*2] = participation[i*2+1] = hud ? 0 : 255;
 			opposite[i] = authoredNormals[i] = 0;
+			semanticNormals[i] = 0;
 			std::fill_n(surface.begin()+i*4, 4, 0.0f);
 			std::fill_n(reflectance.begin()+i*4, 4, 0.0f);
 			samples[i] = {};
@@ -245,6 +251,8 @@ struct RemasterLightingFieldCache
 				rp.instanceId ? instanceMetadata[rp.instanceId-1]->tileRole : RemasterTileRole::Unknown,
 				instance.geometryStatus != RemasterOccurrenceGeometryStatus::Inherit);
 			samples[i].wallBase = instance.heightOffset / 255.0f * frame.lightingCoordinateScale;
+			if(m && m->tileRole==RemasterTileRole::OutOfBounds && instance.visualClaim.published)
+				samples[i].domain=(uint64_t(4)<<48)|uint32_t(instance.visualClaim.component+1);
 			if (mat && mat->surfaceClass == RemasterSurfaceClass::UserInterface) participation[i*2] = participation[i*2+1] = 0;
 			else if (mat && !mat->receivesGi) participation[i*2+1] = 0;
 			if (mat && mat->hasDiffuseReflectance)
@@ -253,10 +261,12 @@ struct RemasterLightingFieldCache
 				reflectance[i*4+3] = 1;
 			}
 			const bool unresolved = S9xRemasterInstanceGeometryUnresolved(instance);
+			const bool terminalUnknown = m && m->tileRole==RemasterTileRole::OutOfBounds &&
+				!S9xRemasterPixelVisualClaim(frame,pixel).published;
 			// Provisional visible BG ground, never a claim of solved/authored geometry.
 			// Explicit unresolved placements and UI remain absent. A placement base
 			// alone is not relief: use a flat sheet there rather than a prop shell.
-			const bool fallbackGround = !unresolved && instance.source == RemasterSourceType::Background &&
+			const bool fallbackGround = !unresolved && !terminalUnknown && instance.source == RemasterSourceType::Background &&
 				(participation[i*2] != 0 || worldBehindHud) && !(m && m->hasHeight);
 			if (fallbackGround)
 			{
@@ -274,7 +284,7 @@ struct RemasterLightingFieldCache
 			const bool missingSpriteRelief = instance.source == RemasterSourceType::Object &&
 				instance.geometryStatus == RemasterOccurrenceGeometryStatus::Resolved &&
 				instance.placementTileRole == RemasterTileRole::Obstacle && !(m && m->hasHeight);
-			if (!unresolved && !missingSpriteRelief && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
+			if (!unresolved && !terminalUnknown && !missingSpriteRelief && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
 			{
 				const int local = m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
 				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
@@ -286,6 +296,7 @@ struct RemasterLightingFieldCache
 				const auto *nm=instanceMetadata[np.instanceId-1];
 				const auto &ni=frame.tileInstances[np.instanceId-1];
 				authoredNormals[i] = 1;
+				semanticNormals[i] = nm->tileRole==RemasterTileRole::OutOfBounds && ni.visualClaim.published && ni.hasPlacementNormals;
 				float nx = nm->normalXyz[np.tilePixel*3]/127.5f-1, ny = nm->normalXyz[np.tilePixel*3+1]/127.5f-1, nz = nm->normalXyz[np.tilePixel*3+2]/127.5f-1;
 				if (normalMasks[np.instanceId-1] & (UINT64_C(1) << np.tilePixel)) nx = ny = nz = 1;
 				S9xRemasterTransformNormalForTileInstance(ni, nx, ny, nz, nm->normalIgnoreTileTransform);

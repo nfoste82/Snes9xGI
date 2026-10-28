@@ -663,6 +663,21 @@ static NSPoint remasterPausedCapturePoint;
 static bool remasterPausedCaptureSelect = false;
 static std::atomic<uint64_t> remasterCaptureSession { 0 };
 
+// UI owns replay reader/evidence; producer owns recorder snapshots. No shared
+// mutable profile or frame is borrowed by either the worker or timeline.
+static std::unique_ptr<RemasterRecording::ReaderFile> remasterRecordingReader;
+static std::shared_ptr<const RemasterFrame> remasterRecordingOriginal;
+static RemasterRecording::Bytes remasterRecordingEvidence;
+static std::string remasterRecordingProfileText;
+static NSPanel *remasterRecordingPanel;
+static NSSlider *remasterRecordingSlider;
+static NSTextField *remasterRecordingStatus;
+static NSButton *remasterRecordingToggle, *remasterRecordingRecorded;
+static NSTimer *remasterRecordingTimer;
+static size_t remasterRecordingIndex=0;
+static bool remasterRecordingLoading=false;
+static bool remasterRecordingFinishing=false;
+
 static NSURL *RemasterCaptureDirectory ()
 {
 	NSURL *support = [[NSFileManager defaultManager] URLForDirectory:NSApplicationSupportDirectory
@@ -823,6 +838,9 @@ static std::map<std::string, RemasterAreaSceneSettings> remasterSavedAreaSceneSe
 static NSSlider *remasterAreaOriginalSlider, *remasterAreaRepresentativeSlider;
 static NSTextField *remasterAreaOriginalInput, *remasterAreaRepresentativeInput;
 static NSButton *remasterAreaRepresentativeEnabled;
+static NSSlider *remasterAreaReflectanceSlider;
+static NSTextField *remasterAreaReflectanceInput;
+static NSButton *remasterAreaReflectanceDefault;
 static NSPanel *remasterAreaPanel;
 static NSTextField *remasterAreaName, *remasterAreaDirection[3], *remasterAreaBrightness;
 static NSButton *remasterAreaEnabled, *remasterAreaSave;
@@ -1414,6 +1432,8 @@ static std::array<bool, 64> RemasterVisibleTileColors (const RemasterFrame &fram
 
 static bool SyncRemasterEditingMetadataToFrame (RemasterFrame &frame = remasterReplayFrame)
 {
+	if(remasterRecordingOriginal && remasterRecordingRecorded.state==NSControlStateValueOn)
+		return false; // immutable runtime interpretation, never editor recalculation
 	if (!remasterEditingProfileLoaded)
 		return false;
 	if (&frame == &remasterReplayFrame && !remasterMetadataNeedsSync)
@@ -1542,11 +1562,15 @@ static inline void EmulationLoop (void)
         while (!emulationStopRequested.load() && running)
         {
             ProcessInput();
+			// Only the normal running branch is gameplay. Paused layer-refresh,
+			// frame-advance and editor redraws must never append recording frames.
+			RemasterRecording::Global().SetGameplay(!pauseEmulation && !frzselecting);
 
             if (!pauseEmulation)
             {
                 ClearRemasterDebugLightRedraw();
                 S9xMainLoop();
+				RemasterRecording::Global().SetGameplay(false);
 				if (S9xRemasterState().activeLayerView == S9xRemasterState().requestedLayerView.load())
 					remasterLayerRefreshPending.store(false);
 				FinishBenchmarkFrame();
@@ -4832,6 +4856,7 @@ void QuitWithFatalError ( NSString *message)
 	emulationStopRequested.store(true);
 	running = false;
 	dispatch_group_wait(emulationThreadGroup, DISPATCH_TIME_FOREVER);
+	RemasterRecording::Global().Stop();
 	S9xDeinitDisplay(); // Drains queued presentation and Metal completion handlers.
 	SNES9X_Quit();
     S9xExit();
@@ -4957,6 +4982,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)pause
 {
+    RemasterRecording::Global().SetGameplay(false);
     pauseEmulation = true;
 	[self savePreviousWorkspace];
 	[self.emulationDelegate emulationPaused];
@@ -4971,6 +4997,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)resume
 {
+	remasterRecordingReader.reset();remasterRecordingOriginal.reset();
+	remasterRecordingEvidence.clear();remasterRecordingProfileText.clear();
 	// Inspector edits update the retained preview without publishing every stroke
 	// to the core. Hand off all session edits before the first resumed frame;
 	// saving the profile to disk is deliberately not required.
@@ -5536,6 +5564,127 @@ void QuitWithFatalError ( NSString *message)
 	return directory.path; // final location/index is chosen by the captured frame
 }
 
+- (void)showRemasterRecording
+{
+	if (!remasterRecordingPanel) {
+		remasterRecordingPanel=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,740,230)
+			styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+		remasterRecordingPanel.title=@"Remaster Recording — Immutable Evidence / Current Profile Preview";
+		[remasterRecordingPanel center];
+		auto button=[&](NSString *title,SEL action,NSRect rect) {
+			NSButton *b=[[NSButton alloc] initWithFrame:rect];b.title=title;b.bezelStyle=NSBezelStyleRounded;b.target=self;b.action=action;
+			[remasterRecordingPanel.contentView addSubview:b];return b;
+		};
+		remasterRecordingToggle=button(@"Start Recording",@selector(toggleRemasterRecording:),NSMakeRect(12,185,155,30));
+		button(@"Open Recording…",@selector(chooseRemasterRecording:),NSMakeRect(175,185,150,30));
+		button(@"◀ Frame",@selector(previousRemasterRecordingFrame:),NSMakeRect(335,185,100,30));
+		button(@"Frame ▶",@selector(nextRemasterRecordingFrame:),NSMakeRect(440,185,100,30));
+		remasterRecordingRecorded=button(@"Recorded Evidence",@selector(changeRemasterRecordingView:),NSMakeRect(545,185,180,30));
+		remasterRecordingRecorded.buttonType=NSButtonTypeSwitch;remasterRecordingRecorded.state=NSControlStateValueOff;
+		button(@"Export Original Frame + Evidence…",@selector(exportRemasterRecordingFrame:),NSMakeRect(15,112,280,28));
+		remasterRecordingSlider=[[NSSlider alloc] initWithFrame:NSMakeRect(15,145,710,26)];
+		remasterRecordingSlider.minValue=0;remasterRecordingSlider.maxValue=0;remasterRecordingSlider.target=self;
+		remasterRecordingSlider.action=@selector(scrubRemasterRecording:);remasterRecordingSlider.continuous=NO;
+		[remasterRecordingPanel.contentView addSubview:remasterRecordingSlider];
+		remasterRecordingStatus=[[NSTextField alloc] initWithFrame:NSMakeRect(15,5,710,105)];
+		remasterRecordingStatus.editable=NO;remasterRecordingStatus.bezeled=NO;remasterRecordingStatus.drawsBackground=NO;
+		remasterRecordingStatus.selectable=YES;remasterRecordingStatus.font=[NSFont userFixedPitchFontOfSize:11];
+		[remasterRecordingPanel.contentView addSubview:remasterRecordingStatus];
+		remasterRecordingTimer=[NSTimer scheduledTimerWithTimeInterval:0.25 target:self selector:@selector(refreshRemasterRecording:) userInfo:nil repeats:YES];
+	}
+	[self refreshRemasterRecording:nil];[remasterRecordingPanel orderFront:nil];
+}
+
+- (void)refreshRemasterRecording:(id)sender
+{
+	remasterRecordingToggle.title=RemasterRecording::Global().Active()?@"Stop Recording":@"Start Recording";
+	remasterRecordingToggle.enabled=!remasterRecordingFinishing;
+	std::ostringstream text;text<<RemasterRecording::Global().Status()<<'\n';
+	if(remasterRecordingReader && remasterRecordingOriginal) {
+		const auto &e=remasterRecordingReader->entries[remasterRecordingIndex];
+		text<<"Frame "<<remasterRecordingIndex+1<<" / "<<remasterRecordingReader->entries.size()<<" | emulated "<<e.emulatedFrame<<" | session "<<e.session<<" | epoch "<<e.epoch<<"\nProfile/settings revision "<<std::hex<<e.profile<<std::dec<<" | area "<<remasterRecordingOriginal->area.id<<'\n';
+		text<<(remasterRecordingRecorded.state==NSControlStateValueOn ? "RECORDED runtime evidence (read-only)." : "CURRENT PROFILE PREVIEW; placement bases/solve/ownership are recorded, NOT re-solved.")<<'\n';
+		if(remasterEditingProfileURL)text<<"Editing target: "<<remasterEditingProfileURL.path.UTF8String<<'\n';
+		text<<remasterRecordingReader->warning;
+	} else text<<"Open while paused. Recordings suspend while paused (including frame advance).\nLimits: 4 queued frames, 2 GiB, 36,000 displayed frames. Errors retain a readable prefix.\nOutput: Application Support/Snes9x/Remaster/*.s9xrmr";
+	remasterRecordingStatus.stringValue=[NSString stringWithUTF8String:text.str().c_str()];
+	remasterRecordingSlider.enabled=remasterRecordingReader && !remasterRecordingReader->entries.empty();
+}
+
+- (void)toggleRemasterRecording:(id)sender
+{
+	if(RemasterRecording::Global().Active()) {
+		// Drain disk work off the main thread. No per-frame UI disk writes.
+		remasterRecordingFinishing=true;remasterRecordingToggle.enabled=NO;
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{RemasterRecording::Global().Stop();dispatch_async(dispatch_get_main_queue(),^{remasterRecordingFinishing=false;[self refreshRemasterRecording:nil];});});
+		return;
+	}
+	if(!running || !remasterEditingProfileLoaded || remasterFramePresenting) {
+		NSAlert *a=[NSAlert new];a.messageText=@"Recording requires a running game and matching loaded profile (close replay by resuming).";[a runModal];return;
+	}
+	NSURL *directory=RemasterCaptureDirectory();if(!directory){NSBeep();return;}
+	NSString *name=[NSString stringWithFormat:@"recording_%@.s9xrmr",NSUUID.UUID.UUIDString];
+	RemasterRecording::Global().Start([directory URLByAppendingPathComponent:name].path.fileSystemRepresentation);
+	[self showRemasterRecording];
+}
+
+- (void)chooseRemasterRecording:(id)sender
+{
+	if((running && !pauseEmulation)||RemasterRecording::Global().Active()){NSAlert *a=[NSAlert new];a.messageText=@"Pause emulation and stop recording before opening a recording.";[a runModal];return;}
+	NSOpenPanel *panel=[NSOpenPanel openPanel];panel.allowedFileTypes=@[@"s9xrmr"];panel.directoryURL=RemasterCaptureDirectory();
+	if([panel runModal]!=NSModalResponseOK)return;
+	// Loading/indexing is bounded, and errors cannot replace the editing profile.
+	auto reader=std::make_unique<RemasterRecording::ReaderFile>();std::string error;
+	if(!reader->Open(panel.URL.path.fileSystemRepresentation,error)||reader->entries.empty()) {
+		NSAlert *a=[NSAlert new];a.messageText=@"Cannot Open Recording";a.informativeText=error.empty()?@"Recording contains no completed frames.":[NSString stringWithUTF8String:error.c_str()];[a runModal];return;
+	}
+	remasterRecordingReader=std::move(reader);remasterRecordingIndex=0;[self showRemasterRecording];
+	remasterRecordingSlider.maxValue=remasterRecordingReader->entries.size()-1;[self presentRemasterRecordingFrame];
+}
+
+- (void)presentRemasterRecordingFrame
+{
+	if(!remasterRecordingReader || (running && !pauseEmulation))return;
+	RemasterFrame frame;std::string error,text;RemasterRecording::Bytes evidence;
+	if(!remasterRecordingReader->Read(remasterRecordingIndex,frame,evidence,text,error)) {
+		NSAlert *a=[NSAlert new];a.messageText=@"Cannot Decode Recording Frame";a.informativeText=error.empty()?@"Malformed frame or dependency; no replay state replaced.":[NSString stringWithUTF8String:error.c_str()];[a runModal];return;
+	}
+	if(!remasterEditingProfileLoaded || frame.profileRomSha256!=remasterEditingProfile.romSha256) {
+		NSAlert *a=[NSAlert new];a.messageText=@"Load the matching CURRENT editing profile first.";
+		a.informativeText=@"Opening a recording never installs or overwrites its recorded profile. The current profile is the explicit editing target.";[a runModal];return;
+	}
+	remasterRecordingOriginal=std::make_shared<const RemasterFrame>(frame);
+	remasterRecordingEvidence=std::move(evidence);remasterRecordingProfileText=std::move(text);
+	remasterRecordingLoading=true;
+	NSString *failure=[self openRemasterFrame:nil retainedPacket:std::make_shared<RemasterFrame>(frame)];
+	remasterRecordingLoading=false;
+	if(failure.length){NSLog(@"Recording presentation: %@",failure);return;}
+	if(remasterRecordingRecorded.state==NSControlStateValueOn) {
+		remasterSceneFrame=*remasterRecordingOriginal;
+		DrawRemasterFrame(remasterSceneFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);
+	}
+	remasterRecordingSlider.integerValue=remasterRecordingIndex;[self refreshRemasterRecording:nil];
+}
+- (void)scrubRemasterRecording:(id)sender {if(!remasterRecordingReader)return;remasterRecordingIndex=std::min(size_t(remasterRecordingSlider.integerValue),remasterRecordingReader->entries.size()-1);[self presentRemasterRecordingFrame];}
+- (void)previousRemasterRecordingFrame:(id)sender {if(remasterRecordingIndex)--remasterRecordingIndex;[self presentRemasterRecordingFrame];}
+- (void)nextRemasterRecordingFrame:(id)sender {if(remasterRecordingReader && remasterRecordingIndex+1<remasterRecordingReader->entries.size())++remasterRecordingIndex;[self presentRemasterRecordingFrame];}
+- (void)changeRemasterRecordingView:(id)sender {[self presentRemasterRecordingFrame];}
+
+- (void)exportRemasterRecordingFrame:(id)sender
+{
+	if(!remasterRecordingOriginal)return;
+	NSURL *dir=RemasterCaptureDirectory();if(!dir)return;
+	std::vector<uint8_t> bytes;std::string written;
+	if(!S9xSerializeRemasterFrame(*remasterRecordingOriginal,bytes)||!S9xRemasterWriteUniqueCapture(bytes,
+		[dir URLByAppendingPathComponent:@"recorded_frame.s9xrmf"].path.fileSystemRepresentation,written)){NSBeep();return;}
+	// Immutable own companions, NEVER the legacy sidecar writer or live RAM.
+	std::ofstream evidence(written+".rte1",std::ios::binary);evidence.write(reinterpret_cast<const char *>(remasterRecordingEvidence.data()),remasterRecordingEvidence.size());
+	std::ofstream profile(written+".profile.toml",std::ios::binary);profile<<remasterRecordingProfileText;
+	evidence.close();profile.close();
+	NSAlert *a=[NSAlert new];a.messageText=evidence && profile ? @"Exported Original Recording Evidence" : @"ERROR: Partial evidence export";
+	a.informativeText=[NSString stringWithUTF8String:written.c_str()];[a runModal];
+}
+
 - (NSString *)openRemasterFrame:(NSURL *)fileURL
 {
 	return [self openRemasterFrame:fileURL retainedPacket:nullptr];
@@ -5543,6 +5692,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket
 {
+	if(!remasterRecordingLoading){remasterRecordingReader.reset();remasterRecordingOriginal.reset();remasterRecordingEvidence.clear();remasterRecordingProfileText.clear();}
 	if (running && !pauseEmulation)
 		return @"Pause emulation before opening a remaster frame.";
 	if (!running && s9xthreadrunning)
@@ -6091,6 +6241,7 @@ void QuitWithFatalError ( NSString *message)
 			[remasterRoleSelector addItemWithTitle:[NSString stringWithUTF8String:S9xRemasterTileRoleName(static_cast<RemasterTileRole>(i))]];
 		remasterRoleSelector.target = self;
 		remasterRoleSelector.action = @selector(changeRemasterDoorwayControls:);
+		remasterRoleSelector.toolTip = @"out-of-bounds: visible unreachable flat plateau at the proved wall's last authored crest sample (no extra rise). Explicitly marked connected opaque tiles only; never walkable support. Missing height/normal channels use a semantic plane/up normal only when anchored; authored layers are preserved. Conflicting or nonflat regions remain unresolved.";
 		for (NSPopUpButton *menu in @[remasterFacingSelector, remasterSecondFacingSelector])
 			[menu addItemsWithTitles:@[@"Choose facing…", @"north", @"east", @"south", @"west", @"north_east", @"south_east", @"south_west", @"north_west"]];
 		[remasterCornerSelector addItemsWithTitles:@[@"Choose corner…", @"inside", @"outside"]];
@@ -6568,6 +6719,22 @@ void QuitWithFatalError ( NSString *message)
 	}
 
 	std::ostringstream text;
+	if(remasterRecordingOriginal) {
+		text << "RECORDING " << (remasterRecordingRecorded.state==NSControlStateValueOn ? "RECORDED runtime evidence" : "CURRENT profile preview; derived placement solve not rerun") << "\n";
+		if(offset<remasterRecordingOriginal->mainPixels.size()) {
+			const auto &recorded=remasterRecordingOriginal->mainPixels[offset];
+			if(recorded.instanceId && recorded.instanceId<=remasterRecordingOriginal->tileInstances.size()) {
+				const auto &ri=remasterRecordingOriginal->tileInstances[recorded.instanceId-1];
+				text<<"Recorded base "<<ri.heightOffset<<" | geometry status "<<unsigned(ri.geometryStatus)
+					<<" | visual "<<S9xRemasterVisualClaimName(ri.visualClaim.status)<<" component "<<ri.visualClaim.component<<" published "<<ri.visualClaim.published<<"\n";
+			}
+			text<<"Recorded main source "<<recorded.instanceId<<'/'<<unsigned(recorded.tilePixel)<<"; source-layer/plane buffers retained\n";
+			if(offset<remasterRecordingOriginal->mainRoomDiagnostics.size()) {
+				const auto &pd=remasterRecordingOriginal->mainRoomDiagnostics[offset];
+				for(unsigned plane=0;plane<2;plane++){const auto &d=pd.planes[plane];text<<"Recorded plane "<<plane<<" room "<<d.room<<" cell "<<d.cell<<" owner "<<d.floorId<<" base "<<d.floorBase<<" lower "<<d.lowerFloorId<<'/'<<d.lowerFloorBase<<" conflict "<<d.heightConflict<<"\n";}
+			}
+		}
+	}
 	if (remasterNpcPicking)
 		text << "NPC pose    " << [remasterNpcActor[@"name"] UTF8String] << " / "
 			<< [remasterNpcPose[@"facing"] UTF8String] << " / frame " << [remasterNpcPose[@"step"] integerValue] + 1
@@ -9182,7 +9349,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)controlTextDidChange:(NSNotification *)notification
 {
-	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput ||
+	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput || notification.object == remasterAreaReflectanceInput ||
 		notification.object == remasterAreaBrightness || notification.object == remasterAreaDirection[0] ||
 		notification.object == remasterAreaDirection[1] || notification.object == remasterAreaDirection[2])
 	{
@@ -9777,6 +9944,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterSavedSceneSettings = S9xRemasterGetSceneSettings(merged.saved);
 		remasterSavedAreaLights = merged.saved.areaLights;
 		remasterSavedAreaSceneSettings = merged.saved.areaSceneSettings;
+		RemasterRecording::Global().Revision(merged.saved);
 		std::string currentText;
 		S9xRemasterSerializeProfile(remasterEditingProfile, currentText, diagnostics, false);
 		UpdateRemasterEditingProfileDirty(currentText);
@@ -9921,7 +10089,7 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.delegate = self;
 		NSView *content = remasterProfileSettingsPanel.contentView;
 		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 930, 300, 24)];
-		reflectanceTitle.stringValue = @"Reflected Light Boost (0–8)";
+		reflectanceTitle.stringValue = @"Reflected Light Boost [Default]";
 		reflectanceTitle.editable = NO;
 		reflectanceTitle.bezeled = NO;
 		reflectanceTitle.drawsBackground = NO;
@@ -9990,8 +10158,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterHeightPreviewMaxInput.target = self;
 		remasterHeightPreviewMaxInput.action = @selector(changeRemasterHeightPreviewRange:);
 		[content addSubview:remasterHeightPreviewMaxInput];
-		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 220, 24)];
-		originalTitle.stringValue = @"Original Scene RGB (unknown areas only)";
+		NSTextField *originalTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 690, 390, 24)];
+		originalTitle.stringValue = @"Original Scene RGB Contribution [Default]";
+		originalTitle.toolTip = @"Fallback for unknown areas. Identified areas use their Area Settings RGB contribution (0.035 when unset).";
 		originalTitle.editable = NO;
 		originalTitle.bezeled = NO;
 		originalTitle.drawsBackground = NO;
@@ -10031,7 +10200,7 @@ void QuitWithFatalError ( NSString *message)
 		[content addSubview:remasterSamplesInput];
 		remasterRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 550, 390, 24)];
 		[remasterRepresentativeEnabled setButtonType:NSButtonTypeSwitch];
-		remasterRepresentativeEnabled.title = @"Default Representative Emitters per Tile (1–8)";
+		remasterRepresentativeEnabled.title = @"Representative Emitters Per Tile [Default]";
 		remasterRepresentativeEnabled.target = self;
 		remasterRepresentativeEnabled.action = @selector(changeRemasterRepresentativeEmitters:);
 		[content addSubview:remasterRepresentativeEnabled];
@@ -10243,12 +10412,14 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)showRemasterAreaSettings
 {
+	if(remasterEditingProfileLoaded)RemasterRecording::Global().Revision(remasterEditingProfile,
+		remasterFramePresenting?remasterReplayFrame.area:S9xRemasterCurrentArea());
 	if (!remasterEditingProfileLoaded) return;
 	workspaceAreaOpen = YES;
 	[self savePreviousWorkspace];
 	if (!remasterAreaPanel)
 	{
-		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 570)
+		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 660)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
 		remasterAreaPanel.title = @"Area Settings";
 		remasterAreaPanel.releasedWhenClosed = NO;
@@ -10328,7 +10499,24 @@ void QuitWithFatalError ( NSString *message)
 		remasterAreaRepresentativeInput = [[NSTextField alloc] initWithFrame:NSMakeRect(300, 96, 80, 24)];
 		remasterAreaRepresentativeInput.target = self; remasterAreaRepresentativeInput.action = @selector(changeRemasterAreaSettings:);
 		remasterAreaRepresentativeInput.delegate = self; [content addSubview:remasterAreaRepresentativeInput];
-		label(@"Outdoors: these two settings apply to the entire overworld.", NSMakeRect(20, 56, 380, 30)).font = [NSFont systemFontOfSize:10];
+		for (NSView *view in [content.subviews copy]) {
+			NSRect frame = view.frame; frame.origin.y += 90; view.frame = frame;
+		}
+		label(@"Reflected Light Boost (0–8)", NSMakeRect(20, 146, 370, 22));
+		remasterAreaReflectanceSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 116, 260, 24)];
+		remasterAreaReflectanceSlider.minValue = 0; remasterAreaReflectanceSlider.maxValue = 8;
+		remasterAreaReflectanceSlider.continuous = YES;
+		remasterAreaReflectanceSlider.target = self; remasterAreaReflectanceSlider.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaReflectanceSlider];
+		remasterAreaReflectanceInput = [[NSTextField alloc] initWithFrame:NSMakeRect(300, 116, 80, 24)];
+		remasterAreaReflectanceInput.target = self; remasterAreaReflectanceInput.action = @selector(changeRemasterAreaSettings:);
+		remasterAreaReflectanceInput.delegate = self; [content addSubview:remasterAreaReflectanceInput];
+		remasterAreaReflectanceDefault = [[NSButton alloc] initWithFrame:NSMakeRect(20, 86, 370, 24)];
+		[remasterAreaReflectanceDefault setButtonType:NSButtonTypeSwitch];
+		remasterAreaReflectanceDefault.title = @"Use profile default";
+		remasterAreaReflectanceDefault.target = self; remasterAreaReflectanceDefault.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaReflectanceDefault];
+		label(@"Outdoors: these settings apply to the entire overworld.", NSMakeRect(20, 56, 380, 30)).font = [NSFont systemFontOfSize:10];
 		remasterAreaSave = [[NSButton alloc] initWithFrame:NSMakeRect(280, 15, 110, 30)];
 		remasterAreaSave.title = @"Save"; remasterAreaSave.bezelStyle = NSBezelStyleRounded;
 		remasterAreaSave.target = self; remasterAreaSave.action = @selector(saveRemasterAreaSettings:);
@@ -10367,6 +10555,10 @@ void QuitWithFatalError ( NSString *message)
 	{
 		remasterAreaNeedsRefresh = false;
 		remasterAreaOriginalSlider.floatValue = scene.originalSceneContribution;
+		const auto stored = remasterEditingProfile.areaSceneSettings.find(S9xRemasterAreaSceneKey(area));
+		remasterAreaReflectanceDefault.state = stored == remasterEditingProfile.areaSceneSettings.end() || stored->second.reflectanceBoost < 0 ? NSControlStateValueOn : NSControlStateValueOff;
+		remasterAreaReflectanceSlider.floatValue = scene.reflectanceBoost;
+		remasterAreaReflectanceInput.stringValue = [NSString stringWithFormat:@"%.6g", scene.reflectanceBoost];
 		remasterAreaOriginalInput.stringValue = [NSString stringWithFormat:@"%.6g", scene.originalSceneContribution];
 		remasterAreaRepresentativeEnabled.state = scene.representativeEmitters ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterAreaRepresentativeSlider.integerValue = scene.representativeEmitters ? scene.representativeEmitters : 4;
@@ -10391,6 +10583,8 @@ void QuitWithFatalError ( NSString *message)
 	remasterAreaAxes.enabled = area.valid(); remasterAreaBack.enabled = area.valid();
 	remasterAreaBrightnessSlider.enabled = area.valid();
 	remasterAreaOriginalSlider.enabled = remasterAreaOriginalInput.enabled = area.valid();
+	remasterAreaReflectanceDefault.enabled = area.valid();
+	remasterAreaReflectanceSlider.enabled = remasterAreaReflectanceInput.enabled = area.valid() && remasterAreaReflectanceDefault.state == NSControlStateValueOff;
 	remasterAreaRepresentativeEnabled.enabled = area.valid();
 	remasterAreaRepresentativeSlider.enabled = remasterAreaRepresentativeInput.enabled = area.valid() && scene.representativeEmitters != 0;
 	remasterAreaSave.enabled = remasterEditingProfileLoaded && RemasterAreaDirty();
@@ -10402,6 +10596,11 @@ void QuitWithFatalError ( NSString *message)
 	const auto oldScene = S9xRemasterAreaSceneSettings(remasterEditingProfile, remasterDisplayedArea);
 	auto scene = oldScene;
 	if (sender == remasterAreaOriginalSlider) remasterAreaOriginalInput.floatValue = remasterAreaOriginalSlider.floatValue;
+	if (sender == remasterAreaReflectanceSlider) remasterAreaReflectanceInput.floatValue = remasterAreaReflectanceSlider.floatValue;
+	const bool inheritBoost = remasterAreaReflectanceDefault.state == NSControlStateValueOn;
+	if (inheritBoost) scene.reflectanceBoost = remasterEditingProfile.reflectanceBoost;
+	else if (!RemasterProfileParsing::ParseFloat(remasterAreaReflectanceInput.stringValue.UTF8String, scene.reflectanceBoost) ||
+		!std::isfinite(scene.reflectanceBoost) || scene.reflectanceBoost < 0 || scene.reflectanceBoost > 8) return NO;
 	if (sender == remasterAreaRepresentativeSlider) remasterAreaRepresentativeInput.integerValue = remasterAreaRepresentativeSlider.integerValue;
 	uint32_t representatives = 0;
 	if (!RemasterProfileParsing::ParseFloat(remasterAreaOriginalInput.stringValue.UTF8String, scene.originalSceneContribution) ||
@@ -10437,7 +10636,15 @@ void QuitWithFatalError ( NSString *message)
 	if (light.direction[2] != 0) remasterAreaBack.state = light.direction[2] < 0 ? NSControlStateValueOn : NSControlStateValueOff;
 	[remasterAreaAxes setNeedsDisplay:YES];
 	const auto old = S9xRemasterAreaLight(remasterEditingProfile, remasterDisplayedArea);
-	if (old == light && oldScene == scene) return YES;
+	const auto sceneKey = S9xRemasterAreaSceneKey(remasterDisplayedArea);
+	const auto storedScene = remasterEditingProfile.areaSceneSettings.find(sceneKey);
+	const float oldStoredBoost = storedScene == remasterEditingProfile.areaSceneSettings.end() ? -1 : storedScene->second.reflectanceBoost;
+	const float storedBoost = inheritBoost ? -1 : scene.reflectanceBoost;
+	const bool boostChanged = oldStoredBoost != storedBoost;
+	remasterAreaReflectanceSlider.enabled = remasterAreaReflectanceInput.enabled = !inheritBoost;
+	if (inheritBoost) remasterAreaReflectanceInput.stringValue = [NSString stringWithFormat:@"%.6g", scene.reflectanceBoost];
+	remasterAreaReflectanceSlider.floatValue = scene.reflectanceBoost;
+	if (old == light && oldScene == scene && !boostChanged) return YES;
 	const std::string key = S9xRemasterAreaKey(remasterDisplayedArea.id);
 	RemasterProfile defaults;
 	if (!(old == light)) {
@@ -10445,14 +10652,15 @@ void QuitWithFatalError ( NSString *message)
 			remasterEditingProfile.areaLights.erase(key);
 		else remasterEditingProfile.areaLights[key] = light;
 	}
-	if (!(oldScene == scene)) {
-		const auto sceneKey = S9xRemasterAreaSceneKey(remasterDisplayedArea);
-		// Editing RGB alone must not freeze an inherited emitter default.
+	if (!(oldScene == scene) || boostChanged) {
+		// Unrelated edits must not freeze inherited defaults.
 		auto &stored = remasterEditingProfile.areaSceneSettings[sceneKey];
 		stored.originalSceneContribution = scene.originalSceneContribution;
 		if (oldScene.representativeEmitters != scene.representativeEmitters) stored.representativeEmitters = scene.representativeEmitters;
+		if (boostChanged) stored.reflectanceBoost = storedBoost;
 	}
 	remasterAreaOriginalSlider.floatValue = scene.originalSceneContribution;
+	RemasterRecording::Global().Revision(remasterEditingProfile,remasterDisplayedArea);
 	remasterAreaRepresentativeSlider.integerValue = representatives ? representatives : 4;
 	remasterAreaRepresentativeSlider.enabled = remasterAreaRepresentativeInput.enabled = representatives != 0;
 	remasterMetadataNeedsSync = true;
@@ -10527,6 +10735,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)finishRemasterSceneSettingsChangeFrom:(NSData *)snapshot actionName:(NSString *)name
 {
+	remasterAreaNeedsRefresh = true;
 	remasterMetadataNeedsSync = true;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterSceneSettings:)
 		object:snapshot];

@@ -276,6 +276,9 @@ extern id<S9xInputDelegate> inputDelegate;
 - (NSString *)cycleRemasterLightingView;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
+- (void)showRemasterRecording;
+- (void)toggleRemasterRecording:(id)sender;
+- (void)chooseRemasterRecording:(id)sender;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;
 #ifdef __cplusplus
 - (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket;

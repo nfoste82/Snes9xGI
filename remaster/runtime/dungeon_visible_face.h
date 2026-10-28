@@ -41,6 +41,13 @@ struct FloorContact { int region, x, y, height; };
 
 enum class Status { Unanchored, Solved, Conflict };
 struct Result { std::vector<int> base; std::vector<Status> status; };
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+struct EquationTrace {
+ std::vector<int> relative,datum;
+ std::vector<bool> invalid,cycle,anchorConflict;
+};
+inline thread_local EquationTrace *equationTrace=nullptr;
+#endif
 
 inline int sample(const Region &r, int x, int y) {
 	return r.height[(r.vflip ? 7-y : y)*8 + (r.hflip ? 7-x : x)];
@@ -89,21 +96,40 @@ inline Result solve(const std::vector<Region> &regions,
 	}
 	Result out{std::vector<int>(size,INT_MIN),std::vector<Status>(size,Status::Unanchored)};
 	std::vector<int> relative(size,INT_MIN);
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+	if(equationTrace){equationTrace->relative.assign(size,INT_MIN);equationTrace->datum.assign(size,INT_MIN);
+	 equationTrace->invalid=invalid;equationTrace->cycle.assign(size,false);equationTrace->anchorConflict.assign(size,false);}
+#endif
 	for(int start=0;start<size;start++) if(relative[start]==INT_MIN) {
 		std::vector<int> queue(1,start);relative[start]=0;bool bad=false;int datum=INT_MIN;
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+		bool cycle=false,anchorConflict=false;
+#endif
 		for(size_t at=0;at<queue.size();at++) {
 			int n=queue[at];bad|=invalid[n];
-			for(int base:anchor[n]) {int d=base-relative[n];if(datum!=INT_MIN && datum!=d)bad=true;datum=d;}
+			for(int base:anchor[n]) {int d=base-relative[n];if(datum!=INT_MIN && datum!=d){bad=true;
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+			 anchorConflict=true;
+#endif
+			}datum=d;}
 			for(auto edge:graph[n]) {
 				int v=relative[n]+edge.second;
 				if(relative[edge.first]==INT_MIN){relative[edge.first]=v;queue.push_back(edge.first);}
-				else if(relative[edge.first]!=v)bad=true;
+				else if(relative[edge.first]!=v){bad=true;
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+				 cycle=true;
+#endif
+				}
 			}
 		}
 		if(datum!=INT_MIN)for(int n:queue) {
 			int v=datum+relative[n];if(v < -32767 || v > 32767 || v==255)bad=true;
 		}
 		for(int n:queue) {
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+			if(equationTrace){equationTrace->relative[n]=relative[n];equationTrace->datum[n]=datum;
+			 equationTrace->cycle[n]=cycle;equationTrace->anchorConflict[n]=anchorConflict;}
+#endif
 			out.status[n]=bad?Status::Conflict:datum==INT_MIN?Status::Unanchored:Status::Solved;
 			if(out.status[n]==Status::Solved)out.base[n]=datum+relative[n];
 		}

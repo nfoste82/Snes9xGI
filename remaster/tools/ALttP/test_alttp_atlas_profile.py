@@ -6,6 +6,7 @@ import tomllib
 import tempfile
 import sqlite3
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -14,6 +15,59 @@ from alttp_atlas_profile import _complete_semantic_groups, _semantic_wall_layers
 
 
 class SemanticProfileTests(unittest.TestCase):
+    def test_oob_compiler_preserves_present_and_absent_channels_in_stale_floor_group(self):
+        ids = ['v1:4bpp:'+f'{i:016x}' for i in range(1, 7)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); db=root/'atlas.sqlite'; source=root/'source.toml'; out=root/'out.toml'
+            con=sqlite3.connect(db)
+            con.executescript('CREATE TABLE run_info(key TEXT,value TEXT); CREATE TABLE decoded_tile(content_id TEXT,indices BLOB); CREATE TABLE graphics_source(content_id TEXT,source_kind TEXT,pack_index INTEGER);')
+            rom='66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb'
+            con.execute('INSERT INTO run_info VALUES(?,?)', ('rom_sha256',rom))
+            for h in ids:
+                con.execute('INSERT INTO decoded_tile VALUES(?,?)',(h,bytes([1]*64)))
+                con.execute('INSERT INTO graphics_source VALUES(?,?,?)',(h,'background',1))
+            con.commit(); con.close()
+            text=f'schema_version = 34\n[game]\ntitle = "OOB compiler fixture"\nrom_sha256 = "{rom}"\n[lighting_space]\nupper_floor_height = 50\n'
+            text+='[asset_groups.dungeon_floor]\ntile_hashes = '+json.dumps(ids)+'\n'
+            text+='[asset_groups.wall_faces]\ntile_hashes = ["v1:4bpp:0000000000000099"]\n'
+            for i,h in enumerate(ids):
+                text+=f'\n[[assets]]\ntile_hash = "{h}"\ntile_role = "out-of-bounds"\n'
+                if i in (1,2,3):text+='height = '+json.dumps([0]*64 if i==1 else [5]*64 if i==2 else list(range(64)))+'\n'
+                if i==4:text+='normal_xyz = '+json.dumps([0,128,255]*64)+'\n'
+                if i==5:text+='occlusion = '+json.dumps([0]*64)+'\n'
+            source.write_text(text)
+            probe=root/'probe'
+            repo=Path(__file__).resolve().parents[3]
+            subprocess.run(['clang++','-std=c++17','-O0',str(repo/'remaster/tests/out_of_bounds_compiled_profile_probe.cpp'),'-o',str(probe)],check=True)
+            for preserve in (False,True):
+                generate_profile(db,source,out,preserve_authored_geometry=preserve)
+                self.assertEqual(tomllib.loads(out.read_text())['assets'],tomllib.loads(text)['assets'])
+                self.assertEqual(source.read_text(),text)
+                subprocess.run([str(probe),str(out)],check=True)
+            sidecar=root/'semantics.json'
+            for native in (False,True):
+                annotations={h: {'role':'floor' if native else 'out-of-bounds', 'normals':[], 'context_dependent':False} for h in ids}
+                sidecar.write_text(json.dumps({'rom_sha256':rom,'tiles':annotations}))
+                source.write_text(text if native else text.replace('tile_role = "out-of-bounds"\n',''))
+                for preserve in (False,True):
+                    with patch('alttp_atlas_profile.AnnotationStore', return_value=SimpleNamespace(tiles=annotations.copy())), patch(
+                            'alttp_atlas_profile.TileCatalog', return_value=SimpleNamespace(semantic_group=lambda key: [key])):
+                        generate_profile(db,source,out,sidecar,preserve_authored_geometry=preserve)
+                    self.assertEqual(tomllib.loads(out.read_text())['assets'],tomllib.loads(text)['assets'])
+                    subprocess.run([str(probe),str(out)],check=True)
+            # Context role persists, but no local geometry is generated. Runtime
+            # classifier deliberately reports it unsupported without placement proof.
+            annotations={h: {'role':'out-of-bounds','normals':[], 'context_dependent':True} for h in ids}
+            sidecar.write_text(json.dumps({'rom_sha256':rom,'tiles':annotations}))
+            source.write_text(text.replace('tile_role = "out-of-bounds"\n',''))
+            with patch('alttp_atlas_profile.AnnotationStore', return_value=SimpleNamespace(tiles=annotations)), patch(
+                    'alttp_atlas_profile.TileCatalog', return_value=SimpleNamespace(semantic_group=lambda key: [key])):
+                generate_profile(db,source,out,sidecar,preserve_authored_geometry=True)
+            for a in tomllib.loads(out.read_text())['assets']:
+                self.assertEqual(a['tile_role'],'out-of-bounds')
+                self.assertTrue(a['tile_semantic_context_dependent'])
+            subprocess.run([str(probe),str(out)],check=True)
+
     def test_schema22_groups_interleaved_and_appended_roundtrip(self):
         a, b = ['v1:4bpp:'+f'{i:016x}' for i in (1, 2)]
         group = ('\n[[obstacle_groups]]\nname = "example"\n'

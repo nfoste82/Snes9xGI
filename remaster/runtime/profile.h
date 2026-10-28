@@ -356,8 +356,9 @@ struct RemasterAreaSceneSettings
 {
 	float originalSceneContribution = 0.035f;
 	int representativeEmitters = -1; // -1 inherits the profile default; 0 disables approximation.
+	float reflectanceBoost = -1.0f; // -1 inherits the profile default.
 	bool operator==(const RemasterAreaSceneSettings &b) const
-	{ return originalSceneContribution == b.originalSceneContribution && representativeEmitters == b.representativeEmitters; }
+	{ return originalSceneContribution == b.originalSceneContribution && representativeEmitters == b.representativeEmitters && reflectanceBoost == b.reflectanceBoost; }
 };
 
 inline std::string S9xRemasterAreaSceneKey(RemasterAreaContext area)
@@ -400,6 +401,7 @@ inline RemasterAreaSceneSettings S9xRemasterAreaSceneSettings(const RemasterProf
 	if (found != profile.areaSceneSettings.end()) settings = found->second;
 	if (!area.valid()) settings.originalSceneContribution = profile.originalSceneContribution;
 	if (settings.representativeEmitters < 0) settings.representativeEmitters = profile.representativeEmitters;
+	if (settings.reflectanceBoost < 0) settings.reflectanceBoost = profile.reflectanceBoost;
 	return settings;
 }
 
@@ -1045,6 +1047,11 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		{
 			auto &settings = parsed.areaSceneSettings[areaKey];
 			if (key == "original_scene_contribution") valid = ParseFloat(value, settings.originalSceneContribution);
+			else if (key == "reflectance_boost") {
+				valid = ParseFloat(value, settings.reflectanceBoost) && std::isfinite(settings.reflectanceBoost) &&
+					settings.reflectanceBoost >= 0 && settings.reflectanceBoost <= 8;
+				if (parsed.schemaVersion < 35) fail(lineNumber, "area reflectance_boost requires schema_version 35");
+			}
 			else if (key == "representative_emitters") {
 				valid = ParseUnsigned(value, unsignedValue) && unsignedValue <= 8;
 				if (valid) settings.representativeEmitters = int(unsignedValue);
@@ -1523,8 +1530,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 34)
-		fail(0, "schema_version must be an integer in [1, 34]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 35)
+		fail(0, "schema_version must be an integer in [1, 35]");
 	for (auto &entry : parsed.assets) {
 		auto &item = entry.second;
 		if (parsed.schemaVersion < 34 && item.tileRole == RemasterTileRole::Door) item.tileRole = RemasterTileRole::Doorway;
@@ -1537,7 +1544,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	if (!parsed.areaSceneSettings.empty() && parsed.schemaVersion < 33) fail(0, "area_scene_settings requires schema_version 33");
 	for (const auto &entry : parsed.areaSceneSettings)
 		if (!std::isfinite(entry.second.originalSceneContribution) || entry.second.originalSceneContribution < 0 ||
-			entry.second.originalSceneContribution > 1 || entry.second.representativeEmitters < -1 || entry.second.representativeEmitters > 8)
+			entry.second.originalSceneContribution > 1 || entry.second.representativeEmitters < -1 || entry.second.representativeEmitters > 8 ||
+			!std::isfinite(entry.second.reflectanceBoost) || (entry.second.reflectanceBoost != -1 && entry.second.reflectanceBoost < 0) || entry.second.reflectanceBoost > 8)
 			fail(0, "invalid area scene settings: " + entry.first);
 	for (const auto &c : contexts)
 	{
@@ -1845,7 +1853,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	});
 	const bool hasSpriteAssembly = std::any_of(profile.obstacleGroups.begin(),profile.obstacleGroups.end(),[](const auto &g){return g.spriteAssembly;});
 	const bool artworkEmission = std::any_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) { return a.second.hasEmission && a.second.emissionColorMask != UINT64_MAX; });
-	const uint32_t requiredSchema = std::max<uint32_t>(!profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const bool hasAreaReflectanceBoost = std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.reflectanceBoost != -1; });
+	const uint32_t requiredSchema = std::max<uint32_t>(hasAreaReflectanceBoost ? 35 : !profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -1885,6 +1894,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "\n[area_scene_settings." << entry.first << "]\n";
 		output << "original_scene_contribution = " << entry.second.originalSceneContribution << "\n";
 		if (entry.second.representativeEmitters != -1) output << "representative_emitters = " << entry.second.representativeEmitters << "\n";
+		if (entry.second.reflectanceBoost != -1) output << "reflectance_boost = " << entry.second.reflectanceBoost << "\n";
 	}
 	for (const auto &entry : profile.areaLights)
 	{

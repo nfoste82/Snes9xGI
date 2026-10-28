@@ -5,6 +5,7 @@
 #include "dungeon_visible_face_templates.h"
 #include "frame.h"
 #include "dungeon_wall_band.h"
+#include "dungeon_out_of_bounds.h"
 
 #define REMASTER_VISIBLE_ROOM_CANDIDATES 1
 struct RemasterVisibleFaceCandidate {
@@ -50,6 +51,16 @@ struct RemasterVisibleFaceTemplateCache {
 	std::vector<S9xRemasterVisibleFace::FloorContact> diagnosticFloors;
 	std::vector<S9xRemasterVisibleFace::DatumContact> diagnosticDatums;
 	std::vector<std::array<int,4>> diagnosticOwners;
+	std::vector<S9xRemasterVisibleFace::PlateauEvent> diagnosticPlateaus;
+	// bg, cell, sheet bg/cell, direction, reason, node, graph status/base,
+	// owner guard, owner, plane, physical base/planes, wall/sheet exposure.
+	// Original 19 fields followed by numeric edge min/max/count, canonical band
+	// mask, downhill bits, and all eight transformed absolute edge samples.
+	std::vector<std::array<int64_t,32>> diagnosticTerminals;
+	S9xRemasterVisibleFace::EquationTrace diagnosticEquations;
+	// bg/cell pairs, direction, admitted; actual observed coverage of both
+	// facing edges, transformed flips, ambiguous/source channel presence.
+	std::vector<std::array<uint64_t,15>> diagnosticSheetJoins;
 #endif
 };
 // A complete-room visual solve. Physical solves are immutable inputs; raster
@@ -230,7 +241,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 			// A floor usage under a continuing wall in the peer map is not an
 			// exposed wall foot. Keep that occupied underpass independent.
 			if(nodes[1-other][j]>=0)continue;
-			const auto &t=tiles[other][j];if(!t.hasHeight || t.surface==Surface::Wall || t.surface==Surface::Stair ||
+			const auto &t=tiles[other][j];if(!t.hasHeight || t.surface==Surface::OutOfBounds || t.surface==Surface::Wall || t.surface==Surface::Stair ||
 				t.surface==Surface::Door || t.surface==Surface::ClosedDoor || t.surface==Surface::Obstacle ||
 				t.obstacleAssembly || t.authoredObstacle || t.removableSupportPlanes || t.doorAssembly)continue;
 			// Independently occupied complete-room support is sufficient even
@@ -315,9 +326,113 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 			}
 		}
 	}
-	std::vector<int> owner(regions.size(),-1),plane(regions.size(),-1);std::vector<bool> conflict(regions.size());
-	for(const auto &a:anchors){int r=root(a.node);if(owner[r]>=0 && (owner[r]!=a.owner || plane[r]!=a.plane))conflict[r]=true;else {owner[r]=a.owner;plane[r]=a.plane;}}
+	std::vector<int> owner(regions.size(),-1),plane(regions.size(),-1);std::vector<bool> conflict(regions.size()),crestPlaneConflict(regions.size());
+	for(const auto &a:anchors){int r=root(a.node);
+		if(plane[r]>=0 && plane[r]!=a.plane)crestPlaneConflict[r]=true;
+		if(owner[r]>=0 && (owner[r]!=a.owner || plane[r]!=a.plane))conflict[r]=true;else {owner[r]=a.owner;plane[r]=a.plane;}}
+	// Preserve the visual wall publication/ownership contract above. An OOB
+	// terminal has a different role: each floor contact was independently proved
+	// occupied, plane-observed and zero-local before entering the signed graph.
+	// Distinct floor IDs alone cannot invalidate that graph's consistent datum.
+	// Never use physical/render fallback or minimize inconsistent wall equations.
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+	if(cache)equationTrace=&cache->diagnosticEquations;
+#endif
 	const auto solution=solve(regions,contacts,floorContacts,datums);
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+	equationTrace=nullptr;
+#endif
+	const bool hasPlateaus=std::any_of(bg1,bg1+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;}) ||
+		std::any_of(bg2,bg2+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;});
+	auto plateauResolver=hasPlateaus?std::make_unique<RemasterFrameChannelResolver>(frame):nullptr;
+	std::vector<RemasterFramePixel> visible(hasPlateaus?selected.size():0);
+	auto sheetExposure=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();
+	for(size_t at=0;at<visible.size();at++) {
+		const auto px=visible[at]=plateauResolver->select(frame,at,true).visible;
+		if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
+		const auto &inst=frame.tileInstances[px.instanceId-1];if(inst.source!=RemasterSourceType::Background || inst.sourceIndex>1)continue;
+		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,bg=inst.sourceIndex;
+		const auto &t=tiles[bg][cell];const auto word=words[bg][cell];
+		const auto &m=plateauResolver->effective[px.instanceId-1];
+		if(t.surface!=Surface::OutOfBounds || m.tileRole!=RemasterTileRole::OutOfBounds || t.stairSourceAmbiguous ||
+			inst.tileId.hash!=t.tileHash || inst.hFlip!=t.hflip || inst.vFlip!=t.vflip || inst.tileNumber!=(word&1023) || inst.palette!=((word>>10)&7) ||
+			m.hasHeight!=t.hasHeight || (m.hasHeight && m.height!=t.height) || frame.contextGeometry.count(px.instanceId) ||
+			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
+		(*sheetExposure)[bg][cell]|=UINT64_C(1)<<((y%8)*8+x%8);
+	}
+	auto edge=[](int direction){uint64_t mask=0;for(int k=0;k<8;k++) {
+		int x=direction==2?0:direction==3?7:k,y=direction==0?0:direction==1?7:k;mask|=UINT64_C(1)<<(y*8+x);
+	}return mask;};
+	#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+	if(cache){cache->diagnosticPlateaus.clear();cache->diagnosticTerminals.clear();cache->diagnosticSheetJoins.clear();plateauEvents=&cache->diagnosticPlateaus;}
+	#endif
+	const auto plateaus=outOfBoundsPlateaus(tiles,[&](int bg,int cell,int direction,int &height,int &o,int &p,int sheetBg,int sheetCell,int &maximum) {
+		auto resolve=[&]() {
+		int n=nodes[bg][cell];if(n<0)return RemasterVisualClaimStatus::NotEvaluated;
+		const auto &b=bands[n];
+		// Only the uphill terminal edge of a proved wall/frame is a crest.
+		if(!(b.downhill&(1<<(direction^1))))return RemasterVisualClaimStatus::NotEvaluated;
+		// Hidden peer-BG walls are not contacts. Partial/unobserved edges cannot
+		// certify an OOB crest in this bounded visible-surface feature.
+		if((exposed[bg][cell]&edge(direction))!=edge(direction))return RemasterVisualClaimStatus::NotEvaluated;
+		if(((*sheetExposure)[sheetBg][sheetCell]&edge(direction^1))!=edge(direction^1))return RemasterVisualClaimStatus::Unsupported;
+		int rt=root(n);if(crestPlaneConflict[rt] || solution.status[n]==Status::Conflict)return RemasterVisualClaimStatus::Conflict;
+		if(solution.status[n]!=Status::Solved || owner[rt]<0)return RemasterVisualClaimStatus::Unanchored;
+		int value=INT_MAX,high=INT_MIN;bool any=false;
+		for(int k=0;k<8;k++) {
+			int x=direction==2?0:direction==3?7:k,y=direction==0?0:direction==1?7:k;
+			const auto &r=regions[n];int local=(r.vflip?7-y:y)*8+(r.hflip?7-x:x);
+			// A masked fragment cannot certify the complete shared crest edge.
+			if(!(b.mask&(UINT64_C(1)<<local)))return RemasterVisualClaimStatus::Unsupported;
+			int h=solution.base[n]+r.height[local];
+			// Only independently validated uphill band samples reach this point.
+			// Art reuse may legitimately vary within an edge as well as between
+			// walls. Reduce absolute values, never alter the signed wall solve.
+			any=true;value=std::min(value,h);high=std::max(high,h);
+		}
+		if(!any)return RemasterVisualClaimStatus::Unsupported;
+		height=value;maximum=high;o=owner[rt];p=plane[rt];return RemasterVisualClaimStatus::Solved;
+		};
+		auto status=resolve();
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+		if(cache && nodes[bg][cell]>=0) {
+		 int n=nodes[bg][cell],rt=root(n);const auto &b=bands[n];
+		 // Numeric candidate is evidence even when a separate owner guard vetoes
+		 // admission. It is never promoted into the callback's output values.
+		 int candidate=INT_MIN,edgeMin=INT_MAX,edgeMax=INT_MIN,edgeCount=0;
+		 std::array<int64_t,8> edgeValues;edgeValues.fill(INT_MIN);
+		 if(solution.status[n]==Status::Solved)for(int k=0;k<8;k++) {
+		  int x=direction==2?0:direction==3?7:k,y=direction==0?0:direction==1?7:k;
+		  const auto &r=regions[n];int local=(r.vflip?7-y:y)*8+(r.hflip?7-x:x);
+		  if(b.mask&(UINT64_C(1)<<local)){int h=solution.base[n]+r.height[local];edgeValues[k]=h;
+		   edgeMin=std::min(edgeMin,h);edgeMax=std::max(edgeMax,h);++edgeCount;
+		   if(candidate==INT_MIN)candidate=h;else if(candidate!=h)candidate=INT_MAX;}
+		 }
+		 int reason=!(b.downhill&(1<<(direction^1)))?1:
+		  (exposed[bg][cell]&edge(direction))!=edge(direction)?2:
+		  ((*sheetExposure)[sheetBg][sheetCell]&edge(direction^1))!=edge(direction^1)?3:
+		  crestPlaneConflict[rt]?4:solution.status[n]==Status::Conflict?5:solution.status[n]!=Status::Solved || owner[rt]<0?6:
+		  status==RemasterVisualClaimStatus::Conflict?7:status==RemasterVisualClaimStatus::Unsupported?8:0;
+		 std::array<int64_t,32> terminal={bg,cell,sheetBg,sheetCell,direction,reason,n,int(solution.status[n]),solution.base[n],conflict[rt],owner[rt],plane[rt],maps[bg]->offsets[cell],maps[bg]->structuralPlaneOffsets[0][cell],maps[bg]->structuralPlaneOffsets[1][cell],int64_t(exposed[bg][cell]),int64_t((*sheetExposure)[sheetBg][sheetCell]),candidate,int(status),edgeMin,edgeMax,edgeCount,int64_t(b.mask),b.downhill};
+		 std::copy(edgeValues.begin(),edgeValues.end(),terminal.begin()+24);
+		 cache->diagnosticTerminals.push_back(terminal);
+		}
+#endif
+		return status;
+	},[&](int a,int i,int b,int j,int d) {
+		// An exact pair of visible opaque edges proves continuation, even across
+		// BGs. No hash/coordinate-only flood and no hidden overlapping bridge.
+		const bool admitted=((*sheetExposure)[a][i]&edge(d))==edge(d) && ((*sheetExposure)[b][j]&edge(d^1))==edge(d^1);
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+		if(cache)cache->diagnosticSheetJoins.push_back({uint64_t(a),uint64_t(i),uint64_t(b),uint64_t(j),uint64_t(d),uint64_t(admitted),(*sheetExposure)[a][i]&edge(d),(*sheetExposure)[b][j]&edge(d^1),edge(d),edge(d^1),uint64_t(tiles[a][i].hflip|tiles[a][i].vflip<<1),uint64_t(tiles[b][j].hflip|tiles[b][j].vflip<<1),uint64_t(tiles[a][i].stairSourceAmbiguous|tiles[b][j].stairSourceAmbiguous<<1),uint64_t(tiles[a][i].hasHeight),uint64_t(tiles[b][j].hasHeight)});
+#endif
+		return admitted;
+	});
+#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
+	plateauEvents=nullptr;
+#endif
+	// Role-only sheets have no height donor until solved; use actual visible
+	// composition, never the lower layer's fallback height, to select publication.
 #ifdef REMASTER_WALL_BAND_DIAGNOSTICS
 	if(cache) {
 		cache->diagnosticOwners.clear();for(const auto &a:anchors)cache->diagnosticOwners.push_back({a.node,a.plane,a.owner,a.cell});
@@ -345,28 +460,43 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		if(inst.tileId.hash!=tile.tileHash || inst.hFlip!=tile.hflip || inst.vFlip!=tile.vflip ||
 			inst.tileNumber!=(word&1023) || inst.palette!=((word>>10)&7) ||
 			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
-		if(n<0 && tiles[bg][cell].surface!=Surface::Wall)continue;
+		const bool plateau=tile.surface==Surface::OutOfBounds;
+		if(n<0 && tile.surface!=Surface::Wall && !plateau)continue;
+		bool unsupportedSource=false;
+		if(plateau) {
+			const auto &m=plateauResolver->effective[px.instanceId-1];
+			if(m.tileRole!=RemasterTileRole::OutOfBounds)continue;
+			unsupportedSource=m.hasHeight!=tile.hasHeight || (m.hasHeight && m.height!=tile.height) || frame.contextGeometry.count(px.instanceId);
+		}
 		const uint64_t mask=n<0?UINT64_MAX:bands[n].mask;
 		if(!(mask&(UINT64_C(1)<<px.tilePixel)))continue;
-		const auto status=n<0?RemasterVisualClaimStatus::Unsupported:
+		const auto status=unsupportedSource?RemasterVisualClaimStatus::Unsupported:plateau?plateaus[bg*4096+cell].status:n<0?RemasterVisualClaimStatus::Unsupported:
 			conflict[root(n)] || solution.status[n]==Status::Conflict?RemasterVisualClaimStatus::Conflict:
 			solution.status[n]==Status::Solved && owner[root(n)]>=0?RemasterVisualClaimStatus::Solved:RemasterVisualClaimStatus::Unanchored;
 		// A contextual/actor/transition contribution is not this map's placement
 		// base. Do not erase it when selecting the separate visual representative.
 		int physical=maps[bg]->offsets[cell]==255?0:maps[bg]->offsets[cell];bool physicalConflict=false;
+		if(plateau)physical=0; // explicit role is not the gameplay support beneath this sheet
 		if(n>=0 && bands[n].frame) {
 			physical=INT_MIN;
 			for(const auto &a:maps[bg]->doorframeAttachments)if(a.cell==cell && a.visible && (a.mask&(UINT64_C(1)<<px.tilePixel))) {
 				if(physical!=INT_MIN && physical!=a.base)physicalConflict=true;physical=a.base;
 			}
 		}
-		const bool selectedScene=scene && at<selected.size() && selected[at].instanceId==px.instanceId && selected[at].tilePixel==px.tilePixel;
+		const auto &choice=plateau?visible[at]:selected[at];
+		const bool selectedScene=scene && choice.instanceId==px.instanceId && choice.tilePixel==px.tilePixel;
 		const bool publish=selectedScene && status==RemasterVisualClaimStatus::Solved && !physicalConflict && inst.heightOffset==physical &&
 			!inst.hasPlacementHeight && !frame.contextGeometry.count(px.instanceId);
-		const int base=publish?solution.base[n]:inst.heightOffset;
+		const int base=publish?(plateau?plateaus[bg*4096+cell].base:solution.base[n]):inst.heightOffset;
 		const auto key=std::make_tuple(px.instanceId,cell,base,publish);auto it=copies.find(key);
 		if(it==copies.end()){
-			auto copy=inst;copy.heightOffset=base;copy.visualClaim={status,mask,cell,n<0?-1:root(n),publish};
+			auto copy=inst;copy.heightOffset=base;copy.visualClaim={status,mask,cell,plateau?plateaus[bg*4096+cell].component:n<0?-1:root(n),publish};
+			if(plateau && publish) {
+				const auto &m=plateauResolver->effective[px.instanceId-1];
+				copy.geometryStatus=RemasterOccurrenceGeometryStatus::Resolved;copy.placementTileRole=RemasterTileRole::OutOfBounds;
+				if(!m.hasHeight){copy.hasPlacementHeight=true;copy.placementHeight.fill(0);}
+				if(!m.hasNormals){copy.hasPlacementNormals=true;for(int k=0;k<64;k++){copy.placementNormalXyz[k*3]=128;copy.placementNormalXyz[k*3+1]=128;copy.placementNormalXyz[k*3+2]=255;}}
+			}
 			// A clone retains any contextual layers; numeric publication above never replaces them.
 			auto context=frame.contextGeometry.find(px.instanceId);
 			if(context!=frame.contextGeometry.end())frame.contextGeometry.emplace(uint32_t(frame.tileInstances.size()+1),context->second);

@@ -8,6 +8,7 @@
 #define _REMASTER_H_
 
 #include "frame.h"
+#include "recording.h"
 #include "layer_view.h"
 #include "capture_path.h"
 #include "overworld_capture.h"
@@ -168,6 +169,9 @@ struct RemasterState
 	std::vector<uint8_t> mainTilePixels;
 	std::vector<uint8_t> subTilePixels;
 	RemasterFrame completedFrame;
+	// Recording dependencies are separately owned, invalidated only at the same
+	// producer boundary that changes the active profile/settings.
+	std::shared_ptr<const RemasterProfile> recordingProfile;
 	std::mutex inventoryMutex;
 	RemasterProfile requestedProfile;
 	RemasterProfile activeProfile;
@@ -811,6 +815,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 	RemasterState &state = S9xRemasterState();
 	state.activeDebugMode = state.requestedDebugMode.load(std::memory_order_relaxed);
 	state.liveFramesActive = state.requestedLiveFrames.load(std::memory_order_relaxed) ||
+		RemasterRecording::Global().Accepting() ||
 		state.requestedRoomDiagnostics.load(std::memory_order_relaxed) ||
 		state.requestedInspectableFrames.load(std::memory_order_relaxed) ||
 		state.activeDebugMode == RemasterDebugMode::TileTypes ||
@@ -828,6 +833,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		std::lock_guard<std::mutex> lock(state.inventoryMutex);
 		if (state.profilePending)
 		{
+			state.recordingProfile.reset();
 			state.runtimeDungeonHeightValid=false;state.outgoingGeometry={};
 			state.previousRuntimeDungeonHeightMap.roomIndex=0xffff;state.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 			state.activeProfile = std::move(state.requestedProfile);
@@ -839,12 +845,14 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		}
 		if (state.areaLightsPending)
 		{
+			state.recordingProfile.reset();
 			state.activeProfile.areaLights = std::move(state.requestedAreaLights);
 			state.completedEvidenceProfile.reset();
 			state.areaLightsPending = false;
 		}
 		if (state.areaSceneSettingsPending)
 		{
+			state.recordingProfile.reset();
 			state.activeProfile.areaSceneSettings = std::move(state.requestedAreaSceneSettings);
 			state.areaSceneSettingsPending = false;
 		}
@@ -856,6 +864,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		}
 		if (state.sceneSettingsPending)
 		{
+			state.recordingProfile.reset();
 			state.runtimeDungeonHeightValid=false;
 			state.outgoingGeometry={};state.previousRuntimeDungeonHeightMap.roomIndex=0xffff;state.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 			S9xRemasterApplySceneSettings(state.activeProfile, state.requestedSceneSettings);
@@ -1133,6 +1142,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			// not promote the new role into a solved structural classification.
 			else if (role == RemasterTileRole::Doorway) placed.surface = Surface::Door;
 			else if (role == RemasterTileRole::Door) placed.surface = Surface::ClosedDoor;
+			else if (role == RemasterTileRole::OutOfBounds) placed.surface = Surface::OutOfBounds;
 			if (role == RemasterTileRole::Doorway) {
 				placed.hasDoorframeMask=asset->second.hasDoorframeMask;
 				placed.doorframeMask=asset->second.doorframeMask;
@@ -1152,6 +1162,13 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// from a default asset that a context/facing/flip source can replace.
 		placed.stairSourceAmbiguous=profile.tileContexts.count(id) ||
 			(asset!=profile.assets.end() && (asset->second.geometryByFacing || asset->second.geometryByFlip));
+		// A semantic plateau is an explicitly marked opaque sheet. Transparent
+		// artwork cannot bridge two regions through a missing geometric edge.
+		if(placed.surface==Surface::OutOfBounds)for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
+			uint8_t index=0;
+			for(int plane=0;plane<4;plane++)index|=((context.graphics[static_cast<uint16_t>(address+(plane/2)*16+y*2+plane%2)]>>(7-x))&1)<<plane;
+			if(!index)placed.stairSourceAmbiguous=true;
+		}
 		// Supporting axis evidence only; this cannot classify a wall. Reviewed
 		// east/south references descend TOWARD +X/+Y face normals: uphill is
 		// opposite. Require consistent significant XY on every non-cap sample;
@@ -2484,6 +2501,21 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			}
 		}
 	}
+	// Explicit terminal sheet semantics outrank stale generated groups and ROM
+	// assembly classification. Never let a user-assigned plateau anchor a wall.
+	if(std::any_of(profile.assets.begin(),profile.assets.end(),[](const auto &a){return a.second.tileRole==RemasterTileRole::OutOfBounds;}))for(auto &t:output) {
+		auto a=profile.assets.find({t.tileHash,1,4});
+		if(a==profile.assets.end() || a->second.tileRole!=RemasterTileRole::OutOfBounds)continue;
+		t.surface=Surface::OutOfBounds;t.floorPlaneMask=0;t.structuralFloorPlaneMask=0;
+		t.stairSourceAmbiguous |= a->second.tileSemanticContextDependent;
+		// Earlier structural recognizers must not turn a stale group/ROM match
+		// into generated local relief for an explicit terminal-role usage.
+		t.hasHeight=a->second.hasHeight;t.height=a->second.height;
+		t.diagonalHeightPreview=t.diagonalAuthoredPreserved=false;
+		t.wallTemplateOffset=t.wallStackAssembly=t.doorAssembly=t.doorTemplateOffset=0;
+		t.obstacleAssembly=t.authoredObstacleAssembly=0;t.authoredObstacle=false;
+		t.groundedFloorMask=0;t.removableSupportPlanes=0;t.diagnosticAuthoredFloor=false;
+	}
 }
 
 inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, uint16_t vramAddress, uint16_t tileWord,
@@ -2922,7 +2954,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	const RemasterDungeonFloorContext *dungeonFloor = nullptr,
 	const RemasterHeldLampState *heldLamp = nullptr, const RemasterAreaContext *area = nullptr,
 	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr,
-	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr)
+	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr,
+	const std::array<int,4> *recordingScrollX = nullptr, const std::array<int,4> *recordingScrollY = nullptr)
 {
 	RemasterLightingTrace::Frame lightingTrace;
 	if (RemasterLightingTrace::enabled()) {
@@ -3099,6 +3132,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	{
 		frame.area = *area;
 		const auto settings = S9xRemasterAreaSceneSettings(state.activeProfile, *area);
+		frame.reflectanceBoost = settings.reflectanceBoost;
 		frame.originalSceneContribution = settings.originalSceneContribution;
 		frame.representativeEmitters = static_cast<uint8_t>(settings.representativeEmitters);
 		const bool preparingScroll = dungeonFloor && dungeonFloor->verifiedAlttpRom &&
@@ -3702,7 +3736,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			S9xRemasterApplyVisibleDungeonFaces(frame,*dungeonFloor,state.dungeonRetainedBg1->data(),
 				state.dungeonRetainedBg2->data(),state.runtimeDungeonBg1HeightMap,state.runtimeDungeonHeightMap,state.visibleFaceTemplateCache.get());
 		}
-		if(dungeonFloor && state.requestedRoomDiagnostics.load(std::memory_order_relaxed))
+		if(dungeonFloor && (state.requestedRoomDiagnostics.load(std::memory_order_relaxed) || RemasterRecording::Global().Accepting()))
 			S9xRemasterProjectRoomDiagnostics(frame,*dungeonFloor,appliedDungeonHeightMap,
 				appliedDungeonHeightMap==&state.runtimeDungeonHeightMap ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				&state.previousRuntimeDungeonHeightMap,&state.previousRuntimeDungeonBg1HeightMap);
@@ -3825,6 +3859,30 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 						appliedDungeonHeightMap,state.runtimeDungeonHeightKey,state.runtimeDungeonHeightEpoch,runtimeInputsPublishable);
 				if(count==120)armed=false;
 			}
+		}
+		// Independent of spriteObstacleSupport/settled submodule and legacy
+		// sidecars. Freeze exact completed results and inputs before publishing.
+		if (RemasterRecording::Global().Accepting()) {
+			try {
+				if(!state.recordingProfile)state.recordingProfile=std::make_shared<const RemasterProfile>(state.activeProfile);
+				RemasterRecording::Packet packet;packet.frame=frame;packet.profile=state.recordingProfile;
+				packet.session=state.dungeonSession;packet.epoch=state.runtimeDungeonHeightEpoch;packet.emulatedFrame=emulatedFrame;
+				packet.evidence=RemasterRecording::Evidence(dungeonFloor,appliedDungeonHeightMap,
+					state.runtimeDungeonBg1HeightMap.roomIndex!=0xffff?&state.runtimeDungeonBg1HeightMap:nullptr,
+					state.previousRuntimeDungeonHeightMap.roomIndex!=0xffff?&state.previousRuntimeDungeonHeightMap:nullptr,
+					state.previousRuntimeDungeonBg1HeightMap.roomIndex!=0xffff?&state.previousRuntimeDungeonBg1HeightMap:nullptr,
+					runtimeInputsPublishable,state.runtimeDungeonHeightKey,state.outgoingGeometry.session,state.outgoingGeometry.room,
+					recordingScrollX?recordingScrollX:contextScrollX,recordingScrollY?recordingScrollY:contextScrollY);
+				// Overworld adapter is already value-owned at this same boundary.
+				RemasterRecording::U8(packet.evidence,overworldCapture!=nullptr);
+				if(overworldCapture) {
+					RemasterRecording::Blob(packet.evidence,overworldCapture->bytes);
+					RemasterRecording::String(packet.evidence,overworldCapture->metadata);
+					RemasterRecording::U32(packet.evidence,uint32_t(overworldCapture->sections.size()));
+					for(const auto &section:overworldCapture->sections){RemasterRecording::String(packet.evidence,section.name);RemasterRecording::U64(packet.evidence,section.offset);RemasterRecording::U64(packet.evidence,section.size);RemasterRecording::U64(packet.evidence,section.hash);}
+				}
+				RemasterRecording::Global().Submit(std::move(packet));
+			} catch(const std::exception &e) { RemasterRecording::Global().Fail(e.what()); }
 		}
 		if (completedFrame)
 			*completedFrame = frame;

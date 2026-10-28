@@ -40,6 +40,7 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+	("frame_recording", "Versioned dedup recordings, revisions, pause/resume and production transition EndFrame"),
 	("height_source", "Compact borrowed height sources versus full geometry and frozen selection; allocation work bound"),
 	("static_projection", "Retained room-cell projection versus uncached consumer, BG/HV/masks/mixed/overlap/legacy"),
 	("context_location_accumulation", "Exact legacy location/serialized binding parity and occurrence-bounded map publication"),
@@ -48,6 +49,11 @@ FULL_EXTRA = (
 	("dungeon_visible_face_solver", "Independent signed visible-region equations, floors and physical-plane isolation"),
 	("dungeon_visible_face_runtime", "Two-BG exposed face, occupied floor and selected-scene publication"),
 	("dungeon_wall_band", "Complete-room wall bands, offscreen anchors and doorway-interior exclusion"),
+	("dungeon_out_of_bounds", "Explicit role-only connected plateau, transformed terminal crest, physical isolation and serialization"),
+	("dungeon_oob_diagnostics", "Signed wall equation diagnostics preserve solve and distinguish anchor/cycle/seam failures"),
+	("dungeon_oob_minimum", "Minimum accepted absolute OOB crests, signed/permutation origins and role-specific compatible floor owners"),
+	("dungeon_oob_nonuniform", "Production nonuniform uphill crests across axes/flips/BGs/planes/signed bases and local origins"),
+	("dungeon_out_of_bounds_end_to_end", "Research VRAM/ROM/profile inputs through classifier, physical solver and actual EndFrame; optional pinned external fixture"),
 	("dungeon_visible_shell", "Complementary shell contacts without physical support or cross-plane substitution"),
 	("visible_channel_integration", "Common range/emission/replay/raster donors and alternate solved-datum conservation"),
 	("lighting_selection_cache", "Exact selection/occurrence cache invalidation, authored zeros and switchback"),

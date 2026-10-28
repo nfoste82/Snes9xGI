@@ -84,6 +84,11 @@ assert(complete(annotation()));
 assert(!complete({role:'door',normals:['north_east']}));
 assert(!complete({role:'door',normals:['north','east']}));
 assert(complete({role:'wall',normals:['north_east']}));
+changeRole('out-of-bounds');
+assert.equal(annotation().role,'out-of-bounds');
+assert.deepEqual(annotation().normals,[]);
+assert(complete(annotation()));
+assert.equal(saves,6);
 '''
         subprocess.run([shutil.which('node'), '-e', script], check=True, capture_output=True, text=True)
 
@@ -124,6 +129,26 @@ assert(complete({role:'wall',normals:['north_east']}));
                              validate_annotation(annotation))
             with self.assertRaises(AtlasError):
                 validate_annotation(dict(role='particle', normals=['north']))
+
+    def test_out_of_bounds_profile_and_sidecar_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile, marker = root / 'profile.toml', root / 'marker.json'
+            key = 'v1:4bpp:0123456789abcdef'
+            profile.write_text(f'schema_version = 34\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                               f'[[assets]]\ntile_hash = "{key}"\nheight = [0]\nnormal_xyz = [128,128,255]\n')
+            marker.write_text(json.dumps({'profile': str(profile)}))
+            store = AnnotationStore(root / 'annotations.json', ROM_SHA256, marker)
+            store.save_group([key], dict(role='out-of-bounds'), store.refresh())
+            asset = tomllib.loads(profile.read_text())['assets'][0]
+            self.assertEqual(asset['tile_role'], 'out-of-bounds')
+            self.assertEqual(asset['height'], [0])
+            self.assertEqual(asset['normal_xyz'], [128,128,255])
+            reloaded = AnnotationStore(store.path, ROM_SHA256, marker)
+            reloaded.refresh()
+            self.assertEqual(reloaded.tiles[key]['role'], 'out-of-bounds')
+        with self.assertRaises(AtlasError):
+            validate_annotation(dict(role='out-of-bounds', normals=['north']))
 
     def test_door_semantic_save_preserves_independent_masks_unless_replaced(self):
         with tempfile.TemporaryDirectory() as directory:

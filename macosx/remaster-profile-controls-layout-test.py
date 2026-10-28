@@ -16,6 +16,11 @@ def frame(name):
 
 
 class ProfileControlsLayoutTests(unittest.TestCase):
+    def test_profile_default_labels(self):
+        self.assertIn('@"Representative Emitters Per Tile [Default]"', SECTION)
+        self.assertIn('@"Original Scene RGB Contribution [Default]"', SECTION)
+        self.assertGreaterEqual(frame("originalTitle")[2], 370)
+
     def test_escape_does_not_close_profile_controls(self):
         self.assertIn("[[S9xRemasterProfilePanel alloc]", SECTION)
         panel = SOURCE.split("@implementation S9xRemasterProfilePanel\n", 1)[1].split(
@@ -38,6 +43,17 @@ class ProfileControlsLayoutTests(unittest.TestCase):
         self.assertGreaterEqual(enabled_y - count_y - count_height, 6)
         self.assertIn("restoredFrame.size = layoutSize;", area)
         self.assertIn("view.frame = frame;", area)
+        _, boost_y, _, boost_height = area_frame("remasterAreaReflectanceSlider")
+        _, default_y, _, default_height = area_frame("remasterAreaReflectanceDefault")
+        self.assertGreaterEqual(count_y + 90 - boost_y - boost_height, 12)
+        self.assertGreaterEqual(boost_y - default_y - default_height, 6)
+        self.assertIn('reflectanceTitle.stringValue = @"Reflected Light Boost [Default]";', SECTION)
+
+    def test_area_boost_preserves_inheritance_and_validates_live_text(self):
+        self.assertIn("notification.object == remasterAreaReflectanceInput", SOURCE)
+        self.assertIn("if (boostChanged) stored.reflectanceBoost = storedBoost;", SOURCE)
+        self.assertIn("const float storedBoost = inheritBoost ? -1 : scene.reflectanceBoost;", SOURCE)
+        self.assertIn("scene.reflectanceBoost < 0 || scene.reflectanceBoost > 8", SOURCE)
 
     def test_saved_placement_cannot_restore_obsolete_panel_size(self):
         capture = SECTION.index("const NSSize layoutSize = remasterProfileSettingsPanel.frame.size;")

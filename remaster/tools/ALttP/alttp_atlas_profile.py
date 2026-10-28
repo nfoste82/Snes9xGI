@@ -336,7 +336,7 @@ def _render_profile(source_text: str, authored: dict[str, dict],
         seen.add(content_id)
         additions = generated.get(content_id, {})
         if (tile_roles is not None and not authored[content_id].get('tile_semantics_authored')
-                and authored[content_id].get('tile_role') not in ('doorway', 'door')):
+                and authored[content_id].get('tile_role') not in ('doorway', 'door', 'out-of-bounds')):
             block = re.sub(r'(?m)^tile_role\s*=\s*[^\n]*\n?', '', block)
             if content_id in tile_roles:
                 block += '\ntile_role = ' + json.dumps(tile_roles[content_id])
@@ -523,7 +523,7 @@ def generate_profile(database: Path, source: Path, output: Path,
             catalog = TileCatalog(database)
             # Explicit native/profile annotations take precedence over stale HTML sidecars.
             for key, asset in authored.items():
-                if asset.get('tile_semantics_authored') or asset.get('tile_role') in ('doorway', 'door'):
+                if asset.get('tile_semantics_authored') or asset.get('tile_role') in ('doorway', 'door', 'out-of-bounds'):
                     annotation = {'role': asset.get('tile_role', 'unknown'),
                                   'normals': asset.get('tile_semantic_normals', []),
                                   'context_dependent': asset.get('tile_semantic_context_dependent', False),
@@ -570,6 +570,8 @@ def generate_profile(database: Path, source: Path, output: Path,
                     source_roles.setdefault(key, role)
             for key, role in source_roles.items():
                 annotation = semantics.get(key)
+                if annotation and annotation['role']=='out-of-bounds':
+                    continue # explicit terminal role wins stale structural groups
                 if annotation and annotation['role'] != role and not (
                         role in ('wall', 'wall_corner') and annotation['role'] in ('wall', 'wall_corner')):
                     deferred_semantics[key] = {'source_role': role, 'annotation_role': annotation['role']}
@@ -644,6 +646,8 @@ def generate_profile(database: Path, source: Path, output: Path,
                 proposal = _neutral_layers()
             methods[method] += 1
             existing = authored.get(content_id, {})
+            terminal = (existing.get('tile_role') == 'out-of-bounds' or
+                        semantics.get(content_id, {}).get('role') == 'out-of-bounds')
             for name in LAYERS:
                 if name in existing:
                     authored_layer_counts[name] += 1
@@ -696,12 +700,17 @@ def generate_profile(database: Path, source: Path, output: Path,
                 if content_id not in authored:
                     continue # no fabricated hash-only asset table for missing source
             generated[content_id] = proposal
+            if terminal:
+                # Role assignment never authors relief, normals or masks. This
+                # also preserves absent channels and valid authored zero arrays.
+                generated[content_id] = {name: tuple(existing[name]) for name in LAYERS if name in existing}
+                geometry_overrides.discard(content_id)
     finally:
         connection.close()
     if not authored.keys() <= generated.keys():
         raise ProfileGenerationError("profile contains assets absent from ROM atlas")
     tile_roles = {content_id: annotation["role"] for content_id, annotation in semantics.items()
-                  if (not annotation["context_dependent"] or annotation['role'] in ('doorway', 'door')) and annotation.get("corner_type") != "unknown"}
+                   if (not annotation["context_dependent"] or annotation['role'] in ('doorway', 'door', 'out-of-bounds')) and annotation.get("corner_type") != "unknown"}
     if preserve_authored_geometry:
         tile_roles = {**tile_roles, **{key: a['tile_role'] for key, a in authored.items()
                                       if a.get('tile_role') not in (None, 'unknown')}}
@@ -726,6 +735,13 @@ def generate_profile(database: Path, source: Path, output: Path,
                     block = block.rstrip() + '\n' + field + ' = ' + json.dumps(annotation[field]) + '\n\n'
         return block
     candidate = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', add_door_mask, candidate)
+    def add_terminal_context(match):
+        block = match.group(); keys = TILE_HASH.findall(block)
+        a = semantics.get(keys[0], {}) if len(keys)==1 else {}
+        if a.get('role')=='out-of-bounds' and a.get('context_dependent') and 'tile_semantics_authored' not in block:
+            block = block.rstrip()+'\ntile_semantics_authored = true\ntile_semantic_normals = []\ntile_semantic_context_dependent = true\n\n'
+        return block
+    candidate = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', add_terminal_context, candidate)
     if semantics_path:
         # Carry canonical diagonal role/facing separately from lighting arrays.
         # Deferred intrinsic relief does not mean its approved semantic facing
@@ -773,7 +789,8 @@ def generate_profile(database: Path, source: Path, output: Path,
     if len({asset["tile_hash"] for asset in candidate_assets}) != len(candidate_assets):
         raise ProfileGenerationError("candidate has duplicate asset hashes")
     for asset in candidate_assets:
-        if asset['tile_hash'] not in obstacle_ids and any(name not in asset for name in LAYERS):
+        if (asset['tile_hash'] not in obstacle_ids and asset.get('tile_role') != 'out-of-bounds'
+                and any(name not in asset for name in LAYERS)):
             raise ProfileGenerationError(f"candidate {asset['tile_hash']} lacks a layer")
         original = authored.get(asset["tile_hash"])
         allowed_floor_override = asset["tile_hash"] in geometry_overrides

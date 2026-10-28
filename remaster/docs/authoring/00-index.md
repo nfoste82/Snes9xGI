@@ -8,7 +8,9 @@ Return to the [primary index](../../../AIDocs/00-index.md).
 
 - [Authoring Workbench](../../../AIDocs/07-phase-4-authoring-workbench.md): Pixel selection, inspector layers, animation browsing, editing and validation.
 - [Layer Inspection](layer_inspection.md): Live All/BG1/BG2 isolation, picking, shortcuts and replay limits.
+- [Continuous Frame Recording](frame_recording.md): Native recorder/timeline, immutable evidence, current-profile preview, revisions and storage limits.
 - [Doorway Authoring](doorway_authoring.md): Doorway versus Door roles and directional support contacts.
+- [Out-of-bounds Plateaus](out_of_bounds.md): Explicit unreachable flat sheets at proved wall crest samples; authoring, sources and limits.
 - [Signed Authored Heights](signed_heights.md): Signed local layers, editing controls, units and compatibility.
 - [NPC Pose Workbench](../../tools/ALttP/NPC-WORKBENCH.md): Assembled NPC poses, action/facing browsing, pixel editing and export.
 

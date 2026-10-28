@@ -73,7 +73,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSMenuItem *tileTypesItem = [[NSMenuItem alloc] initWithTitle:@"Show Tile Metadata Types"
 		action:@selector(showRemasterTileTypes:) keyEquivalent:@""];
 	tileTypesItem.target = self;
-	tileTypesItem.toolTip = @"Metadata tint: floor green, wall blue, corner purple, obstacle orange, stair top cyan, stair bottom pink, door gold, particle pale lavender, other gray, untyped red. HUD preserved.";
+	tileTypesItem.toolTip = @"Metadata tint: floor green, wall blue, corner purple, obstacle orange, stair top cyan, stair bottom pink, door gold, particle pale lavender, out-of-bounds sage, other gray, untyped red. HUD preserved.";
 	[viewMenuItem.submenu addItem:tileTypesItem];
 	NSMenuItem *lightingItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Remaster Lighting", nil)
 	                                                      action:@selector(toggleRemasterLighting:)
@@ -105,6 +105,9 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	                                                keyEquivalent:@""];
 	openFrameItem.target = self;
 	[viewMenuItem.submenu addItem:openFrameItem];
+	NSMenuItem *recordingItem=[[NSMenuItem alloc] initWithTitle:@"Remaster Recording…" action:@selector(showRemasterRecording:) keyEquivalent:@"r"];
+	recordingItem.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagShift;
+	recordingItem.target=self;[viewMenuItem.submenu addItem:recordingItem];
 	NSMenuItem *reviewItem = [[NSMenuItem alloc] initWithTitle:@"Open Area Review…"
 		action:@selector(openRemasterAreaReview:) keyEquivalent:@""];
 	reviewItem.target = self;
@@ -914,6 +917,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 		return;
 
 	[self openURL:panel.URL];
+}
+
+- (IBAction)showRemasterRecording:(id)sender
+{
+	[self.s9xEngine showRemasterRecording];
 }
 
 - (IBAction)openRemasterAreaReview:(id)sender

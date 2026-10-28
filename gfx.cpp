@@ -824,7 +824,7 @@ void S9xEndScreenRefresh (void)
 			std::unique_ptr<RemasterOverworldCapture> overworldCapture;
 			const auto &captureState=S9xRemasterState();
 			if(dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors &&
-				captureState.frameCaptureActive && !captureState.animationCapture.frameCount)
+				((captureState.frameCaptureActive && !captureState.animationCapture.frameCount) || RemasterRecording::Global().Accepting()))
 			{
 				overworldCapture=std::make_unique<RemasterOverworldCapture>();
 				auto &e=*overworldCapture;
@@ -844,7 +844,11 @@ void S9xEndScreenRefresh (void)
 				}
 				e.Add("renderer_line_scroll_hv_u16",lines.data(),lines.size());
 				std::string profileText;std::vector<RemasterProfileDiagnostic> diagnostics;
-				const bool profilePinned=S9xRemasterSerializeProfile(captureState.activeProfile,profileText,diagnostics);
+				// Recorder owns/deduplicates its profile separately; do not serialize
+				// the complete authored atlas on the producer every recorded frame.
+				const bool profilePinned=(!RemasterRecording::Global().Accepting() ||
+					(captureState.frameCaptureActive && !captureState.animationCapture.frameCount)) &&
+					S9xRemasterSerializeProfile(captureState.activeProfile,profileText,diagnostics);
 				if(profilePinned)e.Add("profile_toml",reinterpret_cast<const uint8_t *>(profileText.data()),profileText.size());
 				std::ostringstream m;
 				m << "\"rom_sha256\":\"66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb\","
@@ -892,7 +896,8 @@ void S9xEndScreenRefresh (void)
 				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp, &area,
 				IPPU.TotalEmulatedFrames,overworldCapture.get(),
 				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollX : nullptr,
-				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollY : nullptr);
+				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollY : nullptr,
+				&contextScrollX,&contextScrollY);
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

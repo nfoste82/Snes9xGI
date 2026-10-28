@@ -1653,6 +1653,75 @@ int main()
                 check("rail is finite while wall remains a connected sheet", railMesh[receiver + 45].thickness == 1 &&
                     railMesh[receiver + 44].thickness == 0, {}, {});
             }
+            // Explicit OOB material must reach the real planar occlusion path:
+            // an elevated horizontal sheet blocks a crossing ray, not rays
+            // beneath it (a faux wall shell would incorrectly block both).
+            {
+                Scene oob = scene();oob[PreviousBounce][emitter]={};
+                Light light={};light.position={90.5f,receiverY+0.5f,15};light.radius=1;light.intensity=25;light.color={1,1,1};
+                std::vector<RemasterSurfaceMesh::Sample> samples(width*height);
+                for(unsigned p=0;p<width*height;p++) {
+                    oob[Occlusion][p]={};oob[Surface][p]={0,0,0,1};oob[Height][p]={0,1,0,0};oob[Participation][p]={1,1,0,0};
+                }
+                auto illuminate=[&](const std::vector<RemasterSurfaceMesh::Cell> &mesh) {
+                    return run(oob,true,0,8,-1,nullptr,false,0,1,0,1,1,simd_float3{0,0,-1},-1,&light,false,false,true,0,&mesh).bounce;
+                };
+                auto mesh=RemasterSurfaceMesh::build(width,height,samples,.25f);
+                const auto clear=illuminate(mesh);positive("OOB planar fixture clear light",clear);
+                for(unsigned y=0;y<height;y++)for(unsigned x=44;x<=46;x++) {
+                    const unsigned p=y*width+x;samples[p].known=true;samples[p].coverage=1;samples[p].height=7.5f;
+                    RemasterSurfaceMesh::classify(samples[p],RemasterSourceType::Background,0,RemasterSurfaceClass::Unclassified,"",1,RemasterTileRole::OutOfBounds);
+                    oob[Occlusion][p]={1,1,0,0};oob[Surface][p]={7.5f,0,0,1};oob[Height][p]={7.5f,1,0,0};
+                }
+                mesh=RemasterSurfaceMesh::build(width,height,samples,.25f);
+                dimmed("OOB planar sheet occludes crossing GPU ray",illuminate(mesh),clear);
+                for(unsigned p=0;p<samples.size();p++)if(samples[p].known) {
+                    samples[p].height=30;oob[Surface][p].x=30;oob[Height][p].x=30;
+                }
+                mesh=RemasterSurfaceMesh::build(width,height,samples,.25f);
+                near("OOB planar sheet preserves GPU underpass, no vertical shell",illuminate(mesh),clear);
+            }
+            // Actual EndFrame research packet: embed its unchanged selected OOB
+            // mesh/fields in this kernel harness (XY translation only). No
+            // staged classified placement, solved base or synthetic sheet height.
+            if(const char *path=std::getenv("REMASTER_OOB_E2E_HORIZONTAL_CAPTURE")) {
+                RemasterFrame packet;if(!S9xReadRemasterFrame(path,packet))throw std::runtime_error("EndFrame packet read");
+                RemasterLightingFieldCache fields;fields.update(packet,true);
+                const auto actual=RemasterSurfaceMesh::build(packet.width,packet.height,fields.samples,packet.lightingCoordinateScale/255);
+                Scene oob=scene();oob[PreviousBounce][emitter]={};
+                std::vector<RemasterSurfaceMesh::Cell> mesh(width*height);
+                for(unsigned p=0;p<width*height;p++) {
+                    oob[Occlusion][p]={};oob[Surface][p]={0,0,0,1};oob[Height][p]={0,1,0,0};oob[Participation][p]={1,1,0,0};
+                }
+                size_t copied=0;float crest=0;
+                for(unsigned y=0;y<std::min(height,packet.height);y++)for(unsigned x=0;x<packet.width && x+40<width;x++) {
+                    const size_t a=y*packet.width+x,b=y*width+x+40;
+                    const auto px=fields.channelSources[a].visible;if(!px.instanceId)continue;
+                    const auto &i=packet.tileInstances[px.instanceId-1];
+                    const auto *m=S9xRemasterFrameMetadataForTile(packet,i.tileId);
+                    if(!m || m->tileRole!=RemasterTileRole::OutOfBounds || !i.visualClaim.published)continue;
+                    mesh[b]=actual[a];crest=fields.surface[a*4];copied++;
+                    oob[Occlusion][b]={fields.occlusion[a*2]/255.f,fields.occlusion[a*2+1]/255.f,0,0};
+                    oob[Surface][b]={fields.surface[a*4],fields.surface[a*4+1],fields.surface[a*4+2],fields.surface[a*4+3]};
+                    oob[Height][b]={fields.height[a*2],fields.height[a*2+1],0,0};
+                    check("EndFrame OOB zero-thickness actual mesh",mesh[b].thickness==0 && mesh[b].solidWall==0,{},{});
+                }
+                check("EndFrame OOB copied exact packet denominator",copied==256 && std::abs(crest-45*packet.lightingCoordinateScale/255)<1e-5,{},{});
+                Light light={};light.position={90.5f,receiverY+0.5f,crest*2};light.radius=1;light.intensity=25;light.color={1,1,1};
+                Scene clearScene=oob;clearScene[Occlusion].assign(width*height,{});
+                auto illuminate=[&](const Scene &s,const std::vector<RemasterSurfaceMesh::Cell> &m) {
+                    return run(s,true,0,8,-1,nullptr,false,0,1,0,1,1,simd_float3{0,0,-1},-1,&light,false,false,true,0,&m).bounce;
+                };
+                std::vector<RemasterSurfaceMesh::Cell> empty(width*height);
+                const auto clear=illuminate(clearScene,empty);positive("EndFrame actual packet clear crossing light",clear);
+                // This fully opaque packet blocks the complete ray footprint;
+                // dimmed() intentionally requires nonzero partial transmission.
+                near("EndFrame actual packet planar crossing occlusion",illuminate(oob,mesh),{});
+                light.position.z=crest*.5f;
+                const auto under=illuminate(clearScene,empty);positive("EndFrame actual packet clear underpass light",under);
+                near("EndFrame actual packet planar underpass",illuminate(oob,mesh),under);
+                std::printf("EndFrame actual packet GPU planar crossing/underpass: copied=%zu crest=%g\n",copied,crest);
+            }
             // Real floors are opaque continuous voxel sheets, not isolated
             // non-occluding receiver points. Shallow rays must escape their face.
             for (bool half : {false, true})
