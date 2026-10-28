@@ -31,7 +31,7 @@ int main() {
   a.doorwaySupportDirection=a.doorwaySupport?RemasterSupportDirection::East:RemasterSupportDirection::Unknown;
   S9xRemasterApplyProfileToFrame(p,frame);std::vector<uint8_t> bytes;RemasterFrame decoded;
   assert(S9xSerializeRemasterFrame(frame,bytes));assert(S9xDeserializeRemasterFrame(bytes,decoded));
-  assert(decoded.schemaVersion==39 && decoded.assetMetadata.at(0).tileRole==role);
+  assert(decoded.schemaVersion==REMASTER_FRAME_SCHEMA_VERSION && decoded.assetMetadata.at(0).tileRole==role);
   assert(decoded.assetMetadata.at(0).doorwaySupport==a.doorwaySupport && decoded.assetMetadata.at(0).doorwaySupportDirection==a.doorwaySupportDirection);
  }
  for(auto d:{RemasterSupportDirection::North,RemasterSupportDirection::South,RemasterSupportDirection::East,RemasterSupportDirection::West})

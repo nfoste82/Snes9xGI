@@ -38,7 +38,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 39;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 40;
 
 struct RemasterFramePixel
 {
@@ -142,6 +142,20 @@ struct RemasterFrameMaterial
 // hash-global geometry fallback; neither is an implicit flat surface.
 enum class RemasterOccurrenceGeometryStatus : uint8_t { Inherit, Resolved, Unresolved, Conflict, Count };
 
+// Independent visual graph evidence, never channel presence or a physical datum.
+// A conflicted visual representative may coexist with available physical relief.
+enum class RemasterVisualClaimStatus : uint8_t { NotEvaluated, Solved, Unanchored, Conflict, Unsupported, Count };
+struct RemasterVisualClaim
+{
+	RemasterVisualClaimStatus status = RemasterVisualClaimStatus::NotEvaluated;
+	uint64_t mask = 0; // canonical artwork pixels, not displayed pixels
+	int32_t cell = -1, component = -1;
+	bool published = false; // numeric base was actually supplied by this graph
+	bool operator==(const RemasterVisualClaim &b) const {
+		return status==b.status && mask==b.mask && cell==b.cell && component==b.component && published==b.published;
+	}
+};
+
 struct RemasterFrameTileInstance
 {
 	RemasterTileContentId tileId;
@@ -160,6 +174,7 @@ struct RemasterFrameTileInstance
 	bool vFlip = false;
 	bool hasPlacementHeight = false;
 	RemasterOccurrenceGeometryStatus geometryStatus = RemasterOccurrenceGeometryStatus::Inherit;
+	RemasterVisualClaim visualClaim;
 	// Resolved overrides role (even Unknown); absent geometry arrays continue to
 	// inherit the selected asset variant. Supply flat/+Z arrays to replace relief.
 	RemasterTileRole placementTileRole = RemasterTileRole::Unknown;
@@ -192,6 +207,12 @@ inline RemasterTileRole S9xRemasterResolveInstanceTileRole(RemasterTileRole cano
 
 inline bool S9xRemasterValidOccurrenceGeometry(const RemasterFrameTileInstance &instance)
 {
+	const auto &v=instance.visualClaim;
+	if(v.status>=RemasterVisualClaimStatus::Count ||
+		(v.status==RemasterVisualClaimStatus::NotEvaluated ? (v.mask || v.cell!=-1 || v.component!=-1 || v.published) :
+		(!v.mask || v.cell<0 || v.cell>=4096 || v.component < -1 ||
+		(instance.source!=RemasterSourceType::Background || instance.sourceIndex>1) ||
+		(v.published && v.status!=RemasterVisualClaimStatus::Solved)))) return false;
 	if (instance.geometryStatus >= RemasterOccurrenceGeometryStatus::Count || instance.placementTileRole >= RemasterTileRole::Count)
 		return false;
 	if (instance.geometryStatus != RemasterOccurrenceGeometryStatus::Resolved &&
@@ -378,6 +399,23 @@ struct RemasterVisibleChannelSelection
 	std::array<RemasterFramePixel, size_t(RemasterMetadataChannel::Count)> donors = {};
 };
 
+inline RemasterVisualClaim S9xRemasterPixelVisualClaim(const RemasterFrame &frame,const RemasterFramePixel &p)
+{
+	if(!p.instanceId || p.instanceId>frame.tileInstances.size() || p.tilePixel>=64)return {};
+	const auto &v=frame.tileInstances[p.instanceId-1].visualClaim;
+	return v.mask&(UINT64_C(1)<<p.tilePixel)?v:RemasterVisualClaim{};
+}
+inline const char *S9xRemasterVisualClaimName(RemasterVisualClaimStatus status)
+{
+	switch(status) {
+	case RemasterVisualClaimStatus::Solved:return "Solved";
+	case RemasterVisualClaimStatus::Unanchored:return "Unanchored";
+	case RemasterVisualClaimStatus::Conflict:return "Conflict";
+	case RemasterVisualClaimStatus::Unsupported:return "Unsupported";
+	default:return "NotEvaluated";
+	}
+}
+
 template<class Present>
 inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPresence(const RemasterFrame &frame,
 	size_t offset, bool useScene, const Present &present, bool heightOnly, bool alttp)
@@ -549,6 +587,9 @@ inline std::string S9xRemasterChannelProvenance(const RemasterFrame &frame,size_
 		const auto &i=frame.tileInstances[p.instanceId-1];
 		text<<"instance "<<p.instanceId<<" BG"<<unsigned(i.sourceIndex+1)<<" pixel "<<unsigned(p.tilePixel)
 			<<" base "<<i.heightOffset<<(i.hFlip?" H":"")<<(i.vFlip?" V":"");
+		const auto v=S9xRemasterPixelVisualClaim(frame,p);
+		text<<" visual "<<S9xRemasterVisualClaimName(v.status)<<" cell "<<v.cell<<" component "<<v.component
+			<<" graph-base-published "<<v.published;
 	}
 	return text.str();
 }
@@ -5484,6 +5525,15 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			if (instance.hasPlacementNormals) for (auto &v : instance.placementNormalXyz) if (!input.ReadU8(v)) return false;
 			if (instance.hasPlacementOcclusion) for (auto &v : instance.placementOcclusion) if (!input.ReadU8(v)) return false;
 		}
+		if(result.schemaVersion>=40) {
+			uint8_t status,published;uint32_t cell,component;
+			auto &v=instance.visualClaim;
+			if(!input.ReadU8(status) || !input.ReadU64(v.mask) || !input.ReadU32(cell) ||
+				!input.ReadU32(component) || !input.ReadU8(published) || published>1)return false;
+			v.status=static_cast<RemasterVisualClaimStatus>(status);v.cell=static_cast<int32_t>(cell);
+			v.component=static_cast<int32_t>(component);v.published=published!=0;
+			if(!S9xRemasterValidOccurrenceGeometry(instance))return false;
+		}
 	}
 	result.lights.resize(lightCount);
 	for (RemasterFrameLight &light : result.lights)
@@ -6232,6 +6282,11 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			(instance.hasPlacementOcclusion ? 2 : 0) | (instance.placementNormalIgnoreTileTransform ? 4 : 0));
 		if (instance.hasPlacementNormals) bytes.insert(bytes.end(), instance.placementNormalXyz.begin(), instance.placementNormalXyz.end());
 		if (instance.hasPlacementOcclusion) bytes.insert(bytes.end(), instance.placementOcclusion.begin(), instance.placementOcclusion.end());
+		RemasterFrameSerialization::U8(bytes,static_cast<uint8_t>(instance.visualClaim.status));
+		RemasterFrameSerialization::U64(bytes,instance.visualClaim.mask);
+		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.cell));
+		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.component));
+		RemasterFrameSerialization::U8(bytes,instance.visualClaim.published?1:0);
 	}
 	for (const RemasterFrameLight &light : frame.lights)
 	{

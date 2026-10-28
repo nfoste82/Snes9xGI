@@ -91,7 +91,7 @@ int main(){
    int at=(y+(axis?(unexposed->down>0?0:7):k))*unexposed->frame.width+x+(axis?k:(unexposed->down>0?0:7));
    unexposed->frame.mainPixels[at]={};unexposed->frame.scenePixels[at]={};
   }
-  unexposed->run();need(unexposed->baseAt(second)==90,"unexposed floor edge cannot anchor wall");
+   unexposed->run();need(unexposed->baseAt(second)==62,"complete occupied map floor anchors even with unobserved raster edge");
   auto sameArt=std::make_unique<Fixture>(axis,flip,bg,plane);
   for(int cell:{sameArt->foot,sameArt->foot+(axis?1:64)}) {
    sameArt->heights[floorLayer].planeOffsets[plane][cell]=55;sameArt->heights[floorLayer].offsets[cell]=55;
@@ -123,7 +123,7 @@ int main(){
    int x=(cell%64-10)*8,y=(cell/64-10)*8;
    for(int k=0;k<8;k++)fallback->frame.mainPixels[(y+k)*fallback->frame.width+x]={uint32_t(RemasterSourceType::Background)<<24,uint32_t(fallback->frame.tileInstances.size()),uint8_t(k*8)};
   }
-  fallback->run();need(fallback->baseAt(fallback->first)==90,"opposite-BG height fallback is not exposed floor contact");
+   fallback->run();need(fallback->baseAt(fallback->first)==70,"complete occupied map floor anchors independently of channel fallback exposure");
   auto clipped=std::make_unique<Fixture>(0,0,0,0);
   // Keep only the downhill edge of the first band; chain/floor stay observed.
   for(size_t at=0;at<clipped->frame.mainPixels.size();at++) {
@@ -133,7 +133,7 @@ int main(){
   }
   clipped->run();
   for(const auto &px:clipped->frame.scenePixels)if(px.instanceId)
-   need(clipped->frame.tileInstances[px.instanceId-1].heightOffset!=70,"single exposed edge does not prove a face direction");
+    need(clipped->frame.tileInstances[px.instanceId-1].heightOffset!=90,"complete assembly proves clipped face without camera edge admission");
   // Warm the only persistent cache (exact ROM/map sections), then independently
   // mutate every frame-local dependency. Compare against an uncached consumer;
   // restore the raster between calls, as actual BeginFrame does.
@@ -169,5 +169,6 @@ int main(){
    }
    need(a->baseAt(a->first)==b->baseAt(b->first),"all dependency mutations cached/uncached base parity");
   }
-  std::cout<<"PASS real two-BG exposed owner adapter, both axes/HV/BGs/planes and negative cases\n";
+   std::cout<<"PASS real two-BG exposed owner adapter, both axes/HV/BGs/planes and negative cases\n";
+   return 0;
 }

@@ -47,6 +47,7 @@ FULL_EXTRA = (
 	("dungeon_visible_face_template", "Complete ROM section aliases, BG swaps, transforms, owner/plane conflicts and overwrites"),
 	("dungeon_visible_face_solver", "Independent signed visible-region equations, floors and physical-plane isolation"),
 	("dungeon_visible_face_runtime", "Two-BG exposed face, occupied floor and selected-scene publication"),
+	("dungeon_wall_band", "Complete-room wall bands, offscreen anchors and doorway-interior exclusion"),
 	("dungeon_visible_shell", "Complementary shell contacts without physical support or cross-plane substitution"),
 	("visible_channel_integration", "Common range/emission/replay/raster donors and alternate solved-datum conservation"),
 	("lighting_selection_cache", "Exact selection/occurrence cache invalidation, authored zeros and switchback"),

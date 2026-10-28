@@ -24,7 +24,16 @@ struct Region {
 // One demonstrated contact between two regions on the same exposed surface.
 // dx/dy points from a to b, step is the signed displayed pixel step across the
 // edge. A tangent seam uses 0; an ordinary full unit face uses +/-1.
-struct Contact { int a, b, dx, dy, step; };
+struct Contact {
+	int a, b, dx, dy, step;
+	// Exact assembly caps may have a plateau at the seam. The producer must
+	// prove their normal/band independently before disabling the unit check.
+	bool checkSlope=true;
+	uint8_t samples=255;
+};
+// Complete assembly datum relation, independent of connected pixel masks.
+// delta is base(b)-base(a), including the signed intrinsic relief phase.
+struct DatumContact { int a,b,delta; };
 
 // Floor height is supplied by the independently solved occupied support and
 // local artwork at the actual contact, not by Link's plane or a nearby floor.
@@ -42,20 +51,22 @@ inline int sample(const Region &r, int x, int y) {
 // priority/max/nearest datum or automatic normalization is used. INT_MIN is
 // unresolved and 255 remains reserved by the legacy placement representation.
 inline Result solve(const std::vector<Region> &regions,
-	const std::vector<Contact> &contacts, const std::vector<FloorContact> &floors) {
+	const std::vector<Contact> &contacts, const std::vector<FloorContact> &floors,
+	const std::vector<DatumContact> &datums={}) {
 	const int size = int(regions.size());
 	std::vector<std::vector<std::pair<int,int>>> graph(size);
 	std::vector<bool> invalid(size, false);
 	for(int i=0;i<size;i++) invalid[i]=!regions[i].established;
 	for(const auto &c:contacts) {
 		if(c.a<0 || c.a>=size || c.b<0 || c.b>=size) continue;
-		bool good=c.a!=c.b && std::abs(c.dx)+std::abs(c.dy)==1 && std::abs(c.step)<=1;
+		bool good=c.a!=c.b && std::abs(c.dx)+std::abs(c.dy)==1 && std::abs(c.step)<=1 && c.samples;
 		int delta=INT_MIN;
 		if(good) for(int k=0;k<8;k++) {
+			if(!(c.samples&(1<<k)))continue;
 			int ax=c.dx?(c.dx>0?7:0):k, ay=c.dy?(c.dy>0?7:0):k;
 			int bx=c.dx?(c.dx>0?0:7):k, by=c.dy?(c.dy>0?0:7):k;
 			int ah=sample(regions[c.a],ax,ay), bh=sample(regions[c.b],bx,by);
-			if(c.step && (ah-sample(regions[c.a],ax-c.dx,ay-c.dy)!=c.step ||
+			if(c.checkSlope && c.step && (ah-sample(regions[c.a],ax-c.dx,ay-c.dy)!=c.step ||
 				sample(regions[c.b],bx+c.dx,by+c.dy)-bh!=c.step)) good=false;
 			int d=ah+c.step-bh;
 			if(delta!=INT_MIN && delta!=d)good=false;
@@ -65,6 +76,10 @@ inline Result solve(const std::vector<Region> &regions,
 		// not let the remainder be independently published as if intact.
 		if(!good) {invalid[c.a]=true;invalid[c.b]=true;delta=0;}
 		graph[c.a].push_back({c.b,delta});graph[c.b].push_back({c.a,-delta});
+	}
+	for(const auto &c:datums) {
+		if(c.a<0 || c.a>=size || c.b<0 || c.b>=size)continue;
+		graph[c.a].push_back({c.b,c.delta});graph[c.b].push_back({c.a,-c.delta});
 	}
 	std::vector<std::vector<int>> anchor(size);
 	for(const auto &f:floors) {

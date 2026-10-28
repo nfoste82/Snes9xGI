@@ -18,6 +18,9 @@ int main(int argc, char **argv) {
       <<"\",\"k\":"<<int(p.tilePixel)<<",\"ink\":"<<ink<<",\"base\":"<<i.heightOffset<<",\"has_height\":"<<g.hasHeight
       <<",\"status\":"<<int(i.geometryStatus)<<",\"role\":"<<int(g.tileRole)<<",\"has_normals\":"<<g.hasNormals<<",\"palette_artwork\":"<<i.hasPaletteArtwork<<",\"placement\":"<<i.hasPlacementHeight<<",\"local\":"<<g.height[p.tilePixel]
       <<",\"hflip\":"<<i.hFlip<<",\"vflip\":"<<i.vFlip<<",\"context\":"<<f->contextGeometry.count(p.instanceId);
+     const auto v=S9xRemasterPixelVisualClaim(*f,p);
+     std::cout<<",\"visual_claim\":{\"status\":\""<<S9xRemasterVisualClaimName(v.status)
+      <<"\",\"cell\":"<<v.cell<<",\"component\":"<<v.component<<",\"mask\":"<<v.mask<<",\"published\":"<<v.published<<'}';
     }std::cout<<'}';
  };
  for(size_t at=0;at<f->mainPixels.size();at++) {

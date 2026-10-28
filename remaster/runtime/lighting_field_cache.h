@@ -15,6 +15,8 @@ struct RemasterLightingFieldCache
 	std::vector<RemasterSurfaceMesh::Sample> samples;
 	// Runtime diagnostics: exact observed per-channel donors, including absence.
 	std::vector<RemasterVisibleChannelSelection> channelSources;
+	// Same donor domains as channelSources; no claim is invented for absent channels.
+	std::vector<std::array<RemasterVisualClaim,size_t(RemasterMetadataChannel::Count)>> visualClaims;
 	size_t updatedPixels = 0;
 	size_t selectedPixels = 0;
 	size_t resolvedInstances = 0;
@@ -39,7 +41,7 @@ struct RemasterLightingFieldCache
 	}
 	static bool instanceEqual(const RemasterFrameTileInstance &a, const RemasterFrameTileInstance &b)
 	{
-		return a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
+		return a.visualClaim == b.visualClaim && a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
 			a.heightOffset == b.heightOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
 			a.placementHeight == b.placementHeight && a.hFlip == b.hFlip && a.vFlip == b.vFlip &&
 			a.geometryStatus == b.geometryStatus && a.placementTileRole == b.placementTileRole &&
@@ -70,6 +72,7 @@ struct RemasterLightingFieldCache
 			participation.resize(count*2); opposite.resize(count); authoredNormals.resize(count);
 			height.resize(count*2); surface.resize(count*4); reflectance.resize(count*4);
 			depths.resize(count); omnidirectional.resize(count); samples.resize(count); channelSources.resize(count);
+			visualClaims.resize(count);
 		}
 		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
 		for (const auto &m : frame.assetMetadata) metadata[m.tileId] = &m;
@@ -207,6 +210,7 @@ struct RemasterLightingFieldCache
 				channelsDirty = channelsDirty || !samePixel(p,channelSources[i].donors[c]) || (p.instanceId && dirty[p.instanceId-1]);
 			}
 			channelSources[i]=selection;
+			for(size_t c=0;c<selection.donors.size();c++)visualClaims[i][c]=S9xRemasterPixelVisualClaim(frame,selection.donors[c]);
 			if (!full && !channelsDirty && key == keys_[i] && (!valid || !dirty[pixel.instanceId-1])) continue;
 			keys_[i] = key; updatedPixels++;
 			occlusion[i*2] = occlusion[i*2+1] = 0;
