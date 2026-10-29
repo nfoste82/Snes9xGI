@@ -19,6 +19,7 @@
 #include "diagonal_assembly.h"
 #include "sprite_obstacle.h"
 #include "dungeon_visible_face_runtime.h"
+#include "live_trace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -683,6 +684,8 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 	const auto &session=S9xRemasterState();
 	out << ",\"continuity_session\":" << session.dungeonSession << ",\"rom_identity\":" << c.romIdentity
 		<< ",\"grounded_evidence\":" << (c.groundedEvidence?"true":"false");
+	out << ",\"layout_evidence\":";
+	S9xRemasterWriteDungeonLayoutEvidenceJson(out,c.layoutEvidence);
 	if(map) {
 		out << ",\"configured_stair_fallbacks\":" << map->configuredStairFallbacks
 			<< ",\"persistent_support_required\":["<<map->persistentSupportRequired[0]<<','<<map->persistentSupportRequired[1]<<']'
@@ -2658,6 +2661,13 @@ inline void S9xRemasterRequestTileInventory (const std::string &path)
 
 inline void S9xRemasterRequestFrameCapture (const std::string &path, uint32_t frameCount = 1)
 {
+	RemasterLiveTrace::request();
+	// Explicit launch-time diagnostic mode: reuse the existing capture command
+	// without arming animation/packet capture or disturbing an existing request.
+	// A missing trace prefix retains the ordinary capture command.
+	if (RemasterLiveTrace::configured())
+		if (const char *only = std::getenv("S9X_REMASTER_LIVE_TRACE_ONLY"))
+			if (std::strcmp(only, "1") == 0) return;
 	RemasterState &state = S9xRemasterState();
 	std::lock_guard<std::mutex> lock(state.inventoryMutex);
 	state.requestedFramePath = path;
@@ -2773,6 +2783,8 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.heightPreviewMultiplier = state.activeProfile.heightPreviewMultiplier;
 	result.samplesPerFrame = state.activeProfile.samplesPerFrame;
 	result.representativeEmitters = state.activeProfile.representativeEmitters;
+	result.offscreenRepresentativeEmitters = state.activeProfile.offscreenRepresentativeEmitters < 0 ?
+		1 : state.activeProfile.offscreenRepresentativeEmitters;
 	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;
 	result.originalRgb555.reserve(pixelCount);
@@ -2949,6 +2961,12 @@ inline size_t S9xRemasterRestoreSceneDungeonPots(RemasterFrame &frame,
 	return restored;
 }
 
+// Capture eligibility only; deliberately independent of geometry/emitter lifecycle.
+inline bool S9xRemasterDungeonScrollCaptureEligible(const RemasterDungeonFloorContext &c)
+{
+	return c.verifiedAlttpRom && c.indoors && c.module==7 && (c.submodule==1 || c.submodule==2);
+}
+
 inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t screenPitch = 0,
 	size_t screenWidth = 0, size_t screenHeight = 0, RemasterFrame *completedFrame = nullptr,
 	const RemasterDungeonFloorContext *dungeonFloor = nullptr,
@@ -2957,9 +2975,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr,
 	const std::array<int,4> *recordingScrollX = nullptr, const std::array<int,4> *recordingScrollY = nullptr)
 {
-	RemasterLightingTrace::Frame lightingTrace;
-	if (RemasterLightingTrace::enabled()) {
+	RemasterLightingTrace::Frame lightingTrace=RemasterLiveTrace::refreshFrame();
+	if (RemasterLightingTrace::legacyEnabled() && !lightingTrace.id) {
 		lightingTrace.id=RemasterLightingTrace::nextId(); lightingTrace.begin=RemasterLightingTrace::now();
+	}
+	if (lightingTrace.id) {
 		if(dungeonFloor) { lightingTrace.room=dungeonFloor->roomIndex; lightingTrace.plane=dungeonFloor->linkPlane;
 			lightingTrace.submodule=dungeonFloor->submodule; lightingTrace.collision=dungeonFloor->collisionMode;
 			lightingTrace.scrollX=dungeonFloor->backgroundScrollX; lightingTrace.scrollY=dungeonFloor->backgroundScrollY; }
@@ -2967,6 +2987,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	RemasterLightingTrace::Scope lightingTimer(&lightingTrace,RemasterLightingTrace::EndFrame);
 	RemasterState &state = S9xRemasterState();
 	lightingTrace.epochBefore=state.runtimeDungeonHeightEpoch;
+	const auto traceRestores=state.dungeonArtworkStateHits, traceReuses=state.dungeonGeometryReuseCount;
+	if(lightingTrace.id)lightingTrace.producerFlags=(state.dungeonGeometryProfileDirty?1u:0u)|(!state.runtimeDungeonHeightValid?2u:0u);
 	state.currentArea.store(area ? uint32_t(area->id) | (uint32_t(area->romDark) << 16) : 0xffff);
 	uint8_t result = RemasterCaptureNone;
 	if (completedFrame)
@@ -3135,6 +3157,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		frame.reflectanceBoost = settings.reflectanceBoost;
 		frame.originalSceneContribution = settings.originalSceneContribution;
 		frame.representativeEmitters = static_cast<uint8_t>(settings.representativeEmitters);
+		frame.offscreenRepresentativeEmitters = settings.offscreenRepresentativeEmitters;
 		const bool preparingScroll = dungeonFloor && dungeonFloor->verifiedAlttpRom &&
 			dungeonFloor->indoors && dungeonFloor->module == 7 && dungeonFloor->submodule == 2;
 		frame.directionalLight = state.areaLightTransition.update(*area,
@@ -3360,7 +3383,15 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			}
 			const bool needsSpriteSupport=std::any_of(state.activeProfile.obstacleGroups.begin(),
 				state.activeProfile.obstacleGroups.end(),[](const RemasterObstacleGroup &g){return g.spriteAssembly;});
-			if ((!reviewMap || needsSpriteSupport) && runtimeInputsPublishable)
+			// Compiled review geometry selects visualization, not current source
+			// ownership. It may lack producer evidence or contain unknown bases.
+			// Independently solve current maps for emitting profiles even when a
+			// review map would otherwise skip runtime geometry (no sprite assembly).
+			const bool needsEmitterSupport=std::any_of(state.activeProfile.assets.begin(),
+				state.activeProfile.assets.end(),[](const auto &a){return a.second.hasEmission;});
+			if(lightingTrace.id)lightingTrace.producerFlags|=(reviewMap?4u:0u)|(needsSpriteSupport?8u:0u)|
+				(needsEmitterSupport?16u:0u)|(runtimeInputsPublishable?32u:0u)|(inputChanged?64u:0u);
+			if ((!reviewMap || needsSpriteSupport || needsEmitterSupport) && runtimeInputsPublishable)
 			{
 				const uint64_t key = state.runtimeDungeonObservedInputKey;
 				// Profile publication (including unchanged editor metadata on resume)
@@ -3733,8 +3764,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			state.runtimeDungeonHeightValid && state.dungeonRetainedBg1 && state.dungeonRetainedBg2) {
 			if(!state.visibleFaceTemplateCache)state.visibleFaceTemplateCache=std::make_unique<RemasterVisibleFaceTemplateCache>();
 			RemasterLightingTrace::Scope visibleTimer(&lightingTrace,RemasterLightingTrace::Visible);
+			const size_t visibleBefore=frame.tileInstances.size();
 			S9xRemasterApplyVisibleDungeonFaces(frame,*dungeonFloor,state.dungeonRetainedBg1->data(),
 				state.dungeonRetainedBg2->data(),state.runtimeDungeonBg1HeightMap,state.runtimeDungeonHeightMap,state.visibleFaceTemplateCache.get());
+			lightingTrace.visibleFaces=frame.tileInstances.size()-visibleBefore;
 		}
 		if(dungeonFloor && (state.requestedRoomDiagnostics.load(std::memory_order_relaxed) || RemasterRecording::Global().Accepting()))
 			S9xRemasterProjectRoomDiagnostics(frame,*dungeonFloor,appliedDungeonHeightMap,
@@ -3742,9 +3775,14 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				&state.previousRuntimeDungeonHeightMap,&state.previousRuntimeDungeonBg1HeightMap);
 		if (dungeonFloor) {
 			RemasterLightingTrace::Scope offscreenTimer(&lightingTrace,RemasterLightingTrace::Offscreen);
+			// A matching room/hash/flip does not attest a cached datum when the
+			// current frame lacks publishable collision/geometry inputs. Apply
+			// the same current-input contract to BOTH source planes, not only
+			// the BG2 application path. No historical base rescue on interruption.
+			const bool currentEmitterBases=runtimeInputsPublishable && state.runtimeDungeonHeightValid;
 			S9xRemasterAppendOffscreenRoomLights(frame, *dungeonFloor, state.activeProfile,
-				appliedDungeonHeightMap,
-				state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex ? &state.runtimeDungeonBg1HeightMap : nullptr,
+				currentEmitterBases && state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->roomIndex ? &state.runtimeDungeonHeightMap : nullptr,
+				currentEmitterBases && state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				S9xRemasterHashTile);
 		}
 		if (heldLamp)
@@ -3844,7 +3882,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		if(dungeonFloor)if(const char *path=std::getenv("S9X_REMASTER_DUNGEON_SCROLL_CAPTURE"))if(*path) {
 			static std::string prefix;static unsigned count=0,crossings=0;static bool armed=false,wasScroll=false;
 			if(prefix!=path){prefix=path;count=0;crossings=0;armed=false;wasScroll=false;}
-			const bool scroll=dungeonFloor->module==7 && dungeonFloor->submodule==2;
+			const bool scroll=S9xRemasterDungeonScrollCaptureEligible(*dungeonFloor);
 			// Two separately bounded crossings with one opt-in launch; return
 			// through the opposite door need not fit the first two-second window.
 			if(scroll && !wasScroll && !armed && crossings<2){armed=true;count=0;crossings++;}
@@ -3901,6 +3939,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		lightingTrace.epochAfter=state.runtimeDungeonHeightEpoch;
 		lightingTrace.inputKey=state.runtimeDungeonObservedInputKey;
 		lightingTrace.profileKey=state.dungeonGeometryProfileKey;
+		lightingTrace.width=uint32_t(screenWidth);lightingTrace.height=uint32_t(screenHeight);
+		lightingTrace.restores=state.dungeonArtworkStateHits-traceRestores;
+		lightingTrace.dependencyReuses=state.dungeonGeometryReuseCount-traceReuses;
+		lightingTrace.hiddenPixels=state.liveFramesActive?state.completedFrame.hiddenEmitters.size():frame.hiddenEmitters.size();
+		RemasterLiveTrace::producer(lightingTrace);
 		if(completedFrame)completedFrame->lightingTrace=lightingTrace;
 		if(state.liveFramesActive)state.completedFrame.lightingTrace=lightingTrace;
 	}

@@ -3,6 +3,7 @@
 
 #include "frame.h"
 #include <cmath>
+#include <unordered_map>
 
 // USA ALTTP: module $0e/submodule $02 runs RenderText over the saved world
 // module ($010c). Other interface modes can replace the room with map/menu art.
@@ -120,6 +121,79 @@ inline bool S9xRemasterHeldLampHudPixel(const RemasterFrame &frame, size_t pixel
 	for (const auto &m : frame.materials)
 		if (m.name == material) return m.surfaceClass == RemasterSurfaceClass::UserInterface;
 	return false;
+}
+
+// Invocation-local acceleration of the unchanged predicate above. Borrows an
+// immutable frame: destroy this lookup before ANY frame mutation (including
+// metadata/material edits, instance growth or raster replacement). Never retain
+// it across frames or asynchronous presentation. Temporary material-name keys and
+// borrowed metadata pointers die in the constructor; only copied decisions survive.
+class RemasterHeldLampHudLookup
+{
+	struct Decision { uint64_t selectors = 0; bool fallback = false; };
+	const RemasterFrame &frame_;
+	bool enabled_;
+	std::vector<Decision> decisions_;
+public:
+	explicit RemasterHeldLampHudLookup(const RemasterFrame &frame) : frame_(frame),
+		enabled_(frame.profileRomSha256 == "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb" && frame.width == 256)
+	{
+		if (!enabled_) return;
+		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
+		std::unordered_map<std::string, bool> materials; // C++14 production build
+		materials.reserve(frame.materials.size());
+		// emplace deliberately preserves the linear predicate's FIRST match.
+		for (const auto &m : frame.assetMetadata) metadata.emplace(m.tileId, &m);
+		for (const auto &m : frame.materials)
+			materials.emplace(m.name, m.surfaceClass == RemasterSurfaceClass::UserInterface);
+		const auto isUi = [&](const std::string &name) {
+			const auto found = materials.find(name);
+			return found != materials.end() && found->second;
+		};
+		decisions_.reserve(frame.tileInstances.size());
+		for (const auto &instance : frame.tileInstances)
+		{
+			Decision d;
+			d.fallback = isUi(instance.material);
+			d.selectors = d.fallback ? UINT64_MAX : 0;
+			const auto found = metadata.find(instance.tileId);
+			// Original canonical asset selectors, NOT resolved geometry metadata.
+			if (found != metadata.end() && found->second->hasMaterialSelectors)
+			{
+				const auto &selectors = found->second->materialSelectors;
+				for (unsigned p = 0; p < 64; ++p) if (!selectors[p].empty())
+				{
+					const uint64_t bit = UINT64_C(1) << p;
+					if (isUi(selectors[p])) d.selectors |= bit;
+					else d.selectors &= ~bit;
+				}
+			}
+			decisions_.push_back(d);
+		}
+	}
+	bool operator()(size_t pixel) const
+	{
+		if (!enabled_ || pixel >= size_t(frame_.width) * frame_.height ||
+			pixel >= frame_.mainPixels.size()) return false;
+		const auto &p = frame_.mainPixels[pixel];
+		if (static_cast<RemasterSourceType>(p.owner >> 24) == RemasterSourceType::Background &&
+			((p.owner >> 16) & 255u) == 2) return true;
+		if (!p.instanceId || p.instanceId > decisions_.size()) return false;
+		const auto &d = decisions_[p.instanceId - 1];
+		return p.tilePixel < 64 ? bool(d.selectors & (UINT64_C(1) << p.tilePixel)) : d.fallback;
+	}
+};
+
+// The renderer calls this only with matching scene/original color planes. Keep
+// the bounded copy safe for incomplete packets too; missing original pixels
+// retain their scene color. Construction/destruction are part of this pass.
+inline void S9xRemasterPrepareHeldLampSceneColors(const RemasterFrame &frame,
+	std::vector<uint16_t> &colors)
+{
+	colors = frame.sceneRgb555;
+	const RemasterHeldLampHudLookup hud(frame);
+	for (size_t i = 0; i < std::min(colors.size(), frame.originalRgb555.size()); ++i)
+		if (hud(i)) colors[i] = frame.originalRgb555[i];
 }
 
 #endif

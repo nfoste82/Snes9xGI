@@ -6,6 +6,8 @@
 #include "surface_mesh_material.h"
 #include <map>
 
+#define REMASTER_FIELD_MATERIAL_WORK 1
+
 // Exact frame-local input comparison. No assumptions about static game artwork;
 // emission is independent of geometry and transient instance IDs remain domains.
 struct RemasterLightingFieldCache
@@ -24,6 +26,14 @@ struct RemasterLightingFieldCache
 	size_t updatedPixels = 0;
 	size_t selectedPixels = 0;
 	size_t resolvedInstances = 0;
+#ifdef REMASTER_FIELD_COUNT_WORK
+	size_t materialLookups = 0;
+#endif
+	// Multi-flag exact dependency observations; diagnostic only, never cache policy.
+	enum Reason : uint64_t { Forced=1, Dimensions=2, SceneMetadata=4, Material=8,
+		ContentGeometry=16, EmissionMetadata=32, InstanceIdentity=64, Context=128,
+		Palette=256, Raster=512, CompositionDepth=1024, NormalMask=2048, Cold=4096 };
+	uint64_t reasons = 0;
 
 	static bool geometryEqual(const RemasterFrameAssetMetadata &a, const RemasterFrameAssetMetadata &b)
 	{
@@ -63,6 +73,19 @@ struct RemasterLightingFieldCache
 	{
 		RemasterLightingTrace::Scope selectionTimer(RemasterLightingTrace::current(),RemasterLightingTrace::Selection);
 		const size_t count = frame.mainPixels.size();
+		auto *trace=RemasterLightingTrace::current();
+		const bool diagnose=trace && trace->id;
+		reasons=0;
+		if(diagnose) {
+			if(forceFull)reasons|=Forced;
+			if(width_!=frame.width || height_!=frame.height || scale_!=frame.lightingCoordinateScale || keys_.size()!=count)reasons|=Dimensions;
+			if(rom_!=frame.profileRomSha256 || area_!=frame.area.id || scene_!=useScene)reasons|=SceneMetadata;
+			if(!rasterValid_)reasons|=Cold;
+			if(materials_.size()!=frame.materials.size())reasons|=Material;
+			else for(size_t i=0;i<materials_.size();++i)if(!materialEqual(materials_[i],frame.materials[i])){reasons|=Material;break;}
+			if(originalColors_!=frame.originalRgb555)reasons|=Palette;
+			if(instances_.size()!=frame.tileInstances.size())reasons|=InstanceIdentity;
+		}
 		bool full = forceFull || width_ != frame.width || height_ != frame.height || scale_ != frame.lightingCoordinateScale || keys_.size() != count;
 		full = full || rom_ != frame.profileRomSha256 || area_ != frame.area.id || scene_ != useScene;
 		bool selectionFull = full || !rasterValid_;
@@ -81,6 +104,19 @@ struct RemasterLightingFieldCache
 		}
 		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
 		for (const auto &m : frame.assetMetadata) metadata[m.tileId] = &m;
+		// HUD classification intentionally uses FIRST original metadata, whereas
+		// field donors use LAST metadata. Do not merge those producer precedences.
+		// A changed first-match selector is uncommon and conservatively global.
+		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> hudMetadata;
+		for (const auto &m : frame.assetMetadata) hudMetadata.emplace(m.tileId, &m);
+		bool hudDirty = false;
+		for(const auto &entry:hudMetadata) {
+			const auto old=hudMetadata_.find(entry.first);
+			if(entry.second->hasMaterialSelectors ? old==hudMetadata_.end() || old->second!=entry.second->materialSelectors :
+				old!=hudMetadata_.end()) hudDirty=true;
+		}
+		for(const auto &entry:hudMetadata_)if(!hudMetadata.count(entry.first))hudDirty=true;
+		selectionFull = selectionFull || hudDirty;
 		std::map<std::string, const RemasterFrameMaterial *> materials;
 		for (const auto &m : frame.materials) materials[m.name] = &m;
 		std::vector<const RemasterFrameAssetMetadata *> instanceMetadata(frame.tileInstances.size());
@@ -92,10 +128,13 @@ struct RemasterLightingFieldCache
 		for (const auto &entry : metadata)
 		{
 			const auto old = metadata_.find(entry.first);
-			metadataDirty[entry.first] = old == metadata_.end() || !geometryEqual(old->second, *entry.second);
-			// Presence is channel policy: absent and authored zero are distinct.
-			selectionFull = selectionFull || metadataDirty[entry.first] || old == metadata_.end() ||
+			metadataDirty[entry.first] = old == metadata_.end() || !geometryEqual(old->second, *entry.second) ||
 				old->second.hasEmission != entry.second->hasEmission;
+			if(diagnose && metadataDirty[entry.first])reasons|=ContentGeometry;
+			if(diagnose && (old==metadata_.end() || old->second.hasEmission!=entry.second->hasEmission ||
+				old->second.emissionRgba!=entry.second->emissionRgba || old->second.emissionColorMask!=entry.second->emissionColorMask ||
+				old->second.emissionDepth!=entry.second->emissionDepth || old->second.emissionOmnidirectional!=entry.second->emissionOmnidirectional))reasons|=EmissionMetadata;
+			// Presence is channel policy: absent and authored zero are distinct.
 			if(old==metadata_.end()) emissionDirty=true;
 			else {
 				const auto &a=old->second,&b=*entry.second;
@@ -103,10 +142,15 @@ struct RemasterLightingFieldCache
 					a.emissionColorMask!=b.emissionColorMask || a.emissionDepth!=b.emissionDepth || a.emissionOmnidirectional!=b.emissionOmnidirectional;
 			}
 		}
-		selectionFull = selectionFull || metadata_.size() != metadata.size();
+		for(const auto &entry:metadata_)if(!metadata.count(entry.first))emissionDirty=true;
+		if(diagnose && metadata_.size()!=metadata.size())reasons|=ContentGeometry|EmissionMetadata;
 		for (size_t i = 0; i < frame.tileInstances.size(); i++)
 		{
 			const auto &instance = frame.tileInstances[i];
+			if(diagnose) {
+				if(i>=instances_.size() || !instanceEqual(instance,instances_[i]))reasons|=InstanceIdentity;
+				if(i>=instances_.size() || instance.hasPaletteArtwork!=instances_[i].hasPaletteArtwork || instance.paletteRgb555!=instances_[i].paletteRgb555)reasons|=Palette;
+			}
 			emissionDirty = emissionDirty || i>=instances_.size() ||
 				instance.hasPaletteArtwork!=instances_[i].hasPaletteArtwork || instance.paletteRgb555!=instances_[i].paletteRgb555;
 			const auto found = metadata.find(instance.tileId);
@@ -119,6 +163,7 @@ struct RemasterLightingFieldCache
 				(context!=frame.contextGeometry.end() && oldContext!=contexts_.end() && !contextEqual(context->second,oldContext->second));
 			const bool sourceDirty=i>=instances_.size() || !instanceEqual(instance,instances_[i]) ||
 				(original ? metadataDirty[instance.tileId] : metadata_.count(instance.tileId)!=0) || contextDirty;
+			if(diagnose && contextDirty)reasons|=Context;
 			const auto *m = original;
 			if (contextual || (original && (original->geometryByFacing || original->geometryByFlip)))
 			{
@@ -152,34 +197,108 @@ struct RemasterLightingFieldCache
 			}
 			dirty[i] = full || sourceDirty ||
 				i >= normalMasks_.size() || normalMasks[i] != normalMasks_[i];
+			if(diagnose && (i>=normalMasks_.size() || normalMasks[i]!=normalMasks_[i]))reasons|=NormalMask;
 		}
 		contexts_=frame.contextGeometry;
+		// Presence depends only on resolved occurrence metadata and material,
+		// not on pixel coordinates. Compute once per update instead of repeatedly
+		// chasing the same large metadata for every channel of every candidate.
+		// These masks expire with this invocation; donor precedence and every
+		// preferred/fallback candidate still run through the shared selector.
+		std::vector<uint8_t> channelPresence(instanceMetadata.size());
+		for(size_t i=0;i<instanceMetadata.size();++i)if(const auto *m=instanceMetadata[i]) {
+			channelPresence[i]=uint8_t(m->hasHeight) | (uint8_t(m->hasNormals)<<1) |
+				(uint8_t(m->hasOcclusion)<<2) | (uint8_t(m->hasEmission)<<3) |
+				(uint8_t(m->hasMaterialSelectors || !frame.tileInstances[i].material.empty())<<4) |
+				(uint8_t(m->hasDoorframeMask)<<5) | (uint8_t(m->tileRole!=RemasterTileRole::Unknown)<<6) |
+				(uint8_t(m->tileRole==RemasterTileRole::OutOfBounds)<<7);
+		}
+		const bool alttp=frame.profileRomSha256=="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
+		auto present=[&](const RemasterFramePixel &p,size_t c) {
+			return p.instanceId && p.instanceId<=channelPresence.size() && p.tilePixel<64 &&
+				(channelPresence[p.instanceId-1] & (1u<<c));
+		};
 		updatedPixels = 0;
 		selectedPixels = 0;
 		auto samePixel = [](const RemasterFramePixel &a,const RemasterFramePixel &b) {
 			return a.owner==b.owner && a.instanceId==b.instanceId && a.tilePixel==b.tilePixel;
 		};
 		// Exact observed inputs, not capture counters or actor coordinates.
-		// Changed composition conservatively reselects the frame; individual
-		// geometry outputs still use their per-pixel donor/occurrence dirty test.
+		// Shape changes are global; same-shape composition and source changes are
+		// checked locally below, including candidates which were NOT selected.
 		const std::vector<RemasterFramePixel> *rasters[7] = {&frame.mainPixels,&frame.subPixels,&frame.scenePixels,
 			&frame.observedBgPixels[0],&frame.observedBgPixels[1],&frame.observedBgPixels[2],&frame.observedBgPixels[3]};
+		if(diagnose) {
+			for(size_t r=0;r<7;++r) {
+				const auto &a=*rasters[r],&b=rasters_[r];
+				if(a.size()!=b.size() || !std::equal(a.begin(),a.end(),b.begin(),samePixel))reasons|=Raster;
+			}
+			if(depths_!=frame.observedBgDepth)reasons|=CompositionDepth;
+			trace->fieldReasons=reasons;
+		}
+		bool selectionDirty = std::find(dirty.begin(),dirty.end(),true)!=dirty.end();
 		for(size_t r=0;!selectionFull && r<7;r++) {
 			const auto &now=*rasters[r], &old=rasters_[r];
-			selectionFull = now.size()!=old.size() || !std::equal(now.begin(),now.end(),old.begin(),samePixel);
+			selectionFull = now.size()!=old.size();
+			if(!selectionFull && !selectionDirty)selectionDirty=!std::equal(now.begin(),now.end(),old.begin(),samePixel);
 		}
-		selectionFull = selectionFull || depths_!=frame.observedBgDepth ||
-			std::find(dirty.begin(),dirty.end(),true)!=dirty.end();
+		for(size_t r=0;r<4;++r)selectionFull=selectionFull || depths_[r].size()!=frame.observedBgDepth[r].size();
+		selectionDirty=selectionDirty || depths_!=frame.observedBgDepth;
 		// Lighting/camera/exposure and light motion do not alter any field input.
 		// An exact unchanged observation has no per-pixel work at all. In
 		// particular, do not overwrite the renderer's derived normal components.
-		if(!selectionFull && !emissionDirty) return;
+		if(!selectionFull && !selectionDirty && !emissionDirty) return;
+		// Material names and selectors are occurrence inputs, not pixel inputs.
+		// Resolve against the same LAST-name material map once per invocation.
+		// Selector tables are shared only by identical resolved metadata pointers;
+		// contextual metadata remains occurrence-local. Empty default material means
+		// absent, whereas an explicit empty selector still looks up the empty name.
+#ifdef REMASTER_FIELD_COUNT_WORK
+		materialLookups=0;
+#endif
+		auto findMaterial=[&](const std::string &name) -> const RemasterFrameMaterial * {
+#ifdef REMASTER_FIELD_COUNT_WORK
+			++materialLookups;
+#endif
+			const auto found=materials.find(name);
+			return found==materials.end()?nullptr:found->second;
+		};
+		using MaterialTable=std::array<const RemasterFrameMaterial *,64>;
+		std::map<const RemasterFrameAssetMetadata *,MaterialTable> selectorMaterials;
+		std::vector<const MaterialTable *> instanceSelectors(instanceMetadata.size());
+		std::vector<const RemasterFrameMaterial *> instanceMaterials(instanceMetadata.size());
+		for(size_t i=0;i<instanceMetadata.size();++i) {
+			const auto &name=frame.tileInstances[i].material;
+			if(!name.empty())instanceMaterials[i]=findMaterial(name);
+			const auto *m=instanceMetadata[i];
+			if(m && m->hasMaterialSelectors) {
+				auto inserted=selectorMaterials.emplace(m,MaterialTable{});
+				if(inserted.second)for(size_t p=0;p<64;++p)inserted.first->second[p]=findMaterial(m->materialSelectors[p]);
+				instanceSelectors[i]=&inserted.first->second;
+			}
+		}
+		const RemasterHeldLampHudLookup hudLookup(frame);
 		for (size_t i = 0; i < count; i++)
 		{
-			const bool hud = S9xRemasterHeldLampHudPixel(frame, i);
 			bool select = selectionFull;
+			if(!select && selectionDirty) {
+				// Every possible preferred/fallback reference is in these seven
+				// buffers. Compare BOTH old and new IDs (including invalid IDs and
+				// same-size index reuse), not just the previous channel donors.
+				for(size_t r=0;r<7 && !select;++r)if(i<rasters[r]->size()) {
+					const auto &a=(*rasters[r])[i], &b=rasters_[r][i];
+					auto changed=[&](const RemasterFramePixel &p) {return p.instanceId && p.instanceId<=dirty.size() && dirty[p.instanceId-1];};
+					select=!samePixel(a,b) || changed(a) || changed(b);
+				}
+				for(size_t r=0;r<4 && !select;++r)if(i<depths_[r].size())select=depths_[r][i]!=frame.observedBgDepth[r][i];
+			}
+			// No dependency of this offset changed. Retain fields, claims and
+			// renderer-written derived normals verbatim. Emission-only changes
+			// deliberately still visit every offset (no speculative local cut).
+			if(!select && !emissionDirty)continue;
+			const bool hud = hudLookup(i);
 			if(select) ++selectedPixels;
-			const auto selection = select ? S9xRemasterSelectVisibleChannels(frame,i,useScene,instanceMetadata) : channelSources[i];
+			const auto selection = select ? S9xRemasterSelectVisibleChannelsWithPresence(frame,i,useScene,present,false,alttp) : channelSources[i];
 			const auto &hp = selection.donors[size_t(RemasterMetadataChannel::Height)];
 			const auto &np = selection.donors[size_t(RemasterMetadataChannel::Normals)];
 			const auto &op = selection.donors[size_t(RemasterMetadataChannel::Occlusion)];
@@ -239,13 +358,11 @@ struct RemasterLightingFieldCache
 			}
 			if (!valid) continue;
 			const auto &instance = frame.tileInstances[pixel.instanceId-1];
-			auto material = instance.material.empty() ? materials.end() : materials.find(instance.material);
+			const auto *mat=instanceMaterials[pixel.instanceId-1];
 			if (mp.instanceId) {
-				const auto *mm=instanceMetadata[mp.instanceId-1];
-				const auto &mi=frame.tileInstances[mp.instanceId-1];
-				material=materials.find(mm->hasMaterialSelectors?mm->materialSelectors[mp.tilePixel]:mi.material);
+				const auto *selectors=instanceSelectors[mp.instanceId-1];
+				mat=selectors?(*selectors)[mp.tilePixel]:instanceMaterials[mp.instanceId-1];
 			}
-			const auto *mat = material == materials.end() ? nullptr : material->second;
 			RemasterSurfaceMesh::classify(samples[i], instance.source, instance.sourceIndex,
 				mat ? mat->surfaceClass : RemasterSurfaceClass::Unclassified, instance.assetGroup, pixel.instanceId,
 				rp.instanceId ? instanceMetadata[rp.instanceId-1]->tileRole : RemasterTileRole::Unknown,
@@ -314,7 +431,11 @@ struct RemasterLightingFieldCache
 		depths_=frame.observedBgDepth; rasterValid_=true;
 		rom_=frame.profileRomSha256; area_=frame.area.id; scene_=useScene;
 		originalColors_=frame.originalRgb555;
-		metadata_.clear(); for (const auto &m : frame.assetMetadata) metadata_.emplace(m.tileId, m);
+		// Snapshot the actual last-match field producer (emplace would retain
+		// the first duplicate and can miss a subsequent switchback).
+		metadata_.clear(); for (const auto &m : frame.assetMetadata) metadata_[m.tileId]=m;
+		hudMetadata_.clear();for(const auto &entry:hudMetadata)if(entry.second->hasMaterialSelectors)
+			hudMetadata_.emplace(entry.first,entry.second->materialSelectors);
 		materials_ = frame.materials; width_ = frame.width; height_ = frame.height; scale_ = frame.lightingCoordinateScale;
 	}
 private:
@@ -336,6 +457,7 @@ private:
 	std::vector<uint64_t> keys_, normalMasks_;
 	std::vector<RemasterFrameTileInstance> instances_;
 	std::map<RemasterTileContentId, RemasterFrameAssetMetadata> metadata_;
+	std::map<RemasterTileContentId, std::array<std::string,64>> hudMetadata_;
 	std::vector<RemasterFrameMaterial> materials_;
 };
 #endif

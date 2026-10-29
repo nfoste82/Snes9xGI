@@ -44,6 +44,15 @@ and authored UI pixels throughout the screen retain stock RGB and zero transport
 participation. Room pixels behind transparent HUD artwork remain lit; the HUD
 exemption must never cover that entire rectangular band.
 
+Scene-color restoration and changed field preparation use an invocation-local
+`RemasterHeldLampHudLookup` to avoid repeated per-pixel metadata/material scans.
+It preserves the original predicate's first-match asset/material behavior, BG3
+ink guard and canonical selector/fallback decisions. It borrows an immutable
+frame and must not survive metadata, instance or raster mutation; no cross-frame
+HUD cache is introduced. The original scalar predicate remains the test oracle.
+See [optimization results](room055_optimization_opportunities.md) for scoped
+parity checks and construction-inclusive CPU measurements.
+
 Dialogue letters on BG3 receive the same exemption as HUD ink, including unknown
 font hashes. Transparent spaces between letters retain the room's lighting.
 Future scene-light accents on dark UI/text borders should use a separate

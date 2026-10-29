@@ -1,5 +1,81 @@
 # Completed-room emitter capture
 
+## Validated compartment admission (October 28 follow-up)
+
+Current completed-frame hidden-source enumeration validates the USA layout
+table, composite quadrant, full-size flags, blast-wall/override derivation and
+both complete camera-bound pairs before restricting settled source membership.
+Membership uses the constructed 512px room map, **not** camera-bound coordinates.
+Unknown overrides, contradictory bounds/scroll and absent legacy evidence fail open.
+`Dungeon_HandleCamera` (reference dungeon.c:8118/8144) stops raw WRAM copy2
+exactly at selected A/B bounds. Module07 supplies `copy=copy2+shake`
+(6549–6550), then NMI writes copy to PPU (nmi.c:84–87). Only raw copy2 within
+those bounds and PPU HOffset / VOffset+1 matching it modulo512 authorize culling.
+Shake, unsynchronized WRAM/PPU, or other ambiguous camera timing fails open;
+there is no invented camera tolerance. The earlier synthetic copy2Y2833 was
+invalid for upper bound2832: the corrected raw value is2832 and rendered Y2833.
+Full, half-width, half-height and quarter layouts share one policy; no room ID,
+hash or fixture-coordinate exception exists. Cardinally connected emitting tiles
+touching a split are retained as a complete conservative footprint. This does not
+change authored representative grouping or its reciprocal/self-link semantics.
+
+All eight same-room submodule1 phases enumerate the current whole-room union;
+ControlShutters (5) also retains that whole union until the actual return to
+module7/submodule0/phase0. Module07_05 only calls OperateShutterDoors
+(reference dungeon.c:6882), which updates existing door maps, not a room loader.
+The existing geometry pipeline already admits those handlers and supplies their
+current bases. Unknown bases remain unknown. Maps, graphics, palette and profile
+are read each invocation; no membership or historical source cache survives.
+Both BG source bases now require current publishable inputs and runtime solve
+validity. Previously BG1 could reuse a matching-room cached base after collision
+inputs disappeared; same hash/flip alone did not prove current ownership. This
+intentionally suppresses historical-map sources on unpublishable frames, even
+with unchanged artwork. No unknown height is rescued or guessed.
+Compiled geometry-review maps remain visualization inputs, not emission-base
+provenance. Profiles with emission independently solve the current complete maps
+even without sprite assemblies; both source planes consume those current solves.
+Unknown, stale or arbitrary review bases cannot suppress or replace a currently
+solved source. Missing current collision still suppresses both planes. Profiles
+without emission retain the prior review-only solve-skipping behavior unless
+sprite support needs a solve. Source-only solving can add CPU work to that
+previously skipped review case; no geometry solver rules or review arrays change.
+Inter-room submodule2 remains unchanged (no hidden-source reconstruction).
+The authoritative visible/artwork path is unchanged: this patch does not suppress
+visible sources whose occurrence ownership has not been independently proved.
+
+Fixture-free `dungeon_emitter_compartment_test.cpp` passes378 checks in Debug,
+O2/NDEBUG and ASan+UBSan, including actual EndFrame consumption. Its synthetic
+nine-source half-height baseline fails before the patch (9 instead of3); after
+the patch it selects3 settled and9 during every same-room phase. An independent
+boundary-extended EndFrame inventory emits4 hidden pixels settled,10 during all
+eight phases and every shutter phase tested,4 only after actual settled return,
+10 with absent legacy evidence. Three additional targeted review regressions
+failed before correction: contradictory northern copy2 incorrectly culled sources;
+submodule5 incorrectly restricted membership; missing collision reused cached BG1
+bases. All pass afterward, including both BGs and handlers0/1/5 with input
+withdrawal/restoration. Contradictory rendered camera retains the specific northern
+HUD source. A fourth baseline failed actual EndFrame with a compiled review map
+and no sprite assemblies. Its correction adds73 review/publication checks:
+valid-looking, unknown and mismatched review provenance; both BGs; profiles with
+and without sprite assemblies; profile republishing; collision withdrawal and
+restoration; current artwork extinction; and review removal. These are
+synthetic WRAM tests, NOT fresh gameplay evidence or measured GPU savings.
+
+Initial corpus inventory:234 Application Support dungeon JSON sidecars across
+12 rooms, zero with available layout evidence; the immutable room055005 bundle
+also lacks it. Therefore none can validate actual live compartment culling.
+Fresh settled/transition/settled capture with all eight phase chronology remains
+required, along with human camera/HUD review. The full+Metal gate
+passed80/80 on frozen source, manifest
+`build/remaster-tests/20261028T235924Z-ikt2iabp/results.json`; final Release and
+Debug builds passed. A subsequent authorized room055006 live capture validates
+settled southern-half filtering and72 total Direct records (48 hidden,24 visible).
+It does not validate transition chronology; see
+[Room055 Live Performance](room055_live_performance.md). Historical sphere regression
+retains its preexisting held-lamp publication failure; its obsolete blanket
+submodule1 rejection oracle is separately corrected using the verified USA
+Module07_01 eight-handler dispatch (no room loader).
+
 ## October20 room012 north-pillar diagnosis (unrepaired)
 
 Own-input production replay of `frame_room012_008.s9xrmf`, profile serialized FNV

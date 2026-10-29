@@ -619,6 +619,7 @@ static void S9xRemasterSnapshotFrameActors()
 
 void S9xStartScreenRefresh (void)
 {
+	RemasterLiveTrace::beginRefresh(IPPU.TotalEmulatedFrames);
 	if (S9xRemasterPerformanceMetricsEnabled())
 	{
 		RemasterState &state = S9xRemasterState();
@@ -707,6 +708,8 @@ void S9xEndScreenRefresh (void)
 			if (dungeonFloor.verifiedAlttpRom)
 			{
 				dungeonFloor.indoors = Memory.RAM[0x1b] != 0;
+				dungeonFloor.layoutEvidence = S9xRemasterExtractDungeonLayoutEvidence(
+					Memory.RAM, 0x20000, dungeonFloor.verifiedAlttpRom, dungeonFloor.indoors);
 				dungeonFloor.collisionMode = Memory.RAM[0x46c];
 				dungeonFloor.linkFacing = Memory.RAM[0x2f];
 				dungeonFloor.linkPlane = Memory.RAM[0xee] & 1;
@@ -966,6 +969,7 @@ void S9xEndScreenRefresh (void)
 			}
 		}
 	}
+	RemasterLiveTrace::endRefresh();
 	// Include final redraw, remaster packet/room assembly and presentation CPU
 	// work. Sampling at entry hid these costs and made slow frames look idle.
 	if (S9xRemasterPerformanceMetricsEnabled())

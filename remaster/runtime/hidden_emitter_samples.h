@@ -11,10 +11,17 @@ struct RemasterHiddenDirectSample
 };
 static_assert(sizeof(RemasterHiddenDirectSample)==64,"direct sample ABI");
 
+inline uint8_t S9xRemasterEffectiveOffscreenRepresentatives(const RemasterFrame &frame)
+{
+	return frame.offscreenRepresentativeEmitters < 0 ? frame.representativeEmitters : uint8_t(frame.offscreenRepresentativeEmitters);
+}
+
 inline std::vector<RemasterHiddenDirectSample> S9xRemasterHiddenDirectSamples(const RemasterFrame &frame,
 	bool collapsedDepth = false, bool clustered = false)
 {
 	std::vector<RemasterHiddenDirectSample> result;
+	const auto representatives = S9xRemasterEffectiveOffscreenRepresentatives(frame);
+	clustered = clustered && representatives > 0;
 	auto append = [&](const RemasterFrameHiddenEmitter &e, const std::array<float,3> &radiance, unsigned area) {
 		const unsigned count=e.depth>0 && !collapsedDepth ? 4 : 1;
 		for(unsigned stratum=0;stratum<count;stratum++) {
@@ -39,7 +46,7 @@ inline std::vector<RemasterHiddenDirectSample> S9xRemasterHiddenDirectSamples(co
 		for(unsigned k=0;k<3;k++) value[k]=std::pow(e.emission[k]/255.0f,2.2f)*(e.emission[3]/25.0f)*100.0f;
 		return value;
 	};
-	if (!clustered || !frame.representativeEmitters) {
+	if (!clustered) {
 		for (const auto &e : frame.hiddenEmitters) append(e,power(e),1);
 		return result;
 	}
@@ -56,7 +63,7 @@ inline std::vector<RemasterHiddenDirectSample> S9xRemasterHiddenDirectSamples(co
 		const auto &sources=entry.second;
 		RemasterFrame support;
 		support.width=support.height=8;
-		support.representativeEmitters=frame.representativeEmitters;
+		support.representativeEmitters=representatives;
 		support.mainPixels.resize(64);support.subPixels.resize(64);
 		std::array<uint8_t,256> emission={};std::array<uint8_t,128> participation={};
 		std::vector<RemasterSurfaceMesh::Cell> mesh(64);

@@ -10,6 +10,7 @@
 #include "profile.h"
 #include "room_diagnostics.h"
 #include "lighting_trace.h"
+#include "dungeon_layout_evidence.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -361,6 +362,7 @@ struct RemasterFrame
 	// Value-owned support from this frame, never from current emulator RAM. Not
 	// serialized: replay restores it only from matching complete input sidecars.
 	std::shared_ptr<const RemasterSpriteObstacleSupport> spriteObstacleSupport;
+	int offscreenRepresentativeEmitters = -1; // Old captures follow visible; live frames retain effective 0..8.
 };
 
 inline RemasterFrameAssetMetadata S9xRemasterResolveFrameGeometry(const RemasterFrameAssetMetadata &source,
@@ -416,21 +418,16 @@ inline const char *S9xRemasterVisualClaimName(RemasterVisualClaimStatus status)
 	}
 }
 
-template<class Present>
-inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPresence(const RemasterFrame &frame,
-	size_t offset, bool useScene, const Present &present, bool heightOnly, bool alttp)
+// Artwork precedence only. Consumers that need just the visible occurrence must
+// not resolve channel donors (or materialize unrelated per-occurrence metadata).
+inline RemasterFramePixel S9xRemasterSelectVisibleOccurrence(const RemasterFrame &frame,
+	size_t offset, bool useScene, bool alttp)
 {
-	RemasterVisibleChannelSelection result;
+	RemasterFramePixel visible;
 	auto valid = [&](const RemasterFramePixel &p) {
 		return p.instanceId && p.instanceId <= frame.tileInstances.size() && p.tilePixel < 64;
 	};
-	auto worldBg = [&](const RemasterFramePixel &p) {
-		return valid(p) && frame.tileInstances[p.instanceId-1].source == RemasterSourceType::Background &&
-			frame.tileInstances[p.instanceId-1].sourceIndex < 2 &&
-			static_cast<RemasterSourceType>(p.owner >> 24) == RemasterSourceType::Background &&
-			((p.owner >> 16) & 255) == frame.tileInstances[p.instanceId-1].sourceIndex;
-	};
-	if (offset >= frame.mainPixels.size()) return result;
+	if (offset >= frame.mainPixels.size()) return visible;
 	const auto &main = frame.mainPixels[offset];
 	const RemasterFramePixel empty;
 	const auto &sub = offset < frame.subPixels.size() ? frame.subPixels[offset] : empty;
@@ -441,25 +438,48 @@ inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPrese
 	// A third BG in another game is ordinary artwork, not implicitly HUD.
 	const bool hud = alttp &&
 		static_cast<RemasterSourceType>(main.owner >> 24) == RemasterSourceType::Background && ((main.owner >> 16) & 255) == 2;
-	result.visible = valid(main) && !hud ? main : valid(sub) && (!hud || useScene) ? sub : scene;
-	if (hud && !useScene) result.visible = main;
+	visible = valid(main) && !hud ? main : valid(sub) && (!hud || useScene) ? sub : scene;
+	if (hud && !useScene) visible = main;
 	if (hud && useScene && offset<frame.observedBgPixels[0].size() && offset<frame.observedBgPixels[1].size() &&
 		offset<frame.observedBgDepth[0].size() && offset<frame.observedBgDepth[1].size()) {
 		// Retained main-screen BG depth supplies actual under-HUD ordering. Never
 		// compare main/sub depths: their numeric domains encode different flags.
 		const auto &a=frame.observedBgPixels[0][offset], &b=frame.observedBgPixels[1][offset];
-		if(valid(a) || valid(b)) result.visible=valid(a) && (!valid(b) || frame.observedBgDepth[0][offset]>=frame.observedBgDepth[1][offset])?a:b;
+		if(valid(a) || valid(b)) visible=valid(a) && (!valid(b) || frame.observedBgDepth[0][offset]>=frame.observedBgDepth[1][offset])?a:b;
 	}
 	// EndFrame solves the independent scene occurrence, whereas the stock main
 	// occurrence may retain an unapplied base. If these are the SAME observed
 	// artwork placement at this pixel, use its solved occurrence, not an unrelated
 	// layer and not the stale stock datum. Preserve the presentation owner above.
-	if (useScene && valid(result.visible) && valid(scene) && result.visible.owner == scene.owner &&
-		result.visible.tilePixel == scene.tilePixel) {
-		const auto &a=frame.tileInstances[result.visible.instanceId-1], &b=frame.tileInstances[scene.instanceId-1];
+	if (useScene && valid(visible) && valid(scene) && visible.owner == scene.owner &&
+		visible.tilePixel == scene.tilePixel) {
+		const auto &a=frame.tileInstances[visible.instanceId-1], &b=frame.tileInstances[scene.instanceId-1];
 		if (a.tileId==b.tileId && a.source==b.source && a.sourceIndex==b.sourceIndex &&
-			a.hFlip==b.hFlip && a.vFlip==b.vFlip) result.visible=scene;
+			a.hFlip==b.hFlip && a.vFlip==b.vFlip) visible=scene;
 	}
+	return visible;
+}
+
+template<class Present>
+inline RemasterVisibleChannelSelection S9xRemasterSelectVisibleChannelsWithPresence(const RemasterFrame &frame,
+	size_t offset, bool useScene, const Present &present, bool heightOnly, bool alttp)
+{
+	RemasterVisibleChannelSelection result;
+	if(offset>=frame.mainPixels.size())return result;
+	result.visible=S9xRemasterSelectVisibleOccurrence(frame,offset,useScene,alttp);
+	auto valid = [&](const RemasterFramePixel &p) {
+		return p.instanceId && p.instanceId <= frame.tileInstances.size() && p.tilePixel < 64;
+	};
+	auto worldBg = [&](const RemasterFramePixel &p) {
+		return valid(p) && frame.tileInstances[p.instanceId-1].source == RemasterSourceType::Background &&
+			frame.tileInstances[p.instanceId-1].sourceIndex < 2 &&
+			static_cast<RemasterSourceType>(p.owner >> 24) == RemasterSourceType::Background &&
+			((p.owner >> 16) & 255) == frame.tileInstances[p.instanceId-1].sourceIndex;
+	};
+	const auto &main=frame.mainPixels[offset];
+	const RemasterFramePixel empty;
+	const auto &sub=offset<frame.subPixels.size()?frame.subPixels[offset]:empty;
+	const auto &scene=useScene && offset<frame.scenePixels.size()?frame.scenePixels[offset]:main;
 	const auto &preferred = result.visible;
 	// Explicit OOB is a visible surface claim, not permission to borrow the
 	// lower layer's geometry. Presence remains per-channel (zero is present).
@@ -898,6 +918,7 @@ struct RemasterDungeonFloorContext
 	uint8_t submodule = 0;
 	uint8_t module = 7; // adapters default to settled dungeon module
 	uint8_t savedModule = 0xff; // USA $010c; unknown in legacy capture evidence
+	RemasterDungeonLayoutEvidence layoutEvidence; // value-owned source membership; never geometry-keyed/serialized
 	uint8_t constructionPhase = 0;
 	// USA $0200: selectable collision builder reaches 5 only after basic,
 	// object, door and crystal overrides. 255 means no adapter attestation.
@@ -4779,6 +4800,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
 	frame.representativeEmitters = static_cast<uint8_t>(areaSettings.representativeEmitters);
+	frame.offscreenRepresentativeEmitters = areaSettings.offscreenRepresentativeEmitters;
 	frame.sampleAccumulation = profile.sampleAccumulation;
 
 	// Capture-local animation tracks are observations, not semantic profile groups.
@@ -5590,10 +5612,17 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	bool hasArea = false;
 	bool hasContextLocations = false;
 	bool hasLightPresentation = false;
+	bool hasOffscreenRepresentatives = false;
 	while (result.schemaVersion >= 28 && input.offset < bytes.size())
 	{
 		uint32_t tag;
 		if (!input.ReadU32(tag)) return false;
+		if (tag == 0x3152454fu) { // OER1: effective offscreen representative count
+			uint8_t count;
+			if (hasOffscreenRepresentatives || !input.ReadU8(count) || count > 8) return false;
+			hasOffscreenRepresentatives = true; result.offscreenRepresentativeEmitters = count;
+			continue;
+		}
 		if (tag == 0x3150564cu) // LVP1: sparse hidden sphere indices
 		{
 			uint32_t count;
@@ -6419,6 +6448,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			RemasterFrameSerialization::U8(bytes,entry.second.background);
 			RemasterFrameSerialization::U16(bytes,entry.second.x);RemasterFrameSerialization::U16(bytes,entry.second.y);
 		}
+	}
+	if (frame.offscreenRepresentativeEmitters < -1 || frame.offscreenRepresentativeEmitters > 8 ||
+		(frame.offscreenRepresentativeEmitters >= 0 && frame.schemaVersion < 28)) return false;
+	if (frame.offscreenRepresentativeEmitters >= 0) {
+		RemasterFrameSerialization::U32(bytes, 0x3152454fu); // OER1
+		RemasterFrameSerialization::U8(bytes, uint8_t(frame.offscreenRepresentativeEmitters));
 	}
 	return true;
 }

@@ -15,13 +15,16 @@
 namespace RemasterLightingTrace {
 enum Stage { EndFrame, Finalize, Room, Classification, Solve, Apply, Visible,
     Actors, Offscreen, Fields, Selection, Mesh, Setup, Upload, Scan, Spheres,
-    Hidden, Cluster, Sources, Encode, LockWait, SlotWait, Recognition, Count };
+    Hidden, Cluster, Sources, Encode, LockWait, SlotWait, Recognition,
+    Scene, Owners, Highlights, Normals, MeshCopy, Count };
 static constexpr const char *names[] = {"endframe", "finalize", "room", "classification",
     "solve", "apply", "visible", "actors", "offscreen", "fields", "selection", "mesh",
     "setup", "upload", "scan", "spheres", "hidden", "cluster", "sources", "encode",
-    "lock_wait", "slot_wait", "recognition"};
+    "lock_wait", "slot_wait", "recognition", "scene_hud", "owners", "highlights", "normals", "mesh_copy"};
 inline double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-inline bool enabled() { return std::getenv("S9X_REMASTER_LIGHTING_TRACE") != nullptr; }
+inline bool legacyEnabled() { return std::getenv("S9X_REMASTER_LIGHTING_TRACE") != nullptr; }
+inline std::atomic<bool> &boundedActive() { static std::atomic<bool> a{false}; return a; }
+inline bool enabled() { return legacyEnabled() || boundedActive().load(std::memory_order_relaxed); }
 inline uint64_t nextId() { static std::atomic<uint64_t> id{0}; return ++id; }
 struct Frame {
     uint64_t id=0;
@@ -32,6 +35,10 @@ struct Frame {
     uint64_t selected=0, updated=0, resolved=0, uploadBytes=0, allocations=0;
     uint64_t projectionDecisions=0;
     uint64_t candidateHits=0,candidateBuilds=0;
+    uint64_t fieldReasons=0, highlightCount=0, hiddenPixels=0, visibleFaces=0;
+    uint64_t restores=0, dependencyReuses=0;
+    uint32_t highlightPath=0, producerFlags=0;
+    uint32_t width=0,height=0, spheres=0,samples=0,patches=0;
     uint32_t bounces=0,connections=0,representatives=0;
     bool directional=false;
     uint32_t room=0xffff, plane=0, submodule=0, collision=0;
@@ -84,6 +91,10 @@ inline void write(std::ostream &out,const Frame &f,double gpuStart,double gpuEnd
         << ",\"resolved_instances\":" << f.resolved << ",\"upload_bytes\":" << f.uploadBytes
         << ",\"projection_decisions\":" << f.projectionDecisions
         << ",\"candidate_hits\":" << f.candidateHits << ",\"candidate_builds\":" << f.candidateBuilds
+        << ",\"field_reasons\":" << f.fieldReasons << ",\"highlight_count\":" << f.highlightCount
+        << ",\"highlight_path\":" << f.highlightPath << ",\"producer_flags\":" << f.producerFlags
+        << ",\"hidden_pixels\":" << f.hiddenPixels << ",\"visible_faces\":" << f.visibleFaces
+        << ",\"restores\":" << f.restores << ",\"dependency_reuses\":" << f.dependencyReuses
         << ",\"bounces\":" << f.bounces << ",\"connections\":" << f.connections
         << ",\"representatives\":" << f.representatives << ",\"directional\":" << int(f.directional)
         << ",\"allocations\":" << f.allocations << ",\"spheres\":" << spheres

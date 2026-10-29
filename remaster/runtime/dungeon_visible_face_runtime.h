@@ -6,6 +6,7 @@
 #include "frame.h"
 #include "dungeon_wall_band.h"
 #include "dungeon_out_of_bounds.h"
+#include <unordered_map>
 
 #define REMASTER_VISIBLE_ROOM_CANDIDATES 1
 struct RemasterVisibleFaceCandidate {
@@ -21,6 +22,44 @@ struct RemasterVisibleFaceLocalInput {
 			hflip==b.hflip && vflip==b.vflip && ambiguous==b.ambiguous;
 	}
 };
+// Only values consumed by the visual graph. In particular this is NOT a
+// physical epoch (which also changes with actor support/plane). Compared in
+// the existing complete placement recognition scan, without hashing memory or
+// retaining profile/frame/diagnostic pointers.
+struct RemasterVisibleFaceSupportInput {
+	std::array<int,2> owner={},base={},floorId={},floorBase={};
+	std::array<uint8_t,2> collision={},flags={};
+	bool operator==(const RemasterVisibleFaceSupportInput &b)const {
+		return owner==b.owner && base==b.base && floorId==b.floorId &&
+			floorBase==b.floorBase && collision==b.collision && flags==b.flags;
+	}
+};
+struct RemasterVisibleFaceSolvedCell {
+	uint64_t mask=UINT64_MAX;
+	int base=0,component=-1;
+	RemasterVisualClaimStatus status=RemasterVisualClaimStatus::Unsupported;
+	bool frame=false;
+};
+struct RemasterVisibleFaceSolutionCache {
+	// One entry, no per-room growth. All arrays are value owned. Exposure is
+	// compared after the already-required current raster/source validation.
+	bool valid=false;
+	uint16_t room=0xffff;
+	uint64_t romIdentity=0;
+	std::array<std::array<RemasterDungeonFloorContext::Placement,4096>,2> placements;
+	std::array<std::array<RemasterVisibleFaceSupportInput,4096>,2> support;
+	std::array<std::array<uint64_t,4096>,2> exposed={},sheets={};
+	std::array<std::array<int,4096>,2> exposureBase={};
+	std::array<std::array<RemasterVisibleFaceSolvedCell,4096>,2> cells;
+};
+// Uncached callers already allocate the larger candidate workspace. Its lifetime
+// ends before solved-cell projection; reuse that storage, not another room array.
+union RemasterVisibleFaceWorkspace {
+	std::array<std::array<RemasterVisibleFaceCandidate,4096>,2> candidates;
+	std::array<std::array<RemasterVisibleFaceSolvedCell,4096>,2> cells;
+	RemasterVisibleFaceWorkspace():candidates{} {}
+	~RemasterVisibleFaceWorkspace() {}
+};
 struct RemasterVisibleFaceTemplateCache {
 	bool valid=false;
 	std::array<std::array<uint16_t,4096>,2> words={};
@@ -32,6 +71,8 @@ struct RemasterVisibleFaceTemplateCache {
 	std::array<std::array<RemasterVisibleFaceLocalInput,4096>,2> local;
 	std::array<std::array<RemasterVisibleFaceCandidate,4096>,2> candidates;
 	size_t modelBuilds=0,modelHits=0;
+	std::unique_ptr<RemasterVisibleFaceSolutionCache> solved;
+	size_t preparationHits=0,preparationMisses=0,graphBuilds=0,oobBuilds=0,solutionAllocations=0;
 #ifdef REMASTER_WALL_BAND_DIAGNOSTICS
 	// Last complete solve, diagnostic only (never reused as input/ownership).
 	struct CellResult { int base=INT_MIN,owner=-1,plane=-1; uint8_t status=0; int claimRoot=-1; };
@@ -63,6 +104,57 @@ struct RemasterVisibleFaceTemplateCache {
 	std::vector<std::array<uint64_t,15>> diagnosticSheetJoins;
 #endif
 };
+// Value-owned invocation-local subset. Annotation grows tileInstances, so even
+// placement-height sources must not retain pointers into that vector.
+struct RemasterVisibleFaceSource {
+	std::array<int16_t,64> height={};
+	RemasterTileRole tileRole=RemasterTileRole::Unknown;
+	bool hasHeight=false,hasNormals=false;
+};
+inline std::vector<RemasterVisibleFaceSource> S9xRemasterVisibleFaceSources(const RemasterFrame &frame)
+{
+	std::map<RemasterTileContentId,const RemasterFrameAssetMetadata *> assets;
+	for(const auto &m:frame.assetMetadata)assets[m.tileId]=&m;
+	std::vector<RemasterVisibleFaceSource> result;result.reserve(frame.tileInstances.size());
+	for(size_t n=0;n<frame.tileInstances.size();n++) {
+		const auto &i=frame.tileInstances[n];RemasterVisibleFaceSource s;
+		auto found=assets.find(i.tileId);
+		if(found!=assets.end()) {
+			const auto &m=*found->second;s={m.height,m.tileRole,m.hasHeight,m.hasNormals};
+			const RemasterGeometryLayers *g=nullptr;
+			if(m.geometryByFlip)g=&m.flipGeometry[S9xRemasterGeometryFlipIndex(i.hFlip,i.vFlip)];
+			else if(m.geometryByFacing && i.geometryFacing>=1 && i.geometryFacing<=4)g=&m.facingGeometry[i.geometryFacing-1];
+			if(g){if(g->hasHeight){s.height=g->height;s.hasHeight=true;}if(g->hasNormals)s.hasNormals=true;}
+		}
+		s.tileRole=S9xRemasterResolveInstanceTileRole(s.tileRole,i);
+		if(!S9xRemasterInstanceGeometryUnresolved(i)) {
+			if(i.hasPlacementHeight){s.height=i.placementHeight;s.hasHeight=true;}
+			if(i.hasPlacementNormals)s.hasNormals=true;
+		}
+		auto context=frame.contextGeometry.find(uint32_t(n+1));
+		if(context!=frame.contextGeometry.end()) {
+			s.height=context->second.height;s.hasHeight=context->second.hasHeight;s.hasNormals=context->second.hasNormals;
+		}
+		if(S9xRemasterInstanceGeometryUnresolved(i)) {
+			s.hasHeight=false;if(i.source!=RemasterSourceType::Object)s.hasNormals=false;
+		}
+		result.push_back(s);
+	}
+	return result;
+}
+struct RemasterVisibleFaceCloneKey {
+	uint32_t instance;int cell,base;bool publish;
+	bool operator==(const RemasterVisibleFaceCloneKey &b)const {
+		return instance==b.instance && cell==b.cell && base==b.base && publish==b.publish;
+	}
+};
+struct RemasterVisibleFaceCloneHash {
+	size_t operator()(const RemasterVisibleFaceCloneKey &k)const {
+		uint64_t h=k.instance;
+		for(uint32_t v:{uint32_t(k.cell),uint32_t(k.base),uint32_t(k.publish)})h=(h^v)*UINT64_C(1099511628211);
+		return size_t(h^(h>>32));
+	}
+};
 // A complete-room visual solve. Physical solves are immutable inputs; raster
 // exposure selects publication only, never graph reachability or floor seeds.
 inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
@@ -74,7 +166,8 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 {
 	using namespace S9xRemasterVisibleFace;
 	using Surface=RemasterDungeonFloorContext::Surface;
-	if(!c.verifiedAlttpRom || !c.indoors || c.submodule || c.collisionMode ||
+	const bool currentStairs=c.module==7 && (c.submodule==8 || c.submodule==16) && c.constructionPhase<=1;
+	if(!c.verifiedAlttpRom || !c.indoors || (c.submodule && !currentStairs) || c.collisionMode ||
 		!c.constructedMaps || !c.collisionAttributes || !c.dungeonTemplateData ||
 		!bg1 || !bg2 || !map1.roomDiagnostics || !map2.roomDiagnostics ||
 		map1.roomIndex!=c.roomIndex || map2.roomIndex!=c.roomIndex ||
@@ -88,7 +181,8 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	}
 	// The first scan discovers candidates only. No owner is fabricated from an
 	// artwork match. A second scan below uses the independently derived owner.
-	if(cache && (!cache->valid || cache->words!=words || std::memcmp(cache->rom.data(),c.dungeonTemplateData,12876))) {
+	const bool templatesChanged=cache && (!cache->valid || cache->words!=words || std::memcmp(cache->rom.data(),c.dungeonTemplateData,12876));
+	if(templatesChanged) {
 		cache->modelValid=false;
 		cache->words=words;std::copy_n(c.dungeonTemplateData,12876,cache->rom.begin());
 		cache->sections=collectRoomSections(words[0].data(),words[1].data(),c.dungeonTemplateData,12876,
@@ -100,13 +194,32 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	// Producer hash/word changes already force template rescan above; hash-only
 	// source edits with equal local relief do not change these candidate slopes.
 	bool reuse=cache && cache->modelValid;
-	if(reuse)for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
+	if(cache && !cache->solved){cache->solved=std::make_unique<RemasterVisibleFaceSolutionCache>();++cache->solutionAllocations;}
+	auto *saved=cache?cache->solved.get():nullptr;
+	bool solutionReuse=saved && saved->valid && !templatesChanged && saved->room==c.roomIndex && saved->romIdentity==c.romIdentity;
+	// This extends, rather than adds, the required local-source scan. Actor
+	// plane is deliberately absent: BOTH physical planes are compared by value.
+	for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
 		const auto &t=tiles[bg][i];
 		const RemasterVisibleFaceLocalInput now{t.height,t.surface,t.hasHeight,t.hflip,t.vflip,t.stairSourceAmbiguous};
-		if(!(cache->local[bg][i]==now)){reuse=false;break;}
+		if(reuse && !(cache->local[bg][i]==now))reuse=false;
+		if(saved) {
+			RemasterVisibleFaceSupportInput support;
+			for(int p=0;p<2;p++) {
+				const auto &d=maps[bg]->roomDiagnostics->cells[p*4096+i];
+				support.owner[p]=maps[bg]->occupiedFloorOwners[p][i];support.base[p]=maps[bg]->planeOffsets[p][i];
+				support.floorId[p]=d.floorId;support.floorBase[p]=d.floorBase;
+				support.flags[p]=d.wall | d.heightConflict<<1 | d.planeObserved<<2;
+				support.collision[p]=c.collisionAttributes[p*4096+i];
+			}
+			const auto &old=saved->placements[bg][i];
+			if(solutionReuse && (!old.sameGeometry(t) || old.tileHash!=t.tileHash || old.stairSourceAmbiguous!=t.stairSourceAmbiguous ||
+				!(saved->support[bg][i]==support)))solutionReuse=false;
+			saved->placements[bg][i]=t;saved->support[bg][i]=support;
+		}
 	}
-	auto candidateStorage=cache?nullptr:std::make_unique<std::array<std::array<RemasterVisibleFaceCandidate,4096>,2>>();
-	auto &candidates=cache?cache->candidates:*candidateStorage;
+	auto candidateStorage=cache?nullptr:std::make_unique<RemasterVisibleFaceWorkspace>();
+	auto &candidates=cache?cache->candidates:candidateStorage->candidates;
 	if(!reuse) {
 	for(auto &bg:candidates)for(auto &v:bg)v={};
 	auto slopeStorage=std::make_unique<std::array<std::array<std::array<int8_t,2>,4096>,2>>();auto &slopes=*slopeStorage;
@@ -185,6 +298,28 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		int &base=exposureBase[bg][cell];
 		if(base==INT_MIN)base=inst.heightOffset;else if(base!=inst.heightOffset)base=INT_MAX;
 	}
+	const bool hasPlateaus=std::any_of(bg1,bg1+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;}) ||
+		std::any_of(bg2,bg2+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;});
+	const auto plateauSources=hasPlateaus?S9xRemasterVisibleFaceSources(frame):std::vector<RemasterVisibleFaceSource>{};
+	std::vector<RemasterFramePixel> visible(hasPlateaus?selected.size():0);
+	auto sheetExposure=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();
+	for(size_t at=0;at<visible.size();at++) {
+		const auto px=visible[at]=S9xRemasterSelectVisibleOccurrence(frame,at,true,resolver.alttp);
+		if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
+		const auto &inst=frame.tileInstances[px.instanceId-1];if(inst.source!=RemasterSourceType::Background || inst.sourceIndex>1)continue;
+		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,bg=inst.sourceIndex;
+		const auto &t=tiles[bg][cell];const auto word=words[bg][cell];
+		const auto &m=plateauSources[px.instanceId-1];
+		if(t.surface!=Surface::OutOfBounds || m.tileRole!=RemasterTileRole::OutOfBounds || t.stairSourceAmbiguous ||
+			inst.tileId.hash!=t.tileHash || inst.hFlip!=t.hflip || inst.vFlip!=t.vflip || inst.tileNumber!=(word&1023) || inst.palette!=((word>>10)&7) ||
+			m.hasHeight!=t.hasHeight || (m.hasHeight && m.height!=t.height) || frame.contextGeometry.count(px.instanceId) ||
+			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
+		(*sheetExposure)[bg][cell]|=UINT64_C(1)<<((y%8)*8+x%8);
+	}
+	solutionReuse=solutionReuse && saved->exposed==exposed && saved->exposureBase==exposureBase && saved->sheets==*sheetExposure;
+	auto &solvedCells=saved?saved->cells:candidateStorage->cells;
+	if(solutionReuse) {++cache->preparationHits;} else {
+	if(cache){++cache->preparationMisses;++cache->graphBuilds;++cache->oobBuilds;}
 	auto neighbor=[](int cell,int dx,int dy){int x=cell%64+dx,y=cell/64+dy;return x<0||x>=64||y<0||y>=64?-1:y*64+x;};
 	std::vector<Region> regions;std::vector<Contact> contacts;std::vector<FloorContact> floorContacts;
 	std::vector<WallBand> bands;std::vector<DatumContact> datums;
@@ -342,24 +477,6 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 #ifdef REMASTER_WALL_BAND_DIAGNOSTICS
 	equationTrace=nullptr;
 #endif
-	const bool hasPlateaus=std::any_of(bg1,bg1+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;}) ||
-		std::any_of(bg2,bg2+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;});
-	auto plateauResolver=hasPlateaus?std::make_unique<RemasterFrameChannelResolver>(frame):nullptr;
-	std::vector<RemasterFramePixel> visible(hasPlateaus?selected.size():0);
-	auto sheetExposure=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();
-	for(size_t at=0;at<visible.size();at++) {
-		const auto px=visible[at]=plateauResolver->select(frame,at,true).visible;
-		if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
-		const auto &inst=frame.tileInstances[px.instanceId-1];if(inst.source!=RemasterSourceType::Background || inst.sourceIndex>1)continue;
-		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,bg=inst.sourceIndex;
-		const auto &t=tiles[bg][cell];const auto word=words[bg][cell];
-		const auto &m=plateauResolver->effective[px.instanceId-1];
-		if(t.surface!=Surface::OutOfBounds || m.tileRole!=RemasterTileRole::OutOfBounds || t.stairSourceAmbiguous ||
-			inst.tileId.hash!=t.tileHash || inst.hFlip!=t.hflip || inst.vFlip!=t.vflip || inst.tileNumber!=(word&1023) || inst.palette!=((word>>10)&7) ||
-			m.hasHeight!=t.hasHeight || (m.hasHeight && m.height!=t.height) || frame.contextGeometry.count(px.instanceId) ||
-			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
-		(*sheetExposure)[bg][cell]|=UINT64_C(1)<<((y%8)*8+x%8);
-	}
 	auto edge=[](int direction){uint64_t mask=0;for(int k=0;k<8;k++) {
 		int x=direction==2?0:direction==3?7:k,y=direction==0?0:direction==1?7:k;mask|=UINT64_C(1)<<(y*8+x);
 	}return mask;};
@@ -447,37 +564,61 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		if(r.status==1)r.base=solution.base[n];
 	}
 #endif
+	if(candidateStorage)new (&candidateStorage->cells) std::array<std::array<RemasterVisibleFaceSolvedCell,4096>,2>{};
+	for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
+		auto &out=solvedCells[bg][i];out={};int n=nodes[bg][i];
+		if(tiles[bg][i].surface==Surface::OutOfBounds) {
+			const auto &p=plateaus[bg*4096+i];out.status=p.status;out.base=p.base;out.component=p.component;
+		} else if(n>=0) {
+			out.mask=bands[n].mask;out.frame=bands[n].frame;out.component=root(n);out.base=solution.base[n];
+			out.status=conflict[root(n)] || solution.status[n]==Status::Conflict?RemasterVisualClaimStatus::Conflict:
+				solution.status[n]==Status::Solved && owner[root(n)]>=0?RemasterVisualClaimStatus::Solved:RemasterVisualClaimStatus::Unanchored;
+		}
+	}
+	if(saved){saved->exposed=exposed;saved->exposureBase=exposureBase;saved->sheets=*sheetExposure;saved->room=c.roomIndex;saved->romIdentity=c.romIdentity;saved->valid=true;}
+	} // graph preparation/solve/traversal miss; hits project current occurrences below
 	// Change only the actual scene occurrence selected by the shared policy.
 	// Clone per placement/base; never mutate physical map arrays or stock pixels.
-	std::map<std::tuple<uint32_t,int,int,bool>,uint32_t> copies;
+	// Hashing changes lookup only: insertion/clone IDs still follow the exact
+	// scene/main/sub/observed raster first-encounter order below. Never iterate it.
+	std::unordered_map<RemasterVisibleFaceCloneKey,uint32_t,RemasterVisibleFaceCloneHash> copies;
+	// Exposure's scratch is dead here. Reuse it for an invocation-local,
+	// direct-mapped identity memo keyed by BOTH BG/cell and actual occurrence.
+	// Different occurrences evict safely; no source pointers survive clone growth.
+	for(auto &a:checked)a.fill(0);
 	auto annotate=[&](std::vector<RemasterFramePixel> &raster,bool scene) {
 	for(size_t at=0;at<raster.size();at++) {
 		const auto px=raster[at];if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
 		const auto &inst=frame.tileInstances[px.instanceId-1];int bg=inst.sourceIndex;
 		if(inst.source!=RemasterSourceType::Background || bg>1)continue;
-		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,n=nodes[bg][cell];
+		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8;
+		const auto &solved=solvedCells[bg][cell];
 		const auto &tile=tiles[bg][cell];const auto word=words[bg][cell];
-		if(inst.tileId.hash!=tile.tileHash || inst.hFlip!=tile.hflip || inst.vFlip!=tile.vflip ||
-			inst.tileNumber!=(word&1023) || inst.palette!=((word>>10)&7) ||
-			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
 		const bool plateau=tile.surface==Surface::OutOfBounds;
-		if(n<0 && tile.surface!=Surface::Wall && !plateau)continue;
+		if(solved.component<0 && tile.surface!=Surface::Wall && !plateau)continue;
+		if(checked[bg][cell]!=px.instanceId) {
+			checked[bg][cell]=px.instanceId;
+#ifdef REMASTER_VISIBLE_FACE_IDENTITY_CHECK
+			REMASTER_VISIBLE_FACE_IDENTITY_CHECK();
+#endif
+			matches[bg][cell]=inst.tileId.hash==tile.tileHash && inst.hFlip==tile.hflip && inst.vFlip==tile.vflip &&
+				inst.tileNumber==(word&1023) && inst.palette==((word>>10)&7);
+		}
+		if(!matches[bg][cell] || px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
 		bool unsupportedSource=false;
 		if(plateau) {
-			const auto &m=plateauResolver->effective[px.instanceId-1];
+			const auto &m=plateauSources[px.instanceId-1];
 			if(m.tileRole!=RemasterTileRole::OutOfBounds)continue;
 			unsupportedSource=m.hasHeight!=tile.hasHeight || (m.hasHeight && m.height!=tile.height) || frame.contextGeometry.count(px.instanceId);
 		}
-		const uint64_t mask=n<0?UINT64_MAX:bands[n].mask;
+		const uint64_t mask=solved.mask;
 		if(!(mask&(UINT64_C(1)<<px.tilePixel)))continue;
-		const auto status=unsupportedSource?RemasterVisualClaimStatus::Unsupported:plateau?plateaus[bg*4096+cell].status:n<0?RemasterVisualClaimStatus::Unsupported:
-			conflict[root(n)] || solution.status[n]==Status::Conflict?RemasterVisualClaimStatus::Conflict:
-			solution.status[n]==Status::Solved && owner[root(n)]>=0?RemasterVisualClaimStatus::Solved:RemasterVisualClaimStatus::Unanchored;
+		const auto status=unsupportedSource?RemasterVisualClaimStatus::Unsupported:solved.status;
 		// A contextual/actor/transition contribution is not this map's placement
 		// base. Do not erase it when selecting the separate visual representative.
 		int physical=maps[bg]->offsets[cell]==255?0:maps[bg]->offsets[cell];bool physicalConflict=false;
 		if(plateau)physical=0; // explicit role is not the gameplay support beneath this sheet
-		if(n>=0 && bands[n].frame) {
+		if(solved.frame) {
 			physical=INT_MIN;
 			for(const auto &a:maps[bg]->doorframeAttachments)if(a.cell==cell && a.visible && (a.mask&(UINT64_C(1)<<px.tilePixel))) {
 				if(physical!=INT_MIN && physical!=a.base)physicalConflict=true;physical=a.base;
@@ -487,12 +628,12 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		const bool selectedScene=scene && choice.instanceId==px.instanceId && choice.tilePixel==px.tilePixel;
 		const bool publish=selectedScene && status==RemasterVisualClaimStatus::Solved && !physicalConflict && inst.heightOffset==physical &&
 			!inst.hasPlacementHeight && !frame.contextGeometry.count(px.instanceId);
-		const int base=publish?(plateau?plateaus[bg*4096+cell].base:solution.base[n]):inst.heightOffset;
-		const auto key=std::make_tuple(px.instanceId,cell,base,publish);auto it=copies.find(key);
+		const int base=publish?solved.base:inst.heightOffset;
+		const RemasterVisibleFaceCloneKey key{px.instanceId,cell,base,publish};auto it=copies.find(key);
 		if(it==copies.end()){
-			auto copy=inst;copy.heightOffset=base;copy.visualClaim={status,mask,cell,plateau?plateaus[bg*4096+cell].component:n<0?-1:root(n),publish};
+			auto copy=inst;copy.heightOffset=base;copy.visualClaim={status,mask,cell,solved.component,publish};
 			if(plateau && publish) {
-				const auto &m=plateauResolver->effective[px.instanceId-1];
+				const auto &m=plateauSources[px.instanceId-1];
 				copy.geometryStatus=RemasterOccurrenceGeometryStatus::Resolved;copy.placementTileRole=RemasterTileRole::OutOfBounds;
 				if(!m.hasHeight){copy.hasPlacementHeight=true;copy.placementHeight.fill(0);}
 				if(!m.hasNormals){copy.hasPlacementNormals=true;for(int k=0;k<64;k++){copy.placementNormalXyz[k*3]=128;copy.placementNormalXyz[k*3+1]=128;copy.placementNormalXyz[k*3+2]=255;}}

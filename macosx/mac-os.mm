@@ -741,6 +741,10 @@ static NSSlider			*remasterSamplesSlider;
 static NSSlider *remasterRepresentativeSlider;
 static NSTextField *remasterRepresentativeInput;
 static NSButton *remasterRepresentativeEnabled;
+static NSSlider *remasterOffscreenRepresentativeSlider, *remasterAreaOffscreenRepresentativeSlider;
+static NSTextField *remasterOffscreenRepresentativeInput, *remasterAreaOffscreenRepresentativeInput;
+static NSButton *remasterOffscreenRepresentativeEnabled;
+static NSButton *remasterAreaOffscreenRepresentativeEnabled, *remasterAreaOffscreenRepresentativeDefault;
 static NSTextField		*remasterSamplesInput;
 static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
@@ -4483,10 +4487,51 @@ void QuitWithFatalError ( NSString *message)
 
 @class S9xEngine;
 
+// Keep viewport geometry independent of the full, unscaled controls document.
+static NSRect S9xProfileControlsConstrainedFrame(NSRect frame, NSRect visible)
+{
+	if (NSWidth(visible) <= 0 || NSHeight(visible) <= 0) return frame;
+	const CGFloat top = NSMaxY(frame);
+	frame.size.width = MIN(NSWidth(visible), MAX(450, NSWidth(frame)));
+	frame.size.height = MIN(NSHeight(visible), MAX(342, NSHeight(frame)));
+	frame.origin.x = MAX(NSMinX(visible), MIN(NSMinX(frame), NSMaxX(visible) - NSWidth(frame)));
+	frame.origin.y = MAX(NSMinY(visible), MIN(top - NSHeight(frame), NSMaxY(visible) - NSHeight(frame)));
+	return frame;
+}
+
+static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView *content)
+{
+	NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:panel.contentView.bounds];
+	scroll.borderType = NSNoBorder;
+	scroll.hasVerticalScroller = YES;
+	scroll.hasHorizontalScroller = NO;
+	// Reserve scrollbar space even when the user's system preference is overlay.
+	scroll.scrollerStyle = NSScrollerStyleLegacy;
+	scroll.autohidesScrollers = NO;
+	scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+	scroll.documentView = content;
+	[panel.contentView addSubview:scroll];
+	return scroll;
+}
+
 @interface S9xRemasterProfilePanel : NSPanel
 @end
 
 @implementation S9xRemasterProfilePanel
+- (void)setFrame:(NSRect)frame display:(BOOL)display
+{
+	// Also constrain later placement restores and programmatic resizes. Choose the
+	// requested display, not the old window.screen, when restoring across monitors.
+	NSScreen *screen = self.screen ?: NSScreen.mainScreen;
+	CGFloat bestArea = 0;
+	for (NSScreen *candidate in NSScreen.screens) {
+		NSRect overlap = NSIntersectionRect(frame, candidate.visibleFrame);
+		CGFloat area = NSWidth(overlap) * NSHeight(overlap);
+		if (area > bestArea) { screen = candidate; bestArea = area; }
+	}
+	[super setFrame:S9xProfileControlsConstrainedFrame(frame, screen.visibleFrame) display:display];
+}
+
 - (void)cancelOperation:(id)sender
 {
 	// Escape may cancel editing, but must not dismiss Profile Controls.
@@ -9349,7 +9394,8 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)controlTextDidChange:(NSNotification *)notification
 {
-	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput || notification.object == remasterAreaReflectanceInput ||
+	if (notification.object == remasterOffscreenRepresentativeInput) { [self changeRemasterOffscreenRepresentativeEmitters:notification.object]; return; }
+	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput || notification.object == remasterAreaOffscreenRepresentativeInput || notification.object == remasterAreaReflectanceInput ||
 		notification.object == remasterAreaBrightness || notification.object == remasterAreaDirection[0] ||
 		notification.object == remasterAreaDirection[1] || notification.object == remasterAreaDirection[2])
 	{
@@ -10066,7 +10112,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (NSUndoManager *)windowWillReturnUndoManager:(NSWindow *)window
 {
-	return window == remasterInspectorPanel || window == remasterProfileSettingsPanel ? remasterUndoManager : nil;
+	return window == remasterInspectorPanel || window == remasterProfileSettingsPanel || window == remasterAreaPanel ? remasterUndoManager : nil;
 }
 
 - (void)showRemasterProfileSettings
@@ -10077,8 +10123,8 @@ void QuitWithFatalError ( NSString *message)
 	[self savePreviousWorkspace];
 	if (!remasterProfileSettingsPanel)
 	{
-		remasterProfileSettingsPanel = [[S9xRemasterProfilePanel alloc] initWithContentRect:NSMakeRect(0, 0, 430, 1166)
-			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+		remasterProfileSettingsPanel = [[S9xRemasterProfilePanel alloc] initWithContentRect:NSMakeRect(0, 0, 450, 760)
+			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterProfileSettingsPanel.title = @"Profile Controls";
 		remasterProfileSettingsPanel.releasedWhenClosed = NO;
@@ -10087,7 +10133,9 @@ void QuitWithFatalError ( NSString *message)
 		remasterProfileSettingsPanel.floatingPanel = NO;
 		remasterProfileSettingsPanel.level = NSNormalWindowLevel;
 		remasterProfileSettingsPanel.delegate = self;
-		NSView *content = remasterProfileSettingsPanel.contentView;
+		remasterProfileSettingsPanel.contentMinSize = NSMakeSize(450, 320);
+		NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 430, 1166)];
+		content.autoresizingMask = NSViewNotSizable;
 		NSTextField *reflectanceTitle = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 930, 300, 24)];
 		reflectanceTitle.stringValue = @"Reflected Light Boost [Default]";
 		reflectanceTitle.editable = NO;
@@ -10367,14 +10415,36 @@ void QuitWithFatalError ( NSString *message)
 		remasterLoadedProfileLabel.drawsBackground = NO;
 		remasterLoadedProfileLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 		[content addSubview:remasterLoadedProfileLabel];
-		// This fixed-layout panel may have grown since its position was saved.
-		// Restore the position, but not an obsolete size that clips the heading.
-		const NSSize layoutSize = remasterProfileSettingsPanel.frame.size;
+		// Insert hidden-source quality directly below visible representatives.
+		[content setFrameSize:NSMakeSize(430, 1278)];
+		for (NSView *view in [content.subviews copy]) if (view.frame.origin.y >= 602) {
+			NSRect rect = view.frame; rect.origin.y += 112; view.frame = rect;
+		}
+		remasterOffscreenRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 674, 390, 24)];
+		remasterOffscreenRepresentativeEnabled.buttonType = NSButtonTypeSwitch;
+		remasterOffscreenRepresentativeEnabled.title = @"Offscreen Representative Emitters Per Tile [Default]";
+		remasterOffscreenRepresentativeEnabled.font = [NSFont systemFontOfSize:11];
+		remasterOffscreenRepresentativeEnabled.toolTip = @"Hidden sources, including HUD-covered emission. Uncheck for exact per-pixel sources (0); 1–8 approximates source transport and may change lighting. Does not change visible sources.";
+		remasterOffscreenRepresentativeEnabled.target = self; remasterOffscreenRepresentativeEnabled.action = @selector(changeRemasterOffscreenRepresentativeEmitters:);
+		[content addSubview:remasterOffscreenRepresentativeEnabled];
+		remasterOffscreenRepresentativeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 644, 300, 24)];
+		remasterOffscreenRepresentativeSlider.minValue = 1; remasterOffscreenRepresentativeSlider.maxValue = 8;
+		remasterOffscreenRepresentativeSlider.numberOfTickMarks = 8; remasterOffscreenRepresentativeSlider.allowsTickMarkValuesOnly = YES;
+		remasterOffscreenRepresentativeSlider.continuous = NO;
+		remasterOffscreenRepresentativeSlider.target = self; remasterOffscreenRepresentativeSlider.action = @selector(changeRemasterOffscreenRepresentativeEmitters:);
+		[content addSubview:remasterOffscreenRepresentativeSlider];
+		remasterOffscreenRepresentativeInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 644, 60, 24)];
+		remasterOffscreenRepresentativeInput.delegate = self;
+		remasterOffscreenRepresentativeInput.target = self; remasterOffscreenRepresentativeInput.action = @selector(changeRemasterOffscreenRepresentativeEmitters:);
+		[content addSubview:remasterOffscreenRepresentativeInput];
+		S9xProfileControlsInstallScrollView(remasterProfileSettingsPanel, content);
+		// Saved sizes describe a viewport, never the document height. The panel's
+		// setFrame override clamps even obsolete/offscreen workspace placements.
 		S9xInitializeWindowPlacement(remasterProfileSettingsPanel, @"RemasterSceneControls");
-		NSRect restoredFrame = remasterProfileSettingsPanel.frame;
-		restoredFrame.origin.y += restoredFrame.size.height - layoutSize.height;
-		restoredFrame.size = layoutSize;
-		[remasterProfileSettingsPanel setFrame:restoredFrame display:NO];
+		[remasterProfileSettingsPanel setFrame:remasterProfileSettingsPanel.frame display:NO];
+		// Unflipped document: top is maxY. Only initialize once; reopening and
+		// metrics refresh must preserve the user's chosen scroll position.
+		[content scrollPoint:NSMakePoint(0, NSHeight(content.bounds))];
 	}
 	remasterLoadedProfileLabel.stringValue = [@"Profile: " stringByAppendingString:
 		remasterEditingProfileURL.lastPathComponent ?: @"(unknown)"];
@@ -10419,7 +10489,7 @@ void QuitWithFatalError ( NSString *message)
 	[self savePreviousWorkspace];
 	if (!remasterAreaPanel)
 	{
-		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 660)
+		remasterAreaPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 410, 760)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
 		remasterAreaPanel.title = @"Area Settings";
 		remasterAreaPanel.releasedWhenClosed = NO;
@@ -10516,6 +10586,29 @@ void QuitWithFatalError ( NSString *message)
 		remasterAreaReflectanceDefault.title = @"Use profile default";
 		remasterAreaReflectanceDefault.target = self; remasterAreaReflectanceDefault.action = @selector(changeRemasterAreaSettings:);
 		[content addSubview:remasterAreaReflectanceDefault];
+		// Keep the visible and hidden quality blocks together, above reflected light.
+		for (NSView *view in [content.subviews copy]) if (view.frame.origin.y >= 186) { NSRect frame = view.frame; frame.origin.y += 100; view.frame = frame; }
+		remasterAreaOffscreenRepresentativeEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 246, 380, 24)];
+		remasterAreaOffscreenRepresentativeEnabled.buttonType = NSButtonTypeSwitch;
+		remasterAreaOffscreenRepresentativeEnabled.title = @"Offscreen Representative Emitters per Tile (1–8)";
+		remasterAreaOffscreenRepresentativeEnabled.font = [NSFont systemFontOfSize:11];
+		remasterAreaOffscreenRepresentativeEnabled.toolTip = @"Includes HUD-covered hidden sources. Uncheck for exact per-pixel sources (0). Approximation may change lighting; visible quality is independent.";
+		remasterAreaOffscreenRepresentativeEnabled.target = self; remasterAreaOffscreenRepresentativeEnabled.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaOffscreenRepresentativeEnabled];
+		remasterAreaOffscreenRepresentativeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 216, 260, 24)];
+		remasterAreaOffscreenRepresentativeSlider.minValue = 1; remasterAreaOffscreenRepresentativeSlider.maxValue = 8;
+		remasterAreaOffscreenRepresentativeSlider.numberOfTickMarks = 8; remasterAreaOffscreenRepresentativeSlider.allowsTickMarkValuesOnly = YES;
+		remasterAreaOffscreenRepresentativeSlider.target = self; remasterAreaOffscreenRepresentativeSlider.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaOffscreenRepresentativeSlider];
+		remasterAreaOffscreenRepresentativeInput = [[NSTextField alloc] initWithFrame:NSMakeRect(300, 216, 80, 24)];
+		remasterAreaOffscreenRepresentativeInput.delegate = self;
+		remasterAreaOffscreenRepresentativeInput.target = self; remasterAreaOffscreenRepresentativeInput.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaOffscreenRepresentativeInput];
+		remasterAreaOffscreenRepresentativeDefault = [[NSButton alloc] initWithFrame:NSMakeRect(20, 186, 370, 24)];
+		remasterAreaOffscreenRepresentativeDefault.buttonType = NSButtonTypeSwitch;
+		remasterAreaOffscreenRepresentativeDefault.title = @"Use profile default";
+		remasterAreaOffscreenRepresentativeDefault.target = self; remasterAreaOffscreenRepresentativeDefault.action = @selector(changeRemasterAreaSettings:);
+		[content addSubview:remasterAreaOffscreenRepresentativeDefault];
 		label(@"Outdoors: these settings apply to the entire overworld.", NSMakeRect(20, 56, 380, 30)).font = [NSFont systemFontOfSize:10];
 		remasterAreaSave = [[NSButton alloc] initWithFrame:NSMakeRect(280, 15, 110, 30)];
 		remasterAreaSave.title = @"Save"; remasterAreaSave.bezelStyle = NSBezelStyleRounded;
@@ -10563,6 +10656,10 @@ void QuitWithFatalError ( NSString *message)
 		remasterAreaRepresentativeEnabled.state = scene.representativeEmitters ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterAreaRepresentativeSlider.integerValue = scene.representativeEmitters ? scene.representativeEmitters : 4;
 		remasterAreaRepresentativeInput.integerValue = remasterAreaRepresentativeSlider.integerValue;
+		remasterAreaOffscreenRepresentativeDefault.state = stored == remasterEditingProfile.areaSceneSettings.end() || stored->second.offscreenRepresentativeEmitters < 0 ? NSControlStateValueOn : NSControlStateValueOff;
+		remasterAreaOffscreenRepresentativeEnabled.state = scene.offscreenRepresentativeEmitters ? NSControlStateValueOn : NSControlStateValueOff;
+		remasterAreaOffscreenRepresentativeSlider.integerValue = scene.offscreenRepresentativeEmitters ? scene.offscreenRepresentativeEmitters : 4;
+		remasterAreaOffscreenRepresentativeInput.integerValue = remasterAreaOffscreenRepresentativeSlider.integerValue;
 		remasterAreaEnabled.state = light.enabled ? NSControlStateValueOn : NSControlStateValueOff;
 		for (int i = 0; i < 3; ++i) remasterAreaDirection[i].stringValue = [NSString stringWithFormat:@"%.9g", light.direction[i]];
 		remasterAreaBrightness.stringValue = [NSString stringWithFormat:@"%.9g", S9xRemasterDirectionalBrightnessToUi(light.brightness)];
@@ -10586,6 +10683,9 @@ void QuitWithFatalError ( NSString *message)
 	remasterAreaReflectanceDefault.enabled = area.valid();
 	remasterAreaReflectanceSlider.enabled = remasterAreaReflectanceInput.enabled = area.valid() && remasterAreaReflectanceDefault.state == NSControlStateValueOff;
 	remasterAreaRepresentativeEnabled.enabled = area.valid();
+	remasterAreaOffscreenRepresentativeDefault.enabled = area.valid();
+	remasterAreaOffscreenRepresentativeEnabled.enabled = area.valid() && remasterAreaOffscreenRepresentativeDefault.state == NSControlStateValueOff;
+	remasterAreaOffscreenRepresentativeSlider.enabled = remasterAreaOffscreenRepresentativeInput.enabled = remasterAreaOffscreenRepresentativeEnabled.enabled && scene.offscreenRepresentativeEmitters != 0;
 	remasterAreaRepresentativeSlider.enabled = remasterAreaRepresentativeInput.enabled = area.valid() && scene.representativeEmitters != 0;
 	remasterAreaSave.enabled = remasterEditingProfileLoaded && RemasterAreaDirty();
 }
@@ -10609,6 +10709,13 @@ void QuitWithFatalError ( NSString *message)
 		if (!RemasterProfileParsing::ParseUnsigned(remasterAreaRepresentativeInput.stringValue.UTF8String, representatives) || representatives < 1 || representatives > 8) return NO;
 	}
 	scene.representativeEmitters = int(representatives);
+	if (sender == remasterAreaOffscreenRepresentativeSlider) remasterAreaOffscreenRepresentativeInput.integerValue = remasterAreaOffscreenRepresentativeSlider.integerValue;
+	const bool inheritOffscreen = remasterAreaOffscreenRepresentativeDefault.state == NSControlStateValueOn;
+	uint32_t offscreen = 0;
+	if (!inheritOffscreen && remasterAreaOffscreenRepresentativeEnabled.state == NSControlStateValueOn &&
+		(!RemasterProfileParsing::ParseUnsigned(remasterAreaOffscreenRepresentativeInput.stringValue.UTF8String, offscreen) || offscreen < 1 || offscreen > 8)) return NO;
+	const int storedOffscreen = inheritOffscreen ? -1 : int(offscreen);
+		scene.offscreenRepresentativeEmitters = inheritOffscreen ? (remasterEditingProfile.offscreenRepresentativeEmitters < 0 ? 1 : remasterEditingProfile.offscreenRepresentativeEmitters) : int(offscreen);
 	if (sender == remasterAreaBack)
 		remasterAreaDirection[2].floatValue = std::abs(remasterAreaDirection[2].floatValue) *
 			(remasterAreaBack.state == NSControlStateValueOn ? -1 : 1);
@@ -10641,10 +10748,22 @@ void QuitWithFatalError ( NSString *message)
 	const float oldStoredBoost = storedScene == remasterEditingProfile.areaSceneSettings.end() ? -1 : storedScene->second.reflectanceBoost;
 	const float storedBoost = inheritBoost ? -1 : scene.reflectanceBoost;
 	const bool boostChanged = oldStoredBoost != storedBoost;
+	const int oldStoredOffscreen = storedScene == remasterEditingProfile.areaSceneSettings.end() ? -1 : storedScene->second.offscreenRepresentativeEmitters;
+	const bool offscreenChanged = oldStoredOffscreen != storedOffscreen;
+	remasterAreaOffscreenRepresentativeEnabled.enabled = !inheritOffscreen;
+	remasterAreaOffscreenRepresentativeSlider.enabled = remasterAreaOffscreenRepresentativeInput.enabled = !inheritOffscreen && scene.offscreenRepresentativeEmitters != 0;
+	remasterAreaOffscreenRepresentativeEnabled.state = scene.offscreenRepresentativeEmitters ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterAreaOffscreenRepresentativeSlider.integerValue = scene.offscreenRepresentativeEmitters ? scene.offscreenRepresentativeEmitters : 4;
+	remasterAreaOffscreenRepresentativeInput.integerValue = remasterAreaOffscreenRepresentativeSlider.integerValue;
 	remasterAreaReflectanceSlider.enabled = remasterAreaReflectanceInput.enabled = !inheritBoost;
 	if (inheritBoost) remasterAreaReflectanceInput.stringValue = [NSString stringWithFormat:@"%.6g", scene.reflectanceBoost];
 	remasterAreaReflectanceSlider.floatValue = scene.reflectanceBoost;
-	if (old == light && oldScene == scene && !boostChanged) return YES;
+	if (old == light && oldScene == scene && !boostChanged && !offscreenChanged) return YES;
+	if (offscreenChanged) {
+		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterOffscreenAreaSetting:)
+			object:@{@"key": [NSString stringWithUTF8String:sceneKey.c_str()], @"count": @(oldStoredOffscreen), @"present": @(storedScene != remasterEditingProfile.areaSceneSettings.end())}];
+		[remasterUndoManager setActionName:@"Change Offscreen Representatives"];
+	}
 	const std::string key = S9xRemasterAreaKey(remasterDisplayedArea.id);
 	RemasterProfile defaults;
 	if (!(old == light)) {
@@ -10652,12 +10771,14 @@ void QuitWithFatalError ( NSString *message)
 			remasterEditingProfile.areaLights.erase(key);
 		else remasterEditingProfile.areaLights[key] = light;
 	}
-	if (!(oldScene == scene) || boostChanged) {
+	if (!(oldScene == scene) || boostChanged || offscreenChanged) {
 		// Unrelated edits must not freeze inherited defaults.
 		auto &stored = remasterEditingProfile.areaSceneSettings[sceneKey];
 		stored.originalSceneContribution = scene.originalSceneContribution;
 		if (oldScene.representativeEmitters != scene.representativeEmitters) stored.representativeEmitters = scene.representativeEmitters;
 		if (boostChanged) stored.reflectanceBoost = storedBoost;
+		if (offscreenChanged) S9xRemasterSetAreaOffscreenRepresentatives(remasterEditingProfile,
+			sceneKey, storedOffscreen, remasterSavedAreaSceneSettings.count(sceneKey) != 0);
 	}
 	remasterAreaOriginalSlider.floatValue = scene.originalSceneContribution;
 	RemasterRecording::Global().Revision(remasterEditingProfile,remasterDisplayedArea);
@@ -10690,6 +10811,31 @@ void QuitWithFatalError ( NSString *message)
 	[self writeRemasterProfile];
 }
 
+- (void)restoreRemasterOffscreenAreaSetting:(NSDictionary *)snapshot
+{
+	const std::string key = [snapshot[@"key"] UTF8String];
+	const auto found = remasterEditingProfile.areaSceneSettings.find(key);
+	const int current = found == remasterEditingProfile.areaSceneSettings.end() ? -1 : found->second.offscreenRepresentativeEmitters;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterOffscreenAreaSetting:)
+		object:@{@"key": snapshot[@"key"], @"count": @(current), @"present": @(found != remasterEditingProfile.areaSceneSettings.end())}];
+	[remasterUndoManager setActionName:@"Change Offscreen Representatives"];
+	S9xRemasterSetAreaOffscreenRepresentatives(remasterEditingProfile, key,
+		[snapshot[@"count"] intValue], remasterSavedAreaSceneSettings.count(key) != 0);
+	remasterAreaNeedsRefresh = remasterMetadataNeedsSync = true;
+	RemasterRecording::Global().Revision(remasterEditingProfile, remasterDisplayedArea);
+	remasterEditingProfileDirty = remasterNonSceneDirty || RemasterAreaDirty() || !S9xRemasterSceneSettingsEqual(
+		S9xRemasterGetSceneSettings(remasterEditingProfile), remasterSavedSceneSettings);
+	remasterAreaSave.enabled = RemasterAreaDirty();
+	remasterSettingsSaveButton.enabled = remasterSaveProfileButton.enabled = remasterNpcSaveButton.enabled = remasterEditingProfileDirty;
+	if (running) S9xRemasterSetAreaSceneSettings(remasterEditingProfile.areaSceneSettings);
+	if (remasterFramePresenting) {
+		SyncRemasterEditingMetadataToFrame();
+		DrawRemasterFrame(remasterReplayFrame, remasterReplayDebugMode,
+			remasterSelectionValid ? &remasterSelectedTiles : nullptr, remasterLightingEnabled, remasterLightingView);
+	}
+	[self refreshRemasterAreaSettings];
+}
+
 - (void)changeRemasterMetricsEnabled:(id)sender
 {
 	S9xRemasterSetPerformanceMetricsEnabled(remasterMetricsButton.state == NSControlStateValueOn);
@@ -10717,7 +10863,7 @@ void QuitWithFatalError ( NSString *message)
 		 "  pacing wait %.2f ms\n"
 		 "GPU FRAME  %.2f ms (all graphics)\n"
 		 "  %@\n"
-		 "  %u emitters / %u direct samples\n"
+		 "  %u visible emitting pixels / %u direct samples\n"
 		 "  %u spheres / %u max samples | batch %u\n"
 		 "PRESENT CPU  queue %.2f  |  drawable %.2f ms\n"
 		 "Latest samples may be different frames.",
@@ -10980,6 +11126,7 @@ void QuitWithFatalError ( NSString *message)
 
 - (void)refreshRemasterRepresentativeControls
 {
+	[self refreshRemasterOffscreenRepresentativeControls];
 	const uint8_t count = remasterEditingProfile.representativeEmitters;
 	remasterRepresentativeEnabled.state = count ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterRepresentativeSlider.integerValue = count ? count : 4;
@@ -10999,6 +11146,33 @@ void QuitWithFatalError ( NSString *message)
 	if (count == before.representativeEmitters) return;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(16, remasterEditingProfile.schemaVersion);
 	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Representative Emitters"];
+}
+
+- (void)refreshRemasterOffscreenRepresentativeControls
+{
+	const int stored = remasterEditingProfile.offscreenRepresentativeEmitters;
+	const int count = stored < 0 ? 1 : stored;
+	remasterOffscreenRepresentativeEnabled.state = count ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterOffscreenRepresentativeEnabled.enabled = YES;
+	remasterOffscreenRepresentativeSlider.integerValue = remasterOffscreenRepresentativeInput.integerValue = count ? count : 4;
+	remasterOffscreenRepresentativeSlider.enabled = remasterOffscreenRepresentativeInput.enabled = count > 0;
+}
+
+- (void)changeRemasterOffscreenRepresentativeEmitters:(id)sender
+{
+	if (!remasterEditingProfileLoaded) return;
+	int count = 0;
+	if (remasterOffscreenRepresentativeEnabled.state == NSControlStateValueOn) {
+		if (sender == remasterOffscreenRepresentativeSlider) remasterOffscreenRepresentativeInput.integerValue = remasterOffscreenRepresentativeSlider.integerValue;
+		uint32_t value;
+		if (!RemasterProfileParsing::ParseUnsigned(remasterOffscreenRepresentativeInput.stringValue.UTF8String, value) || value < 1 || value > 8) { NSBeep(); return; }
+		count = int(value);
+	}
+	const auto before = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	remasterEditingProfile.offscreenRepresentativeEmitters = count;
+	[self refreshRemasterOffscreenRepresentativeControls];
+	if (count == before.offscreenRepresentativeEmitters) return;
+	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Offscreen Representatives"];
 }
 
 - (void)changeRemasterSamplesPerFrame:(id)sender

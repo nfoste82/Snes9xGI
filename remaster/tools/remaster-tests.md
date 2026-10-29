@@ -15,6 +15,13 @@ stack cases in `full` also load the checked-in
 
 ## Commands
 
+The full suite includes `surface_mesh` (independent ramps/domains and cached/full
+parity), `surface_mesh_build_work` (connected-vertex work bound and plane oracle),
+and `lighting_local_selection` (complete fields/donors/claims/samples/normals/mesh
+against frozen and fresh consumers). Optional external frozen-header differential
+and native scrolling evidence are documented in
+`remaster/docs/lighting/room055_scrolling_optimization.md`.
+
 ```sh
 # Inspect the curated selection; no compiler/GPU or output directory needed.
 python3 remaster/tools/run_remaster_tests.py --list
@@ -66,6 +73,9 @@ does not launch any benchmark, emulator, or parallel test workers.
 | quick | `obstacle_group_editor` | Repeated OBJ occurrences, reviewed footprint completion and H/V/Z preservation |
 | quick | `paused_obstacle` | Production EndFrame packet retention, same-frame sidecars, paused effective height/normal invariance and bulk Z refresh |
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
+| full adds | `held_lamp_hud_lookup` | Shared production indexed HUD classification and scene-color preparation; original-predicate oracle, first-match duplicates, contrasting colors, malformed inputs and actual field-consumer parity |
+| full adds | `lighting_local_selection` | Exact local old/new raster and candidate invalidation versus frozen and fresh consumers; complete donors, claims, fields, normals and mesh, authored zeros and global fallbacks |
+| full adds | `visible_face_annotation_work` | Invocation-local placement-identity memo work counts, occurrence/cell eviction, forced instance growth and ordered-output differential evidence |
 | full adds | `context_location_publication` | `EndFrame`: BG locations remain selectable with zero, one or multiple named contexts; capture roundtrip |
 | full adds | `layer_view` | Exhaustive background enable/forced masks, subscreen-only exposure, OBJ exclusion and frame-boundary inspection latch |
 | full adds | `tile_selection_highlight` | BG1/BG2 visible selection on main/subscreen; hidden, invalid and independent lighting-scene ownership rejection |
@@ -194,3 +204,10 @@ Per-run JSON/logs remain under `build/remaster-tests`; rerun after new fixes.
 See [remaster-regressions.md](remaster-regressions.md) for freeze-based Release
 benchmarks, repeated baseline recording, performance failure thresholds and
 the distinction between synthetic transition checks and gameplay captures.
+
+## Material lookup construction work
+
+`lighting_material_lookup_work` checks bounded invocation-local material-name
+resolution, LAST duplicate material/metadata precedence, explicit empty selectors,
+absent default names, missing names, authored zeros and switchbacks. Its optional
+`REFERENCE_HEADER` build compares the frozen pre-change field consumer independently.

@@ -18,6 +18,10 @@ struct RemasterRoomEmitterDiagnostics
 inline bool S9xRemasterRoomEmitterLifecycle(const RemasterDungeonFloorContext &c)
 {
 	if(c.module != 7)return false;
+	// All eight USA subtile handlers retain this same constructed room. Never
+	// retain historical identities: enumerate current maps/VRAM/palette below.
+	if(c.submodule==1)return c.constructionPhase<8;
+	if(c.submodule==5)return true; // final subtile ControlShutters, no loader
 	// WRAM $B0 is subsubmodule_index, reused by each module handler. In
 	// Module07_08/10, 0 initializes and 1 climbs; neither constructs the room.
 	// Other stair phases are not present in the verified two-entry dispatch.
@@ -58,6 +62,13 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		std::array<float,3> color = {};
 	};
 	std::vector<Source> sources;
+	// During same-room scrolling retain the conservative whole-room union.
+	// Missing/contradictory settled evidence likewise preserves legacy output.
+	const auto compartment=(c.submodule==0 && c.constructionPhase==0) ?
+		S9xRemasterDungeonCompartment(c.layoutEvidence,c.backgroundScrollX,c.backgroundScrollY) : RemasterDungeonCompartment{};
+	struct Candidate { int layer,cell; uint16_t word,address; RemasterTileContentId id; const RemasterAssetMetadata *asset; };
+	std::vector<Candidate> candidates;
+	std::array<std::array<uint8_t,4096>,2> emittingCells={}, admittedCells={};
 	const int scrollX = c.backgroundScrollX & 511, scrollY = c.backgroundScrollY & 511;
 	for (int layer : {1, 0}) for (int cell = 0; cell < 4096; cell++)
 	{
@@ -102,6 +113,38 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			if(e[3] && (e[0] || e[1] || e[2])) { emitting=true; break; }
 		}
 		if(!emitting)continue;
+		candidates.push_back({layer,cell,word,address,found->second,&a});
+		emittingCells[layer][cell]=1;
+	}
+	// This is only conservative admission, NOT representative grouping. Keep an
+	// entire cardinally connected emitting footprint if any tile touches the
+	// active compartment. No reciprocal/self links or authored arrays change.
+	for(int layer=0;layer<2;layer++) {
+		std::vector<int> queue;
+		for(int cell=0;cell<4096;cell++)if(emittingCells[layer][cell] && compartment.containsTile(cell%64*8,cell/64*8)) {
+			admittedCells[layer][cell]=1;queue.push_back(cell);
+		}
+		for(size_t k=0;k<queue.size();k++) {
+			int cell=queue[k];
+			for(int next:{cell%64?cell-1:-1,cell%64<63?cell+1:-1,cell>=64?cell-64:-1,cell<4032?cell+64:-1})
+				if(next>=0 && emittingCells[layer][next] && !admittedCells[layer][next]){admittedCells[layer][next]=1;queue.push_back(next);}
+		}
+	}
+	for(const auto &candidate:candidates) {
+		const int layer=candidate.layer,cell=candidate.cell;
+		if(!admittedCells[layer][cell])continue;
+		const auto word=candidate.word,address=candidate.address;
+		const auto &a=*candidate.asset;
+		auto emissionAt = [&](int pixel) {
+			std::array<uint8_t,4> e;std::copy_n(a.emissionRgba.data()+pixel*4,4,e.begin());
+			if(!(a.emissionColorMask & (UINT64_C(1)<<pixel))) {
+				unsigned index=0,y=pixel/8,x=pixel%8;
+				for(unsigned p=0;p<4;p++)index|=((c.graphics[uint16_t(address+p/2*16+y*2+p%2)]>>(7-x))&1)<<p;
+				const uint16_t rgb=c.emitterPalette && index?S9xRemasterPaletteRgb555(c.emitterPalette[((word>>10)&7)*16+index]):0;
+				for(unsigned k=0;k<3;k++)e[k]=uint8_t(((((rgb>>(10-k*5))&31)*527)+23)>>6);
+			}
+			return e;
+		};
 		d.placements++;
 		const auto *map=layer==1 ? bg2 : bg1;
 		if (!map) { d.unknownBases++; continue; }
@@ -112,7 +155,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			// planeOffsets may describe a floor UNDER an unresolved wall/overlay;
 			// neither the active plane nor a nearby solved cell proves ownership.
 			if (map->roomIndex!=c.roomIndex || map->offsets[cell]==255 ||
-				(map->producerHashes[cell] && (map->producerHashes[cell]!=found->second.hash ||
+				(map->producerHashes[cell] && (map->producerHashes[cell]!=candidate.id.hash ||
 				map->producerFlips[cell]!=(uint8_t(bool(word&0x4000)) | (uint8_t(bool(word&0x8000))<<1)))))
 			{ d.unknownBases++; continue; }
 			datum=map->offsets[cell];

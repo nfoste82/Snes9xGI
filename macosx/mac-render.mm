@@ -576,7 +576,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	auto trace=frame.lightingTrace;
 	trace.bounces=frame.indirectBounceCount;trace.connections=frame.samplesPerFrame;
 	trace.representatives=frame.representativeEmitters;trace.directional=frame.directionalLight.enabled;
-	if(RemasterLightingTrace::enabled() && !trace.id) {
+	if(RemasterLightingTrace::legacyEnabled() && !trace.id) {
 		trace.id=RemasterLightingTrace::nextId(); trace.begin=RemasterLightingTrace::now();
 	}
 	RemasterLightingTrace::Scope fieldTimer(&trace,RemasterLightingTrace::Fields);
@@ -608,6 +608,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	slotTimer.stop();
 	if (lighting && !meshView && resourceSlot < 0)
 	{
+		fieldTimer.stop();
+		RemasterLiveTrace::renderer(trace,false);
 		if(trace.id)if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
 			std::ofstream out(std::string(path)+".drops",std::ios::app);
 			out<<"{\"frame_id\":"<<trace.id<<",\"reason\":\"slot_drop\"}\n";
@@ -624,20 +626,24 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const bool useScene = lighting && frame.scenePixels.size() == frame.mainPixels.size() &&
 		frame.sceneRgb555.size() == frame.originalRgb555.size();
 	const auto &scenePixels = useScene ? frame.scenePixels : frame.mainPixels;
+	RemasterLightingTrace::Scope sceneTimer(&trace,RemasterLightingTrace::Scene);
 	static std::vector<uint16_t> sceneColors;
 	if (useScene)
 	{
-		sceneColors = frame.sceneRgb555;
-		for (size_t i = 0; i < sceneColors.size(); i++)
-			if (S9xRemasterHeldLampHudPixel(frame, i)) sceneColors[i] = frame.originalRgb555[i];
+		S9xRemasterPrepareHeldLampSceneColors(frame, sceneColors);
 	}
+	sceneTimer.stop();
+	RemasterLightingTrace::Scope ownersTimer(&trace,RemasterLightingTrace::Owners);
 	owners.clear();
 	owners.reserve(frame.mainPixels.size());
 	for (const RemasterFramePixel &pixel : scenePixels)
 		owners.push_back(pixel.owner);
+	ownersTimer.stop();
+	RemasterLightingTrace::Scope highlightsTimer(&trace,RemasterLightingTrace::Highlights);
 	static std::vector<uint8_t> highlights;
 	highlights.clear();
 	if (frame.obstacleLocationSelection) {
+		trace.highlightPath=1;trace.highlightCount=frame.selectedObstacleInstances.size();
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (uint32_t y=0;y<frame.height;y++) for (uint32_t x=0;x<frame.width;x++) {
 			const auto *instance=S9xRemasterFrameVisibleInstanceAt(frame,x,y);
@@ -646,6 +652,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		}
 	}
 	else if (frame.contextLocationSelection || !frame.selectedContextInstances.empty()) {
+		trace.highlightPath=2;trace.highlightCount=frame.selectedContextInstances.size();
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (uint32_t y=0;y<frame.height;y++) for (uint32_t x=0;x<frame.width;x++) {
 			const auto *pixel=S9xRemasterFrameVisibleTilePixelAt(frame,x,y);
@@ -655,11 +662,13 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	}
 	else if (selectedTiles && !selectedTiles->empty())
 	{
+		trace.highlightPath=3;trace.highlightCount=selectedTiles->size();
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (const RemasterTileContentId &tileId : *selectedTiles)
 			for (uint32_t offset : S9xRemasterFrameVisibleOccurrences(frame, tileId))
 				highlights[offset] = 1;
 	}
+	highlightsTimer.stop();
 	static RemasterLightingFieldCache fieldCache;
 	auto &lightingField = fieldCache.occlusion;
 	auto &emissionField = fieldCache.emission;
@@ -686,11 +695,15 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		mesh = std::getenv("S9X_REMASTER_FULL_MESH") ?
 			RemasterSurfaceMesh::build(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f) :
 			meshCache.update(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f);
+		meshTimer.stop();
+		RemasterLightingTrace::Scope meshCopyTimer(&trace,RemasterLightingTrace::MeshCopy);
 		for (size_t i = 0; i < mesh.size(); i++)
 		{
 			mesh[i].emissionDepth = emissionDepths[i];
 			mesh[i].emissionOmnidirectional = emissionOmnidirectional[i];
 		}
+		meshCopyTimer.stop();
+		RemasterLightingTrace::Scope normalsTimer(&trace,RemasterLightingTrace::Normals);
 		for (size_t i = 0; i < mesh.size(); i++)
 			if (!authoredNormals[i]) std::copy(mesh[i].normal, mesh[i].normal + 3, surfaceField.begin() + i * 4 + 1);
 		meshMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshStarted).count();
@@ -788,6 +801,10 @@ static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLP
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:0];
 	bool adaptiveSpheres = !std::getenv("S9X_REMASTER_FULL_SPHERE_SAMPLES");
 	[directConstants setConstantValue:&adaptiveSpheres type:MTLDataTypeBool atIndex:4];
+	// Hidden representatives also use the exact-visible pipeline. Specialize its
+	// depth policy identically; exact visible samples have no negative depth tag.
+	bool adaptiveDepth = !std::getenv("S9X_REMASTER_FULL_DEPTH_SAMPLES");
+	[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
 	id<MTLFunction> directTransport = [defaultLibrary newFunctionWithName:@"remasterIndirectBounce"
 		constantValues:directConstants error:&error];
 	remasterDirectTransportPipelineState = [metalDevice newComputePipelineStateWithFunction:directTransport error:&error];
@@ -801,8 +818,6 @@ static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLP
 	remasterPreparePatchesPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:3];
-	bool adaptiveDepth = !std::getenv("S9X_REMASTER_FULL_DEPTH_SAMPLES");
-	[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
 	bool hoistReceiver = !(RemasterBenchmarkActive() && std::getenv("S9X_REMASTER_REFERENCE_RECEIVER_EMISSION"));
 	[directConstants setConstantValue:&hoistReceiver type:MTLDataTypeBool atIndex:7];
 	remasterClusteredBatchedPipelineState = [metalDevice newComputePipelineStateWithFunction:
@@ -1419,12 +1434,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
-			const bool clustered = frame && frame->representativeEmitters > 0 &&
+			const bool clusteringAvailable = frame &&
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
+			const bool clustered = clusteringAvailable && frame->representativeEmitters > 0;
 			sphereTimer.stop();
 			RemasterLightingTrace::Scope hiddenTimer(trace,RemasterLightingTrace::Hidden);
-			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clustered) : std::vector<RemasterHiddenDirectSample>{};
+			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clusteringAvailable) : std::vector<RemasterHiddenDirectSample>{};
 			hiddenTimer.stop();
 			if (panelMetrics) for (const auto &s:hiddenSamples) {
 				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
@@ -1934,7 +1950,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		// completion block; never read mutable latest-frame metrics for this trace.
 		if(RemasterLightingTrace::activeScope() && RemasterLightingTrace::activeScope()->frame==trace)
 			RemasterLightingTrace::activeScope()->stop();
+		if(trace) { trace->spheres=frameSphereCount;trace->samples=frameDirectSampleCount+frameSphereSampleCount;trace->patches=framePatchCount; }
 		const auto traceCopy=trace?*trace:RemasterLightingTrace::Frame{};
+		RemasterLiveTrace::renderer(traceCopy,true);
 		const double traceBeginUptime=[NSProcessInfo processInfo].systemUptime-(RemasterLightingTrace::now()-traceCopy.begin);
 		const auto callbackGate = presentationCallbackGate;
 		bool (^present)(void) = ^bool {
@@ -1988,6 +2006,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
 					const double presentationCpuMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drawableEnd).count();
 					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+						if (@available(macOS 10.15, *))
+							RemasterLiveTrace::gpu(traceCopy.id,completed.GPUStartTime,completed.GPUEndTime,
+								submittedUptime,queuedMs,drawableMs,presentationCpuMs,int(completed.status),traceBeginUptime);
 						if (@available(macOS 10.15, *)) if(traceCopy.id) if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
 							static std::mutex traceMutex; std::lock_guard<std::mutex> guard(traceMutex);
 							std::ofstream out(path,std::ios::app); out<<std::setprecision(15);

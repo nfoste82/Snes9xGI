@@ -167,7 +167,9 @@ int main()
 		require(frame.mainPixels[n].owner==owners[n].owner,"source recovery never writes room ownership");
 	c.backgroundScrollX=400;
 	require(run().lights==1 && frame.lights[0].x==-72.5f,"signed source left of viewport");
-	c.submodule=1; require(run().lights==0,"transition never reuses settled room sources"); c.submodule=0;
+	// USA subtile transition retains the same complete constructed maps in all
+	// eight phases (Module07_01); current sources are rebuilt, not stale reused.
+	c.submodule=1; require(run().lights==1,"same-room transition rebuilds current room sources"); c.submodule=0;
 	for (int handler : {8,16}) for (int plane : {0,1}) {
 		c.submodule=handler;c.linkPlane=plane;
 		require(run().lights==1 && frame.lights[0].z==light.z,"in-room stair keeps exact transformed source height independent of actor plane");

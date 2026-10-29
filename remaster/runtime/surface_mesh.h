@@ -12,6 +12,10 @@
 // so shading positions remain exactly on the generated surface.
 namespace RemasterSurfaceMesh
 {
+#define REMASTER_MESH_BUILD_WORK 1
+#ifdef REMASTER_MESH_COUNT_WORK
+inline size_t weldRootSearches = 0;
+#endif
 struct Cell
 {
 	float corners[4] = {};
@@ -71,6 +75,7 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 				// that would bridge an arbitrary ledge or touching sprite pieces.
 				for (int side : {-1, 1})
 				{
+					if (continuous) break;
 					const int cx = side < 0 ? int(x) - dx[d] : bx + dx[d];
 					const int cy = side < 0 ? int(y) - dy[d] : by + dy[d];
 					if (!valid(cx, cy)) continue;
@@ -121,11 +126,38 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 	for (unsigned vy = 0; vy <= height; vy++)
 		for (unsigned vx = 0; vx <= width; vx++)
 		{
+			// Interior vertices have four incident cells. Their connectivity is
+			// exactly the four existing edge bits, not a domain relabeling or a
+			// height approximation. Resolve the common connected case without a
+			// per-vertex disjoint-set traversal. Keep the original addition order
+			// (including the initial +0) for byte-identical corner rounding.
+			if (vx && vy && vx < width && vy < height)
+			{
+				const size_t nw = size_t(vy - 1) * width + vx - 1;
+				const size_t ne = nw + 1, sw = nw + width, se = sw + 1;
+				const unsigned mask = ((edges[nw] >> 1) & 1) | ((edges[ne] >> 2) & 2) |
+					((edges[se] << 2) & 4) | ((edges[sw] << 1) & 8);
+				// Any three edges of the four-cycle connect every incident cell.
+				if (mask == 15 || mask == 14 || mask == 13 || mask == 11 || mask == 7)
+				{
+					float sum = 0;
+					sum += result[nw].corners[2]; sum += result[ne].corners[3];
+					sum += result[se].corners[0]; sum += result[sw].corners[1];
+					const float mean = sum / 4;
+					result[nw].corners[2] = result[ne].corners[3] =
+						result[se].corners[0] = result[sw].corners[1] = mean;
+					continue;
+				}
+			}
 			const int xs[] = {int(vx) - 1, int(vx), int(vx), int(vx) - 1};
 			const int ys[] = {int(vy) - 1, int(vy) - 1, int(vy), int(vy)};
 			const unsigned corners[] = {2, 3, 0, 1};
 			unsigned parent[] = {0, 1, 2, 3};
-			auto root = [&](unsigned i) { while (parent[i] != i) i = parent[i]; return i; };
+			auto root = [&](unsigned i) {
+#ifdef REMASTER_MESH_COUNT_WORK
+				++weldRootSearches;
+#endif
+				while (parent[i] != i) i = parent[i]; return i; };
 			for (unsigned i = 0; i < 4; i++)
 			{
 				unsigned j = (i + 1) % 4;

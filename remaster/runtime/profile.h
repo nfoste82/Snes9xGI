@@ -357,8 +357,9 @@ struct RemasterAreaSceneSettings
 	float originalSceneContribution = 0.035f;
 	int representativeEmitters = -1; // -1 inherits the profile default; 0 disables approximation.
 	float reflectanceBoost = -1.0f; // -1 inherits the profile default.
+	int offscreenRepresentativeEmitters = -1; // -1 inherits profile; 0 is exact.
 	bool operator==(const RemasterAreaSceneSettings &b) const
-	{ return originalSceneContribution == b.originalSceneContribution && representativeEmitters == b.representativeEmitters && reflectanceBoost == b.reflectanceBoost; }
+	{ return originalSceneContribution == b.originalSceneContribution && representativeEmitters == b.representativeEmitters && reflectanceBoost == b.reflectanceBoost && offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters; }
 };
 
 inline std::string S9xRemasterAreaSceneKey(RemasterAreaContext area)
@@ -392,7 +393,18 @@ struct RemasterProfile
 	std::map<std::string, RemasterAreaSceneSettings> areaSceneSettings;
 	std::map<RemasterTileContentId, std::map<std::string, RemasterTileContext>> tileContexts;
 	std::map<RemasterContextLocation, RemasterContextBinding> contextBindings;
+	int offscreenRepresentativeEmitters = 1; // Independent default; legacy -1 also resolves to 1.
 };
+
+// Shared by native edits and Undo/Redo. Preserve intentional baseline sections,
+// but do not leave a new default-only section after returning to inheritance.
+inline void S9xRemasterSetAreaOffscreenRepresentatives(RemasterProfile &profile,
+	const std::string &key, int count, bool baselineSectionPresent)
+{
+	auto &stored = profile.areaSceneSettings[key];
+	stored.offscreenRepresentativeEmitters = count;
+	if (!baselineSectionPresent && stored == RemasterAreaSceneSettings{}) profile.areaSceneSettings.erase(key);
+}
 
 inline RemasterAreaSceneSettings S9xRemasterAreaSceneSettings(const RemasterProfile &profile, RemasterAreaContext area)
 {
@@ -401,6 +413,8 @@ inline RemasterAreaSceneSettings S9xRemasterAreaSceneSettings(const RemasterProf
 	if (found != profile.areaSceneSettings.end()) settings = found->second;
 	if (!area.valid()) settings.originalSceneContribution = profile.originalSceneContribution;
 	if (settings.representativeEmitters < 0) settings.representativeEmitters = profile.representativeEmitters;
+	if (settings.offscreenRepresentativeEmitters < 0) settings.offscreenRepresentativeEmitters =
+		profile.offscreenRepresentativeEmitters < 0 ? 1 : profile.offscreenRepresentativeEmitters;
 	if (settings.reflectanceBoost < 0) settings.reflectanceBoost = profile.reflectanceBoost;
 	return settings;
 }
@@ -429,6 +443,7 @@ struct RemasterSceneSettings
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
 	bool sampleAccumulation = true;
+	int offscreenRepresentativeEmitters = 1;
 };
 
 inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile &profile)
@@ -436,7 +451,7 @@ inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile 
 	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
 		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost, profile.linkLampBrightness,
 		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
-		profile.representativeEmitters, profile.sampleAccumulation };
+		profile.representativeEmitters, profile.sampleAccumulation, profile.offscreenRepresentativeEmitters };
 }
 
 inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
@@ -454,6 +469,7 @@ inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const Remas
 	profile.samplesPerFrame = settings.samplesPerFrame;
 	profile.representativeEmitters = settings.representativeEmitters;
 	profile.sampleAccumulation = settings.sampleAccumulation;
+	profile.offscreenRepresentativeEmitters = settings.offscreenRepresentativeEmitters;
 }
 
 inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const RemasterSceneSettings &b)
@@ -470,6 +486,7 @@ inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const
 		a.upperFloorHeight == b.upperFloorHeight &&
 		a.samplesPerFrame == b.samplesPerFrame &&
 		a.representativeEmitters == b.representativeEmitters &&
+		a.offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters &&
 		a.sampleAccumulation == b.sampleAccumulation;
 }
 
@@ -1046,7 +1063,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		case Section::AreaScene:
 		{
 			auto &settings = parsed.areaSceneSettings[areaKey];
-			if (key == "original_scene_contribution") valid = ParseFloat(value, settings.originalSceneContribution);
+			if (key == "offscreen_representative_emitters") {
+				valid = value == "-1" || (ParseUnsigned(value, unsignedValue) && unsignedValue <= 8);
+				if (valid) settings.offscreenRepresentativeEmitters = value == "-1" ? -1 : int(unsignedValue);
+				if (parsed.schemaVersion < 36) fail(lineNumber, "offscreen_representative_emitters requires schema_version 36");
+			}
+			else if (key == "original_scene_contribution") valid = ParseFloat(value, settings.originalSceneContribution);
 			else if (key == "reflectance_boost") {
 				valid = ParseFloat(value, settings.reflectanceBoost) && std::isfinite(settings.reflectanceBoost) &&
 					settings.reflectanceBoost >= 0 && settings.reflectanceBoost <= 8;
@@ -1173,6 +1195,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					fail(lineNumber, "samples_per_frame must be an integer in [1, 128]");
 				else
 					parsed.samplesPerFrame = static_cast<uint8_t>(unsignedValue);
+			}
+			else if (key == "offscreen_representative_emitters")
+			{
+				if (parsed.schemaVersion < 36) fail(lineNumber, "offscreen_representative_emitters requires schema_version 36");
+				if (value == "-1") parsed.offscreenRepresentativeEmitters = -1;
+				else if (!ParseUnsigned(value, unsignedValue) || unsignedValue > 8)
+					fail(lineNumber, "offscreen_representative_emitters must be an integer in [-1, 8]");
+				else parsed.offscreenRepresentativeEmitters = int(unsignedValue);
 			}
 			else if (key == "representative_emitters")
 			{
@@ -1530,8 +1560,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 35)
-		fail(0, "schema_version must be an integer in [1, 35]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 36)
+		fail(0, "schema_version must be an integer in [1, 36]");
 	for (auto &entry : parsed.assets) {
 		auto &item = entry.second;
 		if (parsed.schemaVersion < 34 && item.tileRole == RemasterTileRole::Door) item.tileRole = RemasterTileRole::Doorway;
@@ -1854,7 +1884,13 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	const bool hasSpriteAssembly = std::any_of(profile.obstacleGroups.begin(),profile.obstacleGroups.end(),[](const auto &g){return g.spriteAssembly;});
 	const bool artworkEmission = std::any_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) { return a.second.hasEmission && a.second.emissionColorMask != UINT64_MAX; });
 	const bool hasAreaReflectanceBoost = std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.reflectanceBoost != -1; });
-	const uint32_t requiredSchema = std::max<uint32_t>(hasAreaReflectanceBoost ? 35 : !profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	if (profile.offscreenRepresentativeEmitters < -1 || profile.offscreenRepresentativeEmitters > 8 ||
+		std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.offscreenRepresentativeEmitters < -1 || a.second.offscreenRepresentativeEmitters > 8; })) {
+		diagnostics.push_back({0,"offscreen_representative_emitters must be in [-1, 8]"}); return false;
+	}
+	const bool hasOffscreenRepresentatives = (profile.offscreenRepresentativeEmitters != 1 && profile.offscreenRepresentativeEmitters >= 0) ||
+		std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.offscreenRepresentativeEmitters >= 0; });
+	const uint32_t requiredSchema = std::max<uint32_t>(hasOffscreenRepresentatives ? 36 : hasAreaReflectanceBoost ? 35 : !profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -1887,6 +1923,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "upper_floor_height = " << unsigned(profile.upperFloorHeight) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	if (profile.representativeEmitters) output << "representative_emitters = " << unsigned(profile.representativeEmitters) << "\n";
+	if (profile.offscreenRepresentativeEmitters >= 0 && profile.offscreenRepresentativeEmitters != 1) output << "offscreen_representative_emitters = " << profile.offscreenRepresentativeEmitters << "\n";
 	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.areaSceneSettings)
 	{
@@ -1894,6 +1931,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "\n[area_scene_settings." << entry.first << "]\n";
 		output << "original_scene_contribution = " << entry.second.originalSceneContribution << "\n";
 		if (entry.second.representativeEmitters != -1) output << "representative_emitters = " << entry.second.representativeEmitters << "\n";
+		if (entry.second.offscreenRepresentativeEmitters != -1) output << "offscreen_representative_emitters = " << entry.second.offscreenRepresentativeEmitters << "\n";
 		if (entry.second.reflectanceBoost != -1) output << "reflectance_boost = " << entry.second.reflectanceBoost << "\n";
 	}
 	for (const auto &entry : profile.areaLights)

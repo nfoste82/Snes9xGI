@@ -1282,29 +1282,31 @@ kernel void remasterIndirectBounce(
 		else if (preparedDirect)
 		{
 			preparedSample = directSamples[sampleIndex];
+			uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
 			if (clusteredDirect) {
-				uint2 sourceRecord = uint2(emitterPixels[sampleIndex*2], emitterPixels[sampleIndex*2+1]);
 				if (emittingReceiver && sourceRecord.x != 0xffffffffu)
 					preparedSample = remasterExcludeEmitterReceiver(preparedSample, sourceRecord,
 						pixel.y*uniforms.width+pixel.x, receiverSurface, previousBounce, surfaceField, occlusion, heightField, mesh, emitterPatches);
 				if (all(preparedSample.radiance.rgb <= 0)) continue;
-				if (adaptiveDepth && preparedSample.normal.w < 0.0) {
-					float depth = -preparedSample.normal.w;
-					uint stratum = sourceRecord.y & 3u;
-					float3 axis = preparedSample.normal.xyz * depth;
-					float3 base = preparedSample.position.xyz - axis * (float(stratum) + 0.5) / 4.0;
-					float3 center = base + axis * 0.5;
-					float ratioSquared = depth * depth / max(dot(center-receiverPosition, center-receiverPosition), 0.0001);
-					// A thin distant volume is effectively one midpoint source. Preserve
-					// its full radiance/area below, without dropping spatial representatives.
-					// Near-field depth/shadows retain the existing two/four strata.
-					uint depthSamples = ratioSquared < 0.000625 ? 1u : ratioSquared < 0.0025 ? 2u : 4u;
-					if (stratum >= depthSamples) continue;
-					float3 shift = axis * ((float(stratum)+0.5)/float(depthSamples) - (float(stratum)+0.5)/4.0);
-					preparedSample.position.xyz += shift;
-					preparedSample.endpoint.xyz += shift;
-					preparedSample.radiance *= 4.0 / float(depthSamples);
-				}
+			}
+			// A hidden representative is independent of visible clustering. Exact
+			// visible samples are excluded even if a malformed sample has a depth tag.
+			if ((clusteredDirect || sourceRecord.x == 0xffffffffu) && adaptiveDepth && preparedSample.normal.w < 0.0) {
+				float depth = -preparedSample.normal.w;
+				uint stratum = sourceRecord.y & 3u;
+				float3 axis = preparedSample.normal.xyz * depth;
+				float3 base = preparedSample.position.xyz - axis * (float(stratum) + 0.5) / 4.0;
+				float3 center = base + axis * 0.5;
+				float ratioSquared = depth * depth / max(dot(center-receiverPosition, center-receiverPosition), 0.0001);
+				// A thin distant volume is effectively one midpoint source. Preserve
+				// its full radiance/area below, without dropping spatial representatives.
+				// Near-field depth/shadows retain the existing two/four strata.
+				uint depthSamples = ratioSquared < 0.000625 ? 1u : ratioSquared < 0.0025 ? 2u : 4u;
+				if (stratum >= depthSamples) continue;
+				float3 shift = axis * ((float(stratum)+0.5)/float(depthSamples) - (float(stratum)+0.5)/4.0);
+				preparedSample.position.xyz += shift;
+				preparedSample.endpoint.xyz += shift;
+				preparedSample.radiance *= 4.0 / float(depthSamples);
 			}
 			samplePoint = preparedSample.position.xy;
 		}
@@ -1439,7 +1441,10 @@ kernel void remasterIndirectBounce(
 				occlusion, heightField, surfaceField, visibilityBlocks, mesh);
 			incoming += radiance * formFactor * visibility;
 		}
-		totalFormFactor += clusteredDirect && !debugSample && preparedSample.radiance.w > 0 ?
+		// Hidden representatives can coexist with exact visible sources. Their
+		// emitting area is independent of the visible clustered pipeline choice.
+		totalFormFactor += preparedDirect && !debugSample && preparedSample.radiance.w > 0 &&
+			(clusteredDirect || emitterPixels[sampleIndex * 2] == 0xffffffffu) ?
 			formFactor * preparedSample.radiance.w : volumeSample ? formFactor * 0.25 : formFactor;
 	}
 	if (!batched && totalFormFactor > 0.95)

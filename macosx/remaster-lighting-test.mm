@@ -108,6 +108,8 @@ int main()
             MTLFunctionConstantValues *directConstants = [MTLFunctionConstantValues new];
             bool specialized = true;
             [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:0];
+            bool adaptiveDepth = getenv("S9X_REMASTER_TEST_ADAPTIVE_DEPTH") != nullptr;
+            [directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
             id<MTLComputePipelineState> directTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             require(directTransport != nil, error.localizedDescription);
@@ -120,15 +122,17 @@ int main()
             id<MTLComputePipelineState> preparePatches = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterPrepareEmitterPatches"] error:&error];
 			[directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:3];
-			bool adaptiveDepth = getenv("S9X_REMASTER_TEST_ADAPTIVE_DEPTH") != nullptr;
-			[directConstants setConstantValue:&adaptiveDepth type:MTLDataTypeBool atIndex:6];
 			bool hoistReceiver = getenv("S9X_REMASTER_TEST_REFERENCE_RECEIVER_EMISSION") == nullptr;
 			[directConstants setConstantValue:&hoistReceiver type:MTLDataTypeBool atIndex:7];
             id<MTLComputePipelineState> clusteredTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
+            [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:1];
+            id<MTLComputePipelineState> clusteredBatchedTransport = [device newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
             bool noClusters = false;
+            [directConstants setConstantValue:&noClusters type:MTLDataTypeBool atIndex:1];
             [directConstants setConstantValue:&noClusters type:MTLDataTypeBool atIndex:3];
-            require(preparePatches && clusteredTransport, error.localizedDescription);
+            require(preparePatches && clusteredTransport && clusteredBatchedTransport, error.localizedDescription);
             [directConstants setConstantValue:&specialized type:MTLDataTypeBool atIndex:1];
             id<MTLComputePipelineState> batchedTransport = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
@@ -319,13 +323,13 @@ int main()
                     }
                 }
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-                const bool batched = !customPatches && !sampleDirect && bounce && !composing && !referenceVisibility && (getenv("S9X_REMASTER_TEST_BATCHED") || directBatchSize > 8 || adaptiveSpheres) &&
+                const bool batched = !sampleDirect && bounce && !composing && !referenceVisibility && (getenv("S9X_REMASTER_TEST_BATCHED") || directBatchSize > 8 || adaptiveSpheres) &&
                     (sampled || (passIndex == 0 && lambertianDirect && diagnosticStage == 0));
                 uint32_t batchCount = 1;
                 id<MTLBuffer> partials = nil;
                 require(encoder != nil, @"Could not create compute encoder");
                 [encoder setComputePipelineState:composing ? composite :
-                    bounce ? (sampleDirect ? sampledDirectTransport : customPatches ? clusteredTransport : sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
+                    bounce ? (sampleDirect ? sampledDirectTransport : customPatches ? (batched ? clusteredBatchedTransport : clusteredTransport) : sampled ? (batched ? batchedIndirect : sampledIndirect) : referenceVisibility ? indirectReference :
                         passIndex == 0 && lambertianDirect && diagnosticStage == 0 ? (adaptiveSpheres ? adaptiveTransport : batched ? batchedTransport : directTransport) : indirect) : direct];
 				for (unsigned i = 0; i < count; ++i)
 					[encoder setTexture:textures[i] atIndex:bindings[i] == Reflectance ? 11 : i];
@@ -1284,8 +1288,8 @@ int main()
                 geometry[emitter].emissionDepth=2;geometry[emitter].emissionOmnidirectional=1;
                 auto illuminate=[&](const std::vector<RemasterHiddenDirectSample> *h,
                     const std::vector<RemasterEmitterPatch> *patches=nullptr,unsigned batch=8,
-                    bool sampled=false,unsigned seed=1,const std::vector<Light> *lights=nullptr,bool adaptive=false,unsigned connections=14) {
-                    return run(world,true,0,8,-1,nullptr,true,0,1,0,connections,seed,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
+                    bool sampled=false,unsigned seed=1,const std::vector<Light> *lights=nullptr,bool adaptive=false,unsigned connections=14,bool productionRadiance=true) {
+                    return run(world,true,0,8,-1,nullptr,productionRadiance,0,1,0,connections,seed,simd_float3{0,0,-1},-1,nullptr,false,false,true,0,
                         &geometry,sampled,patches,false,0.65f,lights,batch,adaptive,h).bounce;
                 };
                 const auto visible=illuminate(nullptr);
@@ -1310,6 +1314,30 @@ int main()
                 const auto clusteredLit=illuminate(&clusteredHidden,&dummy);
                 check("hidden representative lights receivers",clusteredLit.x>covered.x,clusteredLit,covered);
                 near("hidden representative deterministic across seeds",illuminate(&clusteredHidden,&dummy,8,false,121),clusteredLit);
+                f.representativeEmitters=0;f.offscreenRepresentativeEmitters=1;
+                const auto independentHidden=S9xRemasterHiddenDirectSamples(f,false,true);
+                near("hidden quality independent of exact visible setting",illuminate(&independentHidden),clusteredLit);
+                near("hidden quality independent in batched exact-visible path",illuminate(&independentHidden,nullptr,32),clusteredLit);
+                auto largeArea=independentHidden;
+                for(auto &sample:largeArea)sample.radiance[3]=100000;
+                near("hidden representative area normalization without visible clusters",illuminate(&largeArea),illuminate(&largeArea,&dummy));
+                near("batched hidden area normalization without visible clusters",illuminate(&largeArea,nullptr,32),illuminate(&largeArea,&dummy,32));
+                // Compare identical hidden sources through clustered and exact-visible
+                // kernels at near/far depth ratios, serial and batched. Run this binary
+                // with adaptive depth both enabled and disabled.
+                for(float depth:{0.25f,1.0f,8.0f}) {
+                    for(auto &source:f.hiddenEmitters){source.depth=depth;source.z=0.1f;}
+                    auto depthHidden=S9xRemasterHiddenDirectSamples(f,false,true);
+                    for(auto &sample:depthHidden)for(unsigned c=0;c<3;c++)sample.radiance[c]*=1000;
+                    for(unsigned batch:{8u,32u}) {
+                        // RGBA16Float rounds away the distant adaptive-depth
+                        // difference; use full precision for this regression.
+                        const auto actual=illuminate(&depthHidden,nullptr,batch,false,1,nullptr,false,14,false), expected=illuminate(&depthHidden,&dummy,batch,false,1,nullptr,false,14,false);
+                        check("independent hidden near/far depth parity",expected.x>0 && std::fabs(actual.x-expected.x)<=std::fabs(expected.x)*1e-7f,actual,expected);
+                    }
+                }
+                for(auto &source:f.hiddenEmitters){source.depth=2;source.z=8;}
+                f.representativeEmitters=1;f.offscreenRepresentativeEmitters=-1;
                 const auto sampledCluster=S9xRemasterHiddenDirectSamples(f,true,true);
                 near("opt-in hidden cluster sentinel stays safe",illuminate(&sampledCluster,&dummy,8,true),clusteredLit);
                 f.hiddenEmitters.resize(1);
