@@ -483,7 +483,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	#ifdef REMASTER_WALL_BAND_DIAGNOSTICS
 	if(cache){cache->diagnosticPlateaus.clear();cache->diagnosticTerminals.clear();cache->diagnosticSheetJoins.clear();plateauEvents=&cache->diagnosticPlateaus;}
 	#endif
-	const auto plateaus=outOfBoundsPlateaus(tiles,[&](int bg,int cell,int direction,int &height,int &o,int &p,int sheetBg,int sheetCell,int &maximum) {
+	const auto plateaus=outOfBoundsPlateaus(tiles,[&](int bg,int cell,int direction,int &height,int &o,int &p,int sheetBg,int sheetCell,int &maximum,bool exact,int &datum) {
 		auto resolve=[&]() {
 		int n=nodes[bg][cell];if(n<0)return RemasterVisualClaimStatus::NotEvaluated;
 		const auto &b=bands[n];
@@ -495,13 +495,21 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		if(((*sheetExposure)[sheetBg][sheetCell]&edge(direction^1))!=edge(direction^1))return RemasterVisualClaimStatus::Unsupported;
 		int rt=root(n);if(crestPlaneConflict[rt] || solution.status[n]==Status::Conflict)return RemasterVisualClaimStatus::Conflict;
 		if(solution.status[n]!=Status::Solved || owner[rt]<0)return RemasterVisualClaimStatus::Unanchored;
-		int value=INT_MAX,high=INT_MIN;bool any=false;
+		int value=INT_MAX,high=INT_MIN;bool any=false,hasDatum=false;
 		for(int k=0;k<8;k++) {
 			int x=direction==2?0:direction==3?7:k,y=direction==0?0:direction==1?7:k;
 			const auto &r=regions[n];int local=(r.vflip?7-y:y)*8+(r.hflip?7-x:x);
 			// A masked fragment cannot certify the complete shared crest edge.
 			if(!(b.mask&(UINT64_C(1)<<local)))return RemasterVisualClaimStatus::Unsupported;
 			int h=solution.base[n]+r.height[local];
+			if(exact) {
+				const auto &sheet=tiles[sheetBg][sheetCell];
+				int sx=direction>=2?7-x:x,sy=direction<2?7-y:y;
+				int sh=sheet.hasHeight?sheet.height[(sheet.vflip?7-sy:sy)*8+(sheet.hflip?7-sx:sx)]:0;
+				int vote=h-sh;
+				if(hasDatum && datum!=vote)return RemasterVisualClaimStatus::Conflict;
+				datum=vote;hasDatum=true;
+			}
 			// Only independently validated uphill band samples reach this point.
 			// Art reuse may legitimately vary within an edge as well as between
 			// walls. Reduce absolute values, never alter the signed wall solve.

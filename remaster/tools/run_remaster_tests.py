@@ -62,6 +62,8 @@ FULL_EXTRA = (
 	("dungeon_oob_diagnostics", "Signed wall equation diagnostics preserve solve and distinguish anchor/cycle/seam failures"),
 	("dungeon_oob_minimum", "Minimum accepted absolute OOB crests, signed/permutation origins and role-specific compatible floor owners"),
 	("dungeon_oob_nonuniform", "Production nonuniform uphill crests across axes/flips/BGs/planes/signed bases and local origins"),
+	("dungeon_oob_signed_source", "Occurrence context applicability and exact signed nonflat OOB seams; transformed conflicting contacts remain unresolved"),
+	("dungeon_oob_signed_endframe", "Actual EndFrame signed nonflat source, CPU height/normal preservation and conflict/replay; optional complete capture prefix"),
 	("dungeon_out_of_bounds_end_to_end", "Research VRAM/ROM/profile inputs through classifier, physical solver and actual EndFrame; optional pinned external fixture"),
 	("dungeon_visible_shell", "Complementary shell contacts without physical support or cross-plane substitution"),
 	("visible_channel_integration", "Common range/emission/replay/raster donors and alternate solved-datum conservation"),
@@ -88,6 +90,9 @@ FULL_EXTRA = (
     ("layer_view", "Background inspection masks, subscreen-only exposure, OBJ exclusion and frame-boundary latching"),
     ("tile_selection_highlight", "BG1/BG2 selection highlights follow visible main/subscreen picking, not lighting ownership"),
     ("context_location_publication", "EndFrame preserves selectable BG locations before contexts exist and across capture roundtrip"),
+    ("context_editor", "Production inspector model preserves explicit targets through context choice, assignment and replay"),
+    ("context_room", "Complete same-frame room decoding, offscreen context filters and atomic durable assignments"),
+    ("paused_capture_lifecycle", "Production paused request/take/completion scheduling, replacement and cancellation interleavings"),
     ("dungeon_wall_obstacle_seam", "Exact authored wall tangent seams to supported assemblies, flips, overwrite and ambiguous/underpass rejection"),
     ("dungeon_wall_floor_contact", "Direct authored wall feet on occupied Floor, transformed relief and independent overlap/ownership rejection"),
     ("dungeon_wall_stack", "Complete ROM wall-stack ownership, sculpted tangent edges, special bands, transformations and ambiguity/plane conflicts"),
@@ -100,6 +105,8 @@ FULL_EXTRA = (
     ("dungeon_frame_recognition", "Complete ordinary/stair frame ownership, all directions/flips/split BGs, opening independence and ambiguity rejection"),
     ("dungeon_placement_reuse", "EndFrame relation transport and placement-cache invalidation"),
     ("dungeon_semantic_cache", "EndFrame semantic activation, facing, context and door-mask invalidation"),
+    ("dungeon_producer_writes", "Live CPU Nx4 source/part/BG witnesses and equal-word/byte overwrite revocation"),
+    ("dungeon_static_assembly", "Production EndFrame explicitly lacks static declaration proof; no geometry grants"),
     ("dungeon_terrain_lifecycle", "Pickup/carried/thrown/landed support, OAM ownership and ambiguity"),
     ("dungeon_persistent_support_rejection", "Dual-owner body rejection without component/constraint corruption"),
     ("emitter_patches", "Production visible source clustering, area, transforms and animation links"),
@@ -218,6 +225,7 @@ def write_report(path, report):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=("quick", "full"), default="quick")
+    parser.add_argument("--profile", type=Path, help="Explicit immutable profile fixture; never overwrite the canonical authoring file")
     parser.add_argument("--metal", action="store_true", help="Append macOS Metal GPU regressions; unavailable is failure")
     parser.add_argument("--sanitize", action="store_true", help="Compile with ASan + UBSan, fatal on findings")
     parser.add_argument("--output", type=Path, default=ROOT / "build/remaster-tests",
@@ -227,6 +235,15 @@ def main(argv=None):
     parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"), help="Compiler command (default CXX or c++)")
     parser.add_argument("--timeout", type=int, default=180, help="Seconds per compile or test process (default 180)")
     args = parser.parse_args(argv)
+    global PROFILE
+    if args.profile:
+        pinned = args.profile.resolve()
+        if not pinned.is_file():
+            parser.error("--profile must name an existing file")
+        try:
+            PROFILE = str(pinned.relative_to(ROOT))
+        except ValueError:
+            parser.error("--profile must be inside the repository for provenance")
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     compiler = shlex.split(args.cxx)

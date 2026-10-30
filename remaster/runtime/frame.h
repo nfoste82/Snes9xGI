@@ -798,8 +798,15 @@ struct RemasterDungeonMovementCache
 };
 
 struct RemasterDungeonHeightMap;
+#include "dungeon_producer_writes.h"
+#include "dungeon_static_assembly.h"
+#define REMASTER_STATIC_DECLARATION_ASSESSMENT 1
 struct RemasterDungeonFloorContext
 {
+	// Immutable ROM declarations, not proof that a particular writer survived.
+	// Optional: legacy captures explicitly lack this input.
+	std::shared_ptr<const RemasterDungeonConstructionDeclarations> constructionDeclarations;
+	const RemasterDungeonWriteTrace *producerWrites=nullptr;
 	// Invocation-local EndFrame scratch shared by related BG/relation solves.
 	// Exact ordered seeds retain actor-plane/position component ordering.
 	RemasterDungeonMovementCache *movementCache=nullptr;
@@ -881,7 +888,7 @@ struct RemasterDungeonFloorContext
 				t.surface,t.height,t.groundedFloorMask,t.doorframeMask,t.hasDoorframeMask,t.doorwaySupport,t.doorwaySupportDirection,
 				t.doorTemplateOffset,t.doorAssembly,t.doorDirection,t.splitDoorPart,t.closedDoorAssembly,
 				t.doorwayColumnContact,t.doorwayColumnSource,t.doorwayColumnBand,
-				t.hasHeight,t.removableSupportPlanes,t.obstacleAssembly,t.obstacleTemplate,t.obstacleAssemblyHeight,t.obstacleAssemblyFlip,
+				t.hasHeight,t.stairSourceAmbiguous,t.removableSupportPlanes,t.obstacleAssembly,t.obstacleTemplate,t.obstacleAssemblyHeight,t.obstacleAssemblyFlip,
 				t.authoredObstacle,t.authoredObstacleAssembly,t.authoredObstacleGroup,t.authoredObstacleZ,t.authoredObstacleFlip,t.authoredObstacleContact,t.authoredObstacleDirection,t.hflip,t.vflip,t.floorPlaneMask,
 				t.distinctLowerUsage,t.structuralFloorPlaneMask,t.wallTemplateOffset,t.wallStackAssembly,
 				t.supportingTrim,t.terminalCorner,t.highPerimeterFace,t.highCornerFace,
@@ -936,6 +943,7 @@ struct RemasterDungeonFloorContext
 	// Complete constructed BG2 room, never a viewport inventory. Heights are
 	// canonical authored relief; flips are applied by the geometry solver.
 	const Placement *placements = nullptr;
+	const Placement *peerProducerPlacements = nullptr; // independent decoded peer, never a height donor
 	const uint8_t *constructedMaps = nullptr; // both final WRAM BG maps, 16384 bytes
 	const uint8_t *graphics = nullptr; // complete VRAM; included in state identity
 	const uint16_t *emitterPalette = nullptr; // current CGRAM, emitter-only (not geometry state)
@@ -1410,13 +1418,41 @@ inline bool S9xRemasterDungeonDoorTangentCap(const RemasterDungeonFloorContext::
 // Exact final handler footprint, not a tile-hash or collision-height inference.
 // The rails prove the assembly's authored zero datum and signed upper endpoint;
 // treads retain their independent authored relief. Priority-only writes are safe.
-struct RemasterDungeonStairProof { int origin, low, high, rise; uint8_t flip; };
+struct RemasterDungeonStairProof { int origin, low, high, rise; uint8_t flip; uint64_t producer=0; };
 inline bool S9xRemasterDungeonStairProof(const RemasterDungeonFloorContext &c,
 	const RemasterDungeonFloorContext::Stair &s, RemasterDungeonStairProof &out)
 {
 	using S=RemasterDungeonFloorContext::Surface;
 	if(!c.dungeonTemplateData || !c.constructedMaps || !c.placements || s.x>60 || !s.y || s.y>59)return false;
 	const int origin=s.y*64+s.x, vf=s.highIsNorth?0:0x8000;
+	// Quantized tread contract (explicitly approved convention): four complete
+	// equal steps above the zero pre-step landing. This is NOT the smooth rail
+	// contract below. Require a live Nx4 both-BG producer and an intact peer;
+	// final matching words from another writer cannot satisfy this witness.
+	if(S9xRemasterDungeonResearchEnabled() && c.producerWrites && c.producerWrites->enabled && c.producerWrites->room==c.roomIndex)for(int bg=0;bg<2;bg++) {
+		const auto *tiles=bg==c.placementBackgroundIndex?c.placements:c.peerProducerPlacements;
+		if(!tiles)continue;
+		const auto &first=c.producerWrites->cells[bg*4096+origin];
+		if(!first.owner || first.operation!=2 || first.origin!=origin ||
+			first.source!=(s.highIsNorth?0x10c8:0x10e8))continue;
+		bool exact=true;int step=0;
+		for(int y=0;y<4;y++)for(int x=0;x<4;x++) {
+			const int i=origin+y*64+x;const auto &t=tiles[i];const auto &w=c.producerWrites->cells[bg*4096+i];
+			const int offset=(bg==c.placementBackgroundIndex?0:8192)+2*i;
+			const int finalWord=c.constructedMaps[offset]|c.constructedMaps[offset+1]<<8;
+			if(w.owner!=first.owner || w.source!=first.source || w.part!=x*4+y ||
+				w.word!=finalWord || t.hflip!=bool(finalWord&0x4000) || t.vflip!=bool(finalWord&0x8000) ||
+				!t.hasHeight || t.stairSourceAmbiguous || t.authoredObstacle || t.obstacleAssembly ||
+				(t.surface!=S::Unknown && t.surface!=S::Stair))exact=false;
+			const int level=s.highIsNorth?4-y:y+1;
+			for(int k=0;k<64;k++) {
+				const int h=t.height[k];if(!step && h>0 && h%level==0)step=h/level;
+				if(step<=0 || h!=level*step)exact=false;
+			}
+		}
+		if(exact){out={origin,(s.highIsNorth?s.y+4:s.y-1)*64+s.x+1,
+			(s.highIsNorth?s.y-1:s.y+4)*64+s.x+1,4*step,uint8_t(vf?2:0),first.owner};return true;}
+	}
 	int matches=0, rise=0;uint8_t flip=0;
 	for(int hf:{0,0x4000}) {
 		bool exact=true;
@@ -2189,7 +2225,10 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				bool landings=a>=0 && b>=0 && a!=b;
 				for(int end:{high,low})for(int dx:{0,1}) {
 					const auto &t=context.placements[end+dx];
-					if(!t.hasHeight || t.stairSourceAmbiguous || !std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;}))landings=false;
+					const auto *source=&t;
+					if(proof.producer && context.peerProducerPlacements && (!t.hasHeight || t.stairSourceAmbiguous ||
+						!std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;})))source=&context.peerProducerPlacements[end+dx];
+					if(!source->hasHeight || source->stairSourceAmbiguous || !std::all_of(source->height.begin(),source->height.end(),[](int16_t h){return h==0;}))landings=false;
 				}
 				if(landings && std::any_of(constraints.begin(),constraints.end(),[&](const Constraint &e){return e.low==a && e.high==b;})) {
 					// A fully connected authored wall path already owns this relation.
@@ -3557,8 +3596,11 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				bool valid=low!=255 && high!=255 && high-low==proof.rise;
 				for(int end:{proof.low,proof.high})for(int dx:{0,1}) {
 					const auto &t=context.placements[end+dx];const int plane=end==proof.low?lp:hp,base=end==proof.low?low:high;
-					if(components[plane*4096+end+dx]<0 || result.planeOffsets[plane][end+dx]!=base || !t.hasHeight || t.stairSourceAmbiguous ||
-						!std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;}))valid=false;
+					const auto *source=&t;
+					if(proof.producer && context.peerProducerPlacements && (!t.hasHeight || t.stairSourceAmbiguous ||
+						!std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;})))source=&context.peerProducerPlacements[end+dx];
+					if(components[plane*4096+end+dx]<0 || result.planeOffsets[plane][end+dx]!=base || !source->hasHeight || source->stairSourceAmbiguous ||
+						!std::all_of(source->height.begin(),source->height.end(),[](int16_t h){return h==0;}))valid=false;
 				}
 				for(int y=0;y<4;y++)for(int x=0;x<4;x++) {
 					const int i=proof.origin+y*64+x;
@@ -3576,10 +3618,31 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				result.stairAttachments.push_back(a);
 				if(unanimous)for(int y=0;y<4;y++)for(int x=0;x<4;x++) {
 					const int i=proof.origin+y*64+x;result.producerOwnedStair[i]=true;
+					if(proof.producer && context.producerWrites->cells[context.placementBackgroundIndex*4096+i].owner!=proof.producer) {
+						result.producerOwnedStair[i]=false;continue;
+					}
 					result.offsets[i]=base;
 					result.structuralPlaneOffsets[a.lowPlane][i]=result.structuralPlaneOffsets[a.highPlane][i]=base;
 					result.fallbackDirections[i]=0;
 				}
+			}
+		}
+		// A producer shared by both BGs has one relief datum. The peer's proved
+		// occupied landing relation can place surviving members even where this
+		// map's art has no movement-support component. Never copy peer floor
+		// offsets or claim overwritten words; only transport the terminal proof.
+		if(S9xRemasterDungeonResearchEnabled() && context.producerWrites && context.producerWrites->enabled && context.peerShellMap)for(int si=0;si<context.stairCount;si++) {
+			RemasterDungeonStairProof proof;
+			if(!S9xRemasterDungeonStairProof(context,context.stairs[si],proof) || !proof.producer)continue;
+			for(const auto &a:context.peerShellMap->stairAttachments) {
+				if(a.origin!=proof.origin || a.low!=proof.low || a.high!=proof.high || a.rise!=proof.rise || a.conflict || a.base==255)continue;
+				for(int y=0;y<4;y++)for(int x=0;x<4;x++) {
+					const int i=proof.origin+y*64+x;
+					if(context.producerWrites->cells[context.placementBackgroundIndex*4096+i].owner!=proof.producer)continue;
+					result.producerOwnedStair[i]=true;result.offsets[i]=a.base;result.fallbackDirections[i]=0;
+					result.structuralPlaneOffsets[a.lowPlane][i]=result.structuralPlaneOffsets[a.highPlane][i]=a.base;
+				}
+				result.stairAttachments.push_back(a);
 			}
 		}
 		return true; // unresolved is a cached result too, not a reason to reuse stale geometry

@@ -23,6 +23,41 @@ def intersects(a, b):
 
 
 class MetadataLayoutTests(unittest.TestCase):
+    def test_room_capture_native_handoff_and_modal_veto(self):
+        self.assertIn('requestedContextRoom.store(input.select)', SOURCE)
+        self.assertIn('pausedRoom = S9xRemasterState().completedContextRoom', SOURCE)
+        self.assertIn('remasterContextRoom.admit(pausedRoom)', SOURCE)
+        self.assertIn('remasterContextRoomSession=session', SOURCE)
+        opened = SOURCE.split('- (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:', 1)[1]
+        self.assertIn('remasterContextRoom=RemasterContextRoom()', opened)
+        assign = SOURCE.split('- (void)assignRemasterLocationContext:(id)sender\n', 1)[1].split('- (void)prepareRemasterRoomContext', 1)[0]
+        self.assertNotIn('remasterSelectedContextInstances.empty()', assign)
+        for guard in ['now!=before', 'session!=remasterCaptureSession.load()', 'selection.include!=', 'selection.exclude!=', 'selection.roomGeneration!=']:
+            self.assertIn(guard, assign)
+        self.assertIn('@"Current room (including offscreen)"', SOURCE)
+        self.assertIn('item.state=filter.count', SOURCE)
+        self.assertIn('item.representedObject=', SOURCE)
+        self.assertIn('remasterContextInclude,remasterContextExclude], grouping || remasterNpcInspectorActive', SOURCE)
+
+    def test_bulk_context_native_consumer(self):
+        pick = SOURCE.split('- (BOOL)selectRemasterPixelAtViewPoint:', 1)[1].split('- (void)showRemasterVariantAtIndex:', 1)[0]
+        self.assertIn('remasterContextEditor.pickType(remasterEditingProfile, remasterReplayFrame, remasterHeightInstanceId, extendingSelection, remasterSelectedTiles)', pick)
+        assign = SOURCE.split('- (void)assignRemasterLocationContext:(id)sender\n', 1)[1].split('- (void)renameRemasterTileContext:', 1)[0]
+        self.assertNotIn('!remasterSelectLocations', assign)
+        self.assertIn('remasterContextEditor.replacementCount', assign)
+        self.assertIn('Replace Existing Context Assignments?', assign)
+        self.assertLess(assign.index('runModal'), assign.index('remasterContextEditor.assign('))
+        self.assertIn('finishRemasterContextEdit:', assign)
+        refresh = SOURCE.split('- (void)refreshRemasterEditingControls\n', 1)[1]
+        enable = refresh.split('remasterAssignContextButton.enabled=', 1)[1].split(';', 1)[0]
+        self.assertNotIn('remasterSelectLocations', enable)
+        self.assertIn('remasterContextEditor.canAssign', enable)
+        self.assertIn('Visible/current frame:', refresh)
+        self.assertIn('distinct bindings', refresh)
+        self.assertIn('visible unavailable excluded', refresh)
+        cycle = SOURCE.split('- (NSString *)cycleRemasterLayerView\n', 1)[1].split('- (NSString *)remasterLayerViewName', 1)[0]
+        self.assertIn('remasterContextEditor.clear()', cycle)
+
     def test_directional_doorway_support_controls(self):
         controls = SOURCE.split('remasterDoorwaySupportButton = [[NSButton alloc]', 1)[1].split('remasterContextDependentButton =', 1)[0]
         self.assertIn('@"Doorway: support contact"', controls)
@@ -82,8 +117,7 @@ class MetadataLayoutTests(unittest.TestCase):
         self.assertIn('remasterSelectedContextInstances.clear()', action)
         self.assertIn('remasterLayerRefreshPending.store(true)', action)
         self.assertIn('S9xRemasterSetProfile(remasterEditingProfile)', action)
-        self.assertIn('remasterCaptureSession.fetch_add(1)', action)
-        self.assertIn('remasterPausedCapturePending.store(false)', action)
+        self.assertIn('CancelRemasterCaptureSession()', action)
         pick = SOURCE.split('- (BOOL)selectRemasterPixelAtViewPoint:', 1)[1]
         self.assertIn('remasterLayerRefreshPending.load()) return YES', pick)
         renderer = Path(__file__).parents[1].joinpath("gfx.cpp").read_text()
@@ -203,7 +237,7 @@ class MetadataLayoutTests(unittest.TestCase):
         refresh = SOURCE.split("- (void)refreshRemasterEditingControls\n", 1)[1]
         self.assertIn("remasterObstacleView.hidden = !grouping || remasterNpcInspectorActive", refresh)
         self.assertIn("remasterContextSelectionMode.enabled = !grouping", refresh)
-        self.assertIn("view.hidden = grouping", refresh)
+        self.assertIn("S9xInspectorSetContextHidden(@[", refresh)
         change = SOURCE.split("- (void)changeRemasterLayer:(id)sender\n", 1)[1].split("- (void)updateRemasterSemantics", 1)[0]
         self.assertIn("S9xRemasterObstacleEditorSelectionInstances", change)
         self.assertIn("for (const auto &cell : remasterObstacleSelection)", change)
@@ -283,7 +317,7 @@ class MetadataLayoutTests(unittest.TestCase):
         self.assertNotIn("remasterObstacleContact.state", action)
 
     def test_paused_capture_transfers_owned_packet_and_pinned_evidence(self):
-        producer = SOURCE.split("if (remasterPausedCapturePending.exchange(false))", 1)[1].split("usleep(Settings.FrameTime)", 1)[0]
+        producer = SOURCE.split("remasterCaptureSession.produce(", 1)[1].split("usleep(Settings.FrameTime)", 1)[0]
         self.assertIn("std::make_shared<RemasterFrame>(*frame)", producer)
         self.assertIn("completedDungeonEvidence", producer)
         self.assertIn("S9xRemasterWriteDungeonCaptureEvidence(written", producer)

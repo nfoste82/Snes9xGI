@@ -16,6 +16,7 @@
 #include "seta.h"
 #include "bsx.h"
 #include "msu1.h"
+#include "remaster/runtime/dungeon_producer_writes.h"
 
 #define addCyclesInMemoryAccess \
 	if (!CPU.InDMAorHDMA) \
@@ -325,6 +326,12 @@ inline void S9xSetByte (uint8 Byte, uint32 Address)
 
 	if (SetAddress >= (uint8 *) CMemory::MAP_LAST)
 	{
+#ifdef S9X_REMASTER_DUNGEON_RESEARCH
+		if (S9xRemasterDungeonResearchEnabled() && S9xRemasterDungeonWrites().enabled && uintptr_t(SetAddress + (Address & 0xffff)) >= uintptr_t(Memory.RAM) &&
+			uintptr_t(SetAddress + (Address & 0xffff)) < uintptr_t(Memory.RAM) + 0x20000)
+			S9xRemasterDungeonWrites().write(Memory.RAM, Memory.ROM,
+				uint32(SetAddress + (Address & 0xffff) - Memory.RAM), Byte, 1, Registers.PBPC, Registers.X.W, Registers.Y.W);
+#endif
 		*(SetAddress + (Address & 0xffff)) = Byte;
 		addCyclesInMemoryAccess;
 		return;
@@ -465,6 +472,12 @@ inline void S9xSetWord (uint16 Word, uint32 Address, enum s9xwrap_t w = WRAP_NON
 
 	if (SetAddress >= (uint8 *) CMemory::MAP_LAST)
 	{
+#ifdef S9X_REMASTER_DUNGEON_RESEARCH
+		if (S9xRemasterDungeonResearchEnabled() && S9xRemasterDungeonWrites().enabled && uintptr_t(SetAddress + (Address & 0xffff)) >= uintptr_t(Memory.RAM) &&
+			uintptr_t(SetAddress + (Address & 0xffff)) < uintptr_t(Memory.RAM) + 0x20000)
+			S9xRemasterDungeonWrites().write(Memory.RAM, Memory.ROM,
+				uint32(SetAddress + (Address & 0xffff) - Memory.RAM), Word, 2, Registers.PBPC, Registers.X.W, Registers.Y.W);
+#endif
 		WRITE_WORD(SetAddress + (Address & 0xffff), Word);
 		addCyclesInMemoryAccess_x2;
 		return;

@@ -625,8 +625,7 @@
 	}
 	[self stopRemasterNpcPlayback];
 	if (running && !pauseEmulation) [self pause];
-	remasterCaptureSession.fetch_add(1);
-	remasterPausedCapturePending.store(false);
+	[self cancelRemasterLiveCapture];
 	const bool continuing = remasterNpcInspectorActive;
 	if (!continuing)
 	{

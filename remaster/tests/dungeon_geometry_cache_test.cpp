@@ -62,7 +62,33 @@ int main(){try {
   c.submodule=5;run();
   check(S9xRemasterDungeonHeightInputsPublishable(c,7),"post-subtile shutter reset");
   c.submodule=0;c.constructionPhase=0;run();
- const auto *animatedMetadata=S9xRemasterFrameMetadataForTile(*f,b);
+  // Default-identical identities are NOT interchangeable when occurrence-local
+  // context activation or facing/flip capability differs. Exercise both
+  // directions without publishing/changing profile bytes between frames.
+  profile.tileContexts[a]["one"]={};profile.tileContexts[a]["two"]={};
+  RemasterContextLocation at;at.area=c.roomIndex;at.background=1;at.x=10;at.y=10;
+  profile.contextBindings[at].tile=a;profile.contextBindings[at].name="one";
+  S9xRemasterSetProfile(profile);run();
+  for(int direction=0;direction<4;direction++) {
+   auto before=s.runtimeDungeonHeightEpoch;
+   for(int y=0;y<8;y++){(*gfx)[y*2]=direction%2?0:255;(*gfx)[y*2+1]=direction%2?255:0;}
+   run();check(s.runtimeDungeonHeightEpoch>before,"occurrence-dependent animation reused stale proof");
+   const bool active=direction%2==0;
+   check((*s.dungeonRetainedBg2)[10*64+10].stairSourceAmbiguous==active,"stale occurrence source applicability");
+   auto retained=*s.dungeonRetainedBg2;
+   differential();
+   for(int i=0;i<4096;i++)check(retained[i].sameGeometry((*s.dungeonRetainedBg2)[i]),"retained classification differs from fresh classification");
+  }
+  auto profileChange=[&](const char *why) {
+   auto key=s.dungeonGeometryProfileKey;
+   S9xRemasterSetProfile(profile);run();check(s.dungeonGeometryProfileKey!=key,why);differential();
+  };
+  at.x++;profile.contextBindings[at]=profile.contextBindings.begin()->second;
+  profile.contextBindings.erase(profile.contextBindings.begin());profileChange("binding move must change geometry key");
+  profile.tileContexts[a].erase("two");profileChange("two-to-one context activation must change key");
+  profile.tileContexts[a]["two"]={};profileChange("one-to-two context activation must change key");
+  profile.tileContexts.clear();profile.contextBindings.clear();S9xRemasterSetProfile(profile);run();
+  const auto *animatedMetadata=S9xRemasterFrameMetadataForTile(*f,b);
  check(animatedMetadata && animatedMetadata->emissionRgba==profile.assets[b].emissionRgba,"animated emission stale");
  epoch=s.runtimeDungeonHeightEpoch;c.linkX++;c.backgroundScrollX++;c.hasTerrainActors=true;c.terrainActors[0].state=10;run();
  check(s.runtimeDungeonHeightEpoch==epoch,"actor/camera invalidation");
@@ -79,7 +105,20 @@ int main(){try {
  c.linkPlane=1;fallback("plane must solve");
  c.stairCount=1;c.stairs[0]={12,12,1,0,false,true};fallback("stair must solve");
  (*tpl)[12875]^=1;fallback("complete template dependency must solve");
- c.roomIndex++;fallback("room transition must solve");
+  c.roomIndex++;fallback("room transition must solve");
+  check(!S9xRemasterDungeonResearchEnabled() && !S9xRemasterDungeonWritesStorage(),"default allocated/enabled observer");
+  // Same input, toggle only: both transitions must revoke all geometry caches.
+  for(bool enabled:{true,false,true,false}) {
+   auto session=s.dungeonSession;
+   S9xRemasterSetDungeonResearchEnabled(enabled);
+   check(s.dungeonSession>session && !s.dungeonSnapshotValid && !s.runtimeDungeonHeightValid && s.dungeonArtworkStates.empty(),"research toggle retained cache");
+   fallback("research toggle must solve");
+   auto &trace=S9xRemasterDungeonWrites();trace.enable(true);trace.room=c.roomIndex;trace.cells[0].owner=42;
+   // Reset/defrost/game-switch callers all use this continuity boundary.
+   S9xRemasterInvalidateDungeonContinuity();
+   check(trace.room==0xffff && !trace.cells[0].owner,"continuity boundary retained stale trace");
+   run();
+  }
  // Exact activated geometry dependencies: defaults/masks/normals never ignored.
  auto metadata=profile;
  metadata.assets[a]=metadata.assets[b];check(S9xRemasterDungeonArtworkGeometryEquivalent(metadata,a.hash,b.hash),"equal metadata");
@@ -96,7 +135,7 @@ int main(){try {
  DIFFERENT(surface,RemasterDungeonFloorContext::Surface::Wall);u=t;u.height[63]=1;check(!t.sameGeometry(u),"height");
  DIFFERENT(groundedFloorMask,1);DIFFERENT(doorframeMask,1);DIFFERENT(hasDoorframeMask,true);
  DIFFERENT(doorTemplateOffset,1);DIFFERENT(doorAssembly,1);DIFFERENT(doorDirection,0);DIFFERENT(splitDoorPart,true);
- DIFFERENT(hasHeight,true);DIFFERENT(removableSupportPlanes,1);DIFFERENT(hflip,true);DIFFERENT(vflip,true);
+  DIFFERENT(hasHeight,true);DIFFERENT(stairSourceAmbiguous,true);DIFFERENT(removableSupportPlanes,1);DIFFERENT(hflip,true);DIFFERENT(vflip,true);
  DIFFERENT(floorPlaneMask,1);DIFFERENT(distinctLowerUsage,true);DIFFERENT(structuralFloorPlaneMask,0);
  DIFFERENT(wallTemplateOffset,1);DIFFERENT(supportingTrim,true);DIFFERENT(terminalCorner,true);
  DIFFERENT(highPerimeterFace,true);DIFFERENT(highCornerFace,true);DIFFERENT(lowerDoorWallPart,true);

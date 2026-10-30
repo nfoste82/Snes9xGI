@@ -21,6 +21,17 @@
 
 extern struct SCheatData		Cheat;
 extern struct SLineData			LineData[240];
+
+// Inspector requests only: prove maps/VRAM and tile registers remained stable
+// across this rendered frame. Never retained or scanned during normal gameplay.
+static std::unique_ptr<RemasterContextRoomCapture> remasterRoomStart;
+static std::array<uint32_t,9> remasterRoomRegisters;
+static std::array<uint8_t,6> remasterRoomState;
+static std::array<uint32_t,9> RemasterRoomRegisters() {
+	return {PPU.BGMode,PPU.BG[0].NameBase,PPU.BG[1].NameBase,
+		PPU.BG[0].SCBase,PPU.BG[1].SCBase,PPU.BG[0].SCSize,PPU.BG[1].SCSize,
+		PPU.BG[0].BGSize,PPU.BG[1].BGSize};
+}
 extern struct SLineMatrixData	LineMatrixData[240];
 
 void S9xComputeClipWindows (void);
@@ -662,6 +673,14 @@ void S9xStartScreenRefresh (void)
 			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight,
 			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampDungeonContext(
 				Memory.RAM[0x10], Memory.RAM[0x11], Memory.RAM[0x10c]));
+		remasterRoomStart.reset();
+		if(S9xRemasterState().requestedContextRoom.load()) {
+			remasterRoomStart=std::make_unique<RemasterContextRoomCapture>();
+			std::copy_n(Memory.RAM+0x2000,16384,remasterRoomStart->maps.begin());
+			std::copy_n(Memory.VRAM,65536,remasterRoomStart->graphics.begin());
+			remasterRoomRegisters=RemasterRoomRegisters();
+			remasterRoomState={Memory.RAM[0x10],Memory.RAM[0x11],Memory.RAM[0xb0],Memory.RAM[0xef],Memory.RAM[0xa0],Memory.RAM[0xa1]};
+		}
 	}
 
 	if (++IPPU.FrameCount == (uint32)Memory.ROMFramesPerSecond)
@@ -705,6 +724,13 @@ void S9xEndScreenRefresh (void)
 			static uint64_t completedTransitionSession=0;
 			dungeonFloor.verifiedAlttpRom =
 				std::memcmp(Memory.ROMSHA256, alttpUsSha256, sizeof(alttpUsSha256)) == 0;
+#ifdef S9X_REMASTER_DUNGEON_RESEARCH
+			// Research builds alone expose the CPU-store observer. Environment is
+			// sampled once, never on a store; ordinary builds have no store hook.
+			static const bool researchRequested=[] {const char *v=std::getenv("S9X_REMASTER_DUNGEON_RESEARCH");return v && std::strcmp(v,"1")==0;}();
+			S9xRemasterSetDungeonResearchEnabled(researchRequested);
+			if(S9xRemasterDungeonResearchEnabled())S9xRemasterDungeonWrites().enable(dungeonFloor.verifiedAlttpRom);
+#endif
 			if (dungeonFloor.verifiedAlttpRom)
 			{
 				dungeonFloor.indoors = Memory.RAM[0x1b] != 0;
@@ -742,6 +768,15 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.graphics = Memory.VRAM;
 				dungeonFloor.emitterPalette = PPU.CGDATA;
 				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
+				// Small bounded immutable declaration decode. This is not the
+				// headless renderer and does not execute a CPU or observe stores.
+				static std::shared_ptr<const RemasterDungeonConstructionDeclarations> declarations;
+				if(!declarations || declarations->room!=dungeonFloor.roomIndex)
+					declarations=std::make_shared<const RemasterDungeonConstructionDeclarations>(
+						S9xRemasterDecodeDungeonDeclarations(Memory.ROM,Memory.CalculatedSize,
+							dungeonFloor.verifiedAlttpRom,dungeonFloor.roomIndex));
+				dungeonFloor.constructionDeclarations=declarations;
+				if(S9xRemasterDungeonResearchEnabled())dungeonFloor.producerWrites = &S9xRemasterDungeonWrites();
 				dungeonFloor.hasTerrainActors = true;
 				dungeonFloor.linkZ = static_cast<int16_t>(Memory.RAM[0x24] | Memory.RAM[0x25]<<8);
 				dungeonFloor.hasObstacleActors = true;
@@ -892,6 +927,24 @@ void S9xEndScreenRefresh (void)
 					const int worldY=(Memory.RAM[yAddress]|Memory.RAM[yAddress+1]<<8)+1;
 					contextScrollX[bg]=S9xRemasterUnwrapRenderedScroll(worldX,LineData[0].BG[bg].HOffset);
 					contextScrollY[bg]=S9xRemasterUnwrapRenderedScroll(worldY,LineData[0].BG[bg].VOffset);
+				}
+			}
+			S9xRemasterState().contextRoomFormatSupported = remasterRoomStart &&
+				remasterRoomRegisters==RemasterRoomRegisters() && PPU.BGMode==1 && !IPPU.PseudoHires && !IPPU.Interlace &&
+				remasterRoomState==std::array<uint8_t,6>{Memory.RAM[0x10],Memory.RAM[0x11],Memory.RAM[0xb0],Memory.RAM[0xef],Memory.RAM[0xa0],Memory.RAM[0xa1]} &&
+				raster_event_count==0 &&
+				!PPU.BG[0].BGSize && !PPU.BG[1].BGSize && PPU.BG[0].SCSize==3 && PPU.BG[1].SCSize==3 &&
+				std::memcmp(remasterRoomStart->maps.data(),Memory.RAM+0x2000,16384)==0 &&
+				std::memcmp(remasterRoomStart->graphics.data(),Memory.VRAM,65536)==0;
+			if(S9xRemasterState().contextRoomFormatSupported) {
+				for(unsigned y=1;y<IPPU.RenderedScreenHeight && y<240;++y)for(unsigned bg=0;bg<2;++bg)
+					if(LineData[y].BG[bg].HOffset!=LineData[0].BG[bg].HOffset || LineData[y].BG[bg].VOffset!=LineData[0].BG[bg].VOffset)
+						S9xRemasterState().contextRoomFormatSupported=false;
+				for(unsigned bg=0;bg<2;++bg)for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x) {
+					const unsigned source=(bg?0:8192)+(y*64+x)*2;
+					const uint16_t dest=uint16_t((PPU.BG[bg].SCBase<<1)+((y/32)*2+x/32)*2048+((y%32)*32+x%32)*2);
+					if(Memory.RAM[0x2000+source]!=Memory.VRAM[dest] || Memory.RAM[0x2001+source]!=Memory.VRAM[uint16_t(dest+1)])
+						S9xRemasterState().contextRoomFormatSupported=false;
 				}
 			}
 			const uint8_t remasterCapture = S9xRemasterEndFrame(

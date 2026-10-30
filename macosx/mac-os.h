@@ -280,6 +280,7 @@ extern id<S9xInputDelegate> inputDelegate;
 - (void)toggleRemasterRecording:(id)sender;
 - (void)chooseRemasterRecording:(id)sender;
 - (NSString *)openRemasterFrame:(NSURL *)fileURL;
+- (void)cancelRemasterLiveCapture;
 #ifdef __cplusplus
 - (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket;
 #endif

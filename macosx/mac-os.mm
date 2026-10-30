@@ -19,6 +19,7 @@
  ***********************************************************************************/
 
 #import <Cocoa/Cocoa.h>
+#import "remaster-inspector-layout.h"
 #import <mach/mach_time.h>
 
 #include <OpenGL/OpenGL.h>
@@ -44,6 +45,9 @@
 #include "remaster/runtime/lighting_field_cache.h"
 #include "remaster/runtime/emission_appearance.h"
 #include "remaster/runtime/inspector_height.h"
+#include "remaster/runtime/context_editor.h"
+#include "remaster/runtime/paused_capture_lifecycle.h"
+#include "remaster-capture-ui.h"
 #include "remaster/runtime/profile_merge.h"
 #include "remaster/runtime/npc_pose.h"
 
@@ -73,6 +77,10 @@
 #include "remaster-benchmark.h"
 #import "window-placement.h"
 #include <CommonCrypto/CommonDigest.h>
+
+@interface S9xEngine (RemasterLiveCompletion)
+- (NSString *)presentRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)packet liveToken:(uint64_t)token;
+@end
 
 static std::atomic<bool> benchmarkActive {false};
 static RemasterBenchmarkTag benchmarkTag;
@@ -577,8 +585,8 @@ static volatile bool8	rejectinput     = false;
 
 static bool8			pauseEmulation  = false,
 						escKeyDown      = false,
-						frameAdvance    = false,
 						useMouse		= false;
+static std::atomic<bool> frameAdvance { false };
 
 static int				frameCount      = 0;
 
@@ -653,15 +661,30 @@ static NSColorWell		*remasterDebugLightColor;
 // A paused live packet may only be read by its producer. Zero means no redraw.
 static std::atomic<uint32_t> remasterDebugLightRedraw { 0 };
 static std::mutex remasterDebugLightRedrawMutex;
-static std::atomic<bool> remasterPausedCapturePending { false };
 static std::atomic<bool> remasterLayerRefreshPending { false };
 static uint8_t remasterLayerView = 0;
 static bool remasterSceneFromLivePacket = false;
-static std::mutex remasterPausedCaptureMutex;
-static NSString *remasterPausedCapturePath;
-static NSPoint remasterPausedCapturePoint;
-static bool remasterPausedCaptureSelect = false;
-static std::atomic<uint64_t> remasterCaptureSession { 0 };
+struct RemasterPausedCaptureInput {
+	std::string path;
+	NSPoint point;
+	bool select;
+};
+static RemasterPausedCaptureLifecycle<RemasterPausedCaptureInput> remasterCaptureSession;
+
+// All cancellation callers (including ProcessInput and freeze selection on the
+// producer) share the UI presentation owner. Never dispatch_sync: stop joins
+// the producer on the main thread. The helper preserves newer UI requests.
+static void CancelRemasterCaptureSession()
+{
+	remasterCaptureSession.cancelOnUI(DispatchRemasterCaptureUI);
+}
+
+static void RequestRemasterFrameAdvance()
+{
+	// Invalidate at the event, before publishing the advance, not at consumption
+	// where a preemption could make this an older advance cancelling a new pick.
+	remasterCaptureSession.requestAdvance(frameAdvance, DispatchRemasterCaptureUI);
+}
 
 // UI owns replay reader/evidence; producer owns recorder snapshots. No shared
 // mutable profile or frame is borrowed by either the worker or timeline.
@@ -937,12 +960,21 @@ static NSInteger remasterClipboardLayer = -1;
 static bool remasterClipboardHasData = false;
 static NSString *remasterClipboardToken;
 static unsigned remasterClipboardGeometryFacing = 0;
-static std::string remasterTileContextName;
+static RemasterContextEditor remasterContextEditor;
+static RemasterContextRoom remasterContextRoom;
+static uint64_t remasterContextRoomSession=0;
+static NSPopUpButton *remasterContextScope;
+static NSPopUpButton *remasterContextInclude;
+static NSPopUpButton *remasterContextExclude;
+static std::string &remasterTileContextName = remasterContextEditor.name;
 static NSTextField *remasterTileContextInput;
 static NSPopUpButton *remasterContextSelectionMode;
 static NSButton *remasterAssignContextButton;
+static NSButton *remasterShowAssignedContextButton;
+static NSPopUpButton *remasterContextChoice;
+static NSTextField *remasterContextStatus;
 static bool remasterSelectLocations = false;
-static std::set<uint32_t> remasterSelectedContextInstances;
+static std::set<uint32_t> &remasterSelectedContextInstances = remasterContextEditor.instances;
 static NSButton *remasterRemoveContextButton, *remasterPreviousContextButton, *remasterNextContextButton, *remasterAddContextButton;
 
 static RemasterTileContext *RemasterSelectedContext(const RemasterTileContentId &tile)
@@ -1592,30 +1624,39 @@ static inline void EmulationLoop (void)
 					if (S9xRemasterState().activeLayerView == S9xRemasterState().requestedLayerView.load())
 						remasterLayerRefreshPending.store(false);
                 }
-                if (frameAdvance)
+                if (frameAdvance.exchange(false))
                 {
                     macFrameSkip = 1;
                     skipFrames = 1;
-                    frameAdvance = false;
                     S9xMainLoop();
                     macFrameSkip = storedMacFrameSkip;
                 }
 
 				// Copy/write on the producer thread: the UI must never borrow a
 				// mutable live packet, even while the emulator is paused.
-				if (remasterPausedCapturePending.exchange(false))
-				{
-					const uint64_t session = remasterCaptureSession.load();
-					NSString *path; NSPoint point; bool select;
-					{
-						std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
-						path = remasterPausedCapturePath; point = remasterPausedCapturePoint;
-						select = remasterPausedCaptureSelect;
-					}
+				struct CaptureResult {
+					std::string written;
+					std::shared_ptr<RemasterFrame> packet;
+					std::shared_ptr<const RemasterContextRoomCapture> room;
+				};
+				remasterCaptureSession.produce([&](const RemasterPausedCaptureInput &input) {
+					CaptureResult result;
+					if (frzselecting) return result;
+					// Take the immutable request before arming or running its fresh frame.
+					// Never set this from the UI: an intervening frame could consume it.
+					S9xRemasterState().requestedContextRoom.store(input.select);
+					S9xRemasterState().completedFrameAvailable = false;
+					S9xRemasterState().completedContextRoom.reset();
+					macFrameSkip = 1;
+					skipFrames = 1;
+					S9xMainLoop();
+					macFrameSkip = storedMacFrameSkip;
+					S9xRemasterState().requestedContextRoom.store(false);
 					const RemasterFrame *frame = S9xRemasterCompletedFrame();
 					std::string written;
 					std::vector<uint8_t> bytes;
 					std::shared_ptr<RemasterFrame> pausedPacket;
+					std::shared_ptr<const RemasterContextRoomCapture> pausedRoom;
 					bool success = false;
 					if (!frzselecting && frame && frame->width && frame->height)
 					{
@@ -1623,33 +1664,47 @@ static inline void EmulationLoop (void)
 							0x66,0x87,0x1d,0x66,0xbe,0x19,0xad,0x2c,0x34,0xc9,0x27,0xd6,0xb1,0x4c,0xd8,0xeb,
 							0x6f,0xc3,0x18,0x19,0x65,0xb6,0xe5,0x17,0xcb,0x36,0x1f,0x73,0x16,0x00,0x9c,0xfb};
 						auto word = [] (int address) { return Memory.RAM[address] | (Memory.RAM[address + 1] << 8); };
-						const std::string located = S9xRemasterCaptureLocationPath(path.fileSystemRepresentation,
+						const std::string located = S9xRemasterCaptureLocationPath(input.path.c_str(),
 							std::memcmp(Memory.ROMSHA256, alttpHash, 32) == 0, Memory.RAM[0x1b] != 0,
 							word(0xa0), word(0x22), word(0x20));
 						success = S9xSerializeRemasterFrame(*frame, bytes) && S9xRemasterWriteUniqueCapture(bytes, located, written);
 						if (success)
 						{
 							pausedPacket = std::make_shared<RemasterFrame>(*frame);
+							pausedRoom = S9xRemasterState().completedContextRoom;
 							const auto &e = S9xRemasterState().completedDungeonEvidence;
 							const auto &p = S9xRemasterState().completedEvidenceProfile;
 							if (e && p) S9xRemasterWriteDungeonCaptureEvidence(written,e->context,*p,
 								e->map.get(),e->key,e->epoch,e->publishable);
 						}
 					}
-					NSString *savedPath = success ? [NSString stringWithUTF8String:written.c_str()] : nil;
+					if (success) { result.written=std::move(written); result.packet=std::move(pausedPacket); result.room=std::move(pausedRoom); }
+					return result;
+				}, [](const RemasterPausedCaptureLifecycle<RemasterPausedCaptureInput>::Request &request, CaptureResult result) {
+					const uint64_t session=request.token;
+					const NSPoint point=request.payload.point;
+					const bool select=request.payload.select;
+					NSString *savedPath = result.packet ? [NSString stringWithUTF8String:result.written.c_str()] : nil;
+					const auto pausedPacket=result.packet;
+					const auto pausedRoom=result.room;
 					dispatch_async(dispatch_get_main_queue(), ^{
-						if (session != remasterCaptureSession.load() || !running || !pauseEmulation || frzselecting) return;
-						if (!savedPath) { NSBeep(); NSLog(@"Paused capture unavailable: allow one live frame after loading the profile."); return; }
+						if (!running || !pauseEmulation || frzselecting) return;
+						remasterCaptureSession.deliver(session, savedPath != nil, [&](bool available) {
+						if (!available) { NSBeep(); NSLog(@"Paused capture unavailable: fresh rendered frame did not complete."); return; }
 						NSLog(@"Remaster frame capture written: %@", savedPath);
 						if (select)
 						{
 							ClearRemasterDebugLightRedraw();
-							NSString *error = [(S9xEngine *)s9xView.emulationDelegate openRemasterFrame:[NSURL fileURLWithPath:savedPath] retainedPacket:pausedPacket];
+							NSString *error = [(S9xEngine *)s9xView.emulationDelegate presentRemasterFrame:[NSURL fileURLWithPath:savedPath] retainedPacket:pausedPacket liveToken:session];
 							if (error.length) { NSBeep(); NSLog(@"%@", error); return; }
+							if (session != remasterCaptureSession.load()) return; // nested modal cancellation
+							remasterContextRoom.admit(pausedRoom);
+							remasterContextRoomSession=session;
 							[(S9xEngine *)s9xView.emulationDelegate selectRemasterPixelAtViewPoint:point extendingSelection:NO];
 						}
+						});
 					});
-				}
+				});
 
                 {
                     std::lock_guard<std::mutex> lock(remasterDebugLightRedrawMutex);
@@ -2970,6 +3025,7 @@ int PromptFreezeDefrost (Boolean freezing)
     const int           w = SNES_WIDTH << 1, h = SNES_HEIGHT << 1;
     const char          letters[] = "123456789ABC", *filename;
 
+	CancelRemasterCaptureSession();
     frzselecting = true;
 	[s9xView updatePauseOverlay];
     oldInactiveMode = inactiveMode;
@@ -3314,7 +3370,7 @@ int PromptFreezeDefrost (Boolean freezing)
     frzselecting = false;
 	pauseEmulation = wasPaused;
 	if (!freezing && result >= 0 && wasPaused)
-		frameAdvance = true;
+		RequestRemasterFrameAdvance();
 
 	[s9xView updatePauseOverlay];
 
@@ -3521,7 +3577,7 @@ static void ProcessInput (void)
                             break;
 
                         case AdvanceFrame:
-                            frameAdvance = true;
+                            RequestRemasterFrameAdvance();
                             break;
 
                         case kNumFunctionButtons:
@@ -4895,6 +4951,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)stop
 {
+	CancelRemasterCaptureSession();
 	ClearRemasterDebugLightRedraw();
 	[s9xView cancelRemasterDebugLightGesture];
 	// Stop the producer before saving SRAM or allowing shared C++ state to die.
@@ -4953,6 +5010,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 {
 	if (![self canShowRemasterTileEditor])
 		return;
+	S9xInspectorRestoreLayout(remasterInspectorPanel, S9xInspectorCanvas(remasterInspectorPanel),
+		remasterInspectorScrollView, (remasterInspectorPanel.screen ?: NSScreen.mainScreen).visibleFrame);
 	[self refreshRemasterEditingControls];
 	[remasterInspectorPanel makeKeyAndOrderFront:nil];
 }
@@ -5049,8 +5108,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	// saving the profile to disk is deliberately not required.
 	if (running && remasterEditingProfileLoaded)
 		S9xRemasterSetProfile(remasterEditingProfile);
-	remasterCaptureSession.fetch_add(1);
-	remasterPausedCapturePending.store(false);
+	CancelRemasterCaptureSession();
 	ClearRemasterDebugLightRedraw();
 	remasterFramePresenting = false;
 	remasterNpcInspectorActive = false;
@@ -5186,8 +5244,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (BOOL)loadROM:(NSURL *)fileURL
 {
 	if (!restoringWorkspace && remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges]) return NO;
-	remasterCaptureSession.fetch_add(1);
-	remasterPausedCapturePending.store(false);
+	CancelRemasterCaptureSession();
 	S9xRemasterState().requestedInspectableFrames.store(false);
 	[self resetRemasterDebugLight];
 	SetLiveRemasterPresentation(false, remasterLightingView);
@@ -5384,8 +5441,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (BOOL)loadMultiple:(NSArray<NSURL *> *)fileURLs
 {
 	if (!restoringWorkspace && remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges]) return NO;
-	remasterCaptureSession.fetch_add(1);
-	remasterPausedCapturePending.store(false);
+	CancelRemasterCaptureSession();
 	S9xRemasterState().requestedInspectableFrames.store(false);
 	if (fileURLs.count == 0)
 	{
@@ -5461,13 +5517,13 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	S9xRemasterState().requestedLayerView.store(remasterLayerView);
 	// Visibility and diagnostics are independent: retain Height/Normals/etc.
 	SetLiveRemasterPresentation(running && remasterLightingEnabled && remasterEditingProfileLoaded, remasterLightingView);
-	remasterCaptureSession.fetch_add(1); // discard any queued old-layer handoff
-	remasterPausedCapturePending.store(false);
+	CancelRemasterCaptureSession(); // discard any queued old-layer handoff
 	remasterFramePresenting = false;
 	remasterNpcInspectorActive = false;
 	remasterSelectionValid = false;
 	remasterSelectedTiles.clear();
 	remasterSelectedContextInstances.clear();
+	remasterContextEditor.clear();
 	remasterObstacleSelection.clear();
 	remasterHeightInstanceId = 0;
 	[remasterInspectorPanel orderOut:nil];
@@ -5598,10 +5654,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 				return [NSString stringWithUTF8String:written.c_str()];
 			return nil;
 		}
-		std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
-		remasterPausedCapturePath = file.path;
-		remasterPausedCaptureSelect = false;
-		remasterPausedCapturePending.store(true);
+		remasterCaptureSession.request({file.path.fileSystemRepresentation, NSZeroPoint, false});
 		return directory.path;
 	}
 	// Two seconds covers slow ALTTP tile animation without creating an unbounded capture.
@@ -5675,6 +5728,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)chooseRemasterRecording:(id)sender
 {
+	[self cancelRemasterLiveCapture];
 	if((running && !pauseEmulation)||RemasterRecording::Global().Active()){NSAlert *a=[NSAlert new];a.messageText=@"Pause emulation and stop recording before opening a recording.";[a runModal];return;}
 	NSOpenPanel *panel=[NSOpenPanel openPanel];panel.allowedFileTypes=@[@"s9xrmr"];panel.directoryURL=RemasterCaptureDirectory();
 	if([panel runModal]!=NSModalResponseOK)return;
@@ -5689,6 +5743,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)presentRemasterRecordingFrame
 {
+	[self cancelRemasterLiveCapture];
 	if(!remasterRecordingReader || (running && !pauseEmulation))return;
 	RemasterFrame frame;std::string error,text;RemasterRecording::Bytes evidence;
 	if(!remasterRecordingReader->Read(remasterRecordingIndex,frame,evidence,text,error)) {
@@ -5737,6 +5792,25 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (NSString *)openRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket
 {
+	[self cancelRemasterLiveCapture];
+	return [self presentRemasterFrame:fileURL retainedPacket:retainedPacket liveToken:0];
+}
+
+- (void)cancelRemasterLiveCapture
+{
+	CancelRemasterCaptureSession();
+	remasterContextRoom=RemasterContextRoom();
+}
+
+// Trusted internal completion only; external opens must use openRemasterFrame:.
+- (NSString *)presentRemasterFrame:(NSURL *)fileURL retainedPacket:(std::shared_ptr<RemasterFrame>)retainedPacket liveToken:(uint64_t)liveToken
+{
+	// Live completion cannot enter a profile-loading/discard modal loop: a nested
+	// external open there could otherwise be overwritten when that loop returns.
+	if (liveToken && (liveToken != remasterCaptureSession.load() || !retainedPacket ||
+		!remasterEditingProfileLoaded || retainedPacket->profileRomSha256 != remasterEditingProfile.romSha256))
+		return @"Live capture replaced or its editing profile changed.";
+	remasterContextRoom=RemasterContextRoom(); // never attach live evidence to imports/recording
 	if(!remasterRecordingLoading){remasterRecordingReader.reset();remasterRecordingOriginal.reset();remasterRecordingEvidence.clear();remasterRecordingProfileText.clear();}
 	if (running && !pauseEmulation)
 		return @"Pause emulation before opening a remaster frame.";
@@ -5822,6 +5896,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterNpcInspectorActive = false;
 	remasterNpcInspectorFrame = RemasterFrame();
 	remasterSceneFrame = std::move(frame);
+	remasterContextEditor.clear(); // New frame: instance IDs may alias entirely different occurrences.
 	remasterSceneFromLivePacket = retainedPacket != nullptr;
 	remasterSceneFrame.obstacleLocationSelection = remasterObstacleGroupingActive;
 	remasterObstacleSelection.clear();
@@ -6062,11 +6137,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		if (!NSPointInRect(point, s9xView.bounds)) return YES;
 		NSURL *directory = RemasterCaptureDirectory();
 		if (!directory) { NSBeep(); return YES; }
-		std::lock_guard<std::mutex> lock(remasterPausedCaptureMutex);
-		remasterPausedCapturePath = [[directory URLByAppendingPathComponent:@"frame.s9xrmf"] path];
-		remasterPausedCapturePoint = point;
-		remasterPausedCaptureSelect = true;
-		remasterPausedCapturePending.store(true);
+		remasterCaptureSession.request({[directory URLByAppendingPathComponent:@"frame.s9xrmf"].path.fileSystemRepresentation, point, true});
 		return YES;
 	}
 	if ((!remasterFramePresenting && !remasterNpcPicking) || remasterReplayFrame.width == 0 || remasterReplayFrame.height == 0)
@@ -6107,13 +6178,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	}
 	else if (remasterSelectLocations && !remasterNpcPicking)
 	{
-		for(auto selected=remasterSelectedContextInstances.begin();selected!=remasterSelectedContextInstances.end();)
-			if(*selected>remasterReplayFrame.tileInstances.size() || !remasterReplayFrame.contextLocations.count(*selected))selected=remasterSelectedContextInstances.erase(selected);else ++selected;
-		if (!extendingSelection) remasterSelectedContextInstances.clear();
-		if (instance && remasterReplayFrame.contextLocations.count(remasterHeightInstanceId)) {
-			if (extendingSelection && remasterSelectedContextInstances.count(remasterHeightInstanceId)) remasterSelectedContextInstances.erase(remasterHeightInstanceId);
-			else remasterSelectedContextInstances.insert(remasterHeightInstanceId);
-		}
+		remasterContextEditor.pick(remasterEditingProfile, remasterReplayFrame, remasterHeightInstanceId, extendingSelection);
 		remasterSelectedTiles.clear();
 		for (auto id:remasterSelectedContextInstances) {
 			const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
@@ -6121,21 +6186,18 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		}
 		remasterReplayFrame.selectedContextInstances=remasterSelectedContextInstances;
 		remasterReplayFrame.contextLocationSelection=true;
-		remasterTileContextName.clear();
-		if(instance) {
-			auto location=remasterReplayFrame.contextLocations.find(remasterHeightInstanceId);
-			if(location!=remasterReplayFrame.contextLocations.end()) {
-				auto binding=remasterEditingProfile.contextBindings.find(location->second);
-				if(binding!=remasterEditingProfile.contextBindings.end() && binding->second.tile==instance->tileId)remasterTileContextName=binding->second.name;
-			}
-		}
 	}
 	else if (instance)
 	{
-		RemasterToggleTileSelection(remasterSelectedTiles, instance->tileId, extendingSelection);
+		if (!remasterNpcPicking)
+			remasterContextEditor.pickType(remasterEditingProfile, remasterReplayFrame, remasterHeightInstanceId, extendingSelection, remasterSelectedTiles);
+		else RemasterToggleTileSelection(remasterSelectedTiles, instance->tileId, extendingSelection);
 	}
 	else if (!extendingSelection)
+	{
 		remasterSelectedTiles.clear();
+		remasterContextEditor.clear();
+	}
 	remasterSelectionValid = !remasterSelectedTiles.empty();
 	if (!remasterSelectionValid) remasterHeightInstanceId = 0;
 	remasterTilePixelSelected = false;
@@ -6170,14 +6232,14 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 	if (!remasterInspectorPanel)
 	{
-		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 646)
+		remasterInspectorPanel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 760, 724)
 			styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
 			backing:NSBackingStoreBuffered defer:NO];
 		remasterInspectorPanel.title = @"Tile and Pixel Inspector";
 		remasterInspectorPanel.releasedWhenClosed = NO;
 		remasterInspectorPanel.hidesOnDeactivate = YES;
 		NSView *contentView = remasterInspectorPanel.contentView;
-		NSTextField *contextLabel = [NSTextField labelWithString:@"Context:"];
+		NSTextField *contextLabel = [NSTextField labelWithString:@"Edit name:"];
 		remasterContextLabel = contextLabel;
 		contextLabel.frame = NSMakeRect(20, 570, 62, 22);
 		[contentView addSubview:contextLabel];
@@ -6204,8 +6266,29 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterAssignContextButton=[[NSButton alloc] initWithFrame:NSMakeRect(210,604,170,28)];
 		remasterAssignContextButton.title=@"Assign Context";remasterAssignContextButton.bezelStyle=NSBezelStyleRounded;
 		remasterAssignContextButton.target=self;remasterAssignContextButton.action=@selector(assignRemasterLocationContext:);
-		remasterAssignContextButton.toolTip=@"Bind the previewed context to selected world/room locations. None clears bindings. Command-click to select multiple locations.";
+		remasterAssignContextButton.toolTip=@"Assign the independent destination context. Tile Types uses the clicked BG for each TileID. Scope chooses visible/current-frame or complete current room including offscreen. Room filters are checkable include/exclude unions; exclusion wins. Tile Locations picks exact locations. None clears bindings, not automatic sole contexts. No autosave.";
 		[contentView addSubview:remasterAssignContextButton];
+		remasterContextChoice = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(390,604,190,28) pullsDown:NO];
+		remasterContextChoice.target=self; remasterContextChoice.action=@selector(chooseRemasterTileContext:);
+		remasterContextChoice.toolTip=@"Choose an existing context to edit/preview and assign. Does not replace selected targets. None clears bindings when assigned.";
+		[contentView addSubview:remasterContextChoice];
+		remasterShowAssignedContextButton = [[NSButton alloc] initWithFrame:NSMakeRect(590,604,150,28)];
+		remasterShowAssignedContextButton.title=@"Show Assigned";
+		remasterShowAssignedContextButton.bezelStyle=NSBezelStyleRounded;
+		remasterShowAssignedContextButton.target=self; remasterShowAssignedContextButton.action=@selector(showAssignedRemasterTileContext:);
+		remasterShowAssignedContextButton.toolTip=@"Replace targets with visible occurrences using the chosen context (including sole-context automatic selection). None shows default/unbound occurrences.";
+		[contentView addSubview:remasterShowAssignedContextButton];
+		remasterContextStatus = [NSTextField wrappingLabelWithString:@""];
+		remasterContextStatus.frame=S9xInspectorStatusFrame();
+		remasterContextStatus.font=[NSFont systemFontOfSize:11];
+		[contentView addSubview:remasterContextStatus];
+		remasterContextScope=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(20,638,300,26) pullsDown:NO];
+		[remasterContextScope addItemsWithTitles:@[@"Visible / current frame",@"Current room (including offscreen)"]];
+		remasterContextScope.target=self;remasterContextScope.action=@selector(changeRemasterContextScope:);
+		[contentView addSubview:remasterContextScope];
+		remasterContextInclude=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(330,638,200,26) pullsDown:YES];
+		remasterContextExclude=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(540,638,200,26) pullsDown:YES];
+		[contentView addSubview:remasterContextInclude];[contentView addSubview:remasterContextExclude];
 		S9xRemasterTileView *tilePreview = [[S9xRemasterTileView alloc] initWithFrame:NSMakeRect(20, 405, 128, 128)];
 		tilePreview.editor = self;
 		remasterTilePreview = tilePreview;
@@ -6754,12 +6837,11 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		S9xInitializeWindowPlacement(remasterInspectorPanel, @"RemasterInspector");
 		// Placement restoration includes the old window size. Keep its location,
 		// but migrate the fixed-size inspector so the new header is not clipped.
-		[remasterInspectorPanel setContentSize:NSMakeSize(760, 646)];
-		remasterInspectorPanel.contentMinSize = NSMakeSize(760, 646);
 		// Restoring a saved window size can resize this flexible view even
 		// though the inspector's controls use fixed coordinates. Restore its
 		// reserved bounds last so it cannot cover the layer-shift row.
-		remasterInspectorScrollView.frame = NSMakeRect(244, 20, 496, 170);
+		S9xInspectorRestoreLayout(remasterInspectorPanel, contentView, remasterInspectorScrollView,
+			(remasterInspectorPanel.screen ?: NSScreen.mainScreen).visibleFrame);
 		[self refreshRemasterEditingControls];
 	}
 
@@ -6863,6 +6945,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterNextVariantButton.enabled = NO;
 	}
 	[self refreshRemasterEditingControls];
+	S9xInspectorRestoreLayout(remasterInspectorPanel, S9xInspectorCanvas(remasterInspectorPanel),
+		remasterInspectorScrollView, (remasterInspectorPanel.screen ?: NSScreen.mainScreen).visibleFrame);
 	[remasterInspectorPanel orderFront:nil];
 	return YES;
 }
@@ -7025,6 +7109,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterVariantIndex = index;
 	const RemasterTileContentId previousFocusedTile = remasterSelectedTile;
 	remasterSelectedTile = remasterVariants[index];
+	if (remasterContextEditor.bulk && !(previousFocusedTile == remasterSelectedTile)) remasterContextEditor.clear(); // Variant navigation is not a scene type pick.
 	const bool grouping = remasterLayerSelector.indexOfSelectedItem == RemasterEditorObstacleGrouping;
 	remasterSelectionValid = grouping ? !remasterSelectedTiles.empty() : true;
 	auto selected = std::find(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), previousFocusedTile);
@@ -7785,6 +7870,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterSelectLocations=remasterContextSelectionMode.indexOfSelectedItem==1;
 	remasterReplayFrame.contextLocationSelection=remasterSelectLocations;
 	remasterSelectedContextInstances.clear();remasterReplayFrame.selectedContextInstances.clear();
+	remasterContextEditor.clear();
+	remasterContextEditor.roomScope=false;
 	remasterSelectedTiles.clear();remasterSelectionValid=false;
 	remasterTileContextName.clear();remasterMetadataNeedsSync=true;
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
@@ -7792,23 +7879,56 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)assignRemasterLocationContext:(id)sender
 {
-	if(!remasterSelectLocations || remasterSelectedContextInstances.empty() || !remasterEditingProfileLoaded)return;
-	// Validate every selected location first; single-context identities need no binding.
-	for(auto id:remasterSelectedContextInstances) {
-		if(id>remasterReplayFrame.tileInstances.size() || !remasterReplayFrame.contextLocations.count(id)){NSBeep();return;}
-		const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
-		auto contexts=remasterEditingProfile.tileContexts.find(tile);
-		if(!remasterTileContextName.empty() && (contexts==remasterEditingProfile.tileContexts.end() || !contexts->second.count(remasterTileContextName))){NSBeep();return;}
-	}
+	if(!remasterEditingProfileLoaded || remasterNpcInspectorActive || remasterObstacleGroupingActive)return;
+	[self prepareRemasterRoomContext];
+	if (!remasterContextEditor.canAssign(remasterEditingProfile, remasterReplayFrame)) { NSBeep(); return; }
 	std::string before;std::vector<RemasterProfileDiagnostic> diagnostics;
 	if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,diagnostics))return;
-	for(auto id:remasterSelectedContextInstances) {
-		const auto &at=remasterReplayFrame.contextLocations.at(id);const auto tile=remasterReplayFrame.tileInstances[id-1].tileId;
-		auto contexts=remasterEditingProfile.tileContexts.find(tile);
-		if(remasterTileContextName.empty() || contexts==remasterEditingProfile.tileContexts.end() || contexts->second.size()<2)remasterEditingProfile.contextBindings.erase(at);
-		else remasterEditingProfile.contextBindings[at]={tile,remasterTileContextName};
+	const auto selection=remasterContextEditor;
+	const auto session=remasterCaptureSession.load();
+	const auto replacements=remasterContextEditor.replacementCount(remasterEditingProfile);
+	if (replacements || remasterContextEditor.roomScope) {
+		NSAlert *alert=[[NSAlert alloc] init];
+		alert.messageText=@"Replace Existing Context Assignments?";
+		alert.informativeText=[NSString stringWithFormat:@"%lu distinct eligible locations; %lu replacements/clears. %@ Each TileID uses its clicked BG, shown in status. Filters are independent of destination. None clears durable bindings but cannot disable automatic sole context.", static_cast<unsigned long>(remasterContextEditor.bindingCount()),static_cast<unsigned long>(replacements),remasterContextEditor.roomScope ? @"Current room INCLUDING OFFSCREEN." : @"Visible/current frame or exact picked locations only."];
+		[alert addButtonWithTitle:@"Assign"]; [alert addButtonWithTitle:@"Cancel"];
+		if ([alert runModal]!=NSAlertFirstButtonReturn) return;
 	}
+	std::string now;S9xRemasterSerializeProfile(remasterEditingProfile,now,diagnostics);
+	const auto currentRoom=remasterContextRoom.capture;
+	if(selection.roomScope && (!running || !pauseEmulation || frzselecting || remasterLayerRefreshPending.load() || currentRoom!=selection.roomGeneration)) {
+		[self refreshRemasterEditingControls];NSBeep();return;
+	}
+	if(now!=before || session!=remasterCaptureSession.load() || selection.name!=remasterContextEditor.name ||
+	 selection.include!=remasterContextEditor.include || selection.exclude!=remasterContextEditor.exclude ||
+	 selection.roomScope!=remasterContextEditor.roomScope || selection.typeBackgrounds!=remasterContextEditor.typeBackgrounds ||
+	 selection.instances!=remasterContextEditor.instances || selection.roomGeneration!=remasterContextEditor.roomGeneration) {
+		[self refreshRemasterEditingControls];NSBeep();return;
+	}
+	if (!remasterContextEditor.assign(remasterEditingProfile, remasterReplayFrame)) { NSBeep(); return; }
 	[self finishRemasterContextEdit:@(before.c_str()) action:@"Assign Location Context"];
+}
+
+- (void)prepareRemasterRoomContext
+{
+	if(remasterContextRoom.capture && (remasterContextRoomSession!=remasterCaptureSession.load() || !pauseEmulation || !running || frzselecting || remasterLayerRefreshPending.load()))
+		remasterContextRoom=RemasterContextRoom();
+	remasterContextEditor.prepareRoom(remasterEditingProfile,remasterReplayFrame,remasterContextRoom);
+}
+
+- (void)changeRemasterContextScope:(id)sender
+{
+	remasterContextEditor.roomScope=remasterContextScope.indexOfSelectedItem==1;
+	remasterContextEditor.include.clear();remasterContextEditor.exclude.clear();
+	[self refreshRemasterEditingControls];
+}
+
+- (void)toggleRemasterContextFilter:(NSMenuItem *)sender
+{
+	auto &filter=sender.tag ? remasterContextEditor.exclude : remasterContextEditor.include;
+	const std::string value=[sender.representedObject UTF8String];
+	if(!filter.erase(value))filter.insert(value);
+	[self refreshRemasterEditingControls];
 }
 
 - (void)renameRemasterTileContext:(id)sender
@@ -7884,20 +8004,9 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)cycleRemasterTileContext:(NSInteger)direction
 {
-	std::vector<std::string> names = {""};
-	auto found = remasterEditingProfile.tileContexts.find(remasterSelectedTile);
-	if (found != remasterEditingProfile.tileContexts.end()) for (const auto &c : found->second) names.push_back(c.first);
-	auto current = std::find(names.begin(), names.end(), remasterTileContextName);
-	NSInteger index = current == names.end() ? 0 : current - names.begin();
-	remasterTileContextName = names[(index + direction + names.size()) % names.size()];
-	if (remasterSelectLocations) {
-		// Keep the tile-type authoring scope even when this context has no visible
-		// assignments, so further cycling remains available. Only locations change.
-		remasterSelectedContextInstances = S9xRemasterContextSelection(remasterEditingProfile,
-			remasterReplayFrame, remasterSelectedTiles, remasterTileContextName);
-		remasterReplayFrame.contextLocationSelection = true;
-		remasterReplayFrame.selectedContextInstances = remasterSelectedContextInstances;
-	}
+	remasterContextEditor.cycle(remasterEditingProfile, remasterReplayFrame, remasterSelectedTile,
+		remasterSelectedTiles, int(direction), remasterSelectLocations);
+	remasterReplayFrame.selectedContextInstances = remasterSelectedContextInstances;
 	remasterGeometryFacing = 0;
 	remasterMetadataNeedsSync = true;
 	remasterTilePixelSelected = false;
@@ -7905,6 +8014,22 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 }
 - (void)previousRemasterTileContext:(id)sender { [self cycleRemasterTileContext:-1]; }
 - (void)nextRemasterTileContext:(id)sender { [self cycleRemasterTileContext:1]; }
+
+- (void)chooseRemasterTileContext:(id)sender
+{
+	remasterContextEditor.choose(remasterContextChoice.indexOfSelectedItem <= 0 ? "" : remasterContextChoice.titleOfSelectedItem.UTF8String);
+	remasterGeometryFacing=0; remasterMetadataNeedsSync=true; remasterTilePixelSelected=false;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)showAssignedRemasterTileContext:(id)sender
+{
+	if (!remasterSelectLocations || !remasterEditingProfileLoaded) return;
+	remasterContextEditor.showAssigned(remasterEditingProfile, remasterReplayFrame, remasterSelectedTiles);
+	remasterReplayFrame.contextLocationSelection=true;
+	remasterReplayFrame.selectedContextInstances=remasterSelectedContextInstances;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
 
 - (void)flipRemasterLayerHorizontal:(id)sender
 {
@@ -8596,9 +8721,51 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	// Messaging nil controls is safe, but array literals containing them are not.
 	if (!remasterInspectorPanel) return;
 	const auto contexts = remasterEditingProfile.tileContexts.find(remasterSelectedTile);
-	if (!remasterTileContextName.empty() && !RemasterSelectedContext(remasterSelectedTile)) remasterTileContextName.clear();
+	if (!remasterContextEditor.bulk && !remasterTileContextName.empty() && !RemasterSelectedContext(remasterSelectedTile)) remasterTileContextName.clear();
 	const bool contextEditable = remasterEditingProfileLoaded && !remasterSelectedTiles.empty();
-	remasterAssignContextButton.enabled=contextEditable && remasterSelectLocations && !remasterSelectedContextInstances.empty();
+	[self prepareRemasterRoomContext];
+	[remasterContextScope selectItemAtIndex:remasterContextEditor.roomScope?1:0];
+	remasterContextScope.enabled=contextEditable && !remasterSelectLocations;
+	for(unsigned side=0;side<2;++side) {
+		NSPopUpButton *popup=side?remasterContextExclude:remasterContextInclude;
+		[popup removeAllItems];[popup addItemWithTitle:side?@"Exclude contexts…":@"Include contexts… (empty = all)"];
+		std::map<std::string,std::string> labels;labels[""]="Default / unbound";
+		for(const auto &tile:remasterSelectedTiles) {
+			const auto c=remasterEditingProfile.tileContexts.find(tile);if(c==remasterEditingProfile.tileContexts.end())continue;
+			for(const auto &entry:c->second) labels[entry.first]+= " " + RemasterProfileSerialization::TileId(tile);
+		}
+		const auto &filter=side?remasterContextEditor.exclude:remasterContextEditor.include;
+		for(const auto &label:labels) {
+			NSString *title=label.first.empty()?@"Default / unbound":[NSString stringWithFormat:@"%s —%s",label.first.c_str(),label.second.c_str()];
+			NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:title action:@selector(toggleRemasterContextFilter:) keyEquivalent:@""];
+			item.target=self;item.tag=side;item.representedObject=@(label.first.c_str());item.state=filter.count(label.first)?NSControlStateValueOn:NSControlStateValueOff;
+			[popup.menu addItem:item];
+		}
+		popup.enabled=contextEditable && remasterContextEditor.roomScope;
+	}
+	remasterAssignContextButton.enabled=contextEditable && !remasterNpcInspectorActive && !remasterObstacleGroupingActive && remasterContextEditor.canAssign(remasterEditingProfile, remasterReplayFrame);
+	[remasterContextChoice removeAllItems];
+	[remasterContextChoice addItemWithTitle:@"None"];
+	if (contexts != remasterEditingProfile.tileContexts.end())
+		for (const auto &entry : contexts->second) [remasterContextChoice addItemWithTitle:@(entry.first.c_str())];
+	[remasterContextChoice selectItemWithTitle:remasterTileContextName.empty() ? @"None" : @(remasterTileContextName.c_str())];
+	remasterContextChoice.enabled=contextEditable;
+	remasterShowAssignedContextButton.enabled=contextEditable && remasterSelectLocations;
+	std::string contextStatus="Edit / preview: " + (remasterTileContextName.empty() ? std::string("None (default asset; Assign clears bindings)") : remasterTileContextName);
+	if (auto *c=RemasterSelectedContext(remasterSelectedTile)) contextStatus += c->hasNormals ? "; normals authored" : "; normals absent (no inheritance)";
+	contextStatus += "\nPicked occurrence: " + remasterContextEditor.active(remasterEditingProfile, remasterReplayFrame, remasterHeightInstanceId);
+	contextStatus += remasterContextEditor.bulk ? "\nVisible/current frame: " : "\nPicked locations: ";
+	contextStatus += std::to_string(remasterContextEditor.bindingCount()) + " distinct bindings; " + std::to_string(remasterContextEditor.unavailable) + " visible unavailable excluded. Hidden/offscreen not included.";
+	contextStatus += "\nReplacements: " + std::to_string(remasterContextEditor.replacementCount(remasterEditingProfile)) + ". Choose context then Assign. None cannot disable sole auto.";
+	if(remasterContextEditor.roomScope) {
+		const auto &n=remasterContextEditor.counts;
+		contextStatus="Current room INCLUDING OFFSCREEN: "+remasterContextEditor.roomStatus;
+		contextStatus+="\nTotal "+std::to_string(n.total)+"; included "+std::to_string(n.included)+"; excluded "+std::to_string(n.excluded)+"; eligible "+std::to_string(n.eligible)+"; blocked "+std::to_string(n.blocked);
+		contextStatus+="\nNew "+std::to_string(n.newBindings)+"; replacements "+std::to_string(n.replacements)+"; clears "+std::to_string(n.clears)+" (distinct durable keys).";
+		contextStatus+="\nDestination: "+(remasterTileContextName.empty()?std::string("None (clear binding; sole context remains automatic)"):remasterTileContextName);
+		for(const auto &bg:remasterContextEditor.typeBackgrounds)contextStatus+="\n"+RemasterProfileSerialization::TileId(bg.first)+" BG"+std::to_string(bg.second+1);
+	}
+	remasterContextStatus.stringValue=@(contextStatus.c_str()); remasterContextStatus.toolTip=remasterContextStatus.stringValue;
 	remasterTileContextInput.stringValue = remasterTileContextName.empty() ? @"None" : @(remasterTileContextName.c_str());
 	remasterTileContextInput.enabled = contextEditable;
 	remasterRemoveContextButton.enabled = contextEditable && !remasterTileContextName.empty();
@@ -8608,10 +8775,12 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	const bool grouping = layer == RemasterEditorObstacleGrouping;
 	remasterContextSelectionMode.enabled = !grouping;
 	[remasterContextSelectionMode selectItemAtIndex:grouping ? 1 : (remasterSelectLocations ? 1 : 0)];
-	remasterContextSelectionMode.toolTip = grouping ? @"Obstacle Grouping selects exact BG and OBJ occurrences. Other layers' location mode binds background contexts only." : @"Tile Locations selects background context-binding locations, not sprite parts. Use Obstacle Grouping for BG or OBJ footprints.";
+	remasterContextSelectionMode.toolTip = grouping ? @"Obstacle Grouping selects exact BG and OBJ occurrences. Other layers' location mode binds background contexts only." : @"Tile Types matches each clicked TileID on its clicked BG; Command-click adds/removes types. Scope chooses visible/current-frame or current room including offscreen (requires settled live capture). Tile Locations picks exact bindings. Other rooms/BGs are not included. Use Obstacle Grouping for sprite parts.";
 	remasterContextLabel.hidden = grouping;
-	for (NSView *view in @[remasterTileContextInput,remasterAddContextButton,remasterRemoveContextButton,
-		remasterPreviousContextButton,remasterNextContextButton,remasterAssignContextButton]) view.hidden = grouping;
+	S9xInspectorSetContextHidden(@[remasterTileContextInput,remasterAddContextButton,remasterRemoveContextButton,
+		remasterPreviousContextButton,remasterNextContextButton,remasterAssignContextButton,
+		remasterContextChoice,remasterShowAssignedContextButton,remasterContextStatus,
+		remasterContextScope,remasterContextInclude,remasterContextExclude], grouping || remasterNpcInspectorActive);
 	const bool editable = remasterEditingProfileLoaded && !remasterVariants.empty() && !RemasterEffectiveHeightPreview() &&
 		!grouping &&
 		(remasterTileContextName.empty() || std::all_of(remasterSelectedTiles.begin(), remasterSelectedTiles.end(), [](const auto &tile) { return RemasterSelectedContext(tile) != nullptr; }));

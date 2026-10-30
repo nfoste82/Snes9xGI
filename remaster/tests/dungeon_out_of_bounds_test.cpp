@@ -272,7 +272,9 @@ int main(int argc,char **argv) {
   if(mode==2)f->tiles[0][f->plateau].surface=C::Surface::Unknown;
   if(mode==3)f->tiles[0][f->plateau].stairSourceAmbiguous=true;
   f->run();const auto &i=f->frame.tileInstances[f->frame.scenePixels[f->at(f->far)].instanceId-1];
-  need(!i.visualClaim.published,"unanchored/nonflat/unknown/ambiguous region cannot fabricate plateau datum");
+   // Consistent edge samples alone do not validate modeled contact. Nonflat
+   // research publication is separately covered with an explicit opt-in.
+   need(!i.visualClaim.published,"default unvalidated nonflat/unknown/ambiguous must remain unresolved");
  }
   { // Policy change: unequal accepted crests/floor identities are nonfatal; planes are not.
   auto storage=std::make_unique<std::array<std::array<C::Placement,4096>,2>>();

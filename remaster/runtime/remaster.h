@@ -8,6 +8,7 @@
 #define _REMASTER_H_
 
 #include "frame.h"
+#include "context_room.h"
 #include "recording.h"
 #include "layer_view.h"
 #include "capture_path.h"
@@ -217,6 +218,7 @@ struct RemasterState
 		bool valid=false, verified=false;
 		uint8_t background=1;
 		uint16_t graphicsBase=0, bg1GraphicsBase=0;
+		uint16_t room=0xffff;
 		uint64_t profile=0;
 		bool templates=false;
 		std::array<uint8_t,16384> maps;
@@ -250,6 +252,7 @@ struct RemasterState
 	uint8_t dungeonObservedStairCount = 255;
 	uint16_t dungeonObservedGraphicsBase = 0xffff;
 	uint64_t dungeonObservedRomIdentity = 0;
+	uint64_t dungeonObservedProducerRevision = 0;
 	uint16_t dungeonObservedBg1GraphicsBase = 0xffff;
 	const uint8_t *dungeonObservedTemplateData = nullptr;
 	uint8_t dungeonObservedRise = 255;
@@ -257,6 +260,10 @@ struct RemasterState
 	uint8_t dungeonObservedCollisionMode = 255;
 	uint64_t dungeonTraceEventKey = 0;
 	bool dungeonSnapshotValid = false;
+	uint16_t dungeonStaticAssessmentRoom=0xffff;
+	bool dungeonStaticDeclarationsComplete=false;
+	std::shared_ptr<const RemasterDungeonConstructionDeclarations> dungeonStaticAssessmentInput;
+	std::vector<RemasterDungeonStaticCandidate> dungeonStaticCandidates;
 	bool dungeonHeightMapsPending = false;
 	bool profilePending = false;
 	RemasterSceneSettings requestedSceneSettings;
@@ -280,6 +287,7 @@ struct RemasterState
 		std::array<uint8_t,8192> attributes;
 		std::array<uint8_t,65536> graphics;
 		std::array<uint8_t,12876> templates;
+		std::unique_ptr<RemasterDungeonWriteTrace> producerWrites;
 		RemasterProfile profile;
 		std::unique_ptr<RemasterDungeonHeightMap> map;
 		uint64_t key=0,epoch=0;
@@ -290,6 +298,10 @@ struct RemasterState
 	// paused captures must not sample newer RAM to recreate missing evidence.
 	std::unique_ptr<DungeonCaptureEvidence> completedDungeonEvidence;
 	std::shared_ptr<const RemasterProfile> completedEvidenceProfile;
+	std::atomic<bool> requestedContextRoom{false};
+	bool contextRoomFormatSupported=false;
+	uint64_t contextRoomGeneration=0;
+	std::shared_ptr<const RemasterContextRoomCapture> completedContextRoom;
 	std::unique_ptr<RemasterOverworldCapture> animationOverworldEvidence;
 	uint32_t requestedFrameCount = 1;
 	uint32_t activeFrameCount = 0;
@@ -326,7 +338,10 @@ inline RemasterState &S9xRemasterState (void)
 
 inline void S9xRemasterInvalidateDungeonContinuity()
 {
+	if(auto &trace=S9xRemasterDungeonWritesStorage())trace->clear();
 	auto &s=S9xRemasterState();s.dungeonSession++;
+	s.dungeonStaticAssessmentRoom=0xffff;s.dungeonStaticDeclarationsComplete=false;
+	s.dungeonStaticAssessmentInput.reset();s.dungeonStaticCandidates.clear();
 	for(auto &p:s.dungeonProjection)if(p)p->invalidate();
 	s.transitionSupport={};s.runtimeEntrySupport={};s.runtimeBg1EntrySupport={};s.runtimeEntryRoom=0xffff;
 	s.dungeonSnapshotValid=false;s.runtimeDungeonHeightValid=false;
@@ -337,6 +352,17 @@ inline void S9xRemasterInvalidateDungeonContinuity()
 	s.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 	s.outgoingGeometry={};
 	s.runtimeDungeonBg1HeightMap.roomIndex=0xffff;
+}
+
+inline void S9xRemasterSetDungeonResearchEnabled(bool enabled)
+{
+	if(S9xRemasterDungeonResearchEnabled()==enabled)return;
+	S9xRemasterDungeonResearchEnabled()=enabled;
+	S9xRemasterInvalidateDungeonContinuity();
+	if(auto &trace=S9xRemasterDungeonWritesStorage())trace->enable(false);
+	auto &s=S9xRemasterState();
+	s.completedDungeonEvidence.reset();s.animationDungeonEvidence.reset();
+	s.completedFrameAvailable=false;
 }
 
 // Render geometry lifetime is independent from grounded entry-support anchors.
@@ -468,6 +494,8 @@ inline uint64_t S9xRemasterDungeonHeightInputKey (const RemasterDungeonFloorCont
 	mix(context.collisionMode); mix(floorRise);
 	mix(context.linkPlane & 1);
 	mix(context.placementBackgroundIndex);
+	mix(S9xRemasterDungeonResearchEnabled());
+	if(S9xRemasterDungeonResearchEnabled() && context.producerWrites)for(int b=0;b<8;b++)mix(uint8_t(context.producerWrites->revision>>(8*b)));
 	for(uint64_t v:{uint64_t(uint32_t(context.entrySupport.cell)),uint64_t(uint32_t(context.entrySupport.base)),
 		uint64_t(context.entrySupport.predecessorRoom),context.entrySupport.predecessorState,context.entrySupport.transitionEvidence,context.entrySupport.destinationState})
 		for(int b=0;b<8;b++)mix(uint8_t(v>>(8*b)));
@@ -518,6 +546,15 @@ inline bool S9xRemasterDungeonArtworkGeometryEquivalent(const RemasterProfile &p
 	static const uint64_t transparent=[](){uint8_t pixels[64]={};return S9xRemasterHashTile(4,pixels);}();
 	if((a==transparent)!=(b==transparent))return false;
 	const RemasterTileContentId ai={a,1,4},bi={b,1,4};
+	// Named sources are occurrence-dependent (room/BG/cell), so a hash-pair
+	// cache cannot prove their equivalence. Reclassify rather than retaining
+	// stale applicability when VRAM changes identity at unchanged final words.
+	for(const auto &id:{ai,bi}) {
+		const auto contexts=profile.tileContexts.find(id);
+		if(contexts!=profile.tileContexts.end() && !contexts->second.empty())return false;
+		const auto asset=profile.assets.find(id);
+		if(asset!=profile.assets.end() && (asset->second.geometryByFacing || asset->second.geometryByFlip))return false;
+	}
 	// Full-footprint matching depends on exact identity, including repeated slots.
 	for(const auto &g:profile.obstacleGroups)for(const auto &m:g.members)if(m.tileId==ai || m.tileId==bi)return false;
 	const auto x=profile.assets.find(ai),y=profile.assets.find(bi);
@@ -525,7 +562,8 @@ inline bool S9xRemasterDungeonArtworkGeometryEquivalent(const RemasterProfile &p
 	if(x!=profile.assets.end()) {
 		auto fields=[](const RemasterAssetMetadata &t){return std::tie(
 			t.tileRole,t.hasTileSemantics,t.tileSemanticContextDependent,t.tileSemanticNormals,t.tileSemanticCorner,
-			t.hasHeight,t.height,t.hasNormals,t.normalXyz,t.hasOcclusion,t.occlusion,t.hasDoorframeMask,t.doorframeMask,t.doorwaySupport,t.doorwaySupportDirection);};
+			t.hasHeight,t.height,t.hasNormals,t.normalXyz,t.hasOcclusion,t.occlusion,t.hasDoorframeMask,t.doorframeMask,t.doorwaySupport,t.doorwaySupportDirection,
+			t.geometryByFacing,t.geometryByFlip);};
 		if(fields(x->second)!=fields(y->second))return false;
 	}
 	for(const auto &g:profile.assetGroups) {
@@ -589,6 +627,13 @@ inline std::unique_ptr<RemasterState::DungeonCaptureEvidence> S9xRemasterPinDung
 	if(!c || !c->verifiedAlttpRom || !c->indoors)return nullptr;
 	auto evidence=std::make_unique<RemasterState::DungeonCaptureEvidence>();
 	evidence->context=*c;evidence->context.placements=nullptr;
+	evidence->context.producerWrites=nullptr; // live observer is mutable; never retain as capture proof
+	evidence->context.peerProducerPlacements=nullptr;
+	evidence->context.peerShellPlacements=nullptr;evidence->context.peerShellMap=nullptr;
+	if(c->producerWrites) {
+		evidence->producerWrites=std::make_unique<RemasterDungeonWriteTrace>(*c->producerWrites);
+		evidence->context.producerWrites=evidence->producerWrites.get();
+	}
 	evidence->context.supportRelations=nullptr; // solve-local pointer, never retain
 	evidence->context.wallSupportRelations=nullptr;
 	evidence->context.doorwaySupportRelations=nullptr;
@@ -631,6 +676,18 @@ inline void S9xRemasterWriteDungeonCaptureEvidence (const std::string &path,
 		std::ofstream templates(path+".dungeon-templates.bin",std::ios::binary);
 		templates.write("ALTPDT1\0",8);
 		templates.write(reinterpret_cast<const char *>(c.dungeonTemplateData),12876);
+	}
+	if(c.producerWrites) {
+		std::vector<uint8_t> bytes={'A','L','T','P','D','W','1',0};
+		RemasterFrameSerialization::U16(bytes,c.producerWrites->room);
+		RemasterFrameSerialization::U64(bytes,c.producerWrites->revision);
+		for(const auto &w:c.producerWrites->cells) {
+			RemasterFrameSerialization::U64(bytes,w.owner);
+			for(uint16_t v:{w.source,w.origin,w.word,w.dispatch})RemasterFrameSerialization::U16(bytes,v);
+			bytes.push_back(w.part);bytes.push_back(w.operation);
+		}
+		std::ofstream trace(path+".dungeon-writes.bin",std::ios::binary);
+		trace.write(reinterpret_cast<const char *>(bytes.data()),bytes.size());
 	}
 	if(c.hasTerrainActors) {
 		// Additive sidecar: ALTPDI1 and schema30 remain byte-compatible. The
@@ -825,6 +882,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 		state.activeDebugMode == RemasterDebugMode::FloorWalls;
 	state.completedFrameAvailable = false;
 	state.completedDungeonEvidence.reset();
+	state.completedContextRoom.reset();
 	state.scenePass = false;
 	state.activeLayerView = state.requestedLayerView.load();
 	state.sceneGeometryOnly = false;
@@ -1046,8 +1104,12 @@ inline bool S9xRemasterDungeonClassificationMatches(const RemasterDungeonFloorCo
 	const RemasterState &s)
 {
 	const auto *a=s.dungeonClassificationInputs.get();
+	// Live ownership is occurrence/order-dependent. Until an exact retained
+	// trace snapshot is available, reclassify on producer-driven solves.
+	if(S9xRemasterDungeonResearchEnabled() && c.producerWrites)return false;
 	if(!a || !a->valid || !s.dungeonRetainedBg1 || !s.dungeonRetainedBg2 ||
 		!c.constructedMaps || !c.graphics || !c.collisionAttributes ||
+		a->room!=c.roomIndex ||
 		a->profile!=s.dungeonGeometryProfileKey || a->verified!=c.verifiedAlttpRom ||
 		a->background!=c.placementBackgroundIndex || a->graphicsBase!=c.graphicsBase ||
 		a->bg1GraphicsBase!=c.bg1GraphicsBase || a->templates!=bool(c.dungeonTemplateData) ||
@@ -1070,6 +1132,7 @@ inline void S9xRemasterRememberDungeonClassification(const RemasterDungeonFloorC
 	if(!s.dungeonClassificationInputs)s.dungeonClassificationInputs=std::make_unique<RemasterState::DungeonClassificationInputs>();
 	auto &a=*s.dungeonClassificationInputs;
 	a.valid=true;a.profile=s.dungeonGeometryProfileKey;a.verified=c.verifiedAlttpRom;
+	a.room=c.roomIndex;
 	a.background=c.placementBackgroundIndex;a.graphicsBase=c.graphicsBase;a.bg1GraphicsBase=c.bg1GraphicsBase;
 	a.templates=bool(c.dungeonTemplateData);
 	std::copy_n(c.constructedMaps,16384,a.maps.begin());std::copy_n(c.collisionAttributes,8192,a.attributes.begin());
@@ -1163,7 +1226,22 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// Stair datum proof must sample the same local source as rendering. Until
 		// alternate geometry selection is compiled here, do not certify its base
 		// from a default asset that a context/facing/flip source can replace.
-		placed.stairSourceAmbiguous=profile.tileContexts.count(id) ||
+		// Named alternatives are not selected by hash presence. Multiple contexts
+		// require an exact area/BG/cell binding; a single context is global, just
+		// as in ApplyContextBindings. Until compiled here, only ACTIVE alternatives
+		// veto a proof from the default source. Foreign-world bindings do not.
+		bool contextSource=false;
+		const auto contexts=profile.tileContexts.find(id);
+		if(contexts!=profile.tileContexts.end() && !contexts->second.empty()) {
+			contextSource=contexts->second.size()==1;
+			if(!contextSource) {
+				RemasterContextLocation location;location.area=context.roomIndex;
+				location.background=context.placementBackgroundIndex;location.x=i%64;location.y=i/64;
+				const auto binding=profile.contextBindings.find(location);
+				contextSource=binding!=profile.contextBindings.end() && binding->second.tile==id && contexts->second.count(binding->second.name);
+			}
+		}
+		placed.stairSourceAmbiguous=contextSource ||
 			(asset!=profile.assets.end() && (asset->second.geometryByFacing || asset->second.geometryByFlip));
 		// A semantic plateau is an explicitly marked opaque sheet. Transparent
 		// artwork cannot bridge two regions through a missing geometric edge.
@@ -1236,6 +1314,35 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			lowerAsset->second.hasHeight && std::all_of(lowerAsset->second.height.begin(),lowerAsset->second.height.end(),[](int16_t h){return h==0;}))
 			placed.floorPlaneMask|=2;
 		placed.distinctLowerUsage=(lowerWord&0xc3ff)!=(word&0xc3ff);
+	}
+	// EntranceCave's actual Nx4 source owns a three-band U AFTER its landing
+	// row. Require one complete live invocation, not a source-art search. The
+	// existing masked frame consumer supplies occupied same-plane support and
+	// preserves opening pixels. Other cave/split handlers need their own proof.
+	if(S9xRemasterDungeonResearchEnabled() && context.producerWrites && context.producerWrites->enabled && context.producerWrites->room==context.roomIndex) {
+		const auto &writes=context.producerWrites->cells;
+		for(int origin=0;origin<4096;origin++) {
+			const auto &w=writes[context.placementBackgroundIndex*4096+origin];
+			if(!w.owner || w.origin!=origin || w.part!=0 || w.source!=0x26f6 || w.operation!=1 ||
+				(w.dispatch&0xff0f)!=0x0e01 ||
+				origin%64>60 || origin/64>60)continue;
+			bool exact=true;
+			for(int x=0;x<4;x++)for(int y=0;y<4;y++) {
+				const int i=origin+y*64+x;const auto &p=writes[context.placementBackgroundIndex*4096+i];
+				const int word=context.constructedMaps[2*i]|context.constructedMaps[2*i+1]<<8;
+				if(p.owner!=w.owner || p.source!=w.source || p.part!=x*4+y || p.word!=word || p.dispatch!=w.dispatch)exact=false;
+				if(output[i].stairSourceAmbiguous)exact=false;
+			}
+			if(!exact)continue;
+			for(int x=0;x<4;x++)for(int y=1;y<4;y++) {
+				const int i=origin+y*64+x;auto &t=output[i];
+				const bool frame=x==0 || x==3 || y==3;
+				if(frame && t.surface!=Surface::Door)continue;
+				if(!frame && !(t.surface==Surface::Floor || t.diagnosticAuthoredFloor))continue;
+				if(t.doorAssembly && t.doorAssembly!=origin+65){t.doorDirection=0xfe;continue;}
+				t.doorTemplateOffset=0x26f6;t.doorAssembly=origin+65;t.doorDirection=1;
+			}
+		}
 	}
 	// Statue handlers subtype0 38 and subtype2 1d/21/26 emit 2x3;
 	// freestanding column handlers subtype0 39/3d emit 2x4. Do not include
@@ -3185,6 +3292,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		const RemasterDungeonHeightMap *appliedDungeonHeightMap = nullptr;
 		RemasterDungeonFloorContext liveContext;
 		if(!dungeonFloor) {
+			state.dungeonStaticAssessmentRoom=0xffff;state.dungeonStaticDeclarationsComplete=false;
+			state.dungeonStaticAssessmentInput.reset();state.dungeonStaticCandidates.clear();
 			state.transitionSupport={};state.runtimeEntrySupport={};state.runtimeBg1EntrySupport={};state.runtimeEntryRoom=0xffff;
 			state.outgoingGeometry={};state.previousRuntimeDungeonHeightMap.roomIndex=0xffff;state.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 		}
@@ -3194,6 +3303,20 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			S9xRemasterObserveDungeonTransition(*dungeonFloor);
 			S9xRemasterObserveOutgoingGeometry(*dungeonFloor);
 			liveContext=*dungeonFloor;
+			// Declaration/effect diagnostics cannot grant a physical equation,
+			// attachment or selected height. Missing exhaustive dynamic effects or
+			// plane-qualified contact evidence stays a rejection before any solve.
+			if(state.dungeonStaticAssessmentRoom!=liveContext.roomIndex ||
+				state.dungeonStaticAssessmentInput!=liveContext.constructionDeclarations) {
+				state.dungeonStaticAssessmentRoom=liveContext.roomIndex;
+				state.dungeonStaticAssessmentInput=liveContext.constructionDeclarations;
+				state.dungeonStaticDeclarationsComplete=liveContext.constructionDeclarations &&
+					liveContext.constructionDeclarations->complete && liveContext.constructionDeclarations->room==liveContext.roomIndex;
+				state.dungeonStaticCandidates.clear();
+				if(state.dungeonStaticDeclarationsComplete)
+					state.dungeonStaticCandidates=S9xRemasterAssessDungeonStaticCandidates(*liveContext.constructionDeclarations,liveContext.constructedMaps);
+			}
+			if(!S9xRemasterDungeonResearchEnabled())liveContext.producerWrites=nullptr;
 			if(state.outgoingGeometry.valid && state.outgoingGeometry.room!=liveContext.roomIndex)
 				liveContext.previousRoomIndex=state.outgoingGeometry.room;
 			if(state.runtimeEntryRoom==liveContext.roomIndex) {
@@ -3238,6 +3361,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.runtimeDungeonHeightValid ? state.runtimeDungeonHeightMap.roomIndex : 0xffff);
 			if (!runtimeInputsPublishable) state.dungeonSnapshotValid = false;
 			bool inputChanged = roomChanged || !state.dungeonSnapshotValid || state.dungeonGeometryProfileDirty ||
+				(dungeonFloor->producerWrites && state.dungeonObservedProducerRevision!=dungeonFloor->producerWrites->revision) ||
 				state.dungeonObservedRomIdentity != dungeonFloor->romIdentity ||
 				state.dungeonObservedEntrySupport.cell != dungeonFloor->entrySupport.cell ||
 				state.dungeonObservedEntrySupport.base != dungeonFloor->entrySupport.base ||
@@ -3350,6 +3474,23 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				for (char c : group.first) state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ c) * UINT64_C(1099511628211);
 				for (const auto &id : group.second.tileIds) state.dungeonGeometryProfileKey = (state.dungeonGeometryProfileKey ^ id.hash) * UINT64_C(1099511628211);
 			}
+			// Applicability depends on context multiplicity, names and exact
+			// bindings, including identities without a default asset. Publication
+			// invalidates classification, but solved artwork-state caches are keyed.
+			{
+				auto mix=[&](uint64_t v){state.dungeonGeometryProfileKey=(state.dungeonGeometryProfileKey^v)*UINT64_C(1099511628211);};
+				auto id=[&](const RemasterTileContentId &v){mix(v.hash);mix(v.hashVersion);mix(v.bitDepth);};
+				mix(state.activeProfile.tileContexts.size());
+				for(const auto &entry:state.activeProfile.tileContexts) {
+					id(entry.first);mix(entry.second.size());
+					for(const auto &named:entry.second){mix(named.first.size());for(unsigned char c:named.first)mix(c);}
+				}
+				mix(state.activeProfile.contextBindings.size());
+				for(const auto &entry:state.activeProfile.contextBindings) {
+					mix(entry.first.area);mix(entry.first.background);mix(entry.first.x);mix(entry.first.y);
+					id(entry.second.tile);mix(entry.second.name.size());for(unsigned char c:entry.second.name)mix(c);
+				}
+			}
 			for(const auto &g:state.activeProfile.obstacleGroups) {
 				auto mix=[&](uint64_t v){state.dungeonGeometryProfileKey=(state.dungeonGeometryProfileKey^v)*UINT64_C(1099511628211);};
 				mix(g.name.size());for(unsigned char c:g.name)mix(c);mix(g.members.size());mix(g.spriteAssembly);
@@ -3373,6 +3514,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.dungeonObservedStairs = dungeonFloor->stairs;
 				state.dungeonObservedEntrySupport = dungeonFloor->entrySupport;
 				state.dungeonObservedRomIdentity = dungeonFloor->romIdentity;
+				state.dungeonObservedProducerRevision = dungeonFloor->producerWrites?dungeonFloor->producerWrites->revision:0;
 				state.dungeonObservedStairCount = dungeonFloor->stairCount;
 				state.dungeonObservedGraphicsBase = dungeonFloor->graphicsBase;
 				state.dungeonObservedBg1GraphicsBase = dungeonFloor->bg1GraphicsBase;
@@ -3472,6 +3614,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 						if(reuseClassification)*lowerPlacements=*state.dungeonRetainedBg1;
 						else S9xRemasterDungeonPlacements(lower,state.activeProfile,*lowerPlacements);
 						lower.placements=lowerPlacements->data();
+						constructed.peerProducerPlacements=lowerPlacements->data();
+						lower.peerProducerPlacements=placements->data();
 					}
 					// Once the exact dependency proof rejects, a full classified scan
 					// cannot authorize reuse: identical activated metadata was already
@@ -3926,6 +4070,18 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			*completedFrame = frame;
 		if (state.liveFramesActive)
 		{
+			if(state.requestedContextRoom.exchange(false)) {
+				auto room=std::make_shared<RemasterContextRoomCapture>();
+				room->packet=frame;room->session=state.dungeonSession;room->generation=++state.contextRoomGeneration;
+				if(dungeonFloor) {
+					const auto &c=*dungeonFloor;room->room=c.roomIndex;
+					room->settled=c.verifiedAlttpRom && c.indoors && c.module==7 && c.submodule==0 && c.constructionPhase==0 && c.roomTransitionFlags==0;
+					room->supported=state.contextRoomFormatSupported && c.constructedMaps && c.graphics && c.bg1GraphicsBase!=0xffff;
+					room->bases={c.bg1GraphicsBase,c.graphicsBase};
+					if(room->supported){std::copy_n(c.constructedMaps,16384,room->maps.begin());std::copy_n(c.graphics,65536,room->graphics.begin());}
+				}
+				state.completedContextRoom=std::move(room);
+			}
 			state.completedDungeonEvidence = frame.spriteObstacleSupport ?
 				S9xRemasterPinDungeonCaptureEvidence(dungeonFloor,state.activeProfile,nullptr,
 					state.runtimeDungeonHeightKey,state.runtimeDungeonHeightEpoch,runtimeInputsPublishable,false) : nullptr;

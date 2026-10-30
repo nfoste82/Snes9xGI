@@ -902,6 +902,7 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 
 - (IBAction)openRemasterFrame:(id)sender
 {
+	[self.s9xEngine cancelRemasterLiveCapture];
 	NSOpenPanel *panel = [NSOpenPanel openPanel];
 	panel.allowsMultipleSelection = NO;
 	panel.canChooseDirectories = NO;
