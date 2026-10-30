@@ -95,6 +95,7 @@ FULL_EXTRA = (
     ("dungeon_oriented_obstacle", "Horizontal footprint support direction and mirrored/V-symmetric ownership"),
     ("link_stair_height", "Continuous Link assembly stair support, both orientations/planes and ambiguous landing rejection"),
     ("dungeon_floor_continuity", "Cardinal same-BG floor relief bases, narrow strips, barriers and plane/level conflicts"),
+    ("dungeon_threshold_support", "Traversed oriented threshold terminal support, independent planes and immutable relief"),
     ("door_opening_height", "Doorframe versus connected landing bases, signed heights, flips and plane ownership"),
     ("dungeon_frame_recognition", "Complete ordinary/stair frame ownership, all directions/flips/split BGs, opening independence and ambiguity rejection"),
     ("dungeon_placement_reuse", "EndFrame relation transport and placement-cache invalidation"),

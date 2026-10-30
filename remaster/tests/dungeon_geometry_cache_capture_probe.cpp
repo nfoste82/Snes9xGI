@@ -122,11 +122,43 @@ int main(int argc,char **argv){try {
    s.mainTilePixels[at]=captured->mainPixels[at].tilePixel;s.subTilePixels[at]=captured->subPixels[at].tilePixel;
   }
   s.scenePixels=captured->scenePixels;s.sceneRgb=captured->sceneRgb555;
-  const auto start=std::chrono::steady_clock::now();
-  S9xRemasterEndFrame(captured->originalRgb555.data(),captured->width,captured->width,captured->height,frame.get(),&c);
+   const auto start=std::chrono::steady_clock::now();
+   RemasterHeldLampState controlledLamp;
+   const bool lampAblation=std::getenv("ALTTP_LINK_THRESHOLD_REGRESSION")!=nullptr;
+   if(lampAblation){controlledLamp.verifiedRom=controlledLamp.darkWithLantern=true;controlledLamp.facing=0;
+    controlledLamp.linkScreenX=int(c.linkX)-int(c.backgroundScrollX);controlledLamp.linkScreenY=int(c.linkY)-int(c.backgroundScrollY);}
+   S9xRemasterEndFrame(captured->originalRgb555.data(),captured->width,captured->width,captured->height,frame.get(),&c,lampAblation?&controlledLamp:nullptr);
   endframeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   if(std::getenv("ALTTP_CACHE_TIMING"))std::cerr<<"endframe_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
-  check(!frame->mainPixels.empty(),"EndFrame");
+   check(!frame->mainPixels.empty(),"EndFrame");
+   if(std::getenv("ALTTP_THRESHOLD_ART_REGRESSION")) {
+    check(c.roomIndex==0x61,"061083 art fixture required");
+    size_t samples=0;
+    for(size_t at=0;at<frame->scenePixels.size();at++) {
+     const auto &px=frame->scenePixels[at];if(!px.instanceId)continue;
+     const auto &i=frame->tileInstances[px.instanceId-1];
+     const int x=((c.backgroundScrollX+at%frame->width)&511)/8,y=((c.backgroundScrollY+at/frame->width)&511)/8;
+     if(i.source!=RemasterSourceType::Background || i.sourceIndex!=1 || x>1 || (y!=16 && y!=17))continue;
+     check(i.tileId.hash==UINT64_C(0xc40518b112d0814e),"061083 selected art identity");
+     check(i.heightOffset==0 && !i.hasPlacementHeight,"actor traversal must not move legacy BG art");
+     samples++;
+    }
+    check(samples==256,"061083 selected art denominator");
+    std::cout<<"PASS 061083 selected BG2 legacy art: 256 samples retain base0/local60\n";
+   }
+  if(std::getenv("ALTTP_LINK_THRESHOLD_REGRESSION")) {
+   check(c.roomIndex==0x55 && c.linkX==2680 && (c.linkY==3021 || c.linkY==3001) && c.linkPlane==0,"threshold capture state pin");
+   const auto base=S9xRemasterLinkFloorHeight(c,s.runtimeDungeonHeightMap);
+   std::cout<<"link_support="<<base<<" feet_cell="<<((c.linkX+8)&511)/8<<','<<((c.linkY+20)&511)/8<<'\n';
+   check(base==24,"captured Link threshold base must be 24");
+   size_t members=0;
+   for(const auto &i:frame->tileInstances)if(i.source==RemasterSourceType::Object && i.sourceIndex>=100 && i.sourceIndex<112) {
+    check(i.heightOffset==24 && !i.hasPlacementHeight,"body/equipment/shadow shared base, intrinsic relief unchanged");members++;
+   }
+   check(members>0,"reserved Link OAM denominator");
+   check(frame->heldLampLightIndex<frame->lights.size(),"controlled lamp emitted through actual EndFrame");
+   check(std::abs(frame->lights[frame->heldLampLightIndex].z-(12+24*frame->lightingCoordinateScale/255.0f))<0.0001f,"held lamp uses same solved support");
+  }
   // Captured production regression, not synthetic actor geometry. Own019 pins
   // the four missing intrinsic sources independently from the repaired base.
    if(!dialogAblation && path.find("frame_room062_019.s9xrmf")!=std::string::npos) {
@@ -518,7 +550,13 @@ int main(int argc,char **argv){try {
    }
   }
  }
- std::ofstream inventory(out+".inventory");inventory<<dungeonMapInventory(s.runtimeDungeonBg1HeightMap)<<'\n'<<dungeonMapInventory(s.runtimeDungeonHeightMap)<<'\n';
+  std::ofstream inventory(out+".inventory");inventory<<dungeonMapInventory(s.runtimeDungeonBg1HeightMap)<<'\n'<<dungeonMapInventory(s.runtimeDungeonHeightMap)<<'\n';
+  std::ofstream actors(out+".actors");
+  actors<<"link_support "<<S9xRemasterLinkFloorHeight(c,s.runtimeDungeonHeightMap)<<'\n';
+  for(const auto *m:{&s.runtimeDungeonBg1HeightMap,&s.runtimeDungeonHeightMap}) {
+   for(int p=0;p<2;p++)for(int i=0;i<4096;i++)actors<<m->actorThresholdOwners[p][i]<<':'<<m->actorThresholdBases[p][i]<<' ';
+   actors<<'\n';
+  }
  std::ofstream report(out+".json");report<<"{\"room\":"<<c.roomIndex<<",\"profile_pin\":\""<<hex.str()<<"\",\"matched_pixels\":"<<matched<<",\"layers\":[";
  for(int bg=0;bg<2;bg++) {if(bg)report<<',';const auto &m=bg?s.runtimeDungeonHeightMap:s.runtimeDungeonBg1HeightMap;
     report<<"{\"bg\":"<<bg<<",\"conflicts\":"<<m.structuralConflicts<<",\"unknown_walls\":"<<m.unknownWallCells

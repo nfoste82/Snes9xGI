@@ -793,6 +793,7 @@ struct RemasterDungeonMovementCache
 	std::array<uint8_t,8192> attributes;
 	std::vector<uint32_t> seeds;
 	std::array<int16_t,8192> components;
+	std::array<int16_t,8192> thresholdOwners; // terminal claims from actual traversed bodies; -2 ambiguous
 	std::vector<std::vector<uint16_t>> cells;
 };
 
@@ -1156,6 +1157,11 @@ struct RemasterDungeonHeightMap
 	// Solved bases are signed; 255 itself is not an admissible placement base.
 	std::array<int32_t, 64 * 64> offsets = {};
 	std::array<std::array<int32_t, 64 * 64>, 2> planeOffsets = {};
+	// Terminal physical support is not evidence of ownership of BG artwork.
+	// Only live solves populate this channel; legacy authored maps have none.
+	bool hasActorThresholdSupport = false;
+	std::array<std::array<int32_t,4096>,2> actorThresholdBases = {};
+	std::array<std::array<int16_t,4096>,2> actorThresholdOwners = {}; // -1 absent, -2 competing bodies
 	// Reproduced movement-body ownership, before any semantic floor extension.
 	// -1 means no occupied body; these are not visual or structural nodes.
 	std::array<std::array<int32_t, 4096>, 2> occupiedFloorOwners = {};
@@ -1479,6 +1485,9 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;});
 	}
 	for (auto &plane : result.planeOffsets) plane.fill(255);
+	for (auto &plane : result.actorThresholdBases) plane.fill(255);
+	for (auto &plane : result.actorThresholdOwners) plane.fill(-1);
+	result.hasActorThresholdSupport = true;
 	for (auto &plane : result.occupiedFloorOwners) plane.fill(-1);
 	for (auto &plane : result.structuralPlaneOffsets) plane.fill(255);
 	for (auto &plane : result.mixedFloorBases) plane.fill(255);
@@ -1495,6 +1504,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	auto componentStorage = std::make_unique<std::array<int16_t, 2 * 64 * 64>>();
 	auto &components = *componentStorage;
 	components.fill(-1);
+	auto thresholdOwners=std::make_unique<std::array<int16_t,8192>>();
+	thresholdOwners->fill(-1);
 	std::vector<std::vector<uint16_t>> cells;
 	auto visitedStorage = std::make_unique<std::array<uint8_t, 2 * 497 * 488>>();
 	auto &visited = *visitedStorage;
@@ -1505,7 +1516,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	// predicate, NOT connectivity or support ownership, within this invocation.
 	// Low nibble: known directions; high nibble: accepted directions.
 	auto movementPredicates=std::make_unique<std::array<uint8_t,2*4096*4>>();
-	auto projectedBodies=std::make_unique<std::array<uint8_t,2*4096>>();
+	auto projectedBodies=std::make_unique<std::array<int16_t,2*4096*4>>();
+	projectedBodies->fill(-1);
 #endif
 	auto walkable = [&] (int plane, int x, int y, int direction) {
 		static const int sx[4][3] = {{ 0, 8, 15 }, { 8, 0, 15 }, { 0, 0, 0 }, { 15, 15, 15 }};
@@ -1581,7 +1593,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	if(auto *cache=context.movementCache) {
 		movementReused=cache->valid && cache->placed==bool(context.placements) && cache->seeds==seeds &&
 			!std::memcmp(cache->attributes.data(),context.collisionAttributes,8192);
-		if(movementReused){components=cache->components;cells=cache->cells;}
+		if(movementReused){components=cache->components;cells=cache->cells;*thresholdOwners=cache->thresholdOwners;}
 	}
 #endif
 	if(!movementReused)for (uint32_t seed : seeds)
@@ -1610,17 +1622,29 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			// viewport can incorrectly join an upper bridge to its underpass.
 #ifndef ALTTP_TEST_REFERENCE_MOVEMENT
 			const int originCell=plane*4096+(y/8)*64+x/8;
-			const uint8_t bodyPhase=1<<(bool(x&7)+2*bool(y&7));
-			const bool project=!((*projectedBodies)[originCell]&bodyPhase);
-			(*projectedBodies)[originCell]|=bodyPhase;
-			// An identical body can only revisit already claimed support cells.
-			// Keep the first visit/order exactly; never merge movement components.
+			const int bodyPhase=bool(x&7)+2*bool(y&7);
+			const bool project=(*projectedBodies)[originCell*4+bodyPhase]!=id;
+			(*projectedBodies)[originCell*4+bodyPhase]=id;
+			// Ordinary support keeps its original first claim. Threshold claims
+			// must still see another component's identical footprint as ambiguous.
 			if(project)
 #endif
 			for (int cellY = (y + 8) / 8; cellY <= (y + 23) / 8; cellY++)
 				for (int cellX = x / 8; cellX <= (x + 15) / 8; cellX++)
 				{
 					const int index = cellY * 64 + cellX;
+					const uint8_t attribute=context.collisionAttributes[plane*4096+index];
+					if(attribute>=0x80 && attribute<=0x8f) {
+						// Only a complete body reached by the unchanged directional movement
+						// predicate can claim a threshold. A nearby floor is not evidence.
+						bool legal=true;
+						for(int yy=(y+8)/8;yy<=(y+23)/8;yy++)for(int xx=x/8;xx<=(x+15)/8;xx++) {
+							const auto v=context.collisionAttributes[plane*4096+yy*64+xx];
+							if(v!=0 && !(v>=0x80 && v<=0x8f && (v&1)==(attribute&1)))legal=false;
+						}
+						if(legal){auto &owner=(*thresholdOwners)[plane*4096+index];
+							if(owner==-1)owner=id;else if(owner!=id)owner=-2;}
+					}
 					if (context.collisionAttributes[plane * 4096 + index] == 0 &&
 						components[plane * 4096 + index] < 0)
 					{
@@ -1658,6 +1682,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		cache.valid=true;cache.placed=bool(context.placements);cache.seeds=seeds;
 		std::copy_n(context.collisionAttributes,8192,cache.attributes.begin());
 		cache.components=components;cache.cells=cells;
+		cache.thresholdOwners=*thresholdOwners;
 	}
 #endif
 	// A temporary blocker cannot merge existing movement components. Enumerate
@@ -2663,6 +2688,13 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			}
 		}
 #endif
+		// A terminal movement claim supports actors only. Preserve the independent
+		// BG graph, offsets, diagnostics and structural ownership verbatim.
+		for(int p=0;p<2;p++)if(activePlanes[p])for(int i=0;i<4096;i++) {
+			const int n=(*thresholdOwners)[p*4096+i];
+			result.actorThresholdOwners[p][i]=n;
+			if(n>=0 && bases[n]!=INT_MIN && !bad[n])result.actorThresholdBases[p][i]=bases[n];
+		}
 		// Post-removal bodies are terminal support consumers, never new graph
 		// nodes/edges/anchors. Account missing/conflicting ownership separately
 		// without inflating actual reachable-support or structural-conflict counts.
@@ -3647,6 +3679,10 @@ inline int32_t S9xRemasterLinkFloorHeight(const RemasterDungeonFloorContext &con
 	if (!context.verifiedAlttpRom || !context.indoors || !dungeon || !map.hasPlaneOffsets ||
 		(context.submodule != 0 && context.submodule != 8 && context.submodule != 16 &&
 		 context.module != 14)) return ordinary;
+	if (map.hasActorThresholdSupport && context.collisionAttributes) {
+		const auto attribute=context.collisionAttributes[plane*4096+cell];
+		if(attribute>=0x80 && attribute<=0x8f)return map.actorThresholdBases[plane][cell];
+	}
 	int32_t ramp = 255;
 	bool matched = false;
 	for (size_t i = 0; i < context.stairCount && i < context.stairs.size(); i++)
