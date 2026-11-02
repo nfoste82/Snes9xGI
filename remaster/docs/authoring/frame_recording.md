@@ -55,7 +55,9 @@ and inheritance/default context. Effective blended light values remain in each p
 
 Dynamic frame color, main/sub/scene ownership, observed BG/depth, placements, flips,
 selected context, effective offsets, occurrence solve/visual status, lights and hidden
-emitters use the existing v40 packet serializer. Runtime-only room/plane diagnostics
+emitters use the current packet serializer (v41 additionally retains saved world
+placement scalar/status; older packets mark that debug view unavailable).
+Runtime-only room/plane diagnostics
 and selected context layers are stored separately. No `.s9xrmf` format changes.
 
 RTE1 records exact completed-boundary context/module/submodule/previous/current room,
@@ -82,7 +84,7 @@ Bounds: 2GiB file, 36,000 displayed frames, 36,000 revision events, 32MiB packet
 four queued packets (128MiB accounted queue), 64MiB dictionary and 262,144 dictionary
 blocks. Reader indexes offsets rather than retaining the recording in memory, checks
 record/dictionary/dimension/table/expansion bounds, then lazily decodes selected frames.
-Current embedded packets only; historic standalone captures retain their old reader.
+Embedded v40/v41 packets are supported; historic standalone captures retain their old reader.
 Runtime production inputs are trusted in-process; malformed serialized inputs fail
 without replacing the displayed frame. Profile copies are retained at publication
 boundaries, not on every frame. Recording does not initiate extra room solves.

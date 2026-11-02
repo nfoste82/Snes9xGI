@@ -38,6 +38,7 @@ enum class RemasterLightingView : uint32_t
 	Emission,
 	Mesh,
 	MetadataTypes,
+	HeightOffsets, // 12: append only; existing shader/capture view IDs stable
 	Count
 };
 

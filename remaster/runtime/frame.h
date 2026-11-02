@@ -39,7 +39,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 40;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 41;
 
 struct RemasterFramePixel
 {
@@ -168,6 +168,12 @@ struct RemasterFrameTileInstance
 	uint8_t palette = 0;
 	uint8_t ppuPriority = 0;
 	int32_t heightOffset = 0; // signed placement datum, added to signed int16 local relief
+	// Saved world-coordinate DATA, never composed height. 0 unsupported/legacy,
+	// 1 absent entry (default zero), 2 explicit entry (including authored zero).
+	int32_t savedPlacementOffset = 0;
+	uint8_t savedPlacementOffsetStatus = 0;
+	// In-memory provenance only; never infer eligibility from coordinates alone.
+	bool savedPlacementCoordinateVerified = false;
 	std::array<int16_t, 64> placementHeight = {};
 	int8_t normalYaw = 0;
 	uint8_t geometryFacing = 0; // Unknown/default, north, south, east, west.
@@ -356,6 +362,8 @@ struct RemasterFrame
 	std::map<uint32_t, RemasterTileContext> contextGeometry;
 	std::set<uint32_t> selectedContextInstances; // editor highlight only, never captured
 	bool contextLocationSelection = false; // empty location selection must not highlight the whole type
+	bool placementOffsetSelection = false; // exact offset picker, not asset/type selection
+	std::string placementOffsetCoordinateRom; // packet provenance across profile application
 	// Obstacle authoring includes OBJ and is not a context binding domain.
 	std::set<uint32_t> selectedObstacleInstances; // editor only, never captured
 	bool obstacleLocationSelection = false;
@@ -754,7 +762,8 @@ inline int S9xRemasterUnwrapRenderedScroll(int worldHint, int renderedScroll)
 // Scroll values must be the renderer's unwrapped game-space BG origin. Reject
 // inconsistent raster scroll/ownership rather than binding an arbitrary location.
 inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array<int,4> &scrollX,
-	const std::array<int,4> &scrollY)
+	const std::array<int,4> &scrollY, const std::array<int,4> *lineX = nullptr,
+	const std::array<int,4> *lineY = nullptr, size_t lineCount = 0)
 {
 	frame.contextLocations.clear();
 	if (!frame.area.valid()) return;
@@ -770,8 +779,10 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 			if (in.source!=RemasterSourceType::Background || in.sourceIndex>1) continue;
 			int lx=pixel.tilePixel%8, ly=pixel.tilePixel/8;
 			if(in.hFlip)lx=7-lx;if(in.vFlip)ly=7-ly;
-			const int wx=scrollX[in.sourceIndex]+int(p%frame.width)-lx;
-			const int wy=scrollY[in.sourceIndex]+int(p/frame.width)-ly;
+			const size_t row=p/frame.width;
+			if (lineX && (!lineY || row>=lineCount)) continue;
+			const int wx=(lineX?lineX[row]:scrollX)[in.sourceIndex]+int(p%frame.width)-lx;
+			const int wy=(lineY?lineY[row]:scrollY)[in.sourceIndex]+int(row)-ly;
 			RemasterContextLocation at;at.area=frame.area.id;at.background=in.sourceIndex;
 			const int mask=frame.area.id<320?511:65535;
 			at.x=(wx&mask)/8;at.y=(wy&mask)/8;
@@ -4885,6 +4896,7 @@ inline void S9xRemasterAlignGeneratedSpriteParts (RemasterFrame &frame,
 
 inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, RemasterFrame &frame)
 {
+	if (frame.placementOffsetCoordinateRom.empty()) frame.placementOffsetCoordinateRom = frame.profileRomSha256;
 	frame.profileRomSha256 = profile.romSha256;
 	frame.lightingCoordinateScale = profile.lightingCoordinateScale;
 	frame.cameraDirection = profile.cameraDirection;
@@ -5687,6 +5699,13 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			v.component=static_cast<int32_t>(component);v.published=published!=0;
 			if(!S9xRemasterValidOccurrenceGeometry(instance))return false;
 		}
+		if(result.schemaVersion>=41) {
+			uint32_t bits;
+			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>2 || !input.ReadU32(bits))return false;
+			std::memcpy(&instance.savedPlacementOffset,&bits,sizeof(bits));
+			if(instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
+				(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+		}
 	}
 	result.lights.resize(lightCount);
 	for (RemasterFrameLight &light : result.lights)
@@ -6187,7 +6206,9 @@ inline std::vector<RemasterTileContentId> S9xRemasterFrameAnimationVariants (
 
 inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<uint8_t> &bytes)
 {
-	if (frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION ||
+	// v40 emission remains available for frozen compatibility oracles/export.
+	// It cannot claim the new saved-scalar evidence; normal captures use v41.
+	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40) ||
 		frame.width == 0 || frame.height == 0 ||
 		frame.width > UINT32_MAX / frame.height)
 		return false;
@@ -6447,6 +6468,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.cell));
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.component));
 		RemasterFrameSerialization::U8(bytes,instance.visualClaim.published?1:0);
+		if(frame.schemaVersion>=41) {
+		if(instance.savedPlacementOffsetStatus>2 || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
+			(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+		RemasterFrameSerialization::U8(bytes,instance.savedPlacementOffsetStatus);
+		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.savedPlacementOffset));
+		}
 	}
 	for (const RemasterFrameLight &light : frame.lights)
 	{

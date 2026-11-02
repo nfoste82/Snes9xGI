@@ -88,6 +88,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	lightingViewItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	lightingViewItem.target = self;
 	[viewMenuItem.submenu addItem:lightingViewItem];
+	NSMenuItem *offsetsItem = [[NSMenuItem alloc] initWithTitle:@"GI Debug: Height Offsets"
+		action:@selector(toggleRemasterHeightOffsets:) keyEquivalent:@"w"];
+	offsetsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+	offsetsItem.target = self;
+	offsetsItem.toolTip = @"Saved world BG2 coordinate offsets only. Fixed grayscale: -128 black, 0 midgray, +128 white; clamped outside range. Purple: not applicable/old capture. Read only. Press again to restore the previous view.";
+	[viewMenuItem.submenu addItem:offsetsItem];
 	NSMenuItem *inventoryItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Capture Remaster Tile Inventory", nil)
 	                                                       action:@selector(captureRemasterTileInventory:)
 	                                                keyEquivalent:@"i"];
@@ -692,7 +698,8 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(showRemasterTileTypes:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
-	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:)) {
+	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:) || action == @selector(toggleRemasterHeightOffsets:)) {
+		if(action == @selector(toggleRemasterHeightOffsets:)) menuItem.state=[self.s9xEngine isShowingRemasterHeightOffsets]?NSOnState:NSOffState;
 		return [self.s9xEngine isPresentingRemasterFrame] ||
 			([self.s9xEngine isRunning] && [self.s9xEngine isRemasterProfileLoaded]);
 	}
@@ -844,6 +851,12 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSString *view = [self.s9xEngine cycleRemasterLightingView];
 	self.remasterLightingItem.state = NSControlStateValueOn;
 	sender.title = [NSString stringWithFormat:@"GI Debug: %@", view];
+}
+
+- (IBAction)toggleRemasterHeightOffsets:(NSMenuItem *)sender
+{
+	[self.s9xEngine toggleRemasterHeightOffsets];
+	sender.state=[self.s9xEngine isShowingRemasterHeightOffsets]?NSOnState:NSOffState;
 }
 
 - (IBAction)captureRemasterTileInventory:(id)sender

@@ -603,6 +603,8 @@ static void S9xApplyMidLineRaster (void)
 // Producer RAM can advance to the NEXT game's camera/OAM during visible lines.
 // Pin actor observations at the same boundary as the PPU frame they describe.
 static RemasterDungeonFloorContext remasterFrameActors;
+static std::array<int,2> remasterWorldHintX, remasterWorldHintY;
+static uint16 remasterWorldIdentity = 0xffff;
 static void S9xRemasterSnapshotFrameActors()
 {
 	auto &c=remasterFrameActors;
@@ -669,6 +671,11 @@ void S9xStartScreenRefresh (void)
 		memset(GFX.ZBuffer, 0, GFX.ScreenSize);
 		memset(GFX.SubZBuffer, 0, GFX.ScreenSize);
 		S9xRemasterSnapshotFrameActors();
+		remasterWorldIdentity=Memory.RAM[0x1b] ? 0xffff : ((Memory.RAM[0x8a]&0x40)?321:320);
+		for(unsigned bg=0;bg<2;++bg) {
+			remasterWorldHintX[bg]=Memory.RAM[0xe0+bg*2]|Memory.RAM[0xe1+bg*2]<<8;
+			remasterWorldHintY[bg]=(Memory.RAM[0xe6+bg*2]|Memory.RAM[0xe7+bg*2]<<8)+1;
+		}
 		S9xRemasterBeginFrame(GFX.ScreenSize, GFX.RealPPL,
 			IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight,
 			Memory.RAM[0x458] && Memory.RAM[0x1b] && S9xRemasterHeldLampDungeonContext(
@@ -913,6 +920,7 @@ void S9xEndScreenRefresh (void)
 				e.metadata=m.str();
 			}
 			std::array<int,4> contextScrollX = {}, contextScrollY = {};
+			std::array<std::array<int,4>,240> worldLineX = {}, worldLineY = {};
 			for (unsigned bg=0;bg<4;bg++) {
 				contextScrollX[bg]=PPU.BG[bg].HOffset;
 				contextScrollY[bg]=PPU.BG[bg].VOffset+1;
@@ -922,11 +930,13 @@ void S9xEndScreenRefresh (void)
 			// next gameplay position to select location-specific tile geometry.
 			if (dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors) {
 				for (unsigned bg=0;bg<2;bg++) {
-					const unsigned xAddress=0xe0+bg*2, yAddress=0xe6+bg*2;
-					const int worldX=Memory.RAM[xAddress]|Memory.RAM[xAddress+1]<<8;
-					const int worldY=(Memory.RAM[yAddress]|Memory.RAM[yAddress+1]<<8)+1;
+					const int worldX=remasterWorldHintX[bg], worldY=remasterWorldHintY[bg];
 					contextScrollX[bg]=S9xRemasterUnwrapRenderedScroll(worldX,LineData[0].BG[bg].HOffset);
 					contextScrollY[bg]=S9xRemasterUnwrapRenderedScroll(worldY,LineData[0].BG[bg].VOffset);
+					for (unsigned y=0;y<IPPU.RenderedScreenHeight && y<240;++y) {
+						worldLineX[y][bg]=S9xRemasterUnwrapRenderedScroll(worldX,LineData[y].BG[bg].HOffset);
+						worldLineY[y][bg]=S9xRemasterUnwrapRenderedScroll(worldY,LineData[y].BG[bg].VOffset);
+					}
 				}
 			}
 			S9xRemasterState().contextRoomFormatSupported = remasterRoomStart &&
@@ -947,13 +957,21 @@ void S9xEndScreenRefresh (void)
 						S9xRemasterState().contextRoomFormatSupported=false;
 				}
 			}
+			// Only ordinary Mode1 BG2 has the proven USA world transform. A
+			// changed world during rasterization must not reuse the start hint.
+			const bool worldCoordinatesSupported=dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors &&
+				remasterWorldIdentity==area.id && PPU.BGMode==1 && !IPPU.PseudoHires && !IPPU.Interlace &&
+				!PPU.BG[1].BGSize && PPU.BG[1].SCSize==3 && raster_event_count==0;
 			const uint8_t remasterCapture = S9xRemasterEndFrame(
 				reinterpret_cast<const uint16_t *>(GFX.Screen), GFX.RealPPL,
 				IPPU.RenderedScreenWidth, IPPU.RenderedScreenHeight, nullptr, &dungeonFloor, &heldLamp, &area,
 				IPPU.TotalEmulatedFrames,overworldCapture.get(),
-				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollX : nullptr,
-				dungeonFloor.verifiedAlttpRom && (!dungeonFloor.indoors || dungeonFloor.submodule==0) ? &contextScrollY : nullptr,
-				&contextScrollX,&contextScrollY);
+				dungeonFloor.verifiedAlttpRom && (dungeonFloor.indoors ? dungeonFloor.submodule==0 : worldCoordinatesSupported) ? &contextScrollX : nullptr,
+				dungeonFloor.verifiedAlttpRom && (dungeonFloor.indoors ? dungeonFloor.submodule==0 : worldCoordinatesSupported) ? &contextScrollY : nullptr,
+				&contextScrollX,&contextScrollY,
+				dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors ? worldLineX.data() : nullptr,
+				dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors ? worldLineY.data() : nullptr,
+				std::min<unsigned>(240,IPPU.RenderedScreenHeight));
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

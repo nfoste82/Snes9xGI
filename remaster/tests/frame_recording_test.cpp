@@ -24,6 +24,7 @@ static RemasterFrame Frame() {
 	RemasterFrameAssetMetadata m;m.tileId=tile;m.hasHeight=true;m.height.fill(-7);f.assetMetadata.push_back(m);
 	RemasterFrameTileInstance i;i.tileId=tile;i.source=RemasterSourceType::Background;i.heightOffset=-13;i.hFlip=true;
 	i.geometryStatus=RemasterOccurrenceGeometryStatus::Conflict;f.tileInstances.push_back(i);
+	f.tileInstances[0].savedPlacementOffset=-40;f.tileInstances[0].savedPlacementOffsetStatus=2;
 	for(auto &px:f.mainPixels){px.instanceId=1;px.tilePixel=0;px.owner=0x01000000;}
 	f.mainRoomDiagnostics.resize(64);f.mainRoomDiagnostics[0].visiblePlane=1;
 	auto &d=f.mainRoomDiagnostics[0].planes[1];d.room=17;d.plane=1;d.floorBase=-34;d.floorId=9;d.wallSource=RemasterRoomDiagnostic::WallSource::RomAssembly;
@@ -37,6 +38,12 @@ int main() {
 	CHECK(std::filesystem::create_directory(root));
 	const auto profile=std::make_shared<const RemasterProfile>(Profile());
 	const auto frame=Frame();
+	// v40 recording packet header/layout is still accepted, with unavailable
+	// saved-placement evidence. Empty tables avoid manufacturing legacy instances.
+	{ RemasterFrame old;old.width=old.height=1;old.originalRgb555.resize(1);old.mainPixels.resize(1);old.subPixels.resize(1);
+	  Bytes bytes;CHECK(S9xSerializeRemasterFrame(old,bytes));bytes[8]=40;
+	  RemasterFrame read;CHECK(DecodeFrame(bytes,read));CHECK(read.schemaVersion==REMASTER_FRAME_SCHEMA_VERSION);
+	  CHECK(S9xSerializeRemasterFrame(read,bytes)); }
 	std::string error;
 	for(size_t n:{size_t(0),size_t(1),size_t(127),size_t(128),size_t(129),Chunk}) {
 		Bytes data(n),unpacked;uint32_t state=12345;
@@ -54,10 +61,12 @@ int main() {
 		RemasterFrame loaded;Bytes evidence;std::string text;CHECK(r.Read(0,loaded,evidence,text,error));
 		CHECK(evidence==packet.evidence);CHECK(loaded.originalRgb555==frame.originalRgb555);CHECK(loaded.tileInstances[0].heightOffset==-13&&loaded.tileInstances[0].hFlip);
 		CHECK(loaded.tileInstances[0].geometryStatus==RemasterOccurrenceGeometryStatus::Conflict);
+		CHECK(loaded.tileInstances[0].savedPlacementOffset==-40 && loaded.tileInstances[0].savedPlacementOffsetStatus==2);
 		CHECK(loaded.mainRoomDiagnostics[0].planes[1].floorBase==-34);CHECK(loaded.mainRoomDiagnostics[0].planes[1].wallSource==RemasterRoomDiagnostic::WallSource::RomAssembly);
 		CHECK(r.entries[0].session==44&&r.entries[0].epoch==99&&r.entries[0].emulatedFrame==100);
 		RemasterProfile edited=Profile();edited.assets[frame.assets[0].tileId].tileId=frame.assets[0].tileId;edited.assets[frame.assets[0].tileId].hasHeight=true;edited.assets[frame.assets[0].tileId].height.fill(80);
 		S9xRemasterApplyProfileToFrame(edited,loaded);
+		CHECK(loaded.tileInstances[0].savedPlacementOffset==-40 && loaded.tileInstances[0].savedPlacementOffsetStatus==2);
 		CHECK(frame.assetMetadata[0].height[0]==-7);
 		CHECK(r.Read(0,loaded,evidence,text,error));CHECK(loaded.assetMetadata[0].height[0]==-7);
 		Bytes ordinary;CHECK(S9xSerializeRemasterFrame(loaded,ordinary));RemasterFrame compatible;CHECK(S9xDeserializeRemasterFrame(ordinary,compatible));CHECK(compatible.tileInstances[0].heightOffset==-13);

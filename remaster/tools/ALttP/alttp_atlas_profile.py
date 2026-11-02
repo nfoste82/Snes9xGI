@@ -312,7 +312,8 @@ def _render_profile(source_text: str, authored: dict[str, dict],
     headers = list(re.finditer(r'(?m)^\[.*\]\s*$', source_text))
     group_blocks = []
     for i, h in enumerate(headers):
-        if h.group().strip() in ('[[obstacle_groups]]', '[[obstacle_groups.members]]'):
+        if h.group().strip() in ('[[obstacle_groups]]', '[[obstacle_groups.members]]',
+                                 '[overworld_placement]', '[[overworld_offsets]]'):
             end = headers[i+1].start() if i+1 < len(headers) else len(source_text)
             group_blocks.append((h.start(), end, source_text[h.start():end]))
     for start, end, _ in reversed(group_blocks):
@@ -369,6 +370,9 @@ def _render_profile(source_text: str, authored: dict[str, dict],
     validate_groups(result)
     if result.get('obstacle_groups') != parsed_source.get('obstacle_groups'):
         raise ProfileGenerationError('obstacle group payload changed')
+    for key in ('overworld_placement', 'overworld_offsets'):
+        if result.get(key) != parsed_source.get(key):
+            raise ProfileGenerationError(f'{key} payload changed')
     return rendered
 
 

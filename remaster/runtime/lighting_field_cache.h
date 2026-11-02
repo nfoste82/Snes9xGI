@@ -159,9 +159,14 @@ struct RemasterLightingFieldCache
 				instance.hasPlacementHeight || instance.hasPlacementNormals || instance.hasPlacementOcclusion || frame.contextGeometry.count(i+1);
 			const auto context=frame.contextGeometry.find(i+1);
 			const auto oldContext=contexts_.find(i+1);
+			const auto location=frame.contextLocations.find(i+1);
+			const auto oldLocation=locations_.find(i+1);
+			const bool locationDirty=(location==frame.contextLocations.end())!=(oldLocation==locations_.end()) ||
+				(location!=frame.contextLocations.end() && oldLocation!=locations_.end() &&
+				 (location->second<oldLocation->second || oldLocation->second<location->second));
 			const bool contextDirty=(context==frame.contextGeometry.end()) != (oldContext==contexts_.end()) ||
 				(context!=frame.contextGeometry.end() && oldContext!=contexts_.end() && !contextEqual(context->second,oldContext->second));
-			const bool sourceDirty=i>=instances_.size() || !instanceEqual(instance,instances_[i]) ||
+			const bool sourceDirty=locationDirty || i>=instances_.size() || !instanceEqual(instance,instances_[i]) ||
 				(original ? metadataDirty[instance.tileId] : metadata_.count(instance.tileId)!=0) || contextDirty;
 			if(diagnose && contextDirty)reasons|=Context;
 			const auto *m = original;
@@ -200,6 +205,7 @@ struct RemasterLightingFieldCache
 			if(diagnose && (i>=normalMasks_.size() || normalMasks[i]!=normalMasks_[i]))reasons|=NormalMask;
 		}
 		contexts_=frame.contextGeometry;
+		locations_=frame.contextLocations;
 		// Presence depends only on resolved occurrence metadata and material,
 		// not on pixel coordinates. Compute once per update instead of repeatedly
 		// chasing the same large metadata for every channel of every candidate.
@@ -446,6 +452,7 @@ private:
 	}
 	std::vector<std::unique_ptr<RemasterFrameAssetMetadata>> effective_;
 	std::map<uint32_t,RemasterTileContext> contexts_;
+	std::map<uint32_t,RemasterContextLocation> locations_;
 	bool rasterValid_ = false, scene_ = false;
 	std::string rom_;
 	uint32_t area_ = 0;

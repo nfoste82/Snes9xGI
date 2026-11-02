@@ -6,6 +6,8 @@ otherwise. Return to the [primary index](../../../AIDocs/00-index.md).
 
 ## Runtime placement and composition
 
+- [Experimental overworld scalar offsets](overworld_scalar_offsets.md): Opt-in copied-profile world-coordinate origins, runtime boundaries and isolated preview usage.
+
 - [HUD-covered Geometry](hud_geometry.md): Independent world ownership beneath BG3, stock color preservation and sprite consistency.
 - [Movable Sprite Obstacles](sprite_obstacles.md): Occurrence groups, producer ownership, contact-floor bases and background isolation.
 - [Link Attachment Heights](link_attachment_heights.md): Shared support for Link's body, equipment and shadow.

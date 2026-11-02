@@ -6,7 +6,7 @@
 enum RemasterEditorLayer
 {
 	RemasterEditorArtwork, RemasterEditorMaterial, RemasterEditorOcclusion,
-	RemasterEditorHeight, RemasterEditorNormal, RemasterEditorEmission,
+	RemasterEditorHeight, RemasterEditorHeightOffset, RemasterEditorNormal, RemasterEditorEmission,
 	RemasterEditorMetadata, RemasterEditorDoorframe, RemasterEditorObstacleGrouping
 };
 

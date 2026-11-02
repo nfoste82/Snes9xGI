@@ -40,6 +40,10 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+	("placement_offset_editor", "Exact world-coordinate scalar transactions, strict input, dedup, bounds and preview"),
+	("placement_offset_type_selection", "Current-scene visible type expansion, flips, dedup, atomic coordinate edits and viewport pruning"),
+	("placement_offset_debug", "Saved scalar-only signed view, default/unsupported isolation and frame transport"),
+	("overworld_offsets", "Strict scalar schema, independent world lookup, native save merge and production EndFrame"),
 	("surface_mesh", "Independent ramp, domain, silhouette and incremental/full mesh geometry oracles"),
 	("surface_mesh_build_work", "Exact connected vertex welding and bounded generic root searches; frozen differential optional"),
 	("held_lamp_hud_lookup", "Shared production indexed HUD and scene-color parity, first-match duplicates and malformed owners"),
@@ -144,6 +148,17 @@ def test_specs(args):
                           description="Opt-in stale monolithic fixture; failure is a real gate failure",
                           flags=[], arguments=[], kind="legacy"))
     if args.metal:
+        specs.append(dict(name="metal_placement_offset_renderer", source="remaster/tests/placement_offset_renderer_metal_test.mm",
+                          description="Actual renderer saved scalar upload/readback and unchanged Height switchback",
+                          flags=["-O2", "-fobjc-arc", "-D__MACOSX__", "-DHAVE_STDINT_H", "-I.", "-Imacosx",
+                                 "-Iapu", "-Ifilter", "-Iapu/bapu", "-Imacosx/snes9x framework",
+                                 "-ffunction-sections", "-fdata-sections", "-Wl,-dead_strip",
+                                 "-framework", "Cocoa", "-framework", "Metal", "-framework", "MetalKit",
+                                 "-framework", "QuartzCore", "-framework", "Carbon"], arguments=[], kind="metal"))
+        specs.append(dict(name="metal_placement_offsets", source="macosx/remaster-placement-offset-metal-test.mm",
+                          description="Production saved scalar debug shader signed/default/unsupported readback",
+                          flags=["-fobjc-arc", "-I.", "-framework", "Foundation", "-framework", "Metal"],
+                          arguments=[], kind="metal"))
         specs.append(dict(name="metal_lighting_slots", source="remaster/tests/lighting_slot_metal_test.mm",
                           description="Actual renderer completion-gated slots, delayed GPU byte readback and buffer growth/reset",
                           flags=["-O2", "-fobjc-arc", "-D__MACOSX__", "-DHAVE_STDINT_H", "-I.", "-Imacosx",
@@ -170,7 +185,7 @@ def source_snapshot(spec):
     if spec["arguments"]:
         paths.add(ROOT / PROFILE)
     if spec["kind"] == "metal":
-        if spec["name"] == "metal_lighting_slots":
+        if spec["name"] in ("metal_lighting_slots", "metal_placement_offset_renderer"):
             paths.add(ROOT / "macosx/mac-render.mm")
             paths.add(ROOT / "remaster/tools/lighting_critical_path_probe.mm")
         paths.add(ROOT / "macosx/shaders.metal")

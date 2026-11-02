@@ -10,7 +10,12 @@ void *operator new(size_t n) {allocatedBytes+=n;if(auto p=std::malloc(n?n:1))ret
 void operator delete(void *p) noexcept {std::free(p);}
 void operator delete(void *p,size_t) noexcept {std::free(p);}
 static uint64_t fingerprint(const PlateauFixture &f) {
- std::vector<uint8_t> bytes;need(S9xSerializeRemasterFrame(f.frame,bytes),"serialize oracle");
+ // Keep the independently frozen v40 geometry/ordered-output oracle intact.
+ // v41 adds only unrelated saved-world-offset diagnostics; do not rebaseline
+ // this checksum to hide a geometry difference.
+ auto legacy=f.frame;legacy.schemaVersion=40;
+ for(const auto &i:legacy.tileInstances)need(i.savedPlacementOffsetStatus==0 && i.savedPlacementOffset==0,"dungeon has no saved world offsets");
+ std::vector<uint8_t> bytes;need(S9xSerializeRemasterFrame(legacy,bytes),"serialize oracle");
  uint64_t h=UINT64_C(14695981039346656037);
  auto add=[&](uint64_t n){for(int k=0;k<8;k++){h=(h^uint8_t(n))*UINT64_C(1099511628211);n>>=8;}};
  for(auto b:bytes)add(b);

@@ -33,6 +33,7 @@
 #include "remaster/runtime/hidden_emitter_samples.h"
 #include "remaster/runtime/room_debug_view.h"
 #include "remaster/runtime/tile_type_overlay.h"
+#include "remaster/runtime/placement_offset_debug.h"
 
 #include <algorithm>
 #include <atomic>
@@ -310,6 +311,7 @@ id<MTLTexture>  			metalTexture = nil;
 id<MTLCommandQueue>			metalCommandQueue = nil;
 id<MTLRenderPipelineState>	metalPipelineState = nil;
 id<MTLComputePipelineState>	remasterLightingPipelineState = nil;
+static id<MTLComputePipelineState> remasterPlacementOffsetsPipelineState = nil;
 id<MTLComputePipelineState>	remasterVisibilityBlocksPipelineState = nil;
 id<MTLComputePipelineState>	remasterIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterPrepareDirectPipelineState = nil;
@@ -355,6 +357,7 @@ struct RemasterMetalResources
 	id<MTLTexture> occlusion = nil;
 	id<MTLTexture> emission = nil;
 	id<MTLTexture> heightField = nil;
+	id<MTLTexture> savedOffsets = nil, savedOffsetsOutput = nil;
 	id<MTLTexture> participation = nil;
 	id<MTLTexture> oppositeFacing = nil;
 	id<MTLTexture> surface = nil;
@@ -380,6 +383,9 @@ static RemasterMetalResources remasterResources[remasterResourceSlotCount];
 static uint32_t remasterRandomSeed = 0;
 static int benchmarkLastResourceSlot = -1;
 static int debugLastResourceSlot = -1;
+#ifdef REMASTER_OFFLINE_RENDERER
+static id<MTLTexture> debugLastPresentationTexture; // offline post-highlight readback
+#endif
 // Serialize producers and lifecycle changes, not the drawable-waiting worker.
 static std::recursive_mutex renderMutex;
 // Drawable notifications can arrive after command-buffer completion. Capturing
@@ -642,7 +648,13 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	RemasterLightingTrace::Scope highlightsTimer(&trace,RemasterLightingTrace::Highlights);
 	static std::vector<uint8_t> highlights;
 	highlights.clear();
-	if (frame.obstacleLocationSelection) {
+	if (frame.placementOffsetSelection) {
+		trace.highlightPath=2;trace.highlightCount=frame.selectedContextInstances.size();
+		highlights.assign(frame.mainPixels.size(),0);
+		for(size_t n=0;n<highlights.size();++n)
+			if(frame.selectedContextInstances.count(S9xRemasterPlacementOffsetPick(frame,n)))highlights[n]=1;
+	}
+	else if (frame.obstacleLocationSelection) {
 		trace.highlightPath=1;trace.highlightCount=frame.selectedObstacleInstances.size();
 		highlights.assign(frame.mainPixels.size(), 0);
 		for (uint32_t y=0;y<frame.height;y++) for (uint32_t x=0;x<frame.width;x++) {
@@ -670,6 +682,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	}
 	highlightsTimer.stop();
 	static RemasterLightingFieldCache fieldCache;
+	static std::vector<float> placementOffsetField;
 	auto &lightingField = fieldCache.occlusion;
 	auto &emissionField = fieldCache.emission;
 	auto &participationField = fieldCache.participation;
@@ -683,7 +696,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	auto &meshSamples = fieldCache.samples;
 	static std::vector<RemasterSurfaceMesh::Cell> mesh;
 	mesh.clear();
-	if (lighting && frame.schemaVersion >= 5)
+	if (lighting && lightingView!=RemasterLightingView::HeightOffsets && frame.schemaVersion >= 5)
 	{
 		fieldCache.update(frame, useScene, std::getenv("S9X_REMASTER_FULL_FIELDS") != nullptr);
 		trace.selected=fieldCache.selectedPixels; trace.updated=fieldCache.updatedPixels; trace.resolved=fieldCache.resolvedInstances;
@@ -725,10 +738,12 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 			Settings.DisplayPressedKeys, Settings.ShowOverscan) : std::vector<uint8_t>();
 	fieldTimer.stop();
 	RemasterLightingTrace::Scope setupTimer(&trace,RemasterLightingTrace::Setup);
+	if(lighting && lightingView==RemasterLightingView::HeightOffsets)
+		S9xRemasterPlacementOffsetField(frame,useScene,placementOffsetField);
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		useScene ? sceneColors.data() : frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
-		lightingField.data(), emissionField.data(), heightField.data(), surfaceField.data(), participationField.data(),
+		lightingField.data(), emissionField.data(), lightingView==RemasterLightingView::HeightOffsets ? placementOffsetField.data() : heightField.data(), surfaceField.data(), participationField.data(),
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
 		lighting && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
@@ -787,6 +802,7 @@ static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLP
 	metalPipelineState = [metalDevice newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
 	id<MTLFunction> lightingFunction = [defaultLibrary newFunctionWithName:@"remasterDirectLighting"];
 	remasterLightingPipelineState = [metalDevice newComputePipelineStateWithFunction:lightingFunction error:&error];
+	remasterPlacementOffsetsPipelineState = [metalDevice newComputePipelineStateWithFunction:[defaultLibrary newFunctionWithName:@"remasterPlacementOffsets"] error:&error];
 	id<MTLFunction> visibilityBlocksFunction = [defaultLibrary newFunctionWithName:@"remasterBuildVisibilityBlocks"];
 	remasterVisibilityBlocksPipelineState = [metalDevice newComputePipelineStateWithFunction:visibilityBlocksFunction error:&error];
 	MTLFunctionConstantValues *referenceConstants = [MTLFunctionConstantValues new];
@@ -867,6 +883,7 @@ static void S9xDeinitMetal (void)
 		resources.device = nil;
 		resources.width = resources.height = 0;
 		resources.source = resources.occlusion = resources.emission = resources.heightField = nil;
+		resources.savedOffsets = resources.savedOffsetsOutput = nil;
 		resources.participation = resources.oppositeFacing = resources.surface = resources.reflectance = resources.output = nil;
 		resources.visibilityBlocks = nil;
 		resources.direct = resources.bounce[0] = resources.bounce[1] = nil;
@@ -885,6 +902,7 @@ static void S9xDeinitMetal (void)
 	metalDevice = nil;
 	metalTexture = nil;
 	remasterLightingPipelineState = nil;
+	remasterPlacementOffsetsPipelineState = nil;
 	remasterVisibilityBlocksPipelineState = nil;
 	remasterIndirectPipelineState = nil;
 	remasterPrepareDirectPipelineState = nil;
@@ -1242,7 +1260,25 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		id<MTLTexture> diagnosticIndirectTextures[16] = {};
 		id<MTLTexture> diagnosticStageTextures[3] = {};
 		uint32_t diagnosticBounceCount = 0;
-		if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && reflectance && remasterLightingPipelineState &&
+		if(lighting && lightingView==RemasterLightingView::HeightOffsets && heightField && resources) {
+			if(!remasterPlacementOffsetsPipelineState)return false;
+			if(!resources->savedOffsets || resources->savedOffsets.width!=NSUInteger(width) || resources->savedOffsets.height!=NSUInteger(height)) {
+				resources->savedOffsets=[metalDevice newTextureWithDescriptor:[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float width:width height:height mipmapped:NO]];
+			}
+			if(!resources->savedOffsetsOutput || resources->savedOffsetsOutput.width!=NSUInteger(width) || resources->savedOffsetsOutput.height!=NSUInteger(height)) {
+				auto d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+				d.usage=MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite;
+				resources->savedOffsetsOutput=[metalDevice newTextureWithDescriptor:d];
+			}
+			// Separate view-only textures leave normal Height/GI cache snapshots intact.
+			[resources->savedOffsets replaceRegion:MTLRegionMake2D(0,0,width,height) mipmapLevel:0 withBytes:heightField bytesPerRow:width*2*sizeof(float)];
+			id<MTLComputeCommandEncoder> e=[commandBuffer computeCommandEncoder];
+			[e setComputePipelineState:remasterPlacementOffsetsPipelineState];
+			[e setTexture:resources->savedOffsets atIndex:0]; [e setTexture:resources->savedOffsetsOutput atIndex:1];
+			[e dispatchThreads:MTLSizeMake(width,height,1) threadsPerThreadgroup:MTLSizeMake(8,8,1)]; [e endEncoding];
+			presentationTexture=resources->savedOffsetsOutput;
+		}
+		else if (lighting && occlusion && emission && heightField && surfaceField && participation && oppositeFacing && reflectance && remasterLightingPipelineState &&
 			remasterVisibilityBlocksPipelineState && remasterIndirectPipelineState && remasterPrepareDirectPipelineState && remasterDirectTransportPipelineState &&
 			remasterBatchedDirectPipelineState && remasterBatchedIndirectPipelineState && remasterReduceDirectPipelineState && remasterSourcePowerLeavesPipelineState &&
 			remasterSourcePowerReducePipelineState && remasterSampledIndirectPipelineState &&
@@ -1933,6 +1969,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		}
 
 		// Only retained Metal objects and copied values cross this boundary. Frame
+#ifdef REMASTER_OFFLINE_RENDERER
+		debugLastPresentationTexture=presentationTexture;
+#endif
 		// pixels and temporary CPU fields have already been uploaded on the producer.
 		CAMetalLayer *presentationLayer = metalLayer;
 		id<MTLRenderPipelineState> presentationPipeline = metalPipelineState;

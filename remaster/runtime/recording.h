@@ -87,14 +87,19 @@ inline bool Take(Reader &r,Bytes &b,size_t limit=MaxBlob) {
 	b.assign(r.bytes.begin()+r.offset,r.bytes.begin()+r.offset+n);r.offset+=n;return true;
 }
 inline bool DecodeFrame(const Bytes &b,RemasterFrame &f) {
-	// Current-version embedded packets only. Check container counts BEFORE the
+	// v40/v41 share this bounded header; old recordings have no saved scalar.
+	// Check container counts BEFORE the
 	// legacy single-capture decoder allocates potentially amplified containers.
 	if(b.size()<24 || std::memcmp(b.data(),"S9XRMF\0\1",8))return false;
 	Reader r(b);r.offset=8;uint32_t version,w,h;std::string rom;
-	if(!r.ReadU32(version)||version!=REMASTER_FRAME_SCHEMA_VERSION||!r.ReadU32(w)||!r.ReadU32(h)||!w||!h||w>512||h>478||!r.ReadString(rom)||rom.size()>64||b.size()-r.offset<34+28)return false;
+	if(!r.ReadU32(version)||(version!=40 && version!=REMASTER_FRAME_SCHEMA_VERSION)||!r.ReadU32(w)||!r.ReadU32(h)||!w||!h||w>512||h>478||!r.ReadString(rom)||rom.size()>64||b.size()-r.offset<34+28)return false;
 	r.offset+=34;uint32_t count[7];for(auto &v:count)if(!r.ReadU32(v))return false;
 	if(count[0]>16384||count[1]>16384||count[2]>16384||count[3]>16384||count[4]>4096||count[5]>65536||count[6]>65536)return false;
-	return S9xDeserializeRemasterFrame(b,f);
+	if(!S9xDeserializeRemasterFrame(b,f))return false;
+	// Promote the in-memory packet for original-frame export/re-recording. The
+	// absent v40 diagnostic fields stay unavailable; never infer saved offsets.
+	f.schemaVersion=REMASTER_FRAME_SCHEMA_VERSION;
+	return true;
 }
 inline RemasterFrame TableFrame(const RemasterFrame &f) {
 	RemasterFrame t;t.width=t.height=1;t.originalRgb555.resize(1);t.mainPixels.resize(1);t.subPixels.resize(1);

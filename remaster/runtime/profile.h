@@ -393,6 +393,8 @@ struct RemasterProfile
 	std::map<std::string, RemasterAreaSceneSettings> areaSceneSettings;
 	std::map<RemasterTileContentId, std::map<std::string, RemasterTileContext>> tileContexts;
 	std::map<RemasterContextLocation, RemasterContextBinding> contextBindings;
+	bool authoredOverworldOffsets = false;
+	std::map<RemasterContextLocation, int16_t> overworldOffsets;
 	int offscreenRepresentativeEmitters = 1; // Independent default; legacy -1 also resolves to 1.
 };
 
@@ -851,7 +853,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area, AreaScene, Context, Binding };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area, AreaScene, Context, Binding, OverworldPlacement, OverworldOffset };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
@@ -872,6 +874,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	struct ContextRecord { RemasterTileContentId tile; std::string name; RemasterTileContext geometry; };
 	std::vector<ContextRecord> contexts;
 	std::vector<std::pair<RemasterContextLocation, RemasterContextBinding>> bindings;
+	struct OffsetRecord { RemasterContextLocation at; int16_t offset = 0; std::set<std::string> keys; };
+	std::vector<OffsetRecord> offsets;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
 
@@ -907,7 +911,13 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			asset = nullptr;
 			rule = nullptr;
 			obstacleMember = nullptr;
-			if (line == "[[context_bindings]]") { section = Section::Binding; bindings.emplace_back(); }
+			if (line == "[overworld_placement]") section = Section::OverworldPlacement;
+			else if (line == "[[overworld_offsets]]") {
+				section = Section::OverworldOffset;
+				if (offsets.size() >= 1048576) { fail(lineNumber, "too many overworld offsets"); return false; }
+				offsets.emplace_back();
+			}
+			else if (line == "[[context_bindings]]") { section = Section::Binding; bindings.emplace_back(); }
 			else if (line == "[[tile_contexts]]")
 			{
 				section = Section::Context; contexts.emplace_back();
@@ -1000,6 +1010,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		std::string keyScope = std::to_string(static_cast<int>(section));
 		if (section == Section::Context) keyScope += ":" + std::to_string(contexts.size());
 		if (section == Section::Binding) keyScope += ":" + std::to_string(bindings.size());
+		if (section == Section::OverworldOffset) keyScope += ":" + std::to_string(offsets.size());
 		if (section == Section::Area || section == Section::AreaScene) keyScope += ":" + areaKey;
 		if (material)
 			keyScope += ":" + material->name;
@@ -1024,6 +1035,28 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		bool valid = true;
 		switch (section)
 		{
+		case Section::OverworldPlacement:
+			if (key != "mode" || !ParseString(value, stringValue) ||
+				(stringValue != "authored_overworld_offsets" && stringValue != "legacy")) fail(lineNumber, "invalid overworld placement mode");
+			else parsed.authoredOverworldOffsets = stringValue == "authored_overworld_offsets";
+			break;
+		case Section::OverworldOffset:
+		{
+			auto &r = offsets.back(); r.keys.insert(key);
+			if (key == "world") {
+				valid = ParseString(value, stringValue) && (stringValue == "light" || stringValue == "dark");
+				if (valid) r.at.area = stringValue == "light" ? 320 : 321;
+			} else if (key == "offset") {
+				std::vector<int16_t> v;
+				valid = ParseHeightArray("[" + value + "]", v, 27) && v.size() == 1 && v[0] != -32768;
+				if (valid) r.offset = v[0];
+			} else if (key == "background" || key == "x" || key == "y") {
+				valid = ParseUnsigned(value, unsignedValue) && unsignedValue <= (key == "background" ? 1u : 8191u);
+				if (valid) { if (key == "x") r.at.x = unsignedValue; else if (key == "y") r.at.y = unsignedValue; else r.at.background = unsignedValue; }
+			} else valid = false;
+			if (!valid) fail(lineNumber, "invalid scalar overworld offset");
+			break;
+		}
 		case Section::Binding:
 		{
 			auto &b = bindings.back();
@@ -1560,8 +1593,14 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 36)
-		fail(0, "schema_version must be an integer in [1, 36]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 37)
+		fail(0, "schema_version must be an integer in [1, 37]");
+	if ((!offsets.empty() || seenKeys.count(std::to_string(int(Section::OverworldPlacement)))) && parsed.schemaVersion < 37)
+		fail(0, "overworld placement requires schema_version 37");
+	for (const auto &r : offsets) {
+		if (r.keys != std::set<std::string>{"world", "background", "x", "y", "offset"}) fail(0, "overworld offset requires world/background/x/y/offset");
+		else if (!parsed.overworldOffsets.emplace(r.at, r.offset).second) fail(0, "duplicate overworld coordinate");
+	}
 	for (auto &entry : parsed.assets) {
 		auto &item = entry.second;
 		if (parsed.schemaVersion < 34 && item.tileRole == RemasterTileRole::Door) item.tileRole = RemasterTileRole::Doorway;
@@ -1903,7 +1942,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 	}
 	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.tileRole == RemasterTileRole::Doorway || entry.second.hasDoorframeMask; });
-	output << "schema_version = " << std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 34u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema)))) << "\n\n";
+	const uint32_t placementSchema = profile.authoredOverworldOffsets || !profile.overworldOffsets.empty() ? 37u : 0u;
+	output << "schema_version = " << std::max(placementSchema, std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 34u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema))))) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
 	output << "rom_sha256 = " << Quote(profile.romSha256) << "\n";
@@ -2105,6 +2145,14 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 		if (g.normalIgnoreTileTransform) output << "normal_ignore_tile_transform = true\n";
 		if (g.directLightingOppositeFacing) output << "direct_lighting_opposite_facing = true\n";
+	}
+	if (profile.authoredOverworldOffsets || !profile.overworldOffsets.empty()) {
+		output << "\n[overworld_placement]\nmode = " << Quote(profile.authoredOverworldOffsets ? "authored_overworld_offsets" : "legacy") << "\n";
+		for (const auto &r : profile.overworldOffsets) {
+			if (r.first.area < 320 || r.first.area > 321 || r.first.background > 1 || r.first.x > 8191 || r.first.y > 8191 || r.second == -32768) return false;
+			output << "\n[[overworld_offsets]]\nworld = " << Quote(r.first.area == 320 ? "light" : "dark")
+				<< "\nbackground = " << unsigned(r.first.background) << "\nx = " << r.first.x << "\ny = " << r.first.y << "\noffset = " << r.second << "\n";
+		}
 	}
 	for (const auto &b : profile.contextBindings) {
 		output << "\n[[context_bindings]]\narea = " << b.first.area << "\nbackground = " << unsigned(b.first.background)

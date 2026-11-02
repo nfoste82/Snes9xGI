@@ -25,6 +25,7 @@ namespace RemasterProfileMerge
 				if (line == "[[rules]]" && header == line) { block += line + '\n'; continue; }
 				flush(); header = line;
 				if (header == "[[rules]]") key = "7:rules";
+				else if (header == "[overworld_placement]") key = "A:mode";
 				else if (header.compare(0, 11, "[materials.") == 0) key = "3:" + header;
 				else if (header.compare(0, 14, "[asset_groups.") == 0) key = "4:" + header;
 				else if (header.compare(0, 13, "[area_lights.") == 0) key = "2:" + header;
@@ -46,6 +47,11 @@ namespace RemasterProfileMerge
 			if (header == "[[context_bindings]]") {
 				if (key.empty()) key="9:";
 				if (line.compare(0,7,"area = ")==0 || line.compare(0,13,"background = ")==0 ||
+					line.compare(0,4,"x = ")==0 || line.compare(0,4,"y = ")==0) key+=line+":";
+			}
+			if (header == "[[overworld_offsets]]") {
+				if (key.empty()) key="B:";
+				if (line.compare(0,8,"world = ")==0 || line.compare(0,13,"background = ")==0 ||
 					line.compare(0,4,"x = ")==0 || line.compare(0,4,"y = ")==0) key+=line+":";
 			}
 			if (header == "[[obstacle_groups]]" && key.empty()) key = "5:" + line;

@@ -274,6 +274,8 @@ extern id<S9xInputDelegate> inputDelegate;
 - (NSString *)showRemasterTileTypes;
 - (BOOL)toggleRemasterLighting;
 - (NSString *)cycleRemasterLightingView;
+- (void)toggleRemasterHeightOffsets;
+- (BOOL)isShowingRemasterHeightOffsets;
 - (NSString *)captureRemasterTileInventory;
 - (NSString *)captureRemasterFrame;
 - (void)showRemasterRecording;

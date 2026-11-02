@@ -619,6 +619,15 @@ kernel void remasterSampledIndirectBounce(
 	nextIndirect.write(float4(accumulated + bounced, 1.0), pixel);
 }
 
+// Dedicated data-only presentation: no GI/normal/local-height passes required.
+kernel void remasterPlacementOffsets(texture2d<float,access::read> saved [[texture(0)]],
+	texture2d<float,access::write> output [[texture(1)]], uint2 p [[thread_position_in_grid]]) {
+	if(p.x>=output.get_width() || p.y>=output.get_height())return;
+	float2 v=saved.read(p).rg;
+	float gray=saturate((v.r+128.0)/256.0);
+	output.write(float4(v.g>0.5?float3(gray):float3(0.22,0.0,0.28),1.0),p);
+}
+
 kernel void remasterDirectLighting(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> occlusion [[texture(1)]],

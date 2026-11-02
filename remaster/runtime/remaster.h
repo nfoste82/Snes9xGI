@@ -13,6 +13,7 @@
 #include "layer_view.h"
 #include "capture_path.h"
 #include "overworld_capture.h"
+#include "overworld_offsets.h"
 #include "profile.h"
 #include "area_light_transition.h"
 #include "held_lamp.h"
@@ -898,6 +899,7 @@ inline void S9xRemasterBeginFrame (size_t pixelCount, size_t pitch = 0, size_t w
 			state.runtimeDungeonHeightValid=false;state.outgoingGeometry={};
 			state.previousRuntimeDungeonHeightMap.roomIndex=0xffff;state.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 			state.activeProfile = std::move(state.requestedProfile);
+			S9xRemasterOverworldLookup().compile(state.activeProfile);
 			state.completedEvidenceProfile.reset();
 			state.areaLightTransition = {};
 			state.dungeonGeometryProfileDirty = true;
@@ -3080,7 +3082,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 	const RemasterHeldLampState *heldLamp = nullptr, const RemasterAreaContext *area = nullptr,
 	uint32_t emulatedFrame = 0, const RemasterOverworldCapture *overworldCapture = nullptr,
 	const std::array<int,4> *contextScrollX = nullptr, const std::array<int,4> *contextScrollY = nullptr,
-	const std::array<int,4> *recordingScrollX = nullptr, const std::array<int,4> *recordingScrollY = nullptr)
+	const std::array<int,4> *recordingScrollX = nullptr, const std::array<int,4> *recordingScrollY = nullptr,
+	const std::array<int,4> *worldLineX = nullptr, const std::array<int,4> *worldLineY = nullptr, size_t worldLineCount = 0)
 {
 	RemasterLightingTrace::Frame lightingTrace=RemasterLiveTrace::refreshFrame();
 	if (RemasterLightingTrace::legacyEnabled() && !lightingTrace.id) {
@@ -3282,11 +3285,35 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		// Restore the stock ownership plane before capture/publication.
 		const bool hasScene = !frame.scenePixels.empty();
 		if (hasScene) frame.mainPixels.swap(frame.scenePixels);
-		if (contextScrollX && contextScrollY) S9xRemasterLocateContextTiles(frame, *contextScrollX, *contextScrollY);
+		if (contextScrollX && contextScrollY) S9xRemasterLocateContextTiles(frame, *contextScrollX, *contextScrollY,
+			worldLineX, worldLineY, worldLineCount);
 		// Keep location evidence even before a tile has multiple named contexts.
 		// The editor needs it to select an occurrence and author its first binding;
 		// profile context cardinality controls binding resolution, not pickability.
 		S9xRemasterApplyContextBindings(state.activeProfile, frame);
+		// Never inherit diagnostic data from a reused/replayed instance or a
+		// previous mode/world. Only THIS completed boundary can publish it.
+		for(auto &in:frame.tileInstances) { in.savedPlacementOffset=0; in.savedPlacementOffsetStatus=0; }
+		if (state.activeProfile.authoredOverworldOffsets && dungeonFloor && dungeonFloor->verifiedAlttpRom &&
+			!dungeonFloor->indoors && frame.area.id>=320 && frame.area.id<=321) {
+			for (size_t i=0;i<frame.tileInstances.size();++i) {
+				auto &in=frame.tileInstances[i];
+				// USA ALTTP's world map is BG2; BG1 can be weather/parallax with
+				// unrelated scroll. It is not independently world-mapped here.
+				if (in.source!=RemasterSourceType::Background || in.sourceIndex!=1) continue;
+				// Assignment, not accumulation: missing and unsupported are exactly zero.
+				const auto at=frame.contextLocations.find(uint32_t(i+1));
+				in.heightOffset=0;
+				if(at!=frame.contextLocations.end() && at->second.area==frame.area.id && at->second.background==1 &&
+					at->second.x<=8191 && at->second.y<=8191) {
+					const auto &entries=S9xRemasterOverworldLookup().entries;
+					const auto saved=entries.find(S9xRemasterOverworldOffsetKey(at->second));
+					in.heightOffset=saved==entries.end()?0:saved->second;
+					in.savedPlacementOffset=in.heightOffset;
+					in.savedPlacementOffsetStatus=saved==entries.end()?1:2;
+				}
+			}
+		}
 		RemasterDungeonHeightApplyDiagnostics dungeonHeightDiagnostics;
 		bool runtimeInputsPublishable = false;
 		const RemasterDungeonHeightMap *appliedDungeonHeightMap = nullptr;
