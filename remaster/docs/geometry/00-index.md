@@ -7,6 +7,7 @@ otherwise. Return to the [primary index](../../../AIDocs/00-index.md).
 ## Runtime placement and composition
 
 - [Experimental overworld scalar offsets](overworld_scalar_offsets.md): Opt-in copied-profile world-coordinate origins, runtime boundaries and isolated preview usage.
+- [Sparse overworld terrain offsets](overworld_terrain_offsets.md): Additive fractional per-pixel heights, detail-preserving normal rotation, inspector and diagnostic views.
 
 - [HUD-covered Geometry](hud_geometry.md): Independent world ownership beneath BG3, stock color preservation and sprite consistency.
 - [Movable Sprite Obstacles](sprite_obstacles.md): Occurrence groups, producer ownership, contact-floor bases and background isolation.

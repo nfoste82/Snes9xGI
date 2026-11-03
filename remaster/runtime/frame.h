@@ -11,6 +11,7 @@
 #include "room_diagnostics.h"
 #include "lighting_trace.h"
 #include "dungeon_layout_evidence.h"
+#include "dungeon_replacement.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -39,7 +40,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 41;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 43;
 
 struct RemasterFramePixel
 {
@@ -171,6 +172,7 @@ struct RemasterFrameTileInstance
 	// Saved world-coordinate DATA, never composed height. 0 unsupported/legacy,
 	// 1 absent entry (default zero), 2 explicit entry (including authored zero).
 	int32_t savedPlacementOffset = 0;
+	RemasterTerrainOffset terrainOffset;
 	uint8_t savedPlacementOffsetStatus = 0;
 	// In-memory provenance only; never infer eligibility from coordinates alone.
 	bool savedPlacementCoordinateVerified = false;
@@ -317,6 +319,7 @@ struct RemasterFrame
 	uint32_t width = 0;
 	uint32_t height = 0;
 	std::string profileRomSha256;
+	RemasterDungeonReplacementEvidence replacementEvidence;
 	float lightingCoordinateScale = 16.0f;
 	std::array<float, 3> cameraDirection = {{ 0.0f, 0.0f, -1.0f }};
 	uint8_t indirectBounceCount = 0;
@@ -771,7 +774,11 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 	// defer ordered publication until all buffers have had a chance to conflict.
 	struct Observation { RemasterContextLocation at; uint8_t state = 0; };
 	std::vector<Observation> observed(frame.tileInstances.size());
-	for (const auto *pixels : {&frame.mainPixels, &frame.subPixels, &frame.scenePixels})
+	// Publish identity underneath OBJ occlusion from independent BG evidence,
+	// while retaining all-observation conflict rejection and visible-only picking.
+	for (const auto *pixels : {&frame.mainPixels, &frame.subPixels, &frame.scenePixels,
+		&frame.observedBgPixels[0], &frame.observedBgPixels[1],
+		&frame.observedBgPixels[2], &frame.observedBgPixels[3]})
 		for (size_t p=0;p<pixels->size();p++) {
 			const auto &pixel=(*pixels)[p];
 			if (!pixel.instanceId || pixel.instanceId>frame.tileInstances.size() || pixel.tilePixel>=64) continue;
@@ -814,6 +821,7 @@ struct RemasterDungeonHeightMap;
 #define REMASTER_STATIC_DECLARATION_ASSESSMENT 1
 struct RemasterDungeonFloorContext
 {
+	RemasterDungeonReplacementEvidence replacementEvidence; // owned completed-boundary input
 	// Immutable ROM declarations, not proof that a particular writer survived.
 	// Optional: legacy captures explicitly lack this input.
 	std::shared_ptr<const RemasterDungeonConstructionDeclarations> constructionDeclarations;
@@ -847,6 +855,10 @@ struct RemasterDungeonFloorContext
 		bool hasHeight = false;
 		bool stairSourceAmbiguous = false; // unsupported alternate local source cannot prove an assembly
 		uint8_t removableSupportPlanes = 0; // exact pot dispatch + completed indexed blocker + replacement floor
+		// Independently classified authored replacement, not visible obstacle relief.
+		// Only complete, unique, opted-in ordinary pot footprints may populate it.
+		std::shared_ptr<const Placement> structuralReplacement;
+		uint8_t replacementPlaneMask = 0, replacementAttribute = 255;
 		uint16_t obstacleAssembly = 0, obstacleTemplate = 0; // exact unique final ROM footprint origin+1
 		uint8_t obstacleAssemblyHeight = 0, obstacleAssemblyFlip = 0; // width2; transformed canonical foot
 		bool authoredObstacle = false; // includes rejected/incomplete footprints; never adjacency-rescued
@@ -908,7 +920,9 @@ struct RemasterDungeonFloorContext
 				t.semanticSoutheastWall,t.semanticBoundaryKnown,t.diagnosticWallTemplateOffset,
 				t.diagnosticUphillDirections,t.diagnosticNormalUphill,
 				t.diagnosticAuthoredFloor,t.diagnosticRomFloorTrim); };
-			return fields(*this)==fields(b);
+			return fields(*this)==fields(b) && replacementPlaneMask==b.replacementPlaneMask &&
+				replacementAttribute==b.replacementAttribute && bool(structuralReplacement)==bool(b.structuralReplacement) &&
+				(!structuralReplacement || (structuralReplacement->tileHash==b.structuralReplacement->tileHash && structuralReplacement->sameGeometry(*b.structuralReplacement)));
 		}
 	};
 	struct Stair
@@ -1053,6 +1067,8 @@ inline uint64_t S9xRemasterDungeonEntryStateKey(const RemasterDungeonFloorContex
 		mix(t.terminalCorner);
 		mix(t.highCornerFace);
 		mix(t.removableSupportPlanes);
+		mix(t.replacementPlaneMask);mix(t.replacementAttribute);
+		if(t.structuralReplacement){mix(t.structuralReplacement->tileHash);for(auto h:t.structuralReplacement->height)mix(h);}
 		for(auto h:t.height)mix(h);
 	}
 	for(int i=0;i<c.stairCount;i++){const auto &s=c.stairs[i];mix(s.x);mix(s.y);mix(s.highIsNorth);mix(s.changesPlane);}
@@ -1502,6 +1518,30 @@ inline bool S9xRemasterDungeonStairProof(const RemasterDungeonFloorContext &c,
 inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext &inputContext,
 	uint8_t floorRise, RemasterDungeonHeightMap &result)
 {
+	// Structural graph consumes replacement placements, while render ownership
+	// remains the current visible obstacle. This is a private solve-only copy:
+	// neither movement/collision RAM nor stock rendering is ever modified.
+	if(inputContext.placements && inputContext.collisionAttributes &&
+		std::any_of(inputContext.placements,inputContext.placements+4096,[](const auto &t){return bool(t.structuralReplacement);})) {
+		auto tiles=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>();
+		std::copy_n(inputContext.placements,4096,tiles->begin());
+		auto attributes=std::make_unique<std::array<uint8_t,8192>>();
+		std::copy_n(inputContext.collisionAttributes,8192,attributes->begin());
+		for(int i=0;i<4096;i++)if(const auto &r=inputContext.placements[i].structuralReplacement) {
+			const auto &visible=inputContext.placements[i];(*tiles)[i]=*r;
+			for(int p=0;p<2;p++)if(visible.replacementPlaneMask&(1<<p))(*attributes)[p*4096+i]=visible.replacementAttribute;
+		}
+		auto structural=inputContext;structural.placements=tiles->data();structural.collisionAttributes=attributes->data();
+		structural.movementCache=nullptr; // never share actual-movement scratch with potential topology
+		const bool ok=S9xRemasterBuildDungeonHeightMap(structural,floorRise,result);
+		for(int i=0;i<4096;i++)if(inputContext.placements[i].structuralReplacement) {
+			const auto &v=inputContext.placements[i];
+			result.producerHashes[i]=v.tileHash;result.producerFlips[i]=v.hflip|(v.vflip<<1);
+			result.producerObstacle[i]=true;result.producerAuthoredObstacle[i]=true;
+			result.producerZeroFloor[i]=false;
+		}
+		return ok;
+	}
 	RemasterLightingTrace::Scope lightingTimer(RemasterLightingTrace::current(), RemasterLightingTrace::Solve);
 #ifdef ALTTP_TEST_CACHE_STAGES
 	auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.solveMs,stages.solves);
@@ -1514,7 +1554,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	if(context.placements && context.collisionAttributes)for(int i=0;i<4096;i++)
 		if(context.placements[i].removableSupportPlanes) {
 			if(!persistentAttributes){persistentAttributes=std::make_unique<std::array<uint8_t,8192>>();std::copy_n(context.collisionAttributes,8192,persistentAttributes->begin());}
-			for(int p=0;p<2;p++)if(context.placements[i].removableSupportPlanes&(1<<p))(*persistentAttributes)[p*4096+i]=0;
+			for(int p=0;p<2;p++)if(context.placements[i].removableSupportPlanes&(1<<p))
+				(*persistentAttributes)[p*4096+i]=context.placements[i].structuralReplacement ? context.placements[i].replacementAttribute : 255;
 		}
 	// Do NOT feed post-removal attributes into ordinary movement, wall ownership
 	// or border fallbacks. Potential bodies are separately attached below.
@@ -5699,6 +5740,15 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 			v.component=static_cast<int32_t>(component);v.published=published!=0;
 			if(!S9xRemasterValidOccurrenceGeometry(instance))return false;
 		}
+		if(result.schemaVersion>=42) {
+			uint8_t flags;if(!input.ReadU8(flags)||flags>(result.schemaVersion>=43?7:3)||(flags&6)==6)return false;
+			instance.terrainOffset.hasHeight=flags&1;
+			if(flags&1)for(auto &h:instance.terrainOffset.height)if(!input.ReadFloat(h))return false;
+			if(flags&2)for(auto &n:instance.terrainOffset.normal)if(!input.ReadFloat(n))return false;
+			instance.terrainOffset.hasPixelNormals=flags&4;
+			if(flags&4)for(auto &n:instance.terrainOffset.pixelNormals)if(!input.ReadFloat(n))return false;
+			if(!S9xRemasterValidTerrainOffset(instance.terrainOffset))return false;
+		}
 		if(result.schemaVersion>=41) {
 			uint32_t bits;
 			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>2 || !input.ReadU32(bits))return false;
@@ -5809,6 +5859,14 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 						p.instanceId>result.tileInstances.size()||(p.instanceId&&p.tilePixel>=64))return false;
 				}
 			}
+			continue;
+		}
+		if(tag==0x31505244u) { // DRP1, value-owned replacement input
+			uint32_t n;if(result.replacementEvidence.available || !input.ReadU32(n) || n>2044 || n>bytes.size()-input.offset)return false;
+			std::vector<uint8_t> evidence(bytes.begin()+input.offset,bytes.begin()+input.offset+n);input.offset+=n;
+			if(!S9xRemasterDeserializeDungeonReplacementEvidence(evidence,result.replacementEvidence) ||
+				!result.area.valid() || result.area.id!=result.replacementEvidence.room ||
+				result.profileRomSha256!="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb")return false;
 			continue;
 		}
 		if (tag != 0x314e4353u || !result.scenePixels.empty()) return false; // SCN1
@@ -6059,9 +6117,10 @@ inline std::pair<int, int> S9xRemasterFrameHeightRange (const RemasterFrame &fra
 			continue;
 		const int localHeight = instance.hasPlacementHeight ? instance.placementHeight[pixel.tilePixel] :
 			(metadata && metadata->hasHeight ? metadata->height[pixel.tilePixel] : 0);
-		const int height = instance.heightOffset + localHeight;
-		minimum = std::min(minimum, height);
-		maximum = std::max(maximum, height);
+		const float terrain=instance.terrainOffset.hasHeight?instance.terrainOffset.height[S9xRemasterTerrainPixel(pixel.tilePixel,instance.hFlip,instance.vFlip)]:0;
+		const float height = instance.heightOffset + localHeight + terrain;
+		minimum = std::min(minimum, int(std::floor(height)));
+		maximum = std::max(maximum, int(std::ceil(height)));
 		foundHeight = true;
 	}
 	return foundHeight ? std::make_pair(minimum, std::max(maximum, minimum + 1)) :
@@ -6208,7 +6267,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 {
 	// v40 emission remains available for frozen compatibility oracles/export.
 	// It cannot claim the new saved-scalar evidence; normal captures use v41.
-	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40) ||
+	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40 && frame.schemaVersion != 41 && frame.schemaVersion != 42) ||
 		frame.width == 0 || frame.height == 0 ||
 		frame.width > UINT32_MAX / frame.height)
 		return false;
@@ -6468,6 +6527,15 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.cell));
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.visualClaim.component));
 		RemasterFrameSerialization::U8(bytes,instance.visualClaim.published?1:0);
+		if(frame.schemaVersion>=42) {
+			const auto &t=instance.terrainOffset;if(!S9xRemasterValidTerrainOffset(t))return false;
+			if(t.hasPixelNormals && frame.schemaVersion<43)return false;
+			const bool normal=!t.hasPixelNormals && t.normal!=std::array<float,3>{{0,0,1}};
+			RemasterFrameSerialization::U8(bytes,(t.hasHeight?1:0)|(normal?2:0)|(t.hasPixelNormals?4:0));
+			if(t.hasHeight)for(float h:t.height)RemasterFrameSerialization::Float(bytes,h);
+			if(normal)for(float n:t.normal)RemasterFrameSerialization::Float(bytes,n);
+			if(t.hasPixelNormals)for(float n:t.pixelNormals)RemasterFrameSerialization::Float(bytes,n);
+		}
 		if(frame.schemaVersion>=41) {
 		if(instance.savedPlacementOffsetStatus>2 || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
 			(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
@@ -6580,6 +6648,14 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	if (frame.offscreenRepresentativeEmitters >= 0) {
 		RemasterFrameSerialization::U32(bytes, 0x3152454fu); // OER1
 		RemasterFrameSerialization::U8(bytes, uint8_t(frame.offscreenRepresentativeEmitters));
+	}
+	if(frame.replacementEvidence.available) {
+		if(!frame.area.valid() || frame.area.id!=frame.replacementEvidence.room ||
+			frame.profileRomSha256!="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb")return false;
+		const auto evidence=S9xRemasterSerializeDungeonReplacementEvidence(frame.replacementEvidence);
+		if(evidence.empty())return false;
+		RemasterFrameSerialization::U32(bytes,0x31505244u);
+		RemasterFrameSerialization::U32(bytes,uint32_t(evidence.size()));bytes.insert(bytes.end(),evidence.begin(),evidence.end());
 	}
 	return true;
 }

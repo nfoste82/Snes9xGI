@@ -1,5 +1,43 @@
 # Link attachment floor offsets
 
+## Overworld per-pixel support
+
+`overworld_actor_support.h` samples the independently observed BG2 pixel at the
+existing grounded Link anchor `(linkX+8, linkY+20)` on each completed frame. It
+requires verified ALTTP overworld identity, matching world-coordinate placement,
+enabled saved offsets, and explicit Floor metadata. Walls/obstacles, missing
+observations and unresolved geometry do not supply support; no nearest/highest
+floor search or previous-frame base is used.
+
+Coordinate publication includes all four independently observed BG planes, not
+just main/sub/scene composites. Otherwise Link can completely cover a floor tile,
+leaving that observed floor without a coordinate/base and resetting actor support
+for particular movement/animation frames. All-observation coordinate conflicts
+still reject; editor picking remains visible-only. Capture
+`frame_overworld_x02ed_y06c8.s9xrmf` reproduces this at BG2 coordinate(94,219):
+the original floor occurrence592 has no coordinate/status; publication from its
+independent observations restores support40. Capture replay regression recovers
+effective raster scroll from existing verified coordinate observations rather
+than assuming WRAM scroll copies exactly match the PPU raster. The previous
+capture still samples39.7204. Both pass ASan/UBSan; context publication regression
+and Release build pass. Fresh live movement confirmation remains pending.
+
+The composed support is local floor height + scalar + world-oriented pixel height
+adjustment. Normal offsets are shading data, not height inputs. The attested Link
+OAM block (56–67 or100–111, identified by dedicated body DMA) shares that base
+across body, equipment and shadow. Fractional support uses a constant float terrain
+height translation on those OBJ members; authored sprite arrays and normal
+orientation remain unchanged. Held-lamp floor height consumes the same sample.
+This changes remaster geometry only, not stock screen positions or gameplay.
+
+Regression: `overworld_link_support_test.cpp`, including optional supplied capture
+and profile arguments. `frame_overworld_x0126_y067f.s9xrmf` with its sidecar-attested
+Link/camera coordinates yields support39.7204. Per-pixel movement, artwork flip
+independence, signed support, shared fractional assembly height and wall/indoor/
+unverified rejection pass ASan/UBSan. Existing dungeon Link attachment test passes;
+Release app builds. Fresh gameplay/jump traversal, GPU lighting and paused-editor
+regrounding remain unverified; replay does not infer actor position from filename.
+
 The dungeon OBJ application path previously sampled each OAM entry's visible
 bottom independently, allowing Link's head, shield, sword and ground shadow to
 receive different bases at floor boundaries.
@@ -20,7 +58,7 @@ the producer-derived carried/thrown-object path are unchanged.
 
 No profile, capture schema, room classification or floor solving changed. This
 is an actor-base inheritance repair, not approval of complete-room coverage.
-Overworld floor support remains outside this dungeon-map application path.
+Overworld floor support uses a separate path, not this dungeon map.
 Jump displacement/body geometry are unchanged. Intra-room stair support is now
 interpolated as described below; authored tread/rail geometry is unchanged.
 

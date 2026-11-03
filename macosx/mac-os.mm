@@ -737,6 +737,7 @@ static NSView *remasterObstacleView;
 static NSTextField *remasterObstacleName, *remasterObstacleZ, *remasterObstacleStatus;
 static NSPopUpButton *remasterObstacleMembers;
 static NSButton *remasterObstacleCreate, *remasterObstacleContact, *remasterObstacleApply;
+static NSButton *remasterObstacleMovable;
 static NSButton *remasterObstacleDelete, *remasterObstacleShow;
 static NSView *remasterObstacleFootprint;
 static NSInteger remasterObstacleGroupIndex = -1, remasterObstacleMemberIndex = -1;
@@ -790,11 +791,14 @@ static bool remasterMetadataToolOpening = false;
 static NSPopUpButton	*remasterLayerSelector;
 static NSView *remasterOffsetControls;
 static NSTextField *remasterOffsetInput, *remasterOffsetStatus;
-static NSButton *remasterOffsetMinus, *remasterOffsetPlus;
+static NSPopUpButton *remasterOffsetHeightMode;
+static bool RemasterPixelHeightOffset() { return remasterLayerSelector && remasterLayerSelector.indexOfSelectedItem==RemasterEditorHeightOffset && remasterOffsetHeightMode.indexOfSelectedItem==1; }
+static NSButton *remasterOffsetMinus, *remasterOffsetPlus, *remasterOffsetClear;
 static std::set<uint32_t> remasterOffsetSelection;
 static std::set<RemasterTileContentId> remasterOffsetTypes;
 static bool remasterOffsetLocations=false;
-static bool RemasterOffsetCategory() { return remasterLayerSelector && remasterLayerSelector.indexOfSelectedItem==RemasterEditorHeightOffset; }
+static bool RemasterNormalOffsetCategory() { return remasterLayerSelector && remasterLayerSelector.indexOfSelectedItem==RemasterEditorNormalOffset; }
+static bool RemasterOffsetCategory() { return remasterLayerSelector && (remasterLayerSelector.indexOfSelectedItem==RemasterEditorHeightOffset || RemasterNormalOffsetCategory()); }
 static NSView *remasterSemanticsView;
 static NSPopUpButton *remasterRoleSelector, *remasterFacingSelector, *remasterSecondFacingSelector, *remasterCornerSelector;
 static NSButton *remasterDoorwaySupportButton;
@@ -935,8 +939,11 @@ static void UpdateRemasterEditingProfileDirty (const std::string &current)
 	// Placement records precede assets/materials in TOML; unlike local assets,
 	// they cannot be detected by the legacy non-scene suffix comparison alone.
 	RemasterProfile saved;std::vector<RemasterProfileDiagnostic>d;
-	if(S9xRemasterParseProfile(remasterSavedProfileText,saved,d))
+	if(S9xRemasterParseProfile(remasterSavedProfileText,saved,d)) {
 		remasterEditingProfileDirty |= !S9xRemasterPlacementMapsEqual(saved.overworldOffsets,remasterEditingProfile.overworldOffsets);
+		std::string a,b;auto comparable=saved;comparable.overworldTerrain=remasterEditingProfile.overworldTerrain;
+		if(S9xRemasterSerializeProfile(saved,a,d)&&S9xRemasterSerializeProfile(comparable,b,d))remasterEditingProfileDirty |= a!=b;
+	}
 }
 
 static S9xRemasterAssetUndoSnapshot *CaptureRemasterAssetSnapshot (
@@ -971,6 +978,7 @@ static NSString *const PreviousWorkspaceKey = @"S9xPreviousWorkspace";
 static std::atomic<bool> workspaceStartPaused {false};
 static NSString *const RemasterTileClipboardType = @"org.snes9x.remaster.tile-metadata";
 static RemasterAssetMetadata remasterClipboardMetadata;
+static RemasterPlacementLayer remasterClipboardPlacementLayer;
 static NSInteger remasterClipboardLayer = -1;
 static bool remasterClipboardHasData = false;
 static NSString *remasterClipboardToken;
@@ -1361,6 +1369,7 @@ static NSString *RemasterLightingViewName (RemasterLightingView view)
 	case RemasterLightingView::DirectContribution: return @"Direct Light";
 	case RemasterLightingView::Height: return @"Height";
 	case RemasterLightingView::HeightOffsets: return @"Height Offsets · -128 black / 0 gray / +128 white (clamped); purple N/A";
+	case RemasterLightingView::NormalOffsets: return @"Normal Offsets · support orientation; missing = +Z; purple N/A";
 	case RemasterLightingView::IndirectContribution: return @"Indirect Light";
 	case RemasterLightingView::Normal: return @"Normals";
 	case RemasterLightingView::DirectAndIndirectContribution: return @"Direct + Indirect Light";
@@ -4004,12 +4013,20 @@ void S9xSyncSpeed (void)
 	long long	currentFrame, adjustment;
 	const bool measurePerformance = S9xRemasterPerformanceMetricsEnabled();
 	const auto pacingStarted = std::chrono::steady_clock::now();
+#if S9X_REMASTER_PROFILING
+	const bool tracePacing = RemasterLiveTrace::pacingFrameId() != 0;
+	const double tracePacingStart = tracePacing ? RemasterLightingTrace::now() : 0;
+	double requestedSleepMs = 0;
+#endif
 
 	if (Settings.SoundSync)
 	{
 		while (!S9xSyncSound())
 			usleep(0);
 	}
+#if S9X_REMASTER_PROFILING
+	const double traceAudioEnd = tracePacing ? RemasterLightingTrace::now() : 0;
+#endif
 
 	if (!macQTRecord)
 	{
@@ -4037,7 +4054,12 @@ void S9xSyncSpeed (void)
 				frameCount = skipFrames;
 
 				if (lastFrame > currentFrame)
+				{
+#if S9X_REMASTER_PROFILING
+					if (tracePacing) requestedSleepMs += (lastFrame - currentFrame) / 1000.0;
+#endif
 					usleep((useconds_t) (lastFrame - currentFrame));
+				}
 
 				IPPU.RenderThisFrame = true;
 			}
@@ -4055,6 +4077,9 @@ void S9xSyncSpeed (void)
 
 				if (currentFrame - lastFrame < adjustment)
 				{
+#if S9X_REMASTER_PROFILING
+					if (tracePacing) requestedSleepMs += (adjustment + lastFrame - currentFrame) / 1000.0;
+#endif
 					usleep((useconds_t) (adjustment + lastFrame - currentFrame));
 					currentFrame = GetMicroseconds();
 				}
@@ -4078,12 +4103,25 @@ void S9xSyncSpeed (void)
 		currentFrame = GetMicroseconds();
 
 		if (currentFrame - lastFrame < adjustment)
+		{
+#if S9X_REMASTER_PROFILING
+			if (tracePacing) requestedSleepMs += (adjustment + lastFrame - currentFrame) / 1000.0;
+#endif
 			usleep((useconds_t) (adjustment + lastFrame - currentFrame));
+		}
 
 		lastFrame = currentFrame;
 
 		IPPU.RenderThisFrame = true;
 	}
+#if S9X_REMASTER_PROFILING
+	if (tracePacing)
+	{
+		const double ended = RemasterLightingTrace::now();
+		RemasterLiveTrace::pacing((traceAudioEnd-tracePacingStart)*1000,
+			(ended-traceAudioEnd)*1000, (ended-tracePacingStart)*1000, requestedSleepMs, tracePacingStart);
+	}
+#endif
 	if (measurePerformance)
 	{
 		RemasterState &state = S9xRemasterState();
@@ -4706,6 +4744,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)resetRemasterLayer:(id)sender;
 - (void)resetRemasterTile:(id)sender;
 - (void)copyRemasterLayer:(id)sender;
+- (void)clearRemasterPlacementLayer:(id)sender;
+- (void)applyRemasterPlacementLayer:(BOOL)clear;
 - (void)pasteRemasterLayer:(id)sender;
 - (void)flipRemasterLayerHorizontal:(id)sender;
 - (void)flipRemasterLayerVertical:(id)sender;
@@ -4797,7 +4837,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)mouseDown:(NSEvent *)event
 {
-	if(RemasterOffsetCategory())return; // tile-level only; never a pixel brush
+	if(RemasterOffsetCategory() && !RemasterPixelHeightOffset())return;
 	if (self.showsNormalAxes)
 	{
 		if (!self.enabled)
@@ -5648,6 +5688,20 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	return RemasterLightingViewName(remasterLightingView);
 }
 
+- (BOOL)isShowingRemasterNormalOffsets
+{
+	return remasterLightingEnabled && remasterLightingView==RemasterLightingView::NormalOffsets;
+}
+- (void)toggleRemasterNormalOffsets
+{
+	static RemasterLightingView previous=RemasterLightingView::Composite;static bool enabled=false;
+	if([self isShowingRemasterNormalOffsets]){remasterLightingView=previous;remasterLightingEnabled=enabled;}
+	else {previous=remasterLightingView;enabled=remasterLightingEnabled;remasterLightingView=RemasterLightingView::NormalOffsets;remasterLightingEnabled=true;}
+	SetLiveRemasterPresentation(running && remasterLightingEnabled && remasterEditingProfileLoaded,remasterLightingView);
+	if(remasterFramePresenting)DrawRemasterFrame(remasterSceneFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);
+	else if(running && pauseEmulation)remasterDebugLightRedraw.store(0x80000000u|(remasterLightingEnabled?0x40000000u:0)|(static_cast<uint32_t>(remasterLightingView)+1));
+	[s9xView updateRemasterDebugOverlay];
+}
 - (BOOL)isShowingRemasterHeightOffsets
 {
 	return remasterLightingEnabled && remasterLightingView==RemasterLightingView::HeightOffsets;
@@ -5698,6 +5752,16 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	NSURL *file = [directory URLByAppendingPathComponent:@"tile-inventory.json"];
 	S9xRemasterRequestTileInventory(file.path.UTF8String);
 	return file.path;
+}
+
+- (NSString *)captureRemasterPerformance
+{
+	if (!RemasterLiveTrace::available() || !running || pauseEmulation) return nil;
+	NSURL *directory = RemasterCaptureDirectory();
+	if (!directory) return nil;
+	NSString *name = [@"performance-" stringByAppendingString:NSUUID.UUID.UUIDString];
+	if (!RemasterLiveTrace::request([directory URLByAppendingPathComponent:name].path.fileSystemRepresentation, 600)) return nil;
+	return directory.path;
 }
 
 - (NSString *)captureRemasterFrame
@@ -6417,7 +6481,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterNextVariantButton.action = @selector(nextRemasterVariant:);
 		[contentView addSubview:remasterNextVariantButton];
 		remasterLayerSelector = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(20, 87, 128, 28) pullsDown:NO];
-		[remasterLayerSelector addItemsWithTitles:@[@"Artwork", @"Material", @"Occlusion", @"Height", @"Height Offset", @"Normal", @"Emission", @"Metadata", @"Doorframe", @"Obstacle Grouping"]];
+		[remasterLayerSelector addItemsWithTitles:@[@"Artwork", @"Material", @"Occlusion", @"Height", @"Height Offset", @"Normal", @"Normal Offset", @"Emission", @"Metadata", @"Doorframe", @"Obstacle Grouping"]];
 		remasterLayerSelector.target = self;
 		remasterLayerSelector.action = @selector(changeRemasterLayer:);
 		[contentView addSubview:remasterLayerSelector];
@@ -6434,6 +6498,15 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterOffsetPlus=[[NSButton alloc] initWithFrame:NSMakeRect(260,52,80,30)];
 		for(NSButton *b in @[remasterOffsetMinus,remasterOffsetPlus]) { b.bezelStyle=NSBezelStyleRounded;b.target=self;b.action=@selector(editRemasterPlacementOffset:);[remasterOffsetControls addSubview:b]; }
 		remasterOffsetMinus.title=@"−1";remasterOffsetMinus.tag=-1;remasterOffsetPlus.title=@"+1";remasterOffsetPlus.tag=1;
+		remasterOffsetHeightMode=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,15,340,28) pullsDown:NO];
+		[remasterOffsetHeightMode addItemsWithTitles:@[@"Tile scalar base",@"Per-pixel support offset"]];
+		[remasterOffsetHeightMode selectItemAtIndex:1];
+		remasterOffsetHeightMode.target=self;remasterOffsetHeightMode.action=@selector(changeRemasterOffsetHeightMode:);
+		[remasterOffsetControls addSubview:remasterOffsetHeightMode];
+		remasterOffsetClear=[[NSButton alloc] initWithFrame:NSMakeRect(350,15,210,30)];
+		remasterOffsetClear.bezelStyle=NSBezelStyleRounded;remasterOffsetClear.target=self;
+		remasterOffsetClear.action=@selector(clearRemasterPlacementLayer:);
+		[remasterOffsetControls addSubview:remasterOffsetClear];
 		remasterOffsetControls.hidden=YES;
 		remasterDoorframeBrush = [[NSButton alloc] initWithFrame:NSMakeRect(168, 377, 190, 28)];
 		remasterDoorframeBrush.title = @"Doorframe pixel (true)";
@@ -6533,6 +6606,13 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterObstacleContact.title = @"Support contact";
 		remasterObstacleContact.toolTip = @"Immediately sets contacts for all selected occurrences (Cmd-click scene or footprint). Mixed first click enables all. At least one contact must remain. Dropdown selects one member. Z and authored relief are preserved.";
 		[remasterObstacleView addSubview:remasterObstacleContact];
+		remasterObstacleMovable = [[NSButton alloc] initWithFrame:NSMakeRect(485,105,80,26)];
+		remasterObstacleMovable.buttonType=NSButtonTypeSwitch;
+		remasterObstacleMovable.title=@"Movable";
+		remasterObstacleMovable.target=self;
+		remasterObstacleMovable.action=@selector(changeRemasterObstacleMovable:);
+		remasterObstacleMovable.toolTip=@"Opt in to verified ROM replacement surfaces for this saved background group. Underlying tiles require authored Floor semantics and height. Unsupported or missing evidence remains unknown; gameplay collision and artwork are unchanged.";
+		[remasterObstacleView addSubview:remasterObstacleMovable];
 		remasterObstacleApply = [[NSButton alloc] initWithFrame:NSMakeRect(165,45,210,28)];
 		remasterObstacleApply.title = @"Apply Selected Z / Name";
 		remasterObstacleApply.toolTip = @"Applies Z to every selected exact scene or footprint member, and updates the group name in one undo step. Mixed Z is blank until entered. Contacts and unselected members are preserved.";
@@ -7260,6 +7340,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	const auto doorMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
 	const bool worldScene=remasterReplayFrame.area.id>=320 && remasterReplayFrame.area.id<=321 && !remasterNpcInspectorActive;
 	[remasterLayerSelector itemAtIndex:RemasterEditorHeightOffset].hidden=!worldScene;
+	[remasterLayerSelector itemAtIndex:RemasterEditorNormalOffset].hidden=!worldScene;
 	if(!worldScene && RemasterOffsetCategory())[remasterLayerSelector selectItemAtIndex:RemasterEditorHeight];
 	// Keep stable enum indices, including the appended grouping layer.
 	[remasterLayerSelector itemAtIndex:RemasterEditorDoorframe].hidden = doorMetadata.tileRole != RemasterTileRole::Doorway;
@@ -7278,7 +7359,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	const auto *height = RemasterOffsetCategory()?(offsetGeometry.hasHeight?&offsetGeometry.height:nullptr):RemasterAuthoredHeight(remasterSelectedTile, sampling);
 	if(RemasterOffsetCategory())sampling=offsetGeometry.heightSampling;
 	const bool hasHeight = height != nullptr;
-	if(RemasterOffsetCategory())remasterTilePixelSelected=false;
+	if(RemasterOffsetCategory() && !RemasterPixelHeightOffset())remasterTilePixelSelected=false;
 	const auto localPreviewRange = height ? S9xRemasterInspectorLocalPreviewRange(*height) :
 		RemasterInspectorHeightPreviewRange{};
 	const uint32_t heightInstance = RemasterOffsetCategory()?remasterHeightInstanceId:S9xRemasterInspectorHeightInstance(remasterReplayFrame,
@@ -7355,7 +7436,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 				for (size_t component = 0; component < 3; component++)
 					artworkPixel[component] = visibleColorCounts[source] ?
 						visibleColors[source * 3 + component] : decodedArtwork;
-				if (remasterTilePixelSelected && source == remasterSelectedTilePixel)
+				if (remasterTilePixelSelected && (RemasterPixelHeightOffset()?S9xRemasterTerrainPixel(source,placement->hFlip,placement->vFlip):source) == remasterSelectedTilePixel)
 				{
 					const NSInteger cellX = x % 16;
 					const NSInteger cellY = y % 16;
@@ -7417,11 +7498,21 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 						capturedMetadata->occlusion[source] : 255);
 					std::copy(color.begin(), color.end(), pixel);
 				}
+				else if(layer==RemasterEditorNormalOffset) {
+					float nx=0,ny=0,nz=1;
+					if(offsetGeometry.hasNormals){nx=offsetGeometry.normalXyz[source*3]/127.5f-1;ny=offsetGeometry.normalXyz[source*3+1]/127.5f-1;nz=offsetGeometry.normalXyz[source*3+2]/127.5f-1;}
+					S9xRemasterTransformNormalForTileInstance(*placement,nx,ny,nz,offsetGeometry.normalIgnoreTileTransform);
+					float len=std::sqrt(nx*nx+ny*ny+nz*nz);if(len>0){nx/=len;ny/=len;nz/=len;}
+					float before[3]={nx,ny,nz};
+					S9xRemasterRotateTerrainNormal(placement->terrainOffset.normalAt(S9xRemasterTerrainPixel(source,placement->hFlip,placement->vFlip)),nx,ny,nz);float after[3]={nx,ny,nz};
+					for(unsigned c=0;c<3;c++){artworkPixel[c]=uint8_t(std::lround(std::max(0.f,std::min(1.f,(before[c]+1)*.5f))*255));pixel[c]=uint8_t(std::lround(std::max(0.f,std::min(1.f,(after[c]+1)*.5f))*255));}
+				}
 				else if(layer==RemasterEditorHeightOffset) {
 					const int offset=S9xRemasterSavedPlacementApplicable(remasterReplayFrame,remasterHeightInstanceId)?remasterReplayFrame.tileInstances[remasterHeightInstanceId-1].savedPlacementOffset:0;
-					if(height && S9xRemasterSavedPlacementApplicable(remasterReplayFrame,remasterHeightInstanceId)) {const int local=(*height)[source];
+					if(S9xRemasterSavedPlacementApplicable(remasterReplayFrame,remasterHeightInstanceId)) {const int local=height?(*height)[source]:0;
 						const uint8_t before=uint8_t(std::lround(std::max(0.0,std::min(1.0,(local+128.)/256))*255));
-						const uint8_t after=uint8_t(std::lround(std::max(0.0,std::min(1.0,(local+offset+128.)/256))*255));
+						const float terrain=placement->terrainOffset.hasHeight?placement->terrainOffset.height[S9xRemasterTerrainPixel(source,placement->hFlip,placement->vFlip)]:0;
+						const uint8_t after=uint8_t(std::lround(std::max(0.0,std::min(1.0,((RemasterPixelHeightOffset()?0:local)+offset+terrain+128.)/256))*255));
 						for(unsigned c=0;c<3;c++){artworkPixel[c]=before;pixel[c]=after;}
 					} else {for(unsigned c=0;c<3;c++)artworkPixel[c]=pixel[c]=c==0?56:c==1?0:71;}
 				}
@@ -7539,7 +7630,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 					pixel[1] = 28;
 					pixel[2] = 28;
 				}
-				if (remasterTilePixelSelected && source == remasterSelectedTilePixel)
+				if (remasterTilePixelSelected && (RemasterPixelHeightOffset()?S9xRemasterTerrainPixel(source,placement->hFlip,placement->vFlip):source) == remasterSelectedTilePixel)
 				{
 					const NSInteger cellX = x % 16;
 					const NSInteger cellY = y % 16;
@@ -7681,16 +7772,48 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		DrawRemasterFrame(remasterReplayFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);
 }
 
+- (void)changeRemasterOffsetHeightMode:(id)sender
+{
+	remasterTilePixelSelected=false;
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
 - (void)refreshRemasterPlacementOffsetControls
 {
 	std::set<RemasterContextLocation> targets;std::string error;
 	bool ok=remasterEditingProfileLoaded && S9xRemasterPlacementTargets(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,targets,error);
 	if(remasterRecordingOriginal && remasterRecordingRecorded.state==NSControlStateValueOn){ok=false;error="Recorded Evidence is immutable. Uncheck it to edit Current Profile Preview.";}
 	remasterOffsetInput.enabled=remasterOffsetMinus.enabled=remasterOffsetPlus.enabled=ok;
+	remasterOffsetClear.enabled=ok;
+	remasterOffsetClear.title=RemasterNormalOffsetCategory()?@"Remove Normal Offsets":@"Remove Height Offsets";
+	remasterOffsetClear.toolTip=RemasterNormalOffsetCategory()?@"Remove uniform and per-pixel normal rotations from all selected coordinates; keep heights.":@"Remove scalar and per-pixel height offsets from all selected coordinates; keep normals and local relief.";
+	remasterCopyLayerButton.enabled=ok && targets.count(remasterReplayFrame.contextLocations.count(remasterHeightInstanceId)?remasterReplayFrame.contextLocations.at(remasterHeightInstanceId):RemasterContextLocation{})!=0;
+	remasterPasteLayerButton.enabled=ok && RemasterClipboardAvailable(remasterLayerSelector.indexOfSelectedItem);
 	bool first=true,mixed=false;int value=0;size_t explicitEntries=0;
 	for(const auto &at:targets){auto e=remasterEditingProfile.overworldOffsets.find(at);int v=e==remasterEditingProfile.overworldOffsets.end()?0:e->second;explicitEntries+=e!=remasterEditingProfile.overworldOffsets.end();if(first){value=v;first=false;}else mixed|=value!=v;}
 	remasterOffsetInput.stringValue=ok && !mixed?[NSString stringWithFormat:@"%d",value]:@"";
 	remasterOffsetInput.placeholderString=mixed?@"Mixed":@"Unavailable";
+	remasterOffsetHeightMode.hidden=RemasterNormalOffsetCategory();
+	if(RemasterPixelHeightOffset()) {
+		const unsigned pixel=unsigned(remasterSelectedTilePixel);bool firstPixel=true,pixelMixed=false;float h=0;
+		for(const auto &at:targets){auto t=remasterEditingProfile.overworldTerrain.find(at);auto s=remasterEditingProfile.overworldOffsets.find(at);float v=(s==remasterEditingProfile.overworldOffsets.end()?0:s->second)+(t!=remasterEditingProfile.overworldTerrain.end()&&t->second.hasHeight?t->second.height[pixel]:0);if(firstPixel){h=v;firstPixel=false;}else pixelMixed|=h!=v;}
+		remasterOffsetInput.enabled=remasterOffsetMinus.enabled=remasterOffsetPlus.enabled=ok&&remasterTilePixelSelected;
+		remasterOffsetInput.stringValue=ok&&remasterTilePixelSelected&&!pixelMixed?[NSString stringWithFormat:@"%.7g",h]:@"";
+		remasterOffsetInput.placeholderString=pixelMixed?@"Mixed":@"Select pixel";
+		remasterOffsetStatus.stringValue=[NSString stringWithFormat:@"Per-pixel support offset: scalar + terrain, excluding local relief.\nClick the upper 8×8 preview to select a world-oriented pixel; enter a fractional height and press Return. −1/+1 adjusts that pixel on selected coordinates.\nPixel (%lu,%lu). Lower preview: local relief. Upper: support offsets only. Undo and Save Profile apply; authored local heights/normals are never changed.",pixel%8,pixel/8];
+		remasterOffsetMinus.hidden=remasterOffsetPlus.hidden=NO;
+		return;
+	}
+	remasterOffsetMinus.hidden=remasterOffsetPlus.hidden=RemasterNormalOffsetCategory();
+	remasterOffsetInput.toolTip=RemasterNormalOffsetCategory()?@"Unit support normal: x, y, z. Return applies to selected coordinates; 0,0,1 removes the rotation.":@"Signed scalar; zero removes the entry. Per-pixel terrain adjustments remain separate.";
+	if(RemasterNormalOffsetCategory()) {
+		std::array<float,3> normal{{0,0,1}};bool firstNormal=true,normalMixed=false;
+		for(const auto &at:targets){auto e=remasterEditingProfile.overworldTerrain.find(at);auto n=e==remasterEditingProfile.overworldTerrain.end()?std::array<float,3>{{0,0,1}}:e->second.normalAt(0);if(e!=remasterEditingProfile.overworldTerrain.end())for(unsigned k=1;k<64;k++)normalMixed|=e->second.normalAt(k)!=n;if(firstNormal){normal=n;firstNormal=false;}else normalMixed|=normal!=n;}
+		remasterOffsetInput.stringValue=ok&&!normalMixed?[NSString stringWithFormat:@"%.6g, %.6g, %.6g",normal[0],normal[1],normal[2]]:@"";
+		remasterOffsetInput.placeholderString=normalMixed?@"Mixed":@"Unavailable";
+		remasterOffsetStatus.stringValue=ok?[NSString stringWithFormat:@"%lu visible BG2 coordinates. Missing normal offset = +Z (identity).\nLower preview: authored normal with artwork orientation. Upper: terrain-rotated normal. Local detail is preserved.\nEnter x, y, z and press Return. Nonzero vectors are normalized. Enter 0, 0, 1 to clear. Command-click adds/removes %@. Save Profile writes the loaded profile; no autosave.",targets.size(),remasterOffsetLocations?@"locations":@"types"]:@(error.c_str());
+		return;
+	}
 	NSString *identity=S9xRemasterSavedPlacementApplicable(remasterReplayFrame,remasterHeightInstanceId)?@(S9xRemasterSavedPlacementDescription(remasterReplayFrame,remasterHeightInstanceId).c_str()):@"Choose a supported representative placement";
 	remasterOffsetStatus.stringValue=ok?[NSString stringWithFormat:@"%lu selected visible BG2 locations (%lu explicit; missing = 0).%@ %@\n%@\nRepresentative only: lower = authored local; upper = local + scalar. Fixed −128…+128; purple missing local height.\nCommand-click adds/removes %@. −1/+1 each independently; Return/Enter sets all. Save Profile persists loaded copy; no autosave.",targets.size(),explicitEntries,mixed?@" Mixed values.":@"",remasterOffsetLocations?@"Exact locations.":[NSString stringWithFormat:@"%lu tile types; current scene only.",remasterOffsetTypes.size()],identity,remasterOffsetLocations?@"locations":@"types"]:@(error.c_str());
 }
@@ -7701,6 +7824,35 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	S9xRemasterRefreshPlacementSelection(remasterReplayFrame,remasterOffsetSelection,remasterOffsetLocations?nullptr:&remasterOffsetTypes);
 	remasterReplayFrame.selectedContextInstances=remasterOffsetSelection;
 	remasterHeightInstanceId=S9xRemasterPlacementRepresentative(remasterReplayFrame,remasterOffsetSelection,remasterHeightInstanceId);
+	if(RemasterNormalOffsetCategory()) {
+		std::set<RemasterContextLocation> targets;std::string error;
+		if(!S9xRemasterPlacementTargets(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,targets,error))return;
+		std::array<float,3> n;std::string value=remasterOffsetInput.stringValue.UTF8String;
+		if(!RemasterProfileParsing::ParseFloat3("["+value+"]",n)){remasterOffsetStatus.stringValue=@"Enter three finite components: x, y, z.";NSBeep();return;}
+		float len=std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+		if(!std::isfinite(len)||len<1e-6f){NSBeep();return;}for(auto &v:n)v/=len;
+		RemasterTerrainOffset test;test.normal=n;if(!S9xRemasterValidTerrainOffset(test)){remasterOffsetStatus.stringValue=@"Normal too close to -Z; shortest-arc support rotation is undefined there.";NSBeep();return;}
+		std::string before;std::vector<RemasterProfileDiagnostic>d;if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,d))return;
+		for(const auto &at:targets){auto &t=remasterEditingProfile.overworldTerrain[at];t.normal=n;t.hasPixelNormals=false;t.pixelNormals={};if(t.identity())remasterEditingProfile.overworldTerrain.erase(at);}
+		remasterEditingProfile.schemaVersion=std::max<uint32_t>(38,remasterEditingProfile.schemaVersion);
+		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:) object:@(before.c_str())];[remasterUndoManager setActionName:@"Edit Placement Normal Offsets"];
+		std::string current;if(S9xRemasterSerializeProfile(remasterEditingProfile,current,d))UpdateRemasterEditingProfileDirty(current);
+		if(running)S9xRemasterSetProfile(remasterEditingProfile);
+		S9xRemasterPreviewPlacementOffsets(remasterEditingProfile,remasterReplayFrame);[self showRemasterVariantAtIndex:remasterVariantIndex];
+		DrawRemasterFrame(remasterReplayFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);return;
+	}
+	if(RemasterPixelHeightOffset()) {
+		if(!remasterTilePixelSelected)return;
+		bool relative=sender==remasterOffsetMinus||sender==remasterOffsetPlus;float value=0;
+		if(relative)value=int([sender tag]);else if(!RemasterProfileParsing::ParseFloat(remasterOffsetInput.stringValue.UTF8String,value)){NSBeep();return;}
+		std::string before,error,current;std::vector<RemasterProfileDiagnostic>d;
+		if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,d)||!S9xRemasterEditPlacementPixelHeight(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,unsigned(remasterSelectedTilePixel),value,relative,error)){remasterOffsetStatus.stringValue=@(error.c_str());NSBeep();return;}
+		[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:) object:@(before.c_str())];[remasterUndoManager setActionName:@"Edit Pixel Height Offset"];
+		if(S9xRemasterSerializeProfile(remasterEditingProfile,current,d))UpdateRemasterEditingProfileDirty(current);
+		if(running)S9xRemasterSetProfile(remasterEditingProfile);
+		S9xRemasterPreviewPlacementOffsets(remasterEditingProfile,remasterReplayFrame);[self showRemasterVariantAtIndex:remasterVariantIndex];
+		DrawRemasterFrame(remasterReplayFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);return;
+	}
 	int value=0;bool relative=sender==remasterOffsetMinus || sender==remasterOffsetPlus;
 	if(relative)value=int([sender tag]);else if(!S9xRemasterParsePlacementScalar(remasterOffsetInput.stringValue.UTF8String,value)){remasterOffsetStatus.stringValue=@"Invalid integer. Whole selection unchanged; enter -32767…32767.";NSBeep();return;}
 	std::string before,error;std::vector<RemasterProfileDiagnostic>d;
@@ -7971,6 +8123,16 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 {
 	if (remasterObstacleGroupingActive) return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
+	if(RemasterOffsetCategory()) {
+		std::set<RemasterContextLocation> targets;std::string error;
+		if(!remasterEditingProfileLoaded || !S9xRemasterPlacementTargets(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,targets,error))return;
+		auto at=remasterReplayFrame.contextLocations.find(remasterHeightInstanceId);
+		if(at==remasterReplayFrame.contextLocations.end() || !targets.count(at->second))return;
+		remasterClipboardPlacementLayer=S9xRemasterCopyPlacementLayer(remasterEditingProfile,at->second);
+		remasterClipboardLayer=layer;remasterClipboardHasData=true;remasterClipboardToken=[NSUUID UUID].UUIDString;
+		NSPasteboard *pasteboard=[NSPasteboard generalPasteboard];[pasteboard clearContents];[pasteboard setString:remasterClipboardToken forType:RemasterTileClipboardType];
+		[self refreshRemasterEditingControls];return;
+	}
 	if (remasterVariants.empty() || layer == RemasterEditorArtwork)
 		return;
 	remasterClipboardMetadata = EffectiveRemasterMetadata(remasterSelectedTile);
@@ -8001,6 +8163,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)pasteRemasterLayer:(id)sender
 {
 	if (remasterObstacleGroupingActive) return;
+	if(RemasterOffsetCategory()){if(RemasterClipboardAvailable(remasterLayerSelector.indexOfSelectedItem))[self applyRemasterPlacementLayer:NO];return;}
 	if (RemasterEffectiveHeightPreview()) return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (!remasterEditingProfileLoaded || remasterSelectedTiles.empty() || !RemasterClipboardAvailable(layer))
@@ -8035,6 +8198,29 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	[remasterUndoManager setActionName:@"Paste Remaster Layer"];
 	UpdateRemasterEditingProfileDirty(current);
 	[self showRemasterVariantAtIndex:remasterVariantIndex];
+}
+
+- (void)clearRemasterPlacementLayer:(id)sender
+{
+	[self applyRemasterPlacementLayer:YES];
+}
+
+- (void)applyRemasterPlacementLayer:(BOOL)clear
+{
+	if(!RemasterOffsetCategory() || !remasterEditingProfileLoaded || (remasterRecordingOriginal && remasterRecordingRecorded.state==NSControlStateValueOn))return;
+	S9xRemasterRefreshPlacementSelection(remasterReplayFrame,remasterOffsetSelection,remasterOffsetLocations?nullptr:&remasterOffsetTypes);
+	remasterReplayFrame.selectedContextInstances=remasterOffsetSelection;
+	std::string before,current,error;std::vector<RemasterProfileDiagnostic>d;
+	if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,d))return;
+	const RemasterPlacementLayer layer=clear?RemasterPlacementLayer{}:remasterClipboardPlacementLayer;
+	if(!S9xRemasterPastePlacementLayer(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,layer,RemasterNormalOffsetCategory(),error)){remasterOffsetStatus.stringValue=@(error.c_str());NSBeep();return;}
+	if(!S9xRemasterSerializeProfile(remasterEditingProfile,current,d) || current==before)return;
+	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:) object:@(before.c_str())];
+	[remasterUndoManager setActionName:clear?@"Remove Placement Offsets":@"Paste Placement Offset Layer"];
+	UpdateRemasterEditingProfileDirty(current);if(running)S9xRemasterSetProfile(remasterEditingProfile);
+	S9xRemasterPreviewPlacementOffsets(remasterEditingProfile,remasterReplayFrame);
+	[self showRemasterVariantAtIndex:remasterVariantIndex];
+	DrawRemasterFrame(remasterReplayFrame,remasterReplayDebugMode,nullptr,remasterLightingEnabled,remasterLightingView);
 }
 
 - (void)finishRemasterContextEdit:(NSString *)before action:(NSString *)action
@@ -8578,6 +8764,18 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	return YES;
 }
 
+- (void)changeRemasterObstacleMovable:(id)sender
+{
+	if(!remasterEditingProfileLoaded || remasterObstacleGroupIndex<0 ||
+		size_t(remasterObstacleGroupIndex)>=remasterEditingProfile.obstacleGroups.size())return;
+	auto candidate=remasterEditingProfile;
+	auto &group=candidate.obstacleGroups[remasterObstacleGroupIndex];
+	if(group.spriteAssembly || group.name!=remasterObstacleFocusedGroup)return;
+	group.movable=remasterObstacleMovable.state==NSControlStateValueOn;
+	if(group.movable)candidate.schemaVersion=std::max(candidate.schemaVersion,40u);
+	[self commitRemasterObstacleProfile:candidate action:@"Change Obstacle Movable"];
+}
+
 - (void)createRemasterObstacleGroup:(id)sender
 {
 	if (!remasterEditingProfileLoaded) return;
@@ -8797,6 +8995,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	[remasterObstacleMembers removeAllItems];
 	for (NSView *view in [remasterObstacleFootprint.subviews copy]) [view removeFromSuperview];
 	const bool hasGroup = groupIndex>=0;
+	remasterObstacleMovable.enabled=remasterEditingProfileLoaded && hasGroup && !remasterEditingProfile.obstacleGroups[groupIndex].spriteAssembly;
+	remasterObstacleMovable.state=hasGroup && remasterEditingProfile.obstacleGroups[groupIndex].movable ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterObstacleCreate.enabled = remasterEditingProfileLoaded && !remasterObstacleSelection.empty() && groupIndex==-1;
 	for (NSControl *control in @[remasterObstacleMembers,remasterObstacleZ,remasterObstacleContact,
 		remasterObstacleApply,remasterObstacleDelete,remasterObstacleShow]) control.enabled = remasterEditingProfileLoaded && hasGroup;
@@ -9425,8 +9625,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	const bool offsetCategory=RemasterOffsetCategory();
 	remasterOffsetControls.hidden=!offsetCategory;
 	if(offsetCategory) {
-		remasterTilePixelSelected=false;
-		remasterTilePreview.enabled=remasterArtworkPreview.enabled=NO;
+		if(!RemasterPixelHeightOffset())remasterTilePixelSelected=false;
+		remasterTilePreview.enabled=RemasterPixelHeightOffset();remasterArtworkPreview.enabled=NO;
 		remasterContextSelectionMode.enabled=YES;
 		[remasterContextSelectionMode selectItemAtIndex:remasterOffsetLocations?1:0];
 		remasterContextSelectionMode.toolTip=@"Tile Types selects every actually visible, verified BG2 occurrence of each clicked canonical TileID in this scene, including flips. Command-click adds/removes types. Tile Locations selects exact occurrences. Changing mode clears selection. No offscreen, other-world or unsupported placements; edits remain per-coordinate scalars.";
@@ -9453,18 +9653,19 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (BOOL)remasterTilePixelAtPoint:(NSPoint)point pixel:(size_t *)pixel
 {
-	if(RemasterOffsetCategory())return NO;
+	if(RemasterOffsetCategory() && !RemasterPixelHeightOffset())return NO;
 	const NSRect imageRect = [remasterTilePreview.cell drawingRectForBounds:remasterTilePreview.bounds];
 	if (!NSPointInRect(point, imageRect) || NSWidth(imageRect) <= 0 || NSHeight(imageRect) <= 0)
 		return NO;
 	const size_t x = std::min<size_t>(7, static_cast<size_t>((point.x - NSMinX(imageRect)) * 8 / NSWidth(imageRect)));
 	const size_t y = std::min<size_t>(7, static_cast<size_t>((NSMaxY(imageRect) - point.y) * 8 / NSHeight(imageRect)));
-	*pixel = S9xRemasterGeometryCanonicalPixel(static_cast<unsigned>(y * 8 + x), RemasterInspectorPreviewFlip());
+	*pixel = RemasterPixelHeightOffset()?y*8+x:S9xRemasterGeometryCanonicalPixel(static_cast<unsigned>(y * 8 + x), RemasterInspectorPreviewFlip());
 	return YES;
 }
 
 - (void)beginRemasterTileStrokeAtPoint:(NSPoint)point
 {
+	if(RemasterPixelHeightOffset()){size_t pixel;if([self remasterTilePixelAtPoint:point pixel:&pixel]){remasterTilePixelSelected=true;remasterSelectedTilePixel=pixel;[self showRemasterVariantAtIndex:remasterVariantIndex];}return;}
 	if(RemasterOffsetCategory())return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata || layer == RemasterEditorObstacleGrouping)
@@ -9504,6 +9705,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)continueRemasterTileStrokeAtPoint:(NSPoint)point
 {
+	if(RemasterOffsetCategory())return; // pixel offsets use explicit numeric edits, never asset brush writes
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (RemasterEffectiveHeightPreview()) return;
 	if (!remasterEditingProfileLoaded || remasterVariants.empty() || layer == RemasterEditorArtwork || layer == RemasterEditorMetadata || layer == RemasterEditorObstacleGrouping)
@@ -9625,6 +9827,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)endRemasterTileStroke
 {
+	if(RemasterOffsetCategory())return;
 	const NSInteger layer = remasterLayerSelector.indexOfSelectedItem;
 	if (!remasterStrokeDragging && (layer == RemasterEditorMaterial || layer == RemasterEditorDoorframe))
 	{

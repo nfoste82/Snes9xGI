@@ -8,6 +8,12 @@
 #include <cstdlib>
 #include <ostream>
 
+// Set to 0 for shipping/performance-baseline builds. No timer scopes or capture
+// activation remain active; keep the value consistent across translation units.
+#ifndef S9X_REMASTER_PROFILING
+#define S9X_REMASTER_PROFILING 1
+#endif
+
 // Opt-in, producing-frame lineage. CPU intervals are elapsed service spans, not
 // scheduler thread-CPU time. Exclusive accounting removes nested work exactly
 // once; waits have their own stages and are not lighting service. No GPU wait is
@@ -16,15 +22,26 @@ namespace RemasterLightingTrace {
 enum Stage { EndFrame, Finalize, Room, Classification, Solve, Apply, Visible,
     Actors, Offscreen, Fields, Selection, Mesh, Setup, Upload, Scan, Spheres,
     Hidden, Cluster, Sources, Encode, LockWait, SlotWait, Recognition,
-    Scene, Owners, Highlights, Normals, MeshCopy, Count };
+    Scene, Owners, Highlights, Normals, MeshCopy, ContextLocations, ContextBindings,
+    Terrain, DoorRecognition, Count };
 static constexpr const char *names[] = {"endframe", "finalize", "room", "classification",
     "solve", "apply", "visible", "actors", "offscreen", "fields", "selection", "mesh",
     "setup", "upload", "scan", "spheres", "hidden", "cluster", "sources", "encode",
-    "lock_wait", "slot_wait", "recognition", "scene_hud", "owners", "highlights", "normals", "mesh_copy"};
+    "lock_wait", "slot_wait", "recognition", "scene_hud", "owners", "highlights", "normals", "mesh_copy",
+    "context_locations", "context_bindings", "terrain", "door_recognition"};
+enum RoomReason : uint64_t {
+    RoomChange=1ull<<0, SnapshotInvalid=1ull<<1, ProfileChange=1ull<<2,
+    ProducerChange=1ull<<3, RomChange=1ull<<4, EntryChange=1ull<<5,
+    PlaneChange=1ull<<6, CollisionChange=1ull<<7, MapChange=1ull<<8,
+    AttributeChange=1ull<<9, GraphicsChange=1ull<<10, TemplateChange=1ull<<11,
+    StairChange=1ull<<12, GraphicsBaseChange=1ull<<13, MissingClassification=1ull<<14,
+    ResearchClassification=1ull<<15, BackgroundChange=1ull<<16,
+    VerifiedChange=1ull<<17, Unpublishable=1ull<<18
+};
 inline double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-inline bool legacyEnabled() { return std::getenv("S9X_REMASTER_LIGHTING_TRACE") != nullptr; }
+inline bool legacyEnabled() { return S9X_REMASTER_PROFILING && std::getenv("S9X_REMASTER_LIGHTING_TRACE") != nullptr; }
 inline std::atomic<bool> &boundedActive() { static std::atomic<bool> a{false}; return a; }
-inline bool enabled() { return legacyEnabled() || boundedActive().load(std::memory_order_relaxed); }
+inline bool enabled() { return S9X_REMASTER_PROFILING && (legacyEnabled() || boundedActive().load(std::memory_order_relaxed)); }
 inline uint64_t nextId() { static std::atomic<uint64_t> id{0}; return ++id; }
 struct Frame {
     uint64_t id=0;
@@ -37,6 +54,8 @@ struct Frame {
     uint64_t candidateHits=0,candidateBuilds=0;
     uint64_t fieldReasons=0, highlightCount=0, hiddenPixels=0, visibleFaces=0;
     uint64_t restores=0, dependencyReuses=0;
+    uint64_t roomReasons=0, classificationReasons=0;
+    uint32_t classificationOutcome=0, projectionOutcome=0, instanceCount=0, instanceBytes=0;
     uint32_t highlightPath=0, producerFlags=0;
     uint32_t width=0,height=0, spheres=0,samples=0,patches=0;
     uint32_t bounces=0,connections=0,representatives=0;
@@ -52,7 +71,7 @@ struct Scope {
     Stage stage;
     Scope *parent=nullptr;
     double start=0, children=0;
-    Scope(Frame *f, Stage s):frame(f && f->id ? f : nullptr),stage(s) {
+    Scope(Frame *f, Stage s):frame(S9X_REMASTER_PROFILING && f && f->id ? f : nullptr),stage(s) {
         if(frame) { parent=activeScope(); activeScope()=this; start=now(); }
     }
     ~Scope() { stop(); }
@@ -94,7 +113,10 @@ inline void write(std::ostream &out,const Frame &f,double gpuStart,double gpuEnd
         << ",\"field_reasons\":" << f.fieldReasons << ",\"highlight_count\":" << f.highlightCount
         << ",\"highlight_path\":" << f.highlightPath << ",\"producer_flags\":" << f.producerFlags
         << ",\"hidden_pixels\":" << f.hiddenPixels << ",\"visible_faces\":" << f.visibleFaces
-        << ",\"restores\":" << f.restores << ",\"dependency_reuses\":" << f.dependencyReuses
+         << ",\"restores\":" << f.restores << ",\"dependency_reuses\":" << f.dependencyReuses
+         << ",\"room_reasons\":" << f.roomReasons << ",\"classification_reasons\":" << f.classificationReasons
+         << ",\"classification_outcome\":" << f.classificationOutcome << ",\"projection_outcome\":" << f.projectionOutcome
+         << ",\"instance_count\":" << f.instanceCount << ",\"instance_bytes\":" << f.instanceBytes
         << ",\"bounces\":" << f.bounces << ",\"connections\":" << f.connections
         << ",\"representatives\":" << f.representatives << ",\"directional\":" << int(f.directional)
         << ",\"allocations\":" << f.allocations << ",\"spheres\":" << spheres

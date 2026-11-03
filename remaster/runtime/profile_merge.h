@@ -49,8 +49,8 @@ namespace RemasterProfileMerge
 				if (line.compare(0,7,"area = ")==0 || line.compare(0,13,"background = ")==0 ||
 					line.compare(0,4,"x = ")==0 || line.compare(0,4,"y = ")==0) key+=line+":";
 			}
-			if (header == "[[overworld_offsets]]") {
-				if (key.empty()) key="B:";
+			if (header == "[[overworld_offsets]]" || header == "[[overworld_terrain]]") {
+				if (key.empty()) key=header=="[[overworld_offsets]]"?"B:":"C:";
 				if (line.compare(0,8,"world = ")==0 || line.compare(0,13,"background = ")==0 ||
 					line.compare(0,4,"x = ")==0 || line.compare(0,4,"y = ")==0) key+=line+":";
 			}

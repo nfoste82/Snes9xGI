@@ -61,6 +61,8 @@ inline RemasterFrameAssetMetadata S9xRemasterPlacementLocalGeometry(const Remast
 		g.height=v.height;g.hasHeight=v.hasHeight;g.heightSampling=v.heightSampling;}
 	const auto context=f.contextGeometry.find(id);
 	if(context!=f.contextGeometry.end()){g.height=context->second.height;g.hasHeight=context->second.hasHeight;g.heightSampling=context->second.heightSampling;}
+	// Resolve the full local normal alternatives too; terrain stays separate.
+	if(m){auto resolved=S9xRemasterResolveFrameGeometry(*m,f,id-1);g.normalXyz=resolved.normalXyz;g.hasNormals=resolved.hasNormals;g.normalIgnoreTileTransform=resolved.normalIgnoreTileTransform;}
 	return g;
 }
 
@@ -78,7 +80,9 @@ inline void S9xRemasterPlacementOffsetField(const RemasterFrame &f, bool useScen
 		if(RemasterSourceType(p.owner>>24)!=RemasterSourceType::Background || ((p.owner>>16)&255)!=1 ||
 			!S9xRemasterSavedPlacementApplicable(f,p.instanceId))continue;
 		const auto &i=f.tileInstances[p.instanceId-1];
-		out[n*2]=float(i.savedPlacementOffset); out[n*2+1]=float(i.savedPlacementOffsetStatus);
+		out[n*2]=float(i.savedPlacementOffset);
+		if(i.terrainOffset.hasHeight)out[n*2]+=i.terrainOffset.height[S9xRemasterTerrainPixel(p.tilePixel,i.hFlip,i.vFlip)];
+		out[n*2+1]=float(i.savedPlacementOffsetStatus);
 	}
 }
 

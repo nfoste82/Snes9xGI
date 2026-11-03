@@ -21,6 +21,21 @@ def member(h, x, y, z=0, hf=False, vf=False, contact=False):
 
 
 class AuthoredObstacles(unittest.TestCase):
+    def test_movable_is_explicit_strict_and_preserved(self):
+        p = dict(schema_version=40, obstacle_groups=[dict(name='pot', movable=True,
+            members=[member(A, 0, 0, contact=True)])])
+        groups, _ = validate_groups(p)
+        self.assertTrue(groups[0]['movable'])
+        for value in (1, 'true', None):
+            p['obstacle_groups'][0]['movable'] = value
+            with self.assertRaises(ValueError):
+                validate_groups(p)
+        p['obstacle_groups'][0]['movable'] = False
+        self.assertFalse(validate_groups(p)[0][0]['movable'])
+        p['schema_version'] = 39
+        with self.assertRaises(ValueError):
+            validate_groups(p)
+
     def test_canonical_curtain_variants_read_only(self):
         # Read authored East unchanged; West is a test-only requested variant.
         profile = tomllib.loads((pathlib.Path(__file__).resolve().parents[2] / 'profiles/ALttP/alttp-profile.toml').read_text())

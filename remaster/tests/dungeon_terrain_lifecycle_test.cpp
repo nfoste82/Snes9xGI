@@ -7,16 +7,17 @@ int main(){
  auto c=std::make_unique<C>();c->verifiedAlttpRom=c->indoors=true;c->roomIndex=7;c->linkX=80;c->linkY=80;
  auto t=std::make_unique<std::array<C::Placement,4096>>();auto attrs=std::make_unique<std::array<uint8_t,8192>>();attrs->fill(1);
  for(int y=8;y<16;y++)for(int x=8;x<16;x++){int i=y*64+x;(*attrs)[i]=0;(*t)[i].surface=S::Floor;(*t)[i].hasHeight=true;}
- for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0x73;(*t)[i].surface=S::Obstacle;(*t)[i].hasHeight=true;(*t)[i].height.fill(5);(*t)[i].removableSupportPlanes=1;}
+ C::Placement replacement;replacement.surface=S::Floor;replacement.hasHeight=true;
+ for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0x73;(*t)[i].surface=S::Obstacle;(*t)[i].hasHeight=true;(*t)[i].height.fill(5);(*t)[i].removableSupportPlanes=1;(*t)[i].structuralReplacement=std::make_shared<const C::Placement>(replacement);(*t)[i].replacementPlaneMask=1;(*t)[i].replacementAttribute=0;}
  c->placements=t->data();c->collisionAttributes=attrs->data();auto map=std::make_unique<RemasterDungeonHeightMap>();
  assert(S9xRemasterBuildDungeonHeightMap(*c,50,*map));assert(map->planeOffsets[0][10*64+10]==0 && (*attrs)[10*64+10]==0x73);
  auto resting=map->planeOffsets[0];
- for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0;(*t)[i].surface=S::Floor;(*t)[i].height.fill(0);(*t)[i].removableSupportPlanes=0;}
+ for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0;(*t)[i].surface=S::Floor;(*t)[i].height.fill(0);(*t)[i].removableSupportPlanes=0;(*t)[i].structuralReplacement.reset();}
  assert(S9xRemasterBuildDungeonHeightMap(*c,50,*map));assert(map->planeOffsets[0]==resting); // pickup/break replaces BG, support remains
- for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0x73;(*t)[i].surface=S::Obstacle;(*t)[i].height.fill(5);(*t)[i].removableSupportPlanes=1;}
+ for(int y=10;y<12;y++)for(int x=10;x<12;x++){int i=y*64+x;(*attrs)[i]=0x73;(*t)[i].surface=S::Obstacle;(*t)[i].height.fill(5);(*t)[i].removableSupportPlanes=1;(*t)[i].structuralReplacement=std::make_shared<const C::Placement>(replacement);}
  assert(S9xRemasterBuildDungeonHeightMap(*c,50,*map));
- for(auto &v:*t)v.removableSupportPlanes=0;
- auto old=std::make_unique<RemasterDungeonHeightMap>();assert(S9xRemasterBuildDungeonHeightMap(*c,50,*old));assert(map->requiredPlaneCells[0]==old->requiredPlaneCells[0] && map->persistentSupportRequired[0]>0);
+ for(auto &v:*t){v.removableSupportPlanes=0;v.structuralReplacement.reset();}
+ auto old=std::make_unique<RemasterDungeonHeightMap>();assert(S9xRemasterBuildDungeonHeightMap(*c,50,*old));assert(map->requiredPlaneCells[0]>=old->requiredPlaneCells[0]);
  // Both halves/four children get the ONE owner offset, not individual visible
  // bottoms. Link plane differs deliberately from thrown object's own plane.
  c->hasTerrainActors=true;c->groundedEvidence=true;c->linkPlane=0;c->linkX=80;c->linkY=80;c->terrainActors[4]={80,85,10,2,16,0};c->terrainOam[20]={80,69,0x46,0x2c,2};

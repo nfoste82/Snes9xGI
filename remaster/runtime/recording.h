@@ -92,7 +92,7 @@ inline bool DecodeFrame(const Bytes &b,RemasterFrame &f) {
 	// legacy single-capture decoder allocates potentially amplified containers.
 	if(b.size()<24 || std::memcmp(b.data(),"S9XRMF\0\1",8))return false;
 	Reader r(b);r.offset=8;uint32_t version,w,h;std::string rom;
-	if(!r.ReadU32(version)||(version!=40 && version!=REMASTER_FRAME_SCHEMA_VERSION)||!r.ReadU32(w)||!r.ReadU32(h)||!w||!h||w>512||h>478||!r.ReadString(rom)||rom.size()>64||b.size()-r.offset<34+28)return false;
+	if(!r.ReadU32(version)||(version!=40 && version!=41 && version!=42 && version!=REMASTER_FRAME_SCHEMA_VERSION)||!r.ReadU32(w)||!r.ReadU32(h)||!w||!h||w>512||h>478||!r.ReadString(rom)||rom.size()>64||b.size()-r.offset<34+28)return false;
 	r.offset+=34;uint32_t count[7];for(auto &v:count)if(!r.ReadU32(v))return false;
 	if(count[0]>16384||count[1]>16384||count[2]>16384||count[3]>16384||count[4]>4096||count[5]>65536||count[6]>65536)return false;
 	if(!S9xDeserializeRemasterFrame(b,f))return false;
@@ -155,6 +155,11 @@ inline Bytes Evidence(const RemasterDungeonFloorContext *c,
 		for(const auto *counts:{&m->requiredPlaneCells,&m->unknownPlaneCells,&m->solvedPlaneCells,&m->persistentSupportRequired,&m->persistentSupportMissing})for(auto v:*counts)U16(b,v);
 		for(auto v:{m->structuralConflicts,m->solvedWallCells,m->unknownWallCells,m->componentCount,m->constraintCount,m->conflictingComponentCount,m->mixedFloorUnknown,m->mixedFloorConflicts})U16(b,v);
 		U8(b,bool(m->roomDiagnostics));if(m->roomDiagnostics)for(const auto &d:m->roomDiagnostics->cells)Diagnostic(b,d);
+	}
+	// Additive tagged trailer; legacy RTE1 inputs remain replacement-unknown.
+	if(c) {
+		const auto replacement=S9xRemasterSerializeDungeonReplacementEvidence(c->replacementEvidence);
+		if(!replacement.empty()){b.insert(b.end(),{'D','R','E','1'});Blob(b,replacement);}
 	}
 	return b;
 }

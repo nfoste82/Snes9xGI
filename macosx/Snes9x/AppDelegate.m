@@ -88,6 +88,9 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	lightingViewItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	lightingViewItem.target = self;
 	[viewMenuItem.submenu addItem:lightingViewItem];
+	NSMenuItem *normalOffsetsItem = [[NSMenuItem alloc] initWithTitle:@"GI Debug: Normal Offsets" action:@selector(toggleRemasterNormalOffsets:) keyEquivalent:@""];
+	normalOffsetsItem.target=self;
+	[viewMenuItem.submenu addItem:normalOffsetsItem];
 	NSMenuItem *offsetsItem = [[NSMenuItem alloc] initWithTitle:@"GI Debug: Height Offsets"
 		action:@selector(toggleRemasterHeightOffsets:) keyEquivalent:@"w"];
 	offsetsItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
@@ -106,6 +109,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	frameItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
 	frameItem.target = self;
 	[viewMenuItem.submenu addItem:frameItem];
+	NSMenuItem *performanceItem = [[NSMenuItem alloc] initWithTitle:@"Capture Per-Frame Performance (10 Seconds Max)"
+		action:@selector(captureRemasterPerformance:) keyEquivalent:@""];
+	performanceItem.target = self;
+	performanceItem.toolTip = @"Profile up to 10 seconds or 600 emulated frames, without animation capture. Writes performance JSONL to the Remaster folder. Detailed profiling can be compiled out.";
+	[viewMenuItem.submenu addItem:performanceItem];
 	NSMenuItem *openFrameItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Open Remaster Frame...", nil)
 	                                                       action:@selector(openRemasterFrame:)
 	                                                keyEquivalent:@""];
@@ -698,13 +706,17 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	else if (action == @selector(cycleRemasterDebugMode:) || action == @selector(showRemasterTileTypes:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame];
 	}
-	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:) || action == @selector(toggleRemasterHeightOffsets:)) {
+	else if (action == @selector(toggleRemasterLighting:) || action == @selector(cycleRemasterLightingView:) || action == @selector(toggleRemasterHeightOffsets:) || action == @selector(toggleRemasterNormalOffsets:)) {
+		if(action == @selector(toggleRemasterNormalOffsets:))menuItem.state=[self.s9xEngine isShowingRemasterNormalOffsets]?NSOnState:NSOffState;
 		if(action == @selector(toggleRemasterHeightOffsets:)) menuItem.state=[self.s9xEngine isShowingRemasterHeightOffsets]?NSOnState:NSOffState;
 		return [self.s9xEngine isPresentingRemasterFrame] ||
 			([self.s9xEngine isRunning] && [self.s9xEngine isRemasterProfileLoaded]);
 	}
 	else if (action == @selector(captureRemasterTileInventory:) || action == @selector(captureRemasterFrame:)) {
 		return [self.s9xEngine isRunning];
+	}
+	else if (action == @selector(captureRemasterPerformance:)) {
+		return [self.s9xEngine isRunning] && ![self.s9xEngine isPaused];
 	}
 	else if (action == @selector(loadRemasterProfile:)) {
 		return [self.s9xEngine isRunning] || [self.s9xEngine isPresentingRemasterFrame] ||
@@ -853,6 +865,11 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	sender.title = [NSString stringWithFormat:@"GI Debug: %@", view];
 }
 
+- (IBAction)toggleRemasterNormalOffsets:(NSMenuItem *)sender
+{
+	[self.s9xEngine toggleRemasterNormalOffsets];
+	sender.state=[self.s9xEngine isShowingRemasterNormalOffsets]?NSOnState:NSOffState;
+}
 - (IBAction)toggleRemasterHeightOffsets:(NSMenuItem *)sender
 {
 	[self.s9xEngine toggleRemasterHeightOffsets];
@@ -864,6 +881,18 @@ NSWindowFrameAutosaveName const kCheatFinderWindowIdentifier = @"s9xCheatFinderW
 	NSString *path = [self.s9xEngine captureRemasterTileInventory];
 	if (path)
 		NSLog(@"Remaster tile inventory requested: %@", path);
+}
+
+- (IBAction)captureRemasterPerformance:(id)sender
+{
+	NSString *path = [self.s9xEngine captureRemasterPerformance];
+	if (path) NSLog(@"Per-frame performance capture started: %@", path);
+	else {
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Performance Capture Unavailable";
+		alert.informativeText = @"Run and resume a game in a build with S9X_REMASTER_PROFILING=1, and wait for any existing capture to finish. Captures do not restart the game or change its settings.";
+		[alert runModal];
+	}
 }
 
 - (IBAction)captureRemasterFrame:(id)sender

@@ -8,6 +8,7 @@
 #define _REMASTER_PROFILE_H_
 
 #include "types.h"
+#include "terrain_offset.h"
 
 #include <algorithm>
 #include <array>
@@ -280,6 +281,7 @@ struct RemasterObstacleGroup
 	std::string name;
 	std::vector<RemasterObstacleMember> members;
 	bool spriteAssembly = false; // dynamic OBJ footprint, never a BG room constraint
+	bool movable = false; // explicit opt-in only; never inferred from indexed collision/art
 };
 
 // Authored contacts identify the supporting end of the example footprint.
@@ -395,6 +397,7 @@ struct RemasterProfile
 	std::map<RemasterContextLocation, RemasterContextBinding> contextBindings;
 	bool authoredOverworldOffsets = false;
 	std::map<RemasterContextLocation, int16_t> overworldOffsets;
+	std::map<RemasterContextLocation, RemasterTerrainOffset> overworldTerrain;
 	int offscreenRepresentativeEmitters = 1; // Independent default; legacy -1 also resolves to 1.
 };
 
@@ -853,7 +856,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
 	using namespace RemasterProfileParsing;
-	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area, AreaScene, Context, Binding, OverworldPlacement, OverworldOffset };
+	enum class Section { Root, Game, LightingSpace, Material, AssetGroup, Asset, Rule, ObstacleGroup, ObstacleMember, Area, AreaScene, Context, Binding, OverworldPlacement, OverworldOffset, OverworldTerrain };
 	Section section = Section::Root;
 	RemasterProfile parsed;
 	bool hasLightingSpace = false;
@@ -876,6 +879,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 	std::vector<std::pair<RemasterContextLocation, RemasterContextBinding>> bindings;
 	struct OffsetRecord { RemasterContextLocation at; int16_t offset = 0; std::set<std::string> keys; };
 	std::vector<OffsetRecord> offsets;
+	struct TerrainRecord { RemasterContextLocation at; RemasterTerrainOffset value; std::set<std::string> keys; };
+	std::vector<TerrainRecord> terrain;
 	std::map<std::string, std::set<std::string>> seenKeys;
 	diagnostics.clear();
 
@@ -911,7 +916,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			asset = nullptr;
 			rule = nullptr;
 			obstacleMember = nullptr;
-			if (line == "[overworld_placement]") section = Section::OverworldPlacement;
+			if (line == "[[overworld_terrain]]") {
+				section=Section::OverworldTerrain;
+				if(terrain.size()>=1048576){fail(lineNumber,"too many terrain offsets");return false;}
+				terrain.emplace_back();
+			}
+			else if (line == "[overworld_placement]") section = Section::OverworldPlacement;
 			else if (line == "[[overworld_offsets]]") {
 				section = Section::OverworldOffset;
 				if (offsets.size() >= 1048576) { fail(lineNumber, "too many overworld offsets"); return false; }
@@ -1011,6 +1021,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (section == Section::Context) keyScope += ":" + std::to_string(contexts.size());
 		if (section == Section::Binding) keyScope += ":" + std::to_string(bindings.size());
 		if (section == Section::OverworldOffset) keyScope += ":" + std::to_string(offsets.size());
+		if (section == Section::OverworldTerrain) keyScope += ":" + std::to_string(terrain.size());
 		if (section == Section::Area || section == Section::AreaScene) keyScope += ":" + areaKey;
 		if (material)
 			keyScope += ":" + material->name;
@@ -1035,6 +1046,28 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		bool valid = true;
 		switch (section)
 		{
+		case Section::OverworldTerrain:
+		{
+			auto &r=terrain.back();r.keys.insert(key);
+			if(key=="world") {valid=ParseString(value,stringValue)&&(stringValue=="light"||stringValue=="dark");if(valid)r.at.area=stringValue=="light"?320:321;}
+			else if(key=="normal_offset")valid=ParseFloat3(value,r.value.normal);
+			else if(key=="normal_offsets") {
+				valid=parsed.schemaVersion>=39 && value.size()>2 && value.front()=='[' && value.back()==']';
+				std::istringstream items(valid?value.substr(1,value.size()-2):"");std::string item;unsigned count=0;
+				while(std::getline(items,item,',')){float n;if(count>=192 || !ParseFloat(Trim(item),n)){valid=false;break;}r.value.pixelNormals[count++]=n;}
+				valid=valid&&count==192;r.value.hasPixelNormals=valid;
+			}
+			else if(key=="height_offset") {
+				valid=value.size()>2 && value.front()=='[' && value.back()==']';
+				std::istringstream items(valid?value.substr(1,value.size()-2):"");std::string item;unsigned count=0;
+				while(std::getline(items,item,',')){float h;if(count>=64 || !ParseFloat(Trim(item),h)){valid=false;break;}r.value.height[count++]=h;}
+				valid=valid&&count==64;r.value.hasHeight=valid;
+			} else if(key=="background"||key=="x"||key=="y") {
+				valid=ParseUnsigned(value,unsignedValue)&&unsignedValue<=(key=="background"?1u:8191u);
+				if(valid){if(key=="background")r.at.background=unsignedValue;else if(key=="x")r.at.x=unsignedValue;else r.at.y=unsignedValue;}
+			} else valid=false;
+			if(!valid)fail(lineNumber,"invalid terrain offset");break;
+		}
 		case Section::OverworldPlacement:
 			if (key != "mode" || !ParseString(value, stringValue) ||
 				(stringValue != "authored_overworld_offsets" && stringValue != "legacy")) fail(lineNumber, "invalid overworld placement mode");
@@ -1128,6 +1161,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		case Section::ObstacleGroup:
 			if(key=="name")valid=ParseString(value,parsed.obstacleGroups[obstacleIndex-1].name);
 			else if(key=="sprite_assembly")valid=ParseBool(value,parsed.obstacleGroups[obstacleIndex-1].spriteAssembly);
+			else if(key=="movable")valid=parsed.schemaVersion>=40 && ParseBool(value,parsed.obstacleGroups[obstacleIndex-1].movable);
 			else valid=false;
 			if(!valid)fail(lineNumber,"invalid obstacle group key/value");
 			break;
@@ -1593,8 +1627,12 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 37)
-		fail(0, "schema_version must be an integer in [1, 37]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 40)
+		fail(0, "schema_version must be an integer in [1, 40]");
+	for(const auto &r:terrain) {
+		if(parsed.schemaVersion<38 || !r.keys.count("world") || !r.keys.count("background") || !r.keys.count("x") || !r.keys.count("y") || (!r.keys.count("normal_offset")&&!r.keys.count("normal_offsets")&&!r.keys.count("height_offset")) || (r.keys.count("normal_offset")&&r.keys.count("normal_offsets")) || !S9xRemasterValidTerrainOffset(r.value))fail(0,"terrain requires schema38/39, coordinates and valid exclusive height/normal offsets");
+		else if(!parsed.overworldTerrain.emplace(r.at,r.value).second)fail(0,"duplicate terrain coordinate");
+	}
 	if ((!offsets.empty() || seenKeys.count(std::to_string(int(Section::OverworldPlacement)))) && parsed.schemaVersion < 37)
 		fail(0, "overworld placement requires schema_version 37");
 	for (const auto &r : offsets) {
@@ -1921,6 +1959,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			std::any_of(entry.second.flipGeometry.begin(), entry.second.flipGeometry.end(), wide);
 	});
 	const bool hasSpriteAssembly = std::any_of(profile.obstacleGroups.begin(),profile.obstacleGroups.end(),[](const auto &g){return g.spriteAssembly;});
+	const bool hasMovable = std::any_of(profile.obstacleGroups.begin(),profile.obstacleGroups.end(),[](const auto &g){return g.movable;});
 	const bool artworkEmission = std::any_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) { return a.second.hasEmission && a.second.emissionColorMask != UINT64_MAX; });
 	const bool hasAreaReflectanceBoost = std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.reflectanceBoost != -1; });
 	if (profile.offscreenRepresentativeEmitters < -1 || profile.offscreenRepresentativeEmitters > 8 ||
@@ -1942,7 +1981,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		}
 	}
 	const bool hasDoors = std::any_of(profile.assets.begin(), profile.assets.end(), [] (const auto &entry) { return entry.second.tileRole == RemasterTileRole::Door || entry.second.tileRole == RemasterTileRole::Doorway || entry.second.hasDoorframeMask; });
-	const uint32_t placementSchema = profile.authoredOverworldOffsets || !profile.overworldOffsets.empty() ? 37u : 0u;
+	const bool pixelTerrainNormals=std::any_of(profile.overworldTerrain.begin(),profile.overworldTerrain.end(),[](const auto &r){return r.second.hasPixelNormals;});
+	const uint32_t placementSchema = hasMovable?40u:pixelTerrainNormals?39u:!profile.overworldTerrain.empty()?38u:profile.authoredOverworldOffsets || !profile.overworldOffsets.empty() ? 37u : 0u;
 	output << "schema_version = " << std::max(placementSchema, std::max(profile.obstacleGroups.empty()?0u:22u, std::max(hasDoors ? 34u : (hasTileSemantics ? 20u : (hasOmnidirectionalEmission ? 19u : (hasTileRoles ? 18u : (hasCombinedEmitters ? 17u : (profile.representativeEmitters ? 16u : 15u))))), std::max(profile.schemaVersion, std::max(hasEmissionDepth ? 14u : 0u, requiredSchema))))) << "\n\n";
 	output << "[game]\n";
 	output << "title = " << Quote(profile.gameTitle) << "\n";
@@ -2014,6 +2054,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	for(const auto &group:profile.obstacleGroups) {
 		output << "\n[[obstacle_groups]]\nname = " << Quote(group.name) << "\n";
 		if(group.spriteAssembly)output << "sprite_assembly = true\n";
+		if(group.movable)output << "movable = true\n";
 		for(const auto &m:group.members)output << "\n[[obstacle_groups.members]]\ntile_hash = " << Quote(TileId(m.tileId))
 			<< "\nx = " << m.x << "\ny = " << m.y << "\nz = " << m.z
 			<< "\nhflip = " << (m.hflip?"true":"false") << "\nvflip = " << (m.vflip?"true":"false")
@@ -2149,10 +2190,19 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	if (profile.authoredOverworldOffsets || !profile.overworldOffsets.empty()) {
 		output << "\n[overworld_placement]\nmode = " << Quote(profile.authoredOverworldOffsets ? "authored_overworld_offsets" : "legacy") << "\n";
 		for (const auto &r : profile.overworldOffsets) {
+			if(!r.second)continue; // sparse identity: absent is exactly zero
 			if (r.first.area < 320 || r.first.area > 321 || r.first.background > 1 || r.first.x > 8191 || r.first.y > 8191 || r.second == -32768) return false;
 			output << "\n[[overworld_offsets]]\nworld = " << Quote(r.first.area == 320 ? "light" : "dark")
 				<< "\nbackground = " << unsigned(r.first.background) << "\nx = " << r.first.x << "\ny = " << r.first.y << "\noffset = " << r.second << "\n";
 		}
+	}
+	for(const auto &r:profile.overworldTerrain) {
+		if(r.first.area<320||r.first.area>321||r.first.background>1||r.first.x>8191||r.first.y>8191||!S9xRemasterValidTerrainOffset(r.second))return false;
+		if(r.second.identity())continue;
+		output << "\n[[overworld_terrain]]\nworld = " << Quote(r.first.area==320?"light":"dark") << "\nbackground = " << unsigned(r.first.background) << "\nx = " << r.first.x << "\ny = " << r.first.y << "\n";
+		if(r.second.hasHeight){output << "height_offset = [";for(unsigned k=0;k<64;k++){if(k)output << ", ";output << r.second.height[k];}output << "]\n";}
+		if(r.second.hasPixelNormals){output << "normal_offsets = [";for(unsigned k=0;k<192;k++){if(k)output << ", ";output << r.second.pixelNormals[k];}output << "]\n";}
+		else if(r.second.normal!=std::array<float,3>{{0,0,1}})output << "normal_offset = [" << r.second.normal[0] << ", " << r.second.normal[1] << ", " << r.second.normal[2] << "]\n";
 	}
 	for (const auto &b : profile.contextBindings) {
 		output << "\n[[context_bindings]]\narea = " << b.first.area << "\nbackground = " << unsigned(b.first.background)

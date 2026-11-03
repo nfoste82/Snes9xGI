@@ -18,8 +18,10 @@ def validate_groups(profile):
     if len(groups) > 4096:
         raise ValueError('too many obstacle groups')
     for gi, g in enumerate(groups):
-        if set(g) not in ({'name', 'members'}, {'name', 'members', 'sprite_assembly'}):
+        if not {'name', 'members'} <= set(g) or set(g) - {'name', 'members', 'sprite_assembly', 'movable'}:
             raise ValueError('invalid obstacle group keys')
+        if 'movable' in g and (profile.get('schema_version', 22) < 40 or type(g['movable']) is not bool):
+            raise ValueError('movable requires schema40 and a boolean')
         if 'sprite_assembly' in g and (profile.get('schema_version', 22) < 30 or type(g['sprite_assembly']) is not bool):
             raise ValueError('sprite_assembly requires schema30 and a boolean')
         name = g.get('name', '')

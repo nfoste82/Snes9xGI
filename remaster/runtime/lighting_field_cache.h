@@ -55,7 +55,7 @@ struct RemasterLightingFieldCache
 	}
 	static bool instanceEqual(const RemasterFrameTileInstance &a, const RemasterFrameTileInstance &b)
 	{
-		return a.visualClaim == b.visualClaim && a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
+		return a.terrainOffset == b.terrainOffset && a.visualClaim == b.visualClaim && a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
 			a.heightOffset == b.heightOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
 			a.placementHeight == b.placementHeight && a.hFlip == b.hFlip && a.vFlip == b.vFlip &&
 			a.geometryStatus == b.geometryStatus && a.placementTileRole == b.placementTileRole &&
@@ -407,10 +407,11 @@ struct RemasterLightingFieldCache
 			const bool missingSpriteRelief = instance.source == RemasterSourceType::Object &&
 				instance.geometryStatus == RemasterOccurrenceGeometryStatus::Resolved &&
 				instance.placementTileRole == RemasterTileRole::Obstacle && !(m && m->hasHeight);
-			if (!unresolved && !terminalUnknown && !missingSpriteRelief && ((m && m->hasHeight) || instance.heightOffset || fallbackGround))
+			if (!unresolved && !terminalUnknown && !missingSpriteRelief && ((m && m->hasHeight) || instance.heightOffset || instance.terrainOffset.hasHeight || fallbackGround))
 			{
 				const int local = m && m->hasHeight ? m->height[pixel.tilePixel] : 0;
 				height[i*2] = S9xRemasterSignedHeightField(instance.heightOffset, static_cast<int16_t>(local)); height[i*2+1] = 1;
+				if(instance.terrainOffset.hasHeight)height[i*2]+=instance.terrainOffset.height[S9xRemasterTerrainPixel(pixel.tilePixel,instance.hFlip,instance.vFlip)]/255.f;
 			}
 			surface[i*4] = height[i*2] * frame.lightingCoordinateScale;
 			if (fallbackGround) surface[i*4+3] = 1;
@@ -423,11 +424,19 @@ struct RemasterLightingFieldCache
 				float nx = nm->normalXyz[np.tilePixel*3]/127.5f-1, ny = nm->normalXyz[np.tilePixel*3+1]/127.5f-1, nz = nm->normalXyz[np.tilePixel*3+2]/127.5f-1;
 				if (normalMasks[np.instanceId-1] & (UINT64_C(1) << np.tilePixel)) nx = ny = nz = 1;
 				S9xRemasterTransformNormalForTileInstance(ni, nx, ny, nz, nm->normalIgnoreTileTransform);
+				S9xRemasterRotateTerrainNormal(ni.terrainOffset.normalAt(S9xRemasterTerrainPixel(np.tilePixel,ni.hFlip,ni.vFlip)),nx,ny,nz);
 				opposite[i] = nm->directLightingOppositeFacing ? 255 : 0;
 				const float length = std::sqrt(nx*nx+ny*ny+nz*nz);
 				surface[i*4+1] = length > 0.0001f ? nx/length : 0;
 				surface[i*4+2] = length > 0.0001f ? ny/length : 0;
 				surface[i*4+3] = length > 0.0001f ? nz/length : 1;
+			}
+			else if((instance.terrainOffset.hasPixelNormals || instance.terrainOffset.normal!=std::array<float,3>{{0,0,1}}) && !unresolved) {
+				// Missing local detail uses the ordinary flat support normal, rotated
+				// by terrain; this is not evidence of authored local normal coverage.
+				const auto n=instance.terrainOffset.normalAt(S9xRemasterTerrainPixel(pixel.tilePixel,instance.hFlip,instance.vFlip));
+				for(unsigned c=0;c<3;c++)surface[i*4+1+c]=n[c];
+				authoredNormals[i]=1;
 			}
 			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && (participation[i*2] != 0 || worldBehindHud);
 			samples[i].coverage = occlusion[i*2]/255.0f;

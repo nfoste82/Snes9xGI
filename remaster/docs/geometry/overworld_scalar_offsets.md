@@ -1,5 +1,10 @@
 # Experimental authored overworld placement offsets
 
+Schema38 adds optional additive per-pixel terrain heights and support-normal
+rotation; see [terrain offsets](overworld_terrain_offsets.md). The scalar remains
+one value per placement. New native saves omit identity zeros; the explicit-zero
+editing/save descriptions below document the older schema37 tooling.
+
 Opt-in profile schema 37. This is an experimental static placement mode, not an
 automatic geometry solver or approval of the castle/world's geometry.
 

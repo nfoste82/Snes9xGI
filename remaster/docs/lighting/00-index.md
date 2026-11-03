@@ -15,6 +15,10 @@ inline paths use the repository root unless stated otherwise. Return to the
 
 ## Performance and deferred plans
 
+- [Stair Classification Retention](stair_classification_cache.md): Exact per-artwork placement caching independent of plane/support solves, replay parity and limits.
+
+- [Per-Frame Profiling](per_frame_profiling.md): Bounded gameplay captures, CPU/GPU/presentation lineage, cache reasons, pacing splits and compile-time disable switch.
+
 - [Indirect Lighting Replacement Plan](../../../AIDocs/09-indirect-lighting-replacement-plan.md): Sampled transport, reflected-light boost and the deferred 5 ms target.
 - [Live Lighting Benchmark](../../../macosx/remaster-benchmark.md): Actual application benchmark setup, scripted movement, CPU/GPU reports and captures.
 - [Room011 Live CPU Profile](room011_live_cpu_profile.md): October28 live representative1/3 comparison, exact-output visible-face CPU optimization, captured-state parity and remaining timing limits.

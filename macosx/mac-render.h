@@ -39,6 +39,7 @@ enum class RemasterLightingView : uint32_t
 	Mesh,
 	MetadataTypes,
 	HeightOffsets, // 12: append only; existing shader/capture view IDs stable
+	NormalOffsets, // 13: coordinate support normals, +Z for missing entries
 	Count
 };
 

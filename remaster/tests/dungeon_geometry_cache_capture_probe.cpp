@@ -197,6 +197,48 @@ int main(int argc,char **argv){try {
     check(checked>500,"captured northwest pixel denominator");
    }
  };
+   if(const char *alternate=std::getenv("ALTTP_CLASSIFICATION_ALTERNATE")) {
+    // Controlled art/plane alternation, not a reconstructed live address trace.
+    // Each art phase uses its OWN packet and complete graphics. Reject mixed
+    // topology/profile/templates rather than silently substituting _002, etc.
+    auto secondInput=read(std::string(alternate)+".dungeon-input.bin");
+    check(secondInput.size()==input.size() && !std::memcmp(secondInput.data(),input.data(),24584),"alternate maps/attributes differ");
+    check(read(std::string(alternate)+".profile.toml")==read(path+".profile.toml"),"alternate profile differs");
+    check(read(std::string(alternate)+".dungeon-templates.bin")==templates,"alternate templates differ");
+    auto secondPacket=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(alternate,*secondPacket),"alternate packet");
+    check(secondPacket->width==captured->width && secondPacket->height==captured->height,"alternate dimensions");
+    std::ofstream exact(out+"-alternating.bin",std::ios::binary);
+    auto emit=[&](const auto &value){const uint64_t size=value.size();exact.write(reinterpret_cast<const char *>(&size),sizeof(size));exact.write(reinterpret_cast<const char *>(value.data()),value.size());};
+    uint64_t coldClass=0,warmClass=0,coldSolves=0,warmSolves=0;std::vector<double> cold,warm;
+    // Oracle is a separately compiled forced-uncached process. No parity work
+    // runs within EndFrame timing or populates the measured cache.
+    const int samples=std::getenv("ALTTP_CLASSIFICATION_SAMPLES")?std::max(4,std::atoi(std::getenv("ALTTP_CLASSIFICATION_SAMPLES"))):20;
+    for(int n=0;n<samples;n++) {
+     const int phase=n%2;
+     if(phase)std::swap(captured,secondPacket);
+     c.graphics=(phase?secondInput:input).data()+24584;
+     c.linkPlane=(n/2)%2;
+#ifdef ALTTP_TEST_CACHE_STAGES
+     S9xRemasterDungeonCacheStages()={};
+#endif
+     run();(n<2?cold:warm).push_back(endframeMs);
+#ifdef ALTTP_TEST_CACHE_STAGES
+     (n<2?coldClass:warmClass)+=S9xRemasterDungeonCacheStages().classifications;
+     (n<2?coldSolves:warmSolves)+=S9xRemasterDungeonCacheStages().solves;
+#endif
+     std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"alternating packet");emit(bytes);
+     emit(dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap));
+     std::ostringstream placements;
+     for(const auto *bg:{s.dungeonRetainedBg1.get(),s.dungeonRetainedBg2.get()})for(const auto &p:*bg)
+      dungeonPlacementInventory(placements,p);
+     emit(placements.str());
+     if(phase)std::swap(captured,secondPacket);
+    }
+    auto stats=[&](std::vector<double> &v){std::sort(v.begin(),v.end());std::cout<<" median_ms="<<v[v.size()/2]<<" p95_ms="<<v[v.size()*95/100];};
+    std::cout<<"alternating cold_frames="<<cold.size()<<" classifications="<<coldClass<<" solves="<<coldSolves;stats(cold);
+    std::cout<<" warm_frames="<<warm.size()<<" classifications="<<warmClass<<" solves="<<warmSolves;stats(warm);std::cout<<'\n';
+    return 0;
+   }
    run();auto epoch=s.runtimeDungeonHeightEpoch;run();
    if(std::getenv("ALTTP_PROFILE_RESUME_REGRESSION")) {
     std::vector<uint8_t> before;check(S9xSerializeRemasterFrame(*frame,before),"resume baseline");

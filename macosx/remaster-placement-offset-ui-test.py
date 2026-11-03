@@ -3,6 +3,18 @@ from pathlib import Path
 import unittest
 
 class OffsetsUI(unittest.TestCase):
+    def test_offset_clipboard_and_clear(self):
+        source = Path('macosx/mac-os.mm').read_text()
+        copy = source.split('- (void)copyRemasterLayer:(id)sender\n', 1)[1].split('- (void)copyRemasterTile:', 1)[0]
+        self.assertIn('S9xRemasterCopyPlacementLayer', copy)
+        paste = source.split('- (void)pasteRemasterLayer:(id)sender\n', 1)[1].split('- (void)clearRemasterPlacementLayer:', 1)[0]
+        self.assertLess(paste.index('applyRemasterPlacementLayer:NO'), paste.index('RemasterEffectiveHeightPreview'))
+        action = source.split('- (void)applyRemasterPlacementLayer:(BOOL)clear\n', 1)[1].split('- (void)finishRemasterContextEdit:', 1)[0]
+        for token in ('remasterRecordingRecorded', 'S9xRemasterRefreshPlacementSelection', 'S9xRemasterPastePlacementLayer', 'restoreRemasterProfileFromText:', 'UpdateRemasterEditingProfileDirty', 'S9xRemasterPreviewPlacementOffsets'):
+            self.assertIn(token, action)
+        self.assertIn('@"Remove Normal Offsets"', source)
+        self.assertIn('@"Remove Height Offsets"', source)
+
     def test_shortcut_and_close(self):
         source = Path("macosx/Snes9x/AppDelegate.m").read_text()
         item = source.split('NSMenuItem *offsetsItem =', 1)[1].split('[viewMenuItem.submenu addItem:offsetsItem]', 1)[0]
@@ -35,7 +47,7 @@ class OffsetsUI(unittest.TestCase):
         self.assertIn('S9xRemasterEditPlacementOffsets(', action)
         self.assertIn('S9xRemasterParsePlacementScalar(', action)
         self.assertIn('restoreRemasterProfileFromText:', action)
-        self.assertEqual(action.count('S9xRemasterSetProfile('), 1)
+        self.assertEqual(action.count('S9xRemasterSetProfile('), 3) # mutually exclusive scalar / pixel / normal transactions
         self.assertNotIn('S9xMainLoop(', action)
         self.assertNotIn('writeTo', action)
 
@@ -59,7 +71,7 @@ class OffsetsUI(unittest.TestCase):
         refresh = source.split('const bool offsetCategory=RemasterOffsetCategory();',1)[1].split('remasterNpcSaveButton.enabled',1)[0]
         self.assertIn('remasterContextSelectionMode.enabled=YES', refresh)
         self.assertIn('selectItemAtIndex:remasterOffsetLocations?1:0', refresh)
-        self.assertIn('remasterTilePreview.enabled=remasterArtworkPreview.enabled=NO', refresh)
+        self.assertIn('remasterTilePreview.enabled=RemasterPixelHeightOffset()', refresh)
         toggle = source.split('- (void)changeRemasterContextSelection:(id)sender\n',1)[1].split('- (void)assignRemasterLocationContext:',1)[0]
         offset = toggle.split('if (remasterObstacleGroupingActive)',1)[0]
         self.assertIn('remasterOffsetSelection.clear();remasterOffsetTypes.clear()', offset)

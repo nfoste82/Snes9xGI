@@ -77,6 +77,10 @@ struct RemasterGpuStageCounters
 
 	RemasterGpuStageCounters(id<MTLDevice> device)
 	{
+		// Stage-boundary sampling can perturb GPU scheduling substantially. A
+		// normal bounded CPU/GPU-duration capture must not silently enable it.
+		if (RemasterLightingTrace::boundedActive().load(std::memory_order_relaxed) &&
+			!std::getenv("S9X_REMASTER_PROFILE_GPU_STAGES")) return;
 		if ((!RemasterBenchmarkActive() && !S9xRemasterPerformanceMetricsEnabled() && !RemasterLightingTrace::enabled()) ||
 			std::getenv("S9X_REMASTER_DISABLE_STAGE_COUNTERS")) return;
 		if (@available(macOS 11.0, *))
@@ -696,7 +700,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	auto &meshSamples = fieldCache.samples;
 	static std::vector<RemasterSurfaceMesh::Cell> mesh;
 	mesh.clear();
-	if (lighting && lightingView!=RemasterLightingView::HeightOffsets && frame.schemaVersion >= 5)
+	if (lighting && lightingView!=RemasterLightingView::HeightOffsets && lightingView!=RemasterLightingView::NormalOffsets && frame.schemaVersion >= 5)
 	{
 		fieldCache.update(frame, useScene, std::getenv("S9X_REMASTER_FULL_FIELDS") != nullptr);
 		trace.selected=fieldCache.selectedPixels; trace.updated=fieldCache.updatedPixels; trace.resolved=fieldCache.resolvedInstances;
@@ -740,12 +744,25 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	RemasterLightingTrace::Scope setupTimer(&trace,RemasterLightingTrace::Setup);
 	if(lighting && lightingView==RemasterLightingView::HeightOffsets)
 		S9xRemasterPlacementOffsetField(frame,useScene,placementOffsetField);
+	std::vector<uint16_t> normalOffsetColors;
+	const bool normalOffsets=lighting && lightingView==RemasterLightingView::NormalOffsets;
+	if(normalOffsets) {
+		normalOffsetColors.assign(frame.mainPixels.size(),uint16_t(7<<10|9));
+		for(size_t k=0;k<normalOffsetColors.size();k++) {
+			const auto p=S9xRemasterSelectVisibleOccurrence(frame,k,useScene,true);
+			if(!S9xRemasterSavedPlacementApplicable(frame,p.instanceId) || (frame.mainPixels[k].owner&0xffff0000u)==0x02020000u)continue;
+			const auto &i=frame.tileInstances[p.instanceId-1];
+			const auto n=i.terrainOffset.normalAt(S9xRemasterTerrainPixel(p.tilePixel,i.hFlip,i.vFlip));
+			unsigned c[3];for(unsigned j=0;j<3;j++)c[j]=unsigned(std::lround(std::max(0.f,std::min(1.f,(n[j]+1)*.5f))*31));
+			normalOffsetColors[k]=uint16_t(c[0]<<10|c[1]<<5|c[2]);
+		}
+	}
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
-		useScene ? sceneColors.data() : frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
+		normalOffsets?normalOffsetColors.data():useScene ? sceneColors.data() : frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
 		lightingField.data(), emissionField.data(), lightingView==RemasterLightingView::HeightOffsets ? placementOffsetField.data() : heightField.data(), surfaceField.data(), participationField.data(),
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
-		lighting && !meshView && frame.schemaVersion >= 5,
+		lighting && !normalOffsets && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
 		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
 		resourceSlot, !asynchronous, &mesh, &frame, &meshSamples, &notification,
@@ -1068,6 +1085,11 @@ void S9xPutImage (int width, int height)
 		return;
 
 	TraceRemasterStairPresentation("stock_fallback", width, height, -1, liveFrame ? liveFrame->lights.size() : 0);
+#if S9X_REMASTER_PROFILING
+	// Preserve producing-frame lineage even with GI disabled or a stock fallback.
+	auto stockTrace = RemasterLiveTrace::refreshFrame();
+	RemasterLightingTrace::Scope stockSetup(&stockTrace, RemasterLightingTrace::Setup);
+#endif
 	S9xPutImageMetal(width, height, GFX.Screen, GFX.RealPPL, S9xRemasterMainOwners(), GFX.RealPPL,
 		nullptr, 0, S9xRemasterGetDebugMode());
 }
@@ -2006,7 +2028,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				const auto drawableEnd = std::chrono::steady_clock::now();
 #ifndef REMASTER_OFFLINE_RENDERER
 				if (!drawable)
+				{
+					RemasterLiveTrace::failed(traceCopy.id);
 					return false;
+				}
 #endif
 				MTLRenderPassDescriptor *renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
 #ifdef REMASTER_OFFLINE_RENDERER
@@ -2021,7 +2046,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				id<MTLRenderCommandEncoder> renderEncoder =
 					[commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
 				if (!renderEncoder)
+				{
+					RemasterLiveTrace::failed(traceCopy.id);
 					return false;
+				}
 				renderEncoder.label = @"Snes9x render encoder";
 				vector_uint2 viewportSize = { static_cast<unsigned int>(layerSize.width), static_cast<unsigned int>(layerSize.height) };
 				[renderEncoder setViewport:(MTLViewport){0.0, 0.0, layerSize.width * presentationScale,
@@ -2045,9 +2073,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					const double drawableMs = std::chrono::duration<double, std::milli>(drawableEnd - drawableStart).count();
 					const double presentationCpuMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drawableEnd).count();
 					[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-						if (@available(macOS 10.15, *))
-							RemasterLiveTrace::gpu(traceCopy.id,completed.GPUStartTime,completed.GPUEndTime,
-								submittedUptime,queuedMs,drawableMs,presentationCpuMs,int(completed.status),traceBeginUptime);
 						if (@available(macOS 10.15, *)) if(traceCopy.id) if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
 							static std::mutex traceMutex; std::lock_guard<std::mutex> guard(traceMutex);
 							std::ofstream out(path,std::ios::app); out<<std::setprecision(15);
@@ -2073,9 +2098,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 										if (times[i * 2].timestamp != MTLCounterErrorValue && times[i * 2 + 1].timestamp != MTLCounterErrorValue &&
 											times[i * 2 + 1].timestamp >= times[i * 2].timestamp)
 											sums[stageNames[i]] += (times[i * 2 + 1].timestamp - times[i * 2].timestamp) / 1e6;
-								for (const auto &stage : sums) gpuStages.push_back(stage);
+						for (const auto &stage : sums) gpuStages.push_back(stage);
 							}
 						}
+						RemasterLiveTrace::gpuStages(traceCopy.id, gpuStages);
+						if (@available(macOS 10.15, *))
+							RemasterLiveTrace::gpu(traceCopy.id,completed.GPUStartTime,completed.GPUEndTime,
+								submittedUptime,queuedMs,drawableMs,presentationCpuMs,int(completed.status),traceBeginUptime);
 						if(traceCopy.id && !gpuStages.empty())if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
 							static std::mutex stagesMutex;std::lock_guard<std::mutex> guard(stagesMutex);
 							std::ofstream out(std::string(path)+".stages",std::ios::app);
@@ -2131,9 +2160,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 									benchmarkMetrics.directDepthEmitterCount,
 									static_cast<unsigned long long>(benchmarkMetrics.directEmitterSignature));
 					}];
-					if (panelMetrics)
+					if (panelMetrics || traceCopy.id)
 						if (@available(macOS 10.15.4, *))
 						{
+							RemasterLiveTrace::expectPresent(traceCopy.id);
 							[drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
 								std::lock_guard<std::mutex> callbackLock(callbackGate->mutex);
 								if (!callbackGate->active)
@@ -2141,6 +2171,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 								const double presentedTime = presentedDrawable.presentedTime;
 								if (presentedTime <= 0.0)
 									return;
+								RemasterLiveTrace::presented(traceCopy.id, presentedTime);
+								if (!panelMetrics) return;
 								RemasterState &state = S9xRemasterState();
 								std::lock_guard<std::mutex> metricsLock(state.performanceMetricsMutex);
 								if (state.performanceLastPresentedTime > 0.0 && presentedTime > state.performanceLastPresentedTime)

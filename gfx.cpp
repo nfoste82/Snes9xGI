@@ -632,7 +632,10 @@ static void S9xRemasterSnapshotFrameActors()
 
 void S9xStartScreenRefresh (void)
 {
-	RemasterLiveTrace::beginRefresh(IPPU.TotalEmulatedFrames);
+#if S9X_REMASTER_PROFILING
+	if (const char *notice = RemasterLiveTrace::takeNotice()) S9xSetInfoString(notice);
+#endif
+	RemasterLiveTrace::beginRefresh(IPPU.TotalEmulatedFrames, IPPU.RenderThisFrame);
 	if (S9xRemasterPerformanceMetricsEnabled())
 	{
 		RemasterState &state = S9xRemasterState();
@@ -754,6 +757,9 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.linkY = Memory.RAM[0x20] | (Memory.RAM[0x21] << 8);
 				dungeonFloor.linkX = Memory.RAM[0x22] | (Memory.RAM[0x23] << 8);
 				dungeonFloor.roomIndex = Memory.RAM[0xa0] | (Memory.RAM[0xa1] << 8);
+				dungeonFloor.replacementEvidence=S9xRemasterExtractDungeonReplacementEvidence(
+					Memory.RAM,0x20000,Memory.ROM,Memory.CalculatedSize,
+					dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && Memory.RAM[0x10]==7 && Memory.RAM[0x11]==0,dungeonFloor.roomIndex);
 				dungeonFloor.previousRoomIndex = Memory.RAM[0xa2] | (Memory.RAM[0xa3] << 8);
 				dungeonFloor.submodule = Memory.RAM[0x11];
 				dungeonFloor.module = Memory.RAM[0x10];

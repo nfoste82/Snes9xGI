@@ -1,5 +1,27 @@
 // Test-only complete semantic map inventory (never compare struct padding).
 #include <sstream>
+inline void dungeonPlacementInventory(std::ostream &o,const RemasterDungeonFloorContext::Placement &t) {
+ auto v=[&](auto x){o<<+x<<' ';};
+ v(int(t.surface));for(auto h:t.height)v(h);
+#define FIELD(f) v(t.f)
+ FIELD(tileHash);FIELD(groundedFloorMask);FIELD(doorframeMask);FIELD(hasDoorframeMask);
+ FIELD(doorwaySupport);v(int(t.doorwaySupportDirection));
+ FIELD(doorTemplateOffset);FIELD(doorAssembly);FIELD(doorDirection);FIELD(splitDoorPart);FIELD(closedDoorAssembly);
+ FIELD(doorwayColumnContact);FIELD(doorwayColumnSource);FIELD(doorwayColumnBand);
+  FIELD(hasHeight);FIELD(stairSourceAmbiguous);FIELD(removableSupportPlanes);
+  FIELD(replacementPlaneMask);FIELD(replacementAttribute);v(bool(t.structuralReplacement));
+  if(t.structuralReplacement)dungeonPlacementInventory(o,*t.structuralReplacement);
+ FIELD(obstacleAssembly);FIELD(obstacleTemplate);FIELD(obstacleAssemblyHeight);FIELD(obstacleAssemblyFlip);
+ FIELD(authoredObstacle);FIELD(authoredObstacleAssembly);FIELD(authoredObstacleGroup);FIELD(authoredObstacleZ);
+ FIELD(authoredObstacleFlip);FIELD(authoredObstacleContact);FIELD(authoredObstacleDirection);FIELD(hflip);FIELD(vflip);FIELD(floorPlaneMask);
+ FIELD(distinctLowerUsage);FIELD(structuralFloorPlaneMask);FIELD(wallTemplateOffset);FIELD(wallStackAssembly);
+ FIELD(supportingTrim);FIELD(terminalCorner);FIELD(highPerimeterFace);FIELD(highCornerFace);
+ FIELD(lowerDoorWallPart);FIELD(diagonalHeightPreview);FIELD(diagonalAuthoredPreserved);FIELD(diagonalPreviewRow);
+ FIELD(diagonalPreviewFoot);FIELD(diagonalIntercept);FIELD(diagonalMinimum);FIELD(diagonalMaximum);
+ FIELD(semanticSoutheastWall);FIELD(semanticBoundaryKnown);FIELD(diagnosticWallTemplateOffset);
+ FIELD(diagnosticUphillDirections);FIELD(diagnosticNormalUphill);FIELD(diagnosticAuthoredFloor);FIELD(diagnosticRomFloorTrim);
+#undef FIELD
+}
 inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  std::ostringstream o;
  auto v=[&](auto x){o<<+x<<' ';};

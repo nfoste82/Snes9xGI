@@ -16,7 +16,8 @@ int main(){
   maps->fill(0);attr->fill(1);
   for(int x=0;x<2;x++)for(int y=0;y<2;y++){int i=(20+y)*64+20+x,sx=flip&1?1-x:x,sy=flip&2?1-y:y;int w=1+sx*2+sy+(flip&1?0x4000:0)+(flip&2?0x8000:0);(*maps)[2*i]=w;(*maps)[2*i+1]=w>>8;(*attr)[plane*4096+i]=0x75;}
   S9xRemasterDungeonPlacements(c,profile,*out);
-  for(int y=0;y<2;y++)for(int x=0;x<2;x++){const auto &a=(*out)[(20+y)*64+20+x];assert(a.surface==S::Obstacle && a.removableSupportPlanes==(1<<plane));}
+   // Legacy art/index witnesses lack slots, LUT and secrets: no floor claim.
+   for(int y=0;y<2;y++)for(int x=0;x<2;x++){const auto &a=(*out)[(20+y)*64+20+x];assert(!a.removableSupportPlanes);}
   (*maps)[2*(20*64+20)]^=1;S9xRemasterDungeonPlacements(c,profile,*out);for(auto &a:*out)assert(!a.removableSupportPlanes);
   (*maps)[2*(20*64+20)]^=1;(*attr)[plane*4096+20*64+20]=0;S9xRemasterDungeonPlacements(c,profile,*out);for(auto &a:*out)assert(!a.removableSupportPlanes);
   // Same artwork with ordinary attributes is a decorative/fake pot, not a
