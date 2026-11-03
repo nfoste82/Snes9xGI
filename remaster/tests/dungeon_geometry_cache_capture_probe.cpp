@@ -5,6 +5,17 @@
 #include <iostream>
 #include <stdexcept>
 #include <chrono>
+#ifdef ALTTP_TEST_ALLOCATIONS
+static uint64_t allocationCount=0,allocationBytes=0;
+void *operator new(size_t n) {++allocationCount;allocationBytes+=n;
+#ifdef ALTTP_TEST_BUILD_WORK
+ auto &w=S9xRemasterDungeonBuildWork();w.allocations[w.active]++;w.bytes[w.active]+=n;
+#endif
+ if(auto p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void *operator new[](size_t n) {return ::operator new(n);}
+void operator delete(void *p) noexcept {std::free(p);}
+void operator delete[](void *p) noexcept {std::free(p);}
+#endif
 uint32_t *S9xRemasterCurrentOwners=nullptr;
 uint32_t S9xRemasterCurrentOwner=REMASTER_OWNER_UNSUPPORTED;
 static void check(bool b,const char *s){if(!b)throw std::runtime_error(s);}
@@ -107,7 +118,8 @@ int main(int argc,char **argv){try {
  S9xRemasterDungeonStairsFromAttributes(c);
  S9xRemasterSetLiveFramesEnabled(true);S9xRemasterSetProfile(profile);S9xRemasterInvalidateDungeonContinuity();auto &s=S9xRemasterState();
  auto frame=std::make_unique<RemasterFrame>();
- double endframeMs=0;
+  double endframeMs=0;
+  uint64_t frameAllocations=0,frameAllocationBytes=0;
  auto run=[&]{
 #ifdef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
   // Bounded baseline: ablate cache only, retaining identical classifier/solver.
@@ -122,13 +134,29 @@ int main(int argc,char **argv){try {
    s.mainTilePixels[at]=captured->mainPixels[at].tilePixel;s.subTilePixels[at]=captured->subPixels[at].tilePixel;
   }
   s.scenePixels=captured->scenePixels;s.sceneRgb=captured->sceneRgb555;
-   const auto start=std::chrono::steady_clock::now();
+#ifdef ALTTP_TEST_DOOR_WORK
+    S9xRemasterDungeonDoorWork()={};
+#endif
+#ifdef ALTTP_TEST_ALLOCATIONS
+    const auto allocationStart=allocationCount,bytesStart=allocationBytes;
+#endif
+    const auto start=std::chrono::steady_clock::now();
+#ifdef ALTTP_TEST_BUILD_WORK
+    S9xRemasterDungeonBuildWork()={};
+#endif
    RemasterHeldLampState controlledLamp;
    const bool lampAblation=std::getenv("ALTTP_LINK_THRESHOLD_REGRESSION")!=nullptr;
    if(lampAblation){controlledLamp.verifiedRom=controlledLamp.darkWithLantern=true;controlledLamp.facing=0;
     controlledLamp.linkScreenX=int(c.linkX)-int(c.backgroundScrollX);controlledLamp.linkScreenY=int(c.linkY)-int(c.backgroundScrollY);}
    S9xRemasterEndFrame(captured->originalRgb555.data(),captured->width,captured->width,captured->height,frame.get(),&c,lampAblation?&controlledLamp:nullptr);
-  endframeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+   endframeMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+#ifdef ALTTP_TEST_BUILD_WORK
+   {const auto &w=S9xRemasterDungeonBuildWork();for(int p=1;p<16;p++)if(w.calls[p])std::cerr<<"build_phase="<<p<<" ms="<<w.ms[p]<<" calls="<<w.calls[p]<<" allocations="<<w.allocations[p]<<" bytes="<<w.bytes[p]<<'\n';
+    std::cerr<<"build_work decoded="<<w.decodedTiles<<" normal_samples="<<w.normalSamples<<" movement_nodes="<<w.movementNodes<<" movement_hits="<<w.movementHits<<" graph_nodes="<<w.graphNodes<<" graph_edges="<<w.graphEdges<<'\n';}
+#endif
+#ifdef ALTTP_TEST_ALLOCATIONS
+   frameAllocations=allocationCount-allocationStart;frameAllocationBytes=allocationBytes-bytesStart;
+#endif
   if(std::getenv("ALTTP_CACHE_TIMING"))std::cerr<<"endframe_ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<'\n';
    check(!frame->mainPixels.empty(),"EndFrame");
    if(std::getenv("ALTTP_THRESHOLD_ART_REGRESSION")) {
@@ -209,7 +237,9 @@ int main(int argc,char **argv){try {
     check(secondPacket->width==captured->width && secondPacket->height==captured->height,"alternate dimensions");
     std::ofstream exact(out+"-alternating.bin",std::ios::binary);
     auto emit=[&](const auto &value){const uint64_t size=value.size();exact.write(reinterpret_cast<const char *>(&size),sizeof(size));exact.write(reinterpret_cast<const char *>(value.data()),value.size());};
-    uint64_t coldClass=0,warmClass=0,coldSolves=0,warmSolves=0;std::vector<double> cold,warm;
+     uint64_t coldClass=0,warmClass=0,coldSolves=0,warmSolves=0;std::vector<double> cold,warm;
+     std::ofstream timing(out+"-timing.csv");
+     timing<<"sample,endframe_ms,allocations,allocation_bytes,classifications,solves,classify_ms,solve_ms,open_origins,frame_words,accepted,threshold_visits,rejected_threshold_visits,closed_origins,lower_origins,jamb_feet,open_ms,closed_ms,lower_ms,jamb_ms\n";
     // Oracle is a separately compiled forced-uncached process. No parity work
     // runs within EndFrame timing or populates the measured cache.
     const int samples=std::getenv("ALTTP_CLASSIFICATION_SAMPLES")?std::max(4,std::atoi(std::getenv("ALTTP_CLASSIFICATION_SAMPLES"))):20;
@@ -221,17 +251,43 @@ int main(int argc,char **argv){try {
 #ifdef ALTTP_TEST_CACHE_STAGES
      S9xRemasterDungeonCacheStages()={};
 #endif
-     run();(n<2?cold:warm).push_back(endframeMs);
+      run();(n<2?cold:warm).push_back(endframeMs);
+      timing<<n<<','<<endframeMs<<','<<frameAllocations<<','<<frameAllocationBytes;
+#ifdef ALTTP_TEST_CACHE_STAGES
+      {const auto &v=S9xRemasterDungeonCacheStages();timing<<','<<v.classifications<<','<<v.solves<<','<<v.classifyMs<<','<<v.solveMs;}
+#else
+      timing<<",0,0,0,0";
+#endif
+#ifdef ALTTP_TEST_DOOR_WORK
+      {const auto &v=S9xRemasterDungeonDoorWork();timing<<','<<v.openOrigins<<','<<v.frameWords<<','<<v.exactCandidates<<','<<v.thresholdVisits<<','<<v.rejectedThresholdVisits<<','<<v.closedOrigins<<','<<v.lowerOrigins<<','<<v.jambFeet<<','<<v.openMs<<','<<v.closedMs<<','<<v.lowerMs<<','<<v.jambMs;}
+#else
+      timing<<",0,0,0,0,0,0,0,0,0,0,0,0";
+#endif
+      timing<<'\n';
 #ifdef ALTTP_TEST_CACHE_STAGES
      (n<2?coldClass:warmClass)+=S9xRemasterDungeonCacheStages().classifications;
      (n<2?coldSolves:warmSolves)+=S9xRemasterDungeonCacheStages().solves;
 #endif
-     std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"alternating packet");emit(bytes);
-     emit(dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap));
-     std::ostringstream placements;
-     for(const auto *bg:{s.dungeonRetainedBg1.get(),s.dungeonRetainedBg2.get()})for(const auto &p:*bg)
-      dungeonPlacementInventory(placements,p);
-     emit(placements.str());
+      // Timing-only runs do not claim output parity. Separate runs retain the
+      // complete packet, both maps/diagnostics and every placed source field.
+      if(!std::getenv("ALTTP_CLASSIFICATION_TIMING_ONLY")) {
+       std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"alternating packet");emit(bytes);
+       emit(dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap));
+       // Actor movement/support grids are independent map consumers, not fully
+       // represented by room diagnostics or visible packet geometry.
+       std::ostringstream support;
+       for(const auto *m:{&s.runtimeDungeonBg1HeightMap,&s.runtimeDungeonHeightMap}) {
+        support<<m->hasActorThresholdSupport<<' ';
+        for(const auto &plane:m->occupiedFloorOwners)for(auto v:plane)support<<v<<' ';
+        for(const auto &plane:m->actorThresholdBases)for(auto v:plane)support<<v<<' ';
+        for(const auto &plane:m->actorThresholdOwners)for(auto v:plane)support<<v<<' ';
+       }
+       emit(support.str());
+       std::ostringstream placements;
+       for(const auto *bg:{s.dungeonRetainedBg1.get(),s.dungeonRetainedBg2.get()})for(const auto &p:*bg)
+        dungeonPlacementInventory(placements,p);
+       emit(placements.str());
+      }
      if(phase)std::swap(captured,secondPacket);
     }
     auto stats=[&](std::vector<double> &v){std::sort(v.begin(),v.end());std::cout<<" median_ms="<<v[v.size()/2]<<" p95_ms="<<v[v.size()*95/100];};

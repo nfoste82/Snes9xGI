@@ -60,9 +60,11 @@ inline RemasterDungeonReplacementEvidence S9xRemasterExtractDungeonReplacementEv
   if((ptr&0x8000) && s.objectOffset>=3 && stream+s.objectOffset<=romSize &&
      (ptr&0xffff)+s.objectOffset<=0x10000) {
    const auto *d=rom+stream+s.objectOffset-3;const uint16_t raw=word(d);
-   // First supported declaration: exact subtype2 single-pot, no repeated runs.
-   if((raw&0xfc)==0xfc && (d[2]&63)==0x2f) {
-    const int x=((raw&3)<<4)|(raw>>12),y=((raw>>8)&15)*4+(d[2]>>6);
+   // First supported declaration: subtype1 index2f SinglePot (encoded via
+   // the >=f8 dispatch), not subtype2 index2f or repeated pot-run handlers.
+   const int id=((d[2]&7)<<4)|(((raw>>8)&3)<<2)|(raw&3);
+   if((raw&0xfc)!=0xfc && d[2]>=0xf8 && id==0x2f) {
+    const int x=(raw&255)>>2,y=raw>>10;
     s.ordinaryPotDeclaration=(s.position&0x1fff)==2*(y*64+x);
    }
   }
@@ -100,5 +102,14 @@ inline bool S9xRemasterDeserializeDungeonReplacementEvidence(const std::vector<u
   e.secrets.push_back({pos,value});
  }
  e.available=true;out=std::move(e);return true;
+}
+
+// Optional sidecar is accepted only when the packet itself owns identical
+// evidence. An orphan sidecar never upgrades a legacy packet's capabilities.
+inline bool S9xRemasterReplacementSidecarMatches(const std::vector<uint8_t> &bytes,
+ const RemasterDungeonReplacementEvidence &packet)
+{
+ RemasterDungeonReplacementEvidence sidecar;
+ return packet.available && S9xRemasterDeserializeDungeonReplacementEvidence(bytes,sidecar) && sidecar==packet;
 }
 #endif

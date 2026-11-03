@@ -22,6 +22,7 @@
 #include "diagonal_assembly.h"
 #include "sprite_obstacle.h"
 #include "dungeon_visible_face_runtime.h"
+#include "dungeon_door_index.h"
 #include "live_trace.h"
 
 #include <algorithm>
@@ -218,7 +219,7 @@ struct RemasterState
 	// separate snapshot: observed solve inputs can advance before a solve succeeds.
 	struct DungeonClassificationInputs {
 		RemasterDungeonReplacementEvidence replacements;
-		uint8_t replacementModule=255,replacementSubmodule=255;
+		uint8_t replacementModule=255,replacementSubmodule=255,replacementCollision=255;
 		bool replacementIndoors=false;
 		bool valid=false, verified=false;
 		uint8_t background=1;
@@ -1158,7 +1159,7 @@ inline bool S9xRemasterDungeonClassificationInputsMatch(const RemasterDungeonFlo
 		S9X_REMASTER_OBSERVED_REASON(a->templates!=bool(c.dungeonTemplateData),classificationReasons,TemplateChange) ||
 		S9X_REMASTER_OBSERVED_REASON(a->replacements!=c.replacementEvidence,classificationReasons,ProducerChange) ||
 		S9X_REMASTER_OBSERVED_REASON(c.replacementEvidence.available &&
-			(a->replacementModule!=c.module || a->replacementSubmodule!=c.submodule || a->replacementIndoors!=c.indoors),classificationReasons,ProducerChange) ||
+			(a->replacementModule!=c.module || a->replacementSubmodule!=c.submodule || a->replacementIndoors!=c.indoors || a->replacementCollision!=c.collisionMode),classificationReasons,ProducerChange) ||
 		S9X_REMASTER_OBSERVED_REASON(std::memcmp(a->maps.data(),c.constructedMaps,16384),classificationReasons,MapChange) ||
 		S9X_REMASTER_OBSERVED_REASON(std::memcmp(a->attributes.data(),c.collisionAttributes,8192),classificationReasons,AttributeChange) ||
 		S9X_REMASTER_OBSERVED_REASON(c.dungeonTemplateData && std::memcmp(a->templateBytes.data(),c.dungeonTemplateData,12876),classificationReasons,TemplateChange))return false;
@@ -1229,7 +1230,7 @@ inline void S9xRemasterRememberDungeonClassification(const RemasterDungeonFloorC
 	a.background=c.placementBackgroundIndex;a.graphicsBase=c.graphicsBase;a.bg1GraphicsBase=c.bg1GraphicsBase;
 	a.templates=bool(c.dungeonTemplateData);
 	a.replacements=c.replacementEvidence;
-	a.replacementModule=c.module;a.replacementSubmodule=c.submodule;a.replacementIndoors=c.indoors;
+	a.replacementModule=c.module;a.replacementSubmodule=c.submodule;a.replacementIndoors=c.indoors;a.replacementCollision=c.collisionMode;
 	std::copy_n(c.constructedMaps,16384,a.maps.begin());std::copy_n(c.collisionAttributes,8192,a.attributes.begin());
 	std::copy_n(c.graphics,65536,a.graphics.begin());
 	if(c.dungeonTemplateData)std::copy_n(c.dungeonTemplateData,12876,a.templateBytes.begin());
@@ -1246,6 +1247,20 @@ inline void S9xRemasterRememberDungeonClassification(const RemasterDungeonFloorC
 	s.dungeonClassifiedArtworkStates.push_back(std::move(entry));
 }
 
+#ifdef ALTTP_TEST_DOOR_WORK
+// Test-only work accounting. No counters, timers or original-order branch exist
+// in production builds. The original branch is an independent performance oracle.
+struct RemasterDungeonDoorWork {
+	uint64_t openOrigins=0, frameWords=0, exactCandidates=0, thresholdVisits=0, rejectedThresholdVisits=0;
+	uint64_t closedOrigins=0, lowerOrigins=0, jambFeet=0;
+	double openMs=0,closedMs=0,lowerMs=0,jambMs=0;
+};
+inline RemasterDungeonDoorWork &S9xRemasterDungeonDoorWork() { static RemasterDungeonDoorWork w;return w; }
+#define S9X_DOOR_WORK(field) (++S9xRemasterDungeonDoorWork().field)
+#else
+#define S9X_DOOR_WORK(field) ((void)0)
+#endif
+
 inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &context,
 	const RemasterProfile &profile, std::array<RemasterDungeonFloorContext::Placement, 4096> &output)
 {
@@ -1254,6 +1269,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 	auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.classifyMs,stages.classifications);
 #endif
 	using Surface = RemasterDungeonFloorContext::Surface;
+	S9X_BUILD_PHASE(1); // group preparation
 	std::map<RemasterTileContentId, Surface> surfaces;
 	for (const auto &group : profile.assetGroups)
 	{
@@ -1270,12 +1286,14 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			if (!surfaces.count(id) || priority(role) > priority(surfaces[id])) surfaces[id] = role;
 	}
 	std::map<uint16_t, RemasterTileContentId> hashes;
+	S9X_BUILD_NEXT(2); // decode, profile facts and contextual placement setup
 	for (int i = 0; i < 4096; i++)
 	{
 		const uint16_t word = context.constructedMaps[i * 2] | (context.constructedMaps[i * 2 + 1] << 8);
 		const uint16_t address = static_cast<uint16_t>(context.graphicsBase + (word & 1023) * 32);
 		if (!hashes.count(address))
 		{
+			S9X_BUILD_WORK(decodedTiles,1);
 			uint8_t pixels[64];
 			for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++)
 			{
@@ -1363,6 +1381,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		if(asset!=profile.assets.end() && asset->second.hasNormals) {
 			int sx=0,sy=0,samples=0;bool consistent=true;
 			for(int pixel=0;pixel<64;pixel++) {
+				S9X_BUILD_WORK(normalSamples,1);
 				const auto *n=asset->second.normalXyz.data()+pixel*3;
 				if(n[0]==128 && n[1]==128 && n[2]==255)continue;
 				const int x=int(n[0])-128,y=int(n[1])-128;
@@ -1406,6 +1425,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		const uint16_t lowerWord=context.constructedMaps[8192+i*2]|context.constructedMaps[8193+i*2]<<8;
 		const uint16_t lowerAddress=static_cast<uint16_t>((context.bg1GraphicsBase==0xffff?context.graphicsBase:context.bg1GraphicsBase)+(lowerWord&1023)*32);
 		if(!hashes.count(lowerAddress)) {
+			S9X_BUILD_WORK(decodedTiles,1);
 			uint8_t pixels[64];
 			for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
 				int index=0;for(int b=0;b<4;b++)index|=((context.graphics[static_cast<uint16_t>(lowerAddress+(b/2)*16+y*2+b%2)]>>(7-x))&1)<<b;
@@ -1421,6 +1441,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			placed.floorPlaneMask|=2;
 		placed.distinctLowerUsage=(lowerWord&0xc3ff)!=(word&0xc3ff);
 	}
+	S9X_BUILD_NEXT(3); // ordered structural recognizers
 	// EntranceCave's actual Nx4 source owns a three-band U AFTER its landing
 	// row. Require one complete live invocation, not a source-art search. The
 	// existing masked frame consumer supplies occupied same-plane support and
@@ -1523,23 +1544,41 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 #endif
 		static const uint16_t ends[]={0x2926,0x2be8,0x2e32,0x3032};
 		std::set<uint16_t> ambiguousFrames;
+		// Final maps do not change during classification. Every open frame has
+		// the canonical first column's first structural word, even across split
+		// BGs. Enumerate only those origins, then run the unchanged full predicate.
+		auto doorWords=std::make_unique<RemasterDungeonDoorWordIndex>(context.constructedMaps);
 		// Staircase-going-up/down handlers 1e..21 emit 4x4 columns. Their
 		// fourth row is opening/trim, not frame. Ordinary and stair dispatches
 		// share the same complete U-shaped three-band structural footprint.
 		// Compare EVERY frame word, but never the opening contents. Equivalent
 		// source templates with identical frames prove the same ownership.
+#ifdef ALTTP_TEST_DOOR_WORK
+		auto doorStageStart=std::chrono::steady_clock::now();
+#endif
 		for(int family=0;family<2;family++) for(int d=0;d<(family?2:4);d++)
 		for(int off=family?(d?0x11e8:0x11a8):starts[d];off<=(family?(d?0x1208:0x11c8):ends[d]);off+=family?32:24)
 		for(int split=0;split<(family?1:2);split++) for(int flip=0;flip<4;flip++) {
 			if(split && context.bg1GraphicsBase!=0xffff && context.bg1GraphicsBase!=context.graphicsBase)continue;
 			const int w=d<2?4:3,h=d<2?3:4;
 			const int direction=d<2?(d^((flip&2)?1:0)):(d^((flip&1)?1:0));
-			for(int y=0;y<=64-h;y++)for(int x=0;x<=64-w;x++) {
+			// (0,0) is structural for every direction except south, whose first
+			// column is still structural. Stair south starts at source row one.
+			const int anchorX=flip&1?w-1:0,anchorY=flip&2?h-1:0;
+			const int anchorSource=off+2*(family && d==1?1:0);
+			const uint16_t anchorWord=(context.dungeonTemplateData[anchorSource]|context.dungeonTemplateData[anchorSource+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+			const int anchorBg=split?((d==0 || d==2)?1:0):context.placementBackgroundIndex;
+			const auto origins=doorWords->origins(anchorBg==context.placementBackgroundIndex?0:8192,anchorWord,w,h,anchorX,anchorY);
+			for(int candidate=0;candidate<origins.count();candidate++) {
+				const int origin=origins[candidate];if(origin<0)continue;
+				const int y=origin/64,x=origin%64;
 				bool exact=true,frame=false;
+				S9X_DOOR_WORK(openOrigins);
 				for(int xx=0;exact && xx<w;xx++)for(int yy=0;exact && yy<h;yy++) {
 					const bool framePart=d<2?(xx==0 || xx==w-1 || (d==0?yy==0:yy==h-1)):
 						(yy==0 || yy==h-1 || (d==2?xx==0:xx==w-1));
 					if(!framePart)continue;
+					S9X_DOOR_WORK(frameWords);
 					const int px=flip&1?w-1-xx:xx,py=flip&2?h-1-yy:yy;
 					const int i=(y+py)*64+x+px,n=off+2*(xx*(family?4:h)+yy+(family && d==1?1:0));
 					const int expected=(context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
@@ -1557,12 +1596,22 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				}
 				// Ordinary axis thresholds prove a real doorway rather than the
 				// closed-wall template (which can match many sliding origins).
+#if !defined(ALTTP_TEST_DOOR_WORK) || !defined(ALTTP_TEST_ORIGINAL_DOOR_ORDER)
+				// Collision can qualify an exact frame without explicit doorway
+				// metadata; it cannot rescue a mismatched structural word/role.
+				if(!exact)continue;
+#endif
 				bool threshold=false;
 				if(context.collisionAttributes)for(int xx=0;xx<w;xx++)for(int yy=0;yy<h;yy++) {
+					S9X_DOOR_WORK(thresholdVisits);
+#ifdef ALTTP_TEST_DOOR_WORK
+					if(!exact)S9X_DOOR_WORK(rejectedThresholdVisits);
+#endif
 					const int a=context.collisionAttributes[(y+yy)*64+x+xx];
 					threshold |= a>=0x80 && a<=0x8f && (a&1)==(d>=2);
 				}
 				if(!exact || (!frame && !threshold))continue;
+				S9X_DOOR_WORK(exactCandidates);
 				for(int xx=0;xx<w;xx++)for(int yy=0;yy<h;yy++) {
 					const bool structuralPart=d<2?(xx==0 || xx==w-1 || (d==0?yy==0:yy==h-1)):
 						(yy==0 || yy==h-1 || (d==2?xx==0:xx==w-1));
@@ -1622,6 +1671,10 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				}
 			}
 		}
+#ifdef ALTTP_TEST_DOOR_WORK
+		S9xRemasterDungeonDoorWork().openMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-doorStageStart).count();
+		doorStageStart=std::chrono::steady_clock::now();
+#endif
 		// A competing frame origin/axis invalidates the complete assembly, not
 		// just its shared member. Do not leave a partially proved U-shaped frame.
 		for(const auto &t:output)if(t.doorDirection==0xfe)ambiguousFrames.insert(t.doorAssembly);
@@ -1637,8 +1690,13 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		for(int d=0;d<4;d++)for(int off=starts[d];off<=ends[d];off+=24)
 		for(int flip=0;flip<4;flip++) {
 			const int w=d<2?4:3,h=d<2?3:4,direction=d^((flip&(d<2?2:1))?1:0);
-			for(int y=0;y<=64-h;y++)for(int x=0;x<=64-w;x++) {
+			const uint16_t anchorWord=(context.dungeonTemplateData[off]|context.dungeonTemplateData[off+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
+			const auto origins=doorWords->origins(0,anchorWord,w,h,flip&1?w-1:0,flip&2?h-1:0);
+			for(int candidate=0;candidate<origins.count();candidate++) {
+				const int origin=origins[candidate];if(origin<0)continue;
+				const int y=origin/64,x=origin%64;
 				bool exact=true,leaf=false,frame=false;
+				S9X_DOOR_WORK(closedOrigins);
 				for(int xx=0;exact && xx<w;xx++)for(int yy=0;exact && yy<h;yy++) {
 					const int i=(y+(flip&2?h-1-yy:yy))*64+x+(flip&1?w-1-xx:xx),n=off+2*(xx*h+yy);
 					const int expected=(context.dungeonTemplateData[n]|context.dungeonTemplateData[n+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
@@ -1660,6 +1718,10 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			t.doorTemplateOffset=closedSources.at(owner);t.closedDoorAssembly=true;t.splitDoorPart=false;
 		}
 		#ifndef ALTTP_TEST_PRIOR_LOWER_DOOR_WRITER
+#ifdef ALTTP_TEST_DOOR_WORK
+		S9xRemasterDungeonDoorWork().closedMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-doorStageStart).count();
+		doorStageStart=std::chrono::steady_clock::now();
+#endif
 		// Lower inter-room staircase handlers26..29 use FOUR-word columns,
 		// unlike ordinary three-word doors. The terminal band is written to
 		// BOTH maps; the other three rows belong to BG1. Attest every write,
@@ -1669,6 +1731,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		for(int d=0;d<2;d++)for(int off=d?0x1268:0x1228;off<=(d?0x1288:0x1248);off+=32)
 		for(int flip=0;flip<4;flip++)for(int y=0;y<=60;y++)for(int x=0;x<=60;x++) {
 			bool exact=true;
+			S9X_DOOR_WORK(lowerOrigins);
 			for(int xx=0;exact && xx<4;xx++)for(int yy=0;exact && yy<4;yy++) {
 				const int px=flip&1?3-xx:xx,py=flip&2?3-yy:yy,i=(y+py)*64+x+px;
 				const int expected=(context.dungeonTemplateData[off+2*(xx*4+yy)]|context.dungeonTemplateData[off+2*(xx*4+yy)+1]<<8)^((flip&1?0x4000:0)|(flip&2?0x8000:0));
@@ -1695,6 +1758,9 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			if(t.doorAssembly && (t.doorAssembly!=origin || t.doorDirection!=direction))continue;
 			t.doorAssembly=origin;t.doorDirection=direction;t.doorTemplateOffset=off;t.splitDoorPart=true;
 		}
+#ifdef ALTTP_TEST_DOOR_WORK
+		S9xRemasterDungeonDoorWork().lowerMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-doorStageStart).count();
+#endif
 		#endif
 	}
 	// Independent surviving inner jambs: exact two-word handler column/row,
@@ -1702,12 +1768,25 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 	// Collect every source claim first; incompatible claims withhold BOTH bands.
 	#ifndef ALTTP_TEST_PRIOR_DOORWAY_COLUMNS
 	if(context.verifiedAlttpRom && context.dungeonTemplateData) {
+#ifdef ALTTP_TEST_DOOR_WORK
+		const auto jambStart=std::chrono::steady_clock::now();
+#endif
 #if S9X_REMASTER_PROFILING
 		RemasterLightingTrace::Scope doorTimer(RemasterLightingTrace::current(),RemasterLightingTrace::DoorRecognition);
 #endif
 		using Claim=std::tuple<int,int,int>; // contact, band, canonical source
 		std::map<int,std::set<Claim>> claims;
 		std::map<int,int> columnSources;
+		// All earlier ownership mutations are complete. The collection loop below
+		// only records claims; output changes afterwards. Necessary foot predicates
+		// are therefore immutable here. Keep sorted feet and original template/
+		// flip/side nesting so source minima and every competing claim stay intact.
+		std::vector<uint16_t> jambFeet;
+		for(int i=0;i<4096;i++) {
+			const auto &f=output[i];
+			if(!f.doorAssembly && f.doorwaySupport && f.surface==Surface::Door &&
+				f.hasHeight && !f.stairSourceAmbiguous)jambFeet.push_back(i);
+		}
 		static const int starts[]={0x2716,0x29f0,0x2c6a,0x2e6a},ends[]={0x2926,0x2be8,0x2e32,0x3032};
 		for(int d=0;d<4;d++)for(int off=starts[d];off<=ends[d];off+=24)for(int flip=0;flip<4;flip++) {
 			const int w=d<2?4:3,h=d<2?3:4;
@@ -1719,7 +1798,8 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				}
 				const int direction=d<2?(d^((flip&2)?1:0)):(d^((flip&1)?1:0));
 				const int dx=direction==2?-1:direction==3?1:0,dy=direction==0?-1:direction==1?1:0;
-				for(int foot=0;foot<4096;foot++) {
+				for(int foot:jambFeet) {
+					S9X_DOOR_WORK(jambFeet);
 					const int x=foot%64+dx,y=foot/64+dy;if(x<0||x>=64||y<0||y>=64)continue;
 					const int other=y*64+x;const auto &f=output[foot];const auto &m=output[other];
 					if(f.doorAssembly || m.doorAssembly || !f.doorwaySupport || f.surface!=Surface::Door || m.surface!=Surface::Door ||
@@ -1742,6 +1822,9 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				}
 			}
 		}
+#ifdef ALTTP_TEST_DOOR_WORK
+		S9xRemasterDungeonDoorWork().jambMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-jambStart).count();
+#endif
 		for(const auto &entry:claims)if(entry.second.size()==1) {
 			const auto [foot,band,source]=*entry.second.begin();
 			const auto &f=output[foot];const auto direction=S9xRemasterTransformSupportDirection(f.doorwaySupportDirection,f.hflip,f.vflip);
@@ -1753,6 +1836,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		}
 	}
 	#endif
+	S9X_BUILD_NEXT(4); // wall and diagnostic ownership recognizers
 	// Handler01/02 (north/south) and61/62 (west/east) emit 2x4/4x2
 	// perimeter templates from the ROM predefined table. An intact exact
 	// final-word face footprint is placement evidence, not a hash-wide wall rule.
@@ -1917,6 +2001,10 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// surviving columns. Multiple distinct high-template claims are ambiguous.
 		auto highCornerOwners=std::make_unique<std::array<uint16_t,4096>>();
 		auto endpointCornerOwners=std::make_unique<std::array<uint16_t,4096>>();
+		// Mandatory first strip word is immutable even as preceding candidates
+		// publish roles. The existing masked index is only a necessary filter:
+		// retain exact priority checks, all three words and original origin order.
+		auto cornerWords=std::make_unique<RemasterDungeonDoorWordIndex>(context.constructedMaps);
 		for(int axis=0;axis<
 #ifdef ALTTP_TEST_PRIOR_CORNER_STRIPS
 			1
@@ -1924,10 +2012,16 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			2
 #endif
 			;axis++)for(int offset=0xb66;offset<=0xd46;offset+=0x20)
-			for(int column=0;column<4;column++) for(int start=0;start<=1;start++)
-				for(int y=0;y<64-(axis?0:2);y++)for(int x=0;x<64-(axis?2:0);x++)
+			for(int column=0;column<4;column++) for(int start=0;start<=1;start++) {
+				const int anchor=offset+2*(axis?start*4+column:column*4+start);
+				const uint16_t word=context.dungeonTemplateData[anchor]|context.dungeonTemplateData[anchor+1]<<8;
+				const auto origins=cornerWords->origins(0,word,axis?3:1,axis?1:3,0,0);
+				for(int candidate=0;candidate<origins.count();candidate++)
 				{
+					const int origin=origins[candidate];if(origin<0)continue;
+					const int y=origin/64,x=origin%64;
 					bool exact=true;int authoredSeeds=0;
+					S9X_CORNER_ORIGIN();
 					for(int k=0;exact && k<3;k++){
 						const int part=axis?(start+k)*4+column:column*4+start+k;
 						const auto *src=context.dungeonTemplateData+offset+part*2;
@@ -1974,6 +2068,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 						}
 					}
 				}
+			}
 		for(int i=0;i<4096;i++)if((*endpointCornerOwners)[i]==0xffff) {
 			output[i].surface=Surface::Unknown;output[i].wallTemplateOffset=0;
 		}
@@ -2194,6 +2289,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			}
 		}
 		}
+		S9X_BUILD_NEXT(13); // diagnostic final-word ownership
 		// Diagnostic-only final-word ownership. Unlike the height solver this
 		// does not require a local array, a solved seam, or a promoted Wall role.
 		// The layouts below are emitted by the pinned USA dungeon handlers;
@@ -2714,10 +2810,18 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		t.obstacleAssembly=t.authoredObstacleAssembly=0;t.authoredObstacle=false;
 		t.groundedFloorMask=0;t.removableSupportPlanes=0;t.diagnosticAuthoredFloor=false;
 	}
+	// Unsupported MOVABLE claims must not fall back to fixed-obstacle contact
+	// heuristics. Nonmovable groups retain their legacy behavior unchanged.
+	auto rejectUnprovenMovables=[&] {
+		for(auto &t:output)if(t.authoredObstacleGroup && t.authoredObstacleGroup<=profile.obstacleGroups.size() &&
+			profile.obstacleGroups[t.authoredObstacleGroup-1].movable && !t.structuralReplacement) {
+			t.authoredObstacleAssembly=0;t.obstacleAssembly=0;t.obstacleTemplate=0;t.removableSupportPlanes=0;
+		}
+	};
 	const auto &e=context.replacementEvidence;
 	if(!e.available || e.room!=context.roomIndex || !context.verifiedAlttpRom || !context.indoors ||
 		context.module!=7 || context.submodule || context.collisionMode || !context.collisionAttributes ||
-		!context.dungeonTemplateData)return;
+		!context.dungeonTemplateData){rejectUnprovenMovables();return;}
 	struct Replacement {int origin,plane;};
 	std::vector<Replacement> replacements;
 	auto maps=std::make_unique<std::array<uint8_t,16384>>();
@@ -2767,7 +2871,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		for(size_t k=0;k<4;k++){const int i=cells[k];(*maps)[2*i]=s.words[k];(*maps)[2*i+1]=s.words[k]>>8;(*attributes)[plane*4096+i]=e.attributes[s.words[3]&1023];}
 		replacements.push_back({origin,plane});
 	}
-	if(replacements.empty())return;
+	if(replacements.empty()){rejectUnprovenMovables();return;}
 	// Classify actual replacement identities/flips/graphics/context in place.
 	// Recursive call has no replacement evidence and cannot claim another body.
 	auto replacementContext=context;replacementContext.replacementEvidence={};
@@ -2791,6 +2895,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			t.removableSupportPlanes=1<<r.plane;
 		}
 	}
+	rejectUnprovenMovables();
 }
 
 inline void S9xRemasterObserveTile (const uint8_t *indices, uint8_t bitDepth, uint16_t vramAddress, uint16_t tileWord,

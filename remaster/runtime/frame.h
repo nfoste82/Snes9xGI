@@ -12,6 +12,9 @@
 #include "lighting_trace.h"
 #include "dungeon_layout_evidence.h"
 #include "dungeon_replacement.h"
+#include "dungeon_build_work.h"
+#include "dungeon_graph_membership.h"
+#include "dungeon_direction_cache.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -1533,6 +1536,11 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		}
 		auto structural=inputContext;structural.placements=tiles->data();structural.collisionAttributes=attributes->data();
 		structural.movementCache=nullptr; // never share actual-movement scratch with potential topology
+		// Transport an already verified signed entry datum across this local
+		// representation only; never mint an anchor from replacement artwork.
+		if(inputContext.entrySupport.destinationState && inputContext.entrySupport.destinationState==
+			S9xRemasterDungeonEntryStateKey(inputContext,floorRise))
+			structural.entrySupport.destinationState=S9xRemasterDungeonEntryStateKey(structural,floorRise);
 		const bool ok=S9xRemasterBuildDungeonHeightMap(structural,floorRise,result);
 		for(int i=0;i<4096;i++)if(inputContext.placements[i].structuralReplacement) {
 			const auto &v=inputContext.placements[i];
@@ -1547,6 +1555,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.solveMs,stages.solves);
 #endif
 	auto context=inputContext;
+	S9X_BUILD_PHASE(5); // solver initialization and producer publication
 	// Persistent structural support is not current movement reachability. Only
 	// an intact indexed liftable with ROM-proved ordinary replacement floor can
 	// contribute its post-removal support body. The doorway graph stays unchanged.
@@ -1590,6 +1599,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	// on the heap, with fixed bounds and invocation-local ownership (no shared
 	// static scratch or retained per-room allocations).
 	auto componentStorage = std::make_unique<std::array<int16_t, 2 * 64 * 64>>();
+	S9X_BUILD_NEXT(6); // movement scratch, floor candidates, ordered seeds
 	auto &components = *componentStorage;
 	components.fill(-1);
 	auto thresholdOwners=std::make_unique<std::array<int16_t,8192>>();
@@ -1677,13 +1687,16 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				walkable(p, x * 8, y * 8, 2) && walkable(p, x * 8, y * 8, 3))
 				seeds.push_back((p * 488 + y * 8) * 497 + x * 8);
 	bool movementReused=false;
+	S9X_BUILD_NEXT(7); // exact movement traversal or cache copy
 #ifndef ALTTP_TEST_REFERENCE_MOVEMENT
 	if(auto *cache=context.movementCache) {
 		movementReused=cache->valid && cache->placed==bool(context.placements) && cache->seeds==seeds &&
 			!std::memcmp(cache->attributes.data(),context.collisionAttributes,8192);
 		if(movementReused){components=cache->components;cells=cache->cells;*thresholdOwners=cache->thresholdOwners;}
+		if(movementReused)S9X_BUILD_WORK(movementHits,1);
 	}
 #endif
+	// Keep the original ordered pixel traversal and shared movement cache.
 	if(!movementReused)for (uint32_t seed : seeds)
 	{
 		if (seed >= visited.size() || visited[seed]) continue;
@@ -1703,6 +1716,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		for (size_t cursor = 0; cursor < queue.size(); cursor++)
 		{
 			const uint32_t node = queue[cursor];
+			S9X_BUILD_WORK(movementNodes,1);
 			const int x = node % 497, row = node / 497, plane = row / 488, y = row % 488;
 			// Project the complete 16x16 collision body onto support cells.  Using
 			// only its four corners erodes ordinary floors and leaves most visible
@@ -1778,6 +1792,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 	// body must touch exactly ONE original support component; ownership is taken
 	// from that reproduced body, not neighboring tile artwork or a flood fill.
 	auto occupiedComponents=std::make_unique<std::array<int16_t,8192>>(components);
+	S9X_BUILD_NEXT(8); // persistent support and constraints
 	std::unique_ptr<std::array<int16_t,8192>> persistentClaims;
 	if(persistentAttributes && context.placements) {
 		auto claims=std::make_unique<std::array<int16_t,8192>>();claims->fill(-1);
@@ -1899,15 +1914,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			const auto &tile = context.placements[i];
 			return static_cast<int>(tile.height[(tile.vflip ? 7 - y : y) * 8 + (tile.hflip ? 7 - x : x)]);
 		};
-		auto direction = [&] (int i, int dx, int dy) {
-			int low = 0, high = 0;
-			for (int k = 0; k < 8; k++)
-			{
-				low += height(i, dx ? (dx > 0 ? 7 : 0) : k, dy ? (dy > 0 ? 7 : 0) : k);
-				high += height(i, dx ? (dx > 0 ? 0 : 7) : k, dy ? (dy > 0 ? 0 : 7) : k);
-			}
-			return low < high;
-		};
+		auto directionCache=std::make_unique<RemasterDungeonDirectionCache>();
+		auto direction = [&] (int i, int dx, int dy) {return directionCache->get(i,dx,dy,height);};
 		// A clipped region of an ordered HIGH corner is a face plus
 		// a ceiling plateau, not a shortened affine wall. The plateau cannot
 		// supply an exterior floor equality. Prove the entire canonical section
@@ -1992,7 +2000,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			if(m.exact){const int a=m.ax+m.sx*(x+dx),b=m.ay+m.sy*(y+dy);return std::abs((m.maximum?std::max(a,b):std::min(a,b))-h);}
 			return std::abs(h-inner);
 		};
-		auto diagonal = [&] (int i) {
+		auto diagonalCache=std::make_unique<RemasterDungeonPredicateCache>();
+		auto diagonal = [&] (int i) {return diagonalCache->get(i,[&](int i) {
 			// A diagonal may terminate in a flat cap or floor half-plane. Require
 			// an exact clipped affine profile, not averaged normals or a corner.
 			int lo = INT16_MAX, hi = INT16_MIN;
@@ -2008,7 +2017,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				if (exact) return true;
 			}
 			return false;
-		};
+		});};
 		auto diagonalStorage = std::make_unique<std::array<bool, 4096>>();
 		auto compositeDiagonalAssembly=std::make_unique<std::array<bool,4096>>();
 		std::vector<int> compositeQueue;
@@ -2243,6 +2252,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				if (compatible) acceptEdge(p,i,j,dx,dy,a,b,rise);
 			}
 		}
+		S9X_BUILD_NEXT(10); // ordered signed graph solve
+		S9X_BUILD_WORK(graphNodes,count);S9X_BUILD_WORK(graphEdges,edges.size());
 		std::vector<std::vector<std::pair<int, int>>> adjacency(count);
 		auto add = [&] (int a, int b, int rise) {
 			adjacency[a].push_back({b, rise}); adjacency[b].push_back({a, -rise});
@@ -2350,6 +2361,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				add(components[r.support],nodes[i],r.rise);
 				ownedHighFaceSeeds.push_back(nodes[i]);
 			}
+		S9X_BUILD_NEXT(9); // signed path exports
 		// Export a signed structural path only from a consistent authored graph
 		// with established support. No configured stair relation or datum enters it.
 		if(context.constructedMaps) {
@@ -2376,7 +2388,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 					const bool terminal=low && support/4096==encoded/4096 && (*occupiedComponents)[support]>=0 &&
 						context.collisionAttributes[support]==0 && floor.surface==RemasterDungeonFloorContext::Surface::Floor && floor.hasHeight &&
 						std::all_of(floor.height.begin(),floor.height.end(),[](int16_t h){return h==0;});
-					if(n<0 || std::find(queue.begin(),queue.end(),n)==queue.end() ||
+					if(n<0 || !S9xRemasterDungeonTraversalContains(queue,parent,int(start),n) ||
 						t.surface!=RemasterDungeonFloorContext::Surface::Wall ||
 						(!terminal && (t.distinctLowerUsage || !solidFace(context.collisionAttributes[encoded]))))continue;
 					const int word=context.constructedMaps[i*2]|context.constructedMaps[i*2+1]<<8;
@@ -2411,6 +2423,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			if(std::none_of(result.authoredSupportRelations.begin(),result.authoredSupportRelations.end(),[&](const RemasterDungeonFloorContext::SupportRelation &e){return components[e.a]==a && components[e.b]==b;}))
 				result.authoredSupportRelations.push_back(r);
 		}
+		S9X_BUILD_NEXT(14); // shell imports and relative datum graph
 		// Join the visible shells BEFORE choosing any relative datum. These
 		// constraints end at actual support components, never at copied visible
 		// bases. Wall nodes remain separate even when bodies occupy their cells.
@@ -3353,6 +3366,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		}
 		// Authored arbitrary footprints consume already solved movement support.
 		// Every named contact must be witnessed; no Z-zero or nearest-floor inference.
+		S9X_BUILD_NEXT(11); // authored assemblies and stair proof
 		std::map<uint16_t,std::vector<int>> authoredAssemblies;
 		for(int i=0;i<4096;i++)if(context.placements[i].authoredObstacle) {
 			result.authoredObstacleCells++;
@@ -3699,6 +3713,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		}
 		return true; // unresolved is a cached result too, not a reason to reuse stale geometry
 	}
+	S9X_BUILD_NEXT(12); // final component projection
 	std::vector<int16_t> levels(cells.size(), INT16_MIN);
 	std::vector<bool> conflict(cells.size(), false);
 	for (const Constraint &start : constraints)

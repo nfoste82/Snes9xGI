@@ -111,6 +111,14 @@ FULL_EXTRA = (
     ("dungeon_threshold_support", "Traversed oriented threshold terminal support, independent planes and immutable relief"),
     ("door_opening_height", "Doorframe versus connected landing bases, signed heights, flips and plane ownership"),
     ("dungeon_frame_recognition", "Complete ordinary/stair frame ownership, all directions/flips/split BGs, opening independence and ambiguity rejection"),
+    ("dungeon_door_work", "Known-inexact doorway candidates never scan collision thresholds"),
+    ("dungeon_graph_membership", "Exact current-traversal parent membership replaces linear queue scans"),
+    ("dungeon_direction_cache", "Invocation-local authored direction and diagonal predicate memoization"),
+    ("dungeon_corner_work", "Absent mandatory corner words never enumerate strip origins"),
+    ("dungeon_corner_candidate_parity", "Corner strips retain exact priority, axes, BGs, edges, transforms and ambiguous ownership"),
+    ("dungeon_door_index", "Bounded exact mandatory-word origin index, deterministic order and repeated-word fallback"),
+    ("dungeon_jamb_candidate_parity", "Partial jamb classifier candidate order, source equivalence, priority and overwrite negatives"),
+    ("dungeon_door_candidate_parity", "Exact collision-only frames, missing thresholds, priority mask, early/late overwrites and split/base routing"),
     ("dungeon_placement_reuse", "EndFrame relation transport and placement-cache invalidation"),
     ("dungeon_semantic_cache", "EndFrame semantic activation, facing, context and door-mask invalidation"),
     ("dungeon_producer_writes", "Live CPU Nx4 source/part/BG witnesses and equal-word/byte overwrite revocation"),
@@ -145,6 +153,13 @@ def test_specs(args):
     if args.suite == "full":
         specs += [dict(name=n, source=f"remaster/tests/{n}_test.cpp", description=d,
                        flags=["-I."] if n == "tile_type_overlay" else [], arguments=[], kind="portable") for n, d in FULL_EXTRA]
+        # Exhaustive 1,536-case full-room classifier: O0 passes but exceeds the
+        # 180s process limit (~245s). Keep every case/assertion, as with the
+        # optimized small-stack variant below; this does not define NDEBUG or
+        # remove sanitizer flags. O0 remains available via direct compilation.
+        for spec in specs:
+            if spec["name"] == "dungeon_corner_candidate_parity":
+                spec["flags"].append("-O2")
         for mode, flags in (("debug", ["-pthread"]),
                             ("optimized", ["-pthread", "-O2"])):
             specs.append(dict(name=f"dungeon_small_stack_{mode}",

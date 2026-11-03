@@ -4734,6 +4734,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)selectRemasterObstacleMember:(id)sender;
 - (void)changeRemasterObstacleContact:(id)sender;
 - (BOOL)remasterObstacleContactMembers:(std::vector<size_t> &)members error:(std::string &)error;
+- (void)changeRemasterObstacleMovable:(id)sender;
 - (void)applyRemasterObstacleMember:(id)sender;
 - (void)deleteRemasterObstacleGroup:(id)sender;
 - (void)showRemasterObstacleGroup:(id)sender;

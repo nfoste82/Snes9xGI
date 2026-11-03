@@ -11,6 +11,7 @@ otherwise. Return to the [primary index](../../../AIDocs/00-index.md).
 
 - [HUD-covered Geometry](hud_geometry.md): Independent world ownership beneath BG3, stock color preservation and sprite consistency.
 - [Movable Sprite Obstacles](sprite_obstacles.md): Occurrence groups, producer ownership, contact-floor bases and background isolation.
+- [Movable BG Replacement Surfaces](movable_replacement_surfaces.md): Opt-in ordinary-pot structural underlays, owned ROM evidence and explicit remaining gaps.
 - [Link Attachment Heights](link_attachment_heights.md): Shared support for Link's body, equipment and shadow.
 - [NPC Floor Support](npc_floor_support.md): Walkable contact-footprint support and shared follower-body bases.
 

@@ -759,7 +759,9 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.roomIndex = Memory.RAM[0xa0] | (Memory.RAM[0xa1] << 8);
 				dungeonFloor.replacementEvidence=S9xRemasterExtractDungeonReplacementEvidence(
 					Memory.RAM,0x20000,Memory.ROM,Memory.CalculatedSize,
-					dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && Memory.RAM[0x10]==7 && Memory.RAM[0x11]==0,dungeonFloor.roomIndex);
+					dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && Memory.RAM[0x10]==7 && Memory.RAM[0x11]==0 &&
+					std::any_of(S9xRemasterState().activeProfile.obstacleGroups.begin(),S9xRemasterState().activeProfile.obstacleGroups.end(),
+						[](const auto &g){return g.movable && !g.spriteAssembly;}),dungeonFloor.roomIndex);
 				dungeonFloor.previousRoomIndex = Memory.RAM[0xa2] | (Memory.RAM[0xa3] << 8);
 				dungeonFloor.submodule = Memory.RAM[0x11];
 				dungeonFloor.module = Memory.RAM[0x10];

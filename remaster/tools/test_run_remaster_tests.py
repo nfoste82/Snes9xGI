@@ -12,6 +12,22 @@ import run_remaster_tests as runner
 
 
 class RunnerTests(unittest.TestCase):
+    def test_corner_parity_is_optimized_without_disabling_checks(self):
+        args = runner.argparse.Namespace(suite="full", legacy_smoke=False, metal=False)
+        specs = runner.test_specs(args)
+        corner = next(s for s in specs if s["name"] == "dungeon_corner_candidate_parity")
+        flags = runner.BASE_FLAGS + corner["flags"]
+        self.assertEqual([f for f in flags if f.startswith("-O")][-1], "-O2")
+        self.assertIn("-UNDEBUG", flags)
+        self.assertNotIn("-DNDEBUG", flags)
+        self.assertEqual(corner["source"], "remaster/tests/dungeon_corner_candidate_parity_test.cpp")
+        self.assertEqual(corner["arguments"], [])
+        # The exception is local: ordinary portable tests still use debug/O0.
+        for spec in specs:
+            if spec["name"].startswith("dungeon_small_stack_") or spec is corner:
+                continue
+            self.assertFalse(any(f.startswith("-O") for f in spec["flags"]), spec["name"])
+
     def test_selection_and_list_are_side_effect_free(self):
         with patch.object(runner, "command_to_log") as command:
             output = io.StringIO()
