@@ -212,6 +212,9 @@ static void FinishBenchmarkFrame()
 			@"module":@(Memory.RAM[0x10]),@"submodule":@(Memory.RAM[0x11]),@"indoors":@(Memory.RAM[0x1b]!=0),
 			@"room":@(word(0xa0)),@"link_x":@(word(0x22)),@"link_y":@(word(0x20)),@"plane":@(Memory.RAM[0xee]),
 			@"refresh_ms":@(metrics.emulationFrameMs),@"epoch":@(state.runtimeDungeonHeightEpoch),
+			// Join optional detailed traces to the producing packet, never the
+			// renderer's latest metrics (which may belong to another live frame).
+			@"producing_frame_id":@(packet?packet->lightingTrace.id:0),
 			@"movable_placement_cells":@(movableCells),@"packet_available":@(packet!=nullptr),
 			@"effective_representatives":@(packet?packet->representativeEmitters:0),
 			@"effective_offscreen_representatives":@(packet?packet->offscreenRepresentativeEmitters:0)}];
