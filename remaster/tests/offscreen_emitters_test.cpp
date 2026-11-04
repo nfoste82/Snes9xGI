@@ -1,7 +1,7 @@
 // Historical sphere approximation oracle. The new exact source boundary is
 // exercised separately by offscreen_continuity_test and the production GPU sweep.
-#define ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
 #include "../runtime/remaster.h"
+#include "legacy_offscreen_reference.h"
 #include "../runtime/hidden_emitter_samples.h"
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +36,7 @@ int main()
 	height->roomIndex=c.roomIndex; height->offsets[cell]=48;
 	RemasterFrame frame; frame.width=256; frame.height=224;
 	frame.originalRgb555.resize(256*224); frame.mainPixels.resize(256*224); frame.subPixels.resize(256*224);
-	auto run=[&]() { frame.lights.clear(); frame.hiddenEmitters.clear(); return S9xRemasterAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),S9xRemasterHashTile); };
+	auto run=[&]() { frame.lights.clear(); frame.hiddenEmitters.clear(); return legacyAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),S9xRemasterHashTile); };
 	require(run().lights==1,"offscreen source discovered before any visible observation; mirrored layers deduplicated");
 	auto light=frame.lights[0];
 	require(light.x==327.5f && light.y==87.5f,"canonical emission mask follows both flips");
@@ -230,10 +230,10 @@ int main()
 	auto animatedHash=[&](uint8_t depth,const uint8_t *pixels) {
 		const auto hash=S9xRemasterHashTile(depth,pixels); return hash==id.hash ? next.hash : hash;
 	};
-	require(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==1,
+	require(legacyAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==1,
 		"animated identity uses its own authored reciprocal combination links");
 	profile.assets[next].combineEmitters.clear(); frame.lights.clear();
-	require(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==2,
+	require(legacyAppendOffscreenRoomLights(frame,c,profile,height.get(),height.get(),animatedHash).lights==2,
 		"animation does not reuse previous frame links");
 	RemasterHeldLampState lamp; lamp.verifiedRom=lamp.darkWithLantern=true;
 	lamp.facing=6; lamp.linkScreenX=100; lamp.linkScreenY=80; lamp.floorHeight=3;
@@ -242,7 +242,10 @@ int main()
 	S9xRemasterBeginFrame(screen.size(),256,256,224);
 	RemasterFrame completed;
 	S9xRemasterEndFrame(screen.data(),256,256,224,&completed,nullptr,&lamp);
-	require(completed.lights.size()==1 && completed.lights[0].x==120 && completed.lights[0].z==15,
+	RemasterFrameLight expectedLamp;
+	RemasterHeldLampSettings lampSettings;lampSettings.intensity=profile.linkLampBrightness;
+	require(S9xRemasterHeldLampLight(lamp,lampSettings,expectedLamp),"valid held lamp fixture");
+	require(completed.lights.size()==1 && completed.lights[0].x==expectedLamp.x && completed.lights[0].z==expectedLamp.z,
 		"EndFrame appends held lamp before publication");
 	require(completed.originalRgb555[0]==0x1234,"original HUD/scene RGB remains stock");
 	lamp.darkWithLantern=false;

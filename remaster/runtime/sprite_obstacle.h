@@ -11,11 +11,7 @@
 // separately when decoding wholly clipped children.
 inline uint8_t S9xRemasterMantleOamY(int screenY)
 {
-#ifdef ALTTP_TEST_PRIOR_MANTLE_CULLING
-	return uint8_t(screenY); // bounded differential: previous producer signature
-#else
 	return uint16_t(screenY+16)>=0x100 ? 0xf0 : uint8_t(screenY);
-#endif
 }
 
 // Additive producer sidecar; older terrain observations cannot attest these actors.
@@ -100,11 +96,7 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 		// VRAM/latched-OAM snapshot. They are identity evidence, never receivers.
 		// The exact actor/whole-producer signature is still required below before
 		// a claim containing any such child can acquire a floor base.
-		if(context->graphics && context->hasTerrainActors && context->hasObstacleActors
-#ifdef ALTTP_TEST_PRIOR_SPRITE_CLIPPING
-			&& false
-#endif
-			)
+		if(context->graphics && context->hasTerrainActors && context->hasObstacleActors)
 		for(int slot=0;slot<128;slot++) {
 			const auto &o=context->terrainOam[slot];if(o.size!=2)continue;
 			int ox=o.x>=256?int(o.x)-512:int(o.x),oy=int(o.y);
@@ -353,9 +345,6 @@ inline void S9xRemasterApplySpriteObstacles(RemasterFrame &frame,const RemasterP
 				std::set<int> cells;
 				for(int y:{sy,outside})for(int edgeX=0;edgeX<8;edgeX++) {
 					const int x=t.x+edgeX;
-#ifdef ALTTP_TEST_PRIOR_SPRITE_CLIPPING
-					if(x<0 || y<0 || x>=int(frame.width) || y>=int(frame.height))continue;
-#endif
 					// Completed room support is camera-independent. An offscreen
 					// contact of an otherwise proved producer remains a real contact.
 					const int rx=(context->backgroundScrollX&511)+x,ry=(context->backgroundScrollY&511)+y;

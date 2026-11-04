@@ -1593,21 +1593,6 @@ kernel void remasterCompositeLighting(
 		output.write(float4(remasterCompositeToDisplay(composite), 1.0), pixel);
 }
 
-kernel void remasterAccumulateSamples(
-	texture2d<float, access::read> sample [[texture(0)]],
-	texture2d<float, access::read> previous [[texture(1)]],
-	texture2d<float, access::write> output [[texture(2)]],
-	constant RemasterLightingUniforms &uniforms [[buffer(0)]],
-	uint2 pixel [[thread_position_in_grid]])
-{
-	if (pixel.x >= uniforms.width || pixel.y >= uniforms.height)
-		return;
-	float3 value = sample.read(pixel).rgb;
-	if (uniforms.sampleIndex > 0)
-		value = previous.read(pixel).rgb + (value - previous.read(pixel).rgb) / float(uniforms.sampleIndex + 1);
-	output.write(float4(value, 1.0), pixel);
-}
-
 kernel void remasterSelectedTileHighlight(
 	texture2d<float, access::read> source [[texture(0)]],
 	texture2d<float, access::read> mask [[texture(1)]],

@@ -22,9 +22,7 @@ int main(int argc,char **argv){if(captureProbeMain(argc,argv))return 1;
   if(i.source!=RemasterSourceType::Background || i.sourceIndex!=1 || !targetIds.count(i.tileId.hash))continue;
   usages++;overrides+=i.hasPlacementHeight;
   const int y=((3230+at/packet->width)&511)/8;rowBases[y].insert(i.heightOffset);
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY
   check(!i.hasPlacementHeight && i.heightOffset==0,"actual column relief not preserved/shared footbase0");
-#endif
  }
  std::cout<<"actual_column_pixel_usages="<<usages<<" replaced_local_usages="<<overrides<<'\n';
  std::ofstream effective(std::string(argv[2])+"-effective.json");effective<<"{\"pixel_usages\":"<<usages<<",\"local_overrides\":"<<overrides<<",\"bases_by_row\":{";bool initial=true;for(auto &r:rowBases){if(!initial)effective<<',';initial=false;effective<<'\"'<<r.first<<"\":[";bool a=true;for(int b:r.second){if(!a)effective<<',';a=false;effective<<b;}effective<<']';}effective<<"}}\n";

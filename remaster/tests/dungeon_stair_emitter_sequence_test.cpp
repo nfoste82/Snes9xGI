@@ -40,9 +40,6 @@ int main(int argc,char **argv) {try {
   c.submodule=handler;c.constructionPhase=step?1:0;
   c.linkX=c.stairs[stair].x*8+8;c.linkY=c.stairs[stair].y*8-24+step*4;
   c.linkPlane=c.stairs[stair].changesPlane?(step>=6):0;run();steps++;
-#ifdef ALTTP_TEST_PRIOR_STAIR_PHASE_GATE
-  if(step) {check(result->lights.empty(),"prior climb gate baseline");continue;}
-#endif
   if(steps==1)if(const char *trace=std::getenv("S9X_REMASTER_STAIR_LIGHT_TRACE")) {
    std::ifstream file(trace);std::string first;std::getline(file,first);
    check(first.find("\"event\":\"stair_trace_start\",\"sample\":0")!=std::string::npos,"first stair did not arm explicit start");
@@ -70,11 +67,7 @@ int main(int argc,char **argv) {try {
    else check(!result->lights.empty(),"recorded ordinary/init source missing");
   }
   check(records==600 && climb==249,"actual trace denominator changed");
-#ifdef ALTTP_TEST_PRIOR_STAIR_PHASE_GATE
-  check(dropped==249,"prior gate did not reproduce actual249blackout frames");
-#else
   check(dropped==0,"actual climb lifecycle still drops sources");
-#endif
   std::cout<<"actual_trace_records="<<records<<" climb_frames="<<climb<<" dropped="<<dropped<<" (recorded lifecycle/camera; own packet artwork fixed, not live VRAM chronology)\n";
  }
  c.submodule=2;run();check(result->lights.empty(),"room transition must suppress sources");

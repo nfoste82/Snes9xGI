@@ -1,6 +1,6 @@
-// Production EndFrame must retain bounded declaration diagnostics without
-// treating declarations or final-word coincidence as a geometry certificate.
+// Declaration research is offline-only and never grants production geometry.
 #include "../runtime/remaster.h"
+#include "../tools/ALttP/dungeon_static_assembly.h"
 #include <cassert>
 #include <iostream>
 
@@ -14,14 +14,10 @@ int main() {
 	uint16_t rgb=0;RemasterFrame frame;
 	S9xRemasterBeginFrame(1,1,1,1);
 	S9xRemasterEndFrame(&rgb,1,1,1,&frame,&c);
-#ifdef REMASTER_STATIC_DECLARATION_ASSESSMENT
-	assert(S9xRemasterState().dungeonStaticAssessmentRoom==8);
-	assert(!S9xRemasterState().dungeonStaticDeclarationsComplete);
-	assert(S9xRemasterState().dungeonStaticCandidates.empty());
+	const auto declarations=S9xRemasterDecodeDungeonDeclarations(nullptr,0,false,8);
+	assert(!declarations.complete);
+	assert(S9xRemasterAssessDungeonStaticCandidates(declarations,nullptr).empty());
 	assert(!S9xRemasterDungeonResearchEnabled());
-	std::cout<<"PASS absent declarations stay unresolved in production EndFrame\n";
-#else
-	std::cerr<<"FAIL production EndFrame has no static declaration assessment\n";
-	return 1;
-#endif
+	assert(!S9xRemasterState().runtimeDungeonHeightValid);
+	std::cout<<"PASS offline absent declarations stay unresolved; production grants no geometry\n";
 }

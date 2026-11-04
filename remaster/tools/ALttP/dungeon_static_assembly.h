@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-// Bounded declaration/effect evidence, NOT a writer trace or a geometry grant.
+// Offline-only declaration/effect evidence, NOT a writer trace or a geometry grant.
 // Addresses are USA LoROM addresses; the adapter must verify the entire ROM.
 // Unknown handlers have a whole-room effect, never an inferred small rectangle.
 struct RemasterDungeonDeclaration {

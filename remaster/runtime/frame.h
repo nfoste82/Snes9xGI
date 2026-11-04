@@ -336,7 +336,7 @@ struct RemasterFrame
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
-	bool sampleAccumulation = true;
+	bool legacySampleAccumulation = true; // v12+ wire evidence only; rendering never reads this.
 	std::vector<uint16_t> originalRgb555;
 	std::vector<RemasterFramePixel> mainPixels;
 	std::vector<RemasterFramePixel> subPixels;
@@ -690,20 +690,11 @@ inline size_t S9xRemasterRestoreSceneSubscreenWalls(RemasterFrame &frame,
 				// Preserve the approved floor/stair receiver contract. In particular,
 				// height-only landing art is not authorization to change stair appearance.
 				physical = physical || (effective.hasHeight && effective.hasNormals &&
-					(false
-#ifndef ALTTP_TEST_PRIOR_SCENE_FLOORS
-						 || effective.tileRole == RemasterTileRole::Floor
-#endif
-#ifndef ALTTP_TEST_PRIOR_SCENE_STAIRS
+					(effective.tileRole == RemasterTileRole::Floor
 						 || effective.tileRole == RemasterTileRole::StairTop || effective.tileRole == RemasterTileRole::StairBottom
-						 #ifndef ALTTP_TEST_PRIOR_SCENE_STAIR_GROUPS
 						 || (effective.tileRole == RemasterTileRole::Unknown &&
 							(i.assetGroup == "stair_treads" || i.assetGroup == "stair_rails" || (authoredStairs && authoredStairs->count(i.tileId))))
-						 #endif
-#endif
-						 #ifndef ALTTP_TEST_PRIOR_SCENE_DOORWAYS
 						 || effective.tileRole == RemasterTileRole::Doorway
-						 #endif
 					));
 			}
 			a = accepted.emplace(p.instanceId, physical).first;
@@ -837,14 +828,9 @@ struct RemasterDungeonMovementCache
 
 struct RemasterDungeonHeightMap;
 #include "dungeon_producer_writes.h"
-#include "dungeon_static_assembly.h"
-#define REMASTER_STATIC_DECLARATION_ASSESSMENT 1
 struct RemasterDungeonFloorContext
 {
 	RemasterDungeonReplacementEvidence replacementEvidence; // owned completed-boundary input
-	// Immutable ROM declarations, not proof that a particular writer survived.
-	// Optional: legacy captures explicitly lack this input.
-	std::shared_ptr<const RemasterDungeonConstructionDeclarations> constructionDeclarations;
 	const RemasterDungeonWriteTrace *producerWrites=nullptr;
 	// Invocation-local EndFrame scratch shared by related BG/relation solves.
 	// Exact ordered seeds retain actor-plane/position component ordering.
@@ -1478,21 +1464,6 @@ inline bool S9xRemasterReadDungeonHeightMap (const std::string &path,
 }
 
 #include "dungeon_wall_mounts.h"
-
-// Canonical local source proof; placement flips are applied only when selecting
-// displayed seam samples. A cap is not permission to ignore arbitrary relief.
-inline bool S9xRemasterDungeonDoorTangentCap(const RemasterDungeonFloorContext::Placement &wall,
-	uint8_t doorDirection)
-{
-	if(doorDirection>=4 || wall.surface!=RemasterDungeonFloorContext::Surface::Wall ||
-		!wall.hasHeight || !wall.wallTemplateOffset || (!wall.highCornerFace && !wall.highPerimeterFace))return false;
-	const int low=*std::min_element(wall.height.begin(),wall.height.end());
-	const int cap=*std::max_element(wall.height.begin(),wall.height.end());
-	if(cap<=low || cap>=low+7)return false;
-	for(int y=0;y<8;y++)for(int x=0;x<8;x++)
-		if(wall.height[y*8+x]!=std::min(cap,low+7-(doorDirection<2?y:x)))return false;
-	return true;
-}
 
 // Exact final handler footprint, not a tile-hash or collision-height inference.
 // The rails prove the assembly's authored zero datum and signed upper endpoint;
@@ -3202,7 +3173,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		// That plateau is NOT a floor contact. Only the two surviving downhill
 		// tangent face regions constrain its signed placement base. Preserve the
 		// authored cap/relief, and require independent agreement on both facings.
-		#ifndef ALTTP_TEST_PRIOR_CLIPPED_CORNER_ATTACHMENT
 		for(int i=0;i<4096;i++) {
 			const auto &t=context.placements[i];
 			if(!t.highCornerFace || !t.wallTemplateOffset || !t.hasHeight || t.surface!=RemasterDungeonFloorContext::Surface::Wall)continue;
@@ -3242,7 +3212,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				} else if(conflict)result.structuralConflicts++;
 			}
 		}
-		#endif
 		// Only explicitly marked, transformed floorward contacts seed doorway
 		// datums. Carry the datum through the exact complete ROM assembly,
 		// retaining authored frame/opening relief (including stairs). Hidden art
@@ -3306,12 +3275,8 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 									// A diagnostic Unknown landing can lack its own Floor bit;
 									// the other map's proved flat Floor bit still identifies the
 									// hidden counterpart. Do not require both bits to hide it.
-									#ifdef ALTTP_TEST_PRIOR_DOOR_PLANE_OWNERSHIP
-									visible=true;
-									#else
 									visible |= !n.distinctLowerUsage || !(n.floorPlaneMask&2) ||
 										p==(context.placementBackgroundIndex==1?0:1);
-									#endif
 								}
 							}
 						}
@@ -3485,7 +3450,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			// from EVERY declared movement contact on that plane. All-00 bodies,
 			// missing lower floor metadata and unsupported special attributes stay ambiguous.
 			int bodyPlane=-1;
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_CONTACT_PLANES
 			bool underpass=context.placementBackgroundIndex==1;
 			for(int i:entry.second)underpass &= context.placements[i].distinctLowerUsage && (context.placements[i].floorPlaneMask&2);
 			if(underpass) {
@@ -3497,7 +3461,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				}
 				if(solid && exclusive)bodyPlane=0;
 			}
-#endif
 			for(int i:entry.second) {
 				const auto &part=context.placements[i];
 				if(!part.authoredObstacleContact)continue;
@@ -3588,7 +3551,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		// interior. Within a unique intact ROM section, signed authored normal
 		// continuation joins its bands. Never cross a missing source, corner,
 		// incompatible edge, underpass or ambiguous assembly owner.
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_WALL_SEAMS
 		for(int sectionPass=0;sectionPass<2;sectionPass++)for(int p=0;p<2;p++)if(activePlanes[p]) {
 			std::array<bool,4096> seen={};
 			auto axis=[&](int i) {
@@ -3669,7 +3631,6 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				}
 			}
 		}
-#endif
 		for (int i = 0; i < 4096; i++)
 		{
 			const auto &tile = context.placements[i];
@@ -5083,7 +5044,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.samplesPerFrame = profile.samplesPerFrame;
 	frame.representativeEmitters = static_cast<uint8_t>(areaSettings.representativeEmitters);
 	frame.offscreenRepresentativeEmitters = areaSettings.offscreenRepresentativeEmitters;
-	frame.sampleAccumulation = profile.sampleAccumulation;
+	frame.legacySampleAccumulation = profile.legacySampleAccumulation;
 
 	// Capture-local animation tracks are observations, not semantic profile groups.
 	// Keep them when refreshing authored metadata in the replay editor.
@@ -5583,7 +5544,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		return false;
 	if (result.heightPreviewMultiplier < 1 || result.heightPreviewMultiplier > 20)
 		return false;
-	result.sampleAccumulation = sampleAccumulation != 0;
+	result.legacySampleAccumulation = sampleAccumulation != 0;
 	const size_t pixelCount = static_cast<size_t>(result.width) * result.height;
 	if (pixelCount > bytes.size() / 2 || assetCount > bytes.size() / 74 ||
 		artworkColorCount > bytes.size() / 146 || groupCount > bytes.size() / 4 ||
@@ -6290,74 +6251,6 @@ inline const RemasterFrameMaterial *S9xRemasterFrameMaterialForPixel (
 	return name ? S9xRemasterFrameMaterialForName(frame, *name) : nullptr;
 }
 
-inline std::vector<RemasterFrameLight> S9xRemasterFrameEmissionLights (const RemasterFrame &frame)
-{
-	RemasterFrameChannelResolver channels(frame);
-	struct Accumulator
-	{
-		float x = 0.0f;
-		float y = 0.0f;
-		float red = 0.0f;
-		float green = 0.0f;
-		float blue = 0.0f;
-		float z = 0.0f;
-		float weight = 0.0f;
-		bool emissive = false;
-	};
-	std::vector<Accumulator> accumulators(frame.tileInstances.size());
-	for (size_t offset = 0; offset < frame.mainPixels.size(); offset++)
-	{
-		const auto selected=channels.select(frame,offset,!frame.scenePixels.empty());
-		const auto pixel=selected.donors[size_t(RemasterMetadataChannel::Emission)];
-		if (!pixel.instanceId || pixel.instanceId > frame.tileInstances.size())
-			continue;
-		Accumulator &accumulator = accumulators[pixel.instanceId - 1];
-		if (pixel.tilePixel >= 64)
-			continue;
-		const RemasterFrameTileInstance &instance = frame.tileInstances[pixel.instanceId - 1];
-		const RemasterFrameAssetMetadata *metadata = channels.metadata[pixel.instanceId-1];
-		if (!metadata || !metadata->hasEmission)
-			continue;
-		const size_t emissionOffset = pixel.tilePixel * 4;
-		const auto emission = S9xRemasterEmissionSample(*metadata, pixel.tilePixel,
-			instance.hasPaletteArtwork ? instance.paletteRgb555[pixel.tilePixel] : frame.originalRgb555[offset]);
-		const float intensity = metadata->emissionRgba[emissionOffset + 3] / 25.0f;
-		if (intensity <= 0.0f)
-			continue;
-		accumulator.x += (static_cast<float>(offset % frame.width) + 0.5f) * intensity;
-		accumulator.y += (static_cast<float>(offset / frame.width) + 0.5f) * intensity;
-		// Eight standard-intensity pixels produce a 1x light; every pixel remains additive.
-		// Match the shader's emission decode before summing differently colored pixels.
-		accumulator.red += std::pow(emission[0] / 255.0f, 2.2f) * intensity / 8.0f;
-		accumulator.green += std::pow(emission[1] / 255.0f, 2.2f) * intensity / 8.0f;
-		accumulator.blue += std::pow(emission[2] / 255.0f, 2.2f) * intensity / 8.0f;
-		const auto hp=selected.donors[size_t(RemasterMetadataChannel::Height)];
-		const int height=hp.instanceId ? frame.tileInstances[hp.instanceId-1].heightOffset+
-			channels.metadata[hp.instanceId-1]->height[hp.tilePixel] : 0;
-		accumulator.z += height / 255.0f * intensity;
-		accumulator.weight += intensity;
-		accumulator.emissive = true;
-	}
-	std::vector<RemasterFrameLight> lights;
-	for (const Accumulator &accumulator : accumulators)
-	{
-		if (!accumulator.emissive || accumulator.weight <= 0.0f)
-			continue;
-		RemasterFrameLight light;
-		light.x = accumulator.x / accumulator.weight;
-		light.y = accumulator.y / accumulator.weight;
-		const float emitterHeight = accumulator.z / accumulator.weight * frame.lightingCoordinateScale;
-		light.z = std::max(emitterHeight, frame.lightingCoordinateScale / 255.0f);
-		light.radius = 96.0f;
-		light.red = accumulator.red;
-		light.green = accumulator.green;
-		light.blue = accumulator.blue;
-		light.intensity = 12.0f;
-		lights.push_back(light);
-	}
-	return lights;
-}
-
 inline std::vector<RemasterTileContentId> S9xRemasterFrameAssetGroupVariants (
 	const RemasterFrame &frame, const std::string &groupName)
 {
@@ -6470,7 +6363,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			return false;
 		RemasterFrameSerialization::Float(bytes, frame.originalSceneContribution);
 		RemasterFrameSerialization::U8(bytes, frame.samplesPerFrame);
-		RemasterFrameSerialization::U8(bytes, frame.sampleAccumulation ? 1 : 0);
+		RemasterFrameSerialization::U8(bytes, frame.legacySampleAccumulation ? 1 : 0);
 	}
 	if (frame.schemaVersion >= 14)
 	{

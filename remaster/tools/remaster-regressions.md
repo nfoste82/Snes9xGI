@@ -118,5 +118,5 @@ as evidence that a code change regressed performance.
 ## Test the tooling itself
 
 ```sh
-python3 -m unittest discover -s tools -p 'test_*remaster*.py'
+python3 -m unittest discover -s remaster/tools -p 'test_*remaster*.py'
 ```

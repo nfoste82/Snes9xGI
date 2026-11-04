@@ -17,16 +17,12 @@ int main(int argc,char **argv) {
  for(int i=0;i<4096;i++)if((*bg1Tiles)[i].obstacleAssembly || (*bg1Tiles)[i].tileHash==UINT64_C(0x8044813840be1f26)) {
   const auto &t=(*bg1Tiles)[i];const auto &bm=S9xRemasterState().runtimeDungeonBg1HeightMap;
   std::cout<<"BG1 obstacle cell="<<i%64<<','<<i/64<<" assembly="<<t.obstacleAssembly<<" local="<<int(*std::min_element(t.height.begin(),t.height.end()))<<".."<<int(*std::max_element(t.height.begin(),t.height.end()))<<" base="<<bm.offsets[i]<<" planes="<<bm.planeOffsets[0][i]<<','<<bm.planeOffsets[1][i]<<'\n';
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT
   check(bm.offsets[i]==0 && !bm.fallbackDirections[i] && bm.producerObstacle[i],"actual statue full assembly support/local composition");
-#endif
  }
  {auto packet=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(std::string(argv[2])+".s9xrmf",*packet),"actual produced packet");size_t topPixels=0;
   for(const auto *pixels:{&packet->mainPixels,&packet->subPixels})for(const auto &px:*pixels)if(px.instanceId) {
    const auto &i=packet->tileInstances[px.instanceId-1];if(i.source==RemasterSourceType::Background && i.sourceIndex==0 && i.tileId.hash==UINT64_C(0x8044813840be1f26)) {
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT
     check(i.heightOffset==0 && !i.hasPlacementHeight,"own statue effective top offset/local array wrong");
-#endif
     topPixels++;
    }
   }std::cout<<"actual_top_visible_usages="<<topPixels<<'\n';

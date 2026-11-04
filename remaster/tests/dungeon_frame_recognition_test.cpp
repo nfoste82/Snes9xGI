@@ -78,20 +78,6 @@ int main(){try {
  S9xRemasterDungeonPlacements(c,profile,*tiles);int ambiguous=0;
  for(const auto &t:*tiles)if(t.doorTemplateOffset){need(t.doorDirection==0xfe,"competing origins accepted");ambiguous++;}
   need(ambiguous>0,"ambiguous candidate denominator");
-  // The actual western failure was attachment, not recognition. The previous
-  // 288 synthetic frames used full ramps everywhere, so never exercised caps.
-  // Prove reusable canonical sections on both axes; flips affect displayed
-  // contacts/masks, not this intrinsic source proof. Signed datums are legal.
-  for(int d=0;d<4;d++)for(int flip=0;flip<4;flip++)for(int cap=1;cap<7;cap++)for(int datum:{-32,0,300}){
-   C::Placement wall;wall.surface=C::Surface::Wall;wall.hasHeight=true;
-   wall.wallTemplateOffset=0xb86;wall.highCornerFace=true;wall.hflip=flip&1;wall.vflip=flip&2;
-   for(int y=0;y<8;y++)for(int x=0;x<8;x++)wall.height[y*8+x]=datum+std::min(cap,7-(d<2?y:x));
-   need(S9xRemasterDungeonDoorTangentCap(wall,d),"clipped cap axis/flip/signed proof");
-   for(int k=0;k<64;k++){wall.height[k]++;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"partial/overwritten cap proof");wall.height[k]--;}
-   wall.wallTemplateOffset=0;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"missing ownership cap proof");wall.wallTemplateOffset=0xb86;
-   wall.highCornerFace=false;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"unproved cap handler");wall.highCornerFace=true;
-   wall.surface=C::Surface::Floor;need(!S9xRemasterDungeonDoorTangentCap(wall,d),"incompatible cap role");
-  }
    // Full support/attachment solve, independent planes, all axes and flips.
    // A wall seam/cap alone is NOT doorway support. Explicit floorward marks
    // on the two innermost frame members seed the shared assembly datum.

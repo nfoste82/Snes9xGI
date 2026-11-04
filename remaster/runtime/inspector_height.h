@@ -25,12 +25,6 @@ inline RemasterInspectorHeightPreviewRange S9xRemasterInspectorLocalPreviewRange
 	return {std::min(0, int(*bounds.first)), std::max(255, int(*bounds.second))};
 }
 
-inline void S9xRemasterInspectorInitializeAuthoredHeight (RemasterAssetMetadata &asset)
-{
-	if (!asset.hasHeight) asset.height.fill(0);
-	asset.hasHeight = true;
-}
-
 // Inspector authoring never reads instance geometry. A loaded profile is
 // authoritative, including an absent/reset layer; capture fallback is local
 // asset data copied by ApplyProfileToFrame, not an effective placement array.
@@ -50,12 +44,6 @@ inline const std::array<int16_t, 64> *S9xRemasterInspectorAuthoredHeight (
 	if (!captured || !captured->hasHeight) return nullptr;
 	sampling = captured->heightSampling;
 	return &captured->height;
-}
-
-inline size_t S9xRemasterInspectorCanonicalPixel (const RemasterFrameTileInstance &instance, size_t displayed)
-{
-	const size_t x = displayed % 8, y = displayed / 8;
-	return (instance.vFlip ? 7 - y : y) * 8 + (instance.hFlip ? 7 - x : x);
 }
 
 // IDs are one-based packet instances, not hash occurrences or gameplay planes.

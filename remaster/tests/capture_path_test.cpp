@@ -2,6 +2,7 @@
 #include <cassert>
 #include <fstream>
 #include <iterator>
+#include <filesystem>
 #include <unistd.h>
 
 int main()
@@ -11,8 +12,10 @@ int main()
 	assert(S9xRemasterCaptureLocationPath("frame.s9xrmf", true, false, 0, 0x1234, 0x5678) ==
 		"frame_overworld_x1234_y5678.s9xrmf");
 	assert(S9xRemasterCaptureLocationPath("frame.s9xrmf", false, false, 0, 0, 0) == "frame.s9xrmf");
-	char directory[] = "/var/folders/hk/2wk9yqf564g4c39vrly7dgd80000gq/T/opencode/capture-path-XXXXXX";
-	assert(mkdtemp(directory));
+	auto pattern = (std::filesystem::temp_directory_path() / "capture-path-XXXXXX").string();
+	std::vector<char> storage(pattern.begin(), pattern.end());storage.push_back('\0');
+	const char *directory = mkdtemp(storage.data());
+	assert(directory);
 	std::string base = std::string(directory) + "/frame_room061.s9xrmf", written;
 	std::vector<uint8_t> first = {1, 2, 3}, second = {4, 5};
 	assert(S9xRemasterWriteUniqueCapture(first, base, written) && written == base);

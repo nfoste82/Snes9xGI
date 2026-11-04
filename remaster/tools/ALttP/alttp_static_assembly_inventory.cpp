@@ -1,5 +1,5 @@
 // Read-only declaration/effect capability inventory. Never a geometry approval.
-#include "../../runtime/dungeon_static_assembly.h"
+#include "dungeon_static_assembly.h"
 #include "../../../sha256.cpp"
 #include <algorithm>
 #include <cstring>

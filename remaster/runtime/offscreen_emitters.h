@@ -26,11 +26,7 @@ inline bool S9xRemasterRoomEmitterLifecycle(const RemasterDungeonFloorContext &c
 	// Module07_08/10, 0 initializes and 1 climbs; neither constructs the room.
 	// Other stair phases are not present in the verified two-entry dispatch.
 	if(c.submodule == 8 || c.submodule == 16) {
-#ifdef ALTTP_TEST_PRIOR_STAIR_PHASE_GATE
-		return c.constructionPhase == 0;
-#else
 		return c.constructionPhase <= 1;
-#endif
 	}
 	return c.submodule == 0 && c.constructionPhase == 0;
 }
@@ -48,20 +44,11 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 	if (!c.verifiedAlttpRom || !c.indoors || !S9xRemasterRoomEmitterLifecycle(c) ||
 		c.collisionMode || c.roomIndex >= 320 || !c.constructedMaps || !c.graphics ||
 		frame.width != 256 || !frame.height || frame.height > 256) return d;
-	// All missing pixels retain the planar/depth source contract. The historical
-	// sphere approximation is compiled only for regression comparison below.
+	// All missing pixels retain the same planar/depth source contract.
 	if (std::none_of(profile.assets.begin(), profile.assets.end(), [](const auto &a) {
 		return a.second.hasEmission;
 	})) return d;
 	std::map<uint16_t, RemasterTileContentId> identities;
-	struct Source {
-		int layer, cell;
-		const RemasterAssetMetadata *asset;
-		float power = 0, sx = 0, sy = 0, sz = 0;
-		unsigned count = 0;
-		std::array<float,3> color = {};
-	};
-	std::vector<Source> sources;
 	// During same-room scrolling retain the conservative whole-room union.
 	// Missing/contradictory settled evidence likewise preserves legacy output.
 	const auto compartment=(c.submodule==0 && c.constructionPhase==0) ?
@@ -160,8 +147,6 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 			{ d.unknownBases++; continue; }
 			datum=map->offsets[cell];
 		}
-		float power=0, sx=0, sy=0, sz=0; unsigned count=0;
-		std::array<float,3> color={};
 		const std::array<int16_t,64> *placementLocal=nullptr;
 		for(const auto &preview:map->localHeightPreviews)if(preview.cell==cell){placementLocal=&preview.height;break;}
 		for (int y=0; y<8; y++) for (int x=0; x<8; x++)
@@ -178,14 +163,10 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 				if (!S9xRemasterHeldLampHudPixel(frame, size_t(py)*frame.width+px))
 				{ d.visiblePixels++; continue; }
 			}
-#ifndef ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
 			// Preserve the visible pixel source contract at the viewport boundary:
 			// exact signed XY, placement-local Z, authored normal/depth and power.
 			// The existing source-only deterministic depth transport consumes it.
 			{
-#else
-			if (px>=0 && py>=0 && px<int(frame.width) && py<int(frame.height)) {
-#endif
 				RemasterFrameHiddenEmitter hidden;
 				hidden.x=px+0.5f; hidden.y=py+0.5f;
 				int local=placementLocal ? (*placementLocal)[pixel] : a.hasHeight ? a.height[pixel] : 0;
@@ -205,64 +186,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 					else hidden.normal={{0,0,1}};
 				}
 				frame.hiddenEmitters.push_back(hidden); d.hiddenPixels++;
-				continue;
 			}
-#ifdef ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
-			if (!a.emissionOmnidirectional && a.emissionDepth<=0) continue;
-			const float w=e[3];
-			power+=w; sx+=(px+0.5f)*w; sy+=(py+0.5f)*w;
-			sz+=((datum+(placementLocal ? (*placementLocal)[pixel] : a.hasHeight ? a.height[pixel] : 0))*frame.lightingCoordinateScale/255.0f + a.emissionDepth*0.5f)*w;
-			for (int k=0;k<3;k++) color[k]+=std::pow(e[k]/255.0f,2.2f)*w;
-			count++;
-#endif
 		}
-		if (!count) continue;
-		sources.push_back({layer, cell, &a, power, sx, sy, sz, count, color});
-	}
-	// The visible path honors these links in representative mode. Use the same
-	// opt-in contract for missing pixels, before losing placement/hash identity.
-	// Never combine across BG planes, room edges or disconnected occurrences.
-	std::vector<size_t> parent(sources.size());
-	std::map<std::pair<int,int>,size_t> placements;
-	for (size_t i = 0; i < sources.size(); i++) {
-		parent[i] = i;
-		placements[{sources[i].layer, sources[i].cell}] = i;
-	}
-	auto root = [&](size_t i) { while (parent[i] != i) i = parent[i]; return i; };
-	if (frame.representativeEmitters) for (size_t i = 0; i < sources.size(); i++) {
-		const auto &s = sources[i];
-		for (int delta : {1, 64}) {
-			if ((delta == 1 && s.cell % 64 == 63) || s.cell + delta >= 4096) continue;
-			auto next = placements.find({s.layer, s.cell + delta});
-			if (next == placements.end()) continue;
-			const auto &a = *s.asset, &b = *sources[next->second].asset;
-			if (a.emissionOmnidirectional != b.emissionOmnidirectional ||
-				std::find(a.combineEmitters.begin(), a.combineEmitters.end(), b.tileId) == a.combineEmitters.end() ||
-				std::find(b.combineEmitters.begin(), b.combineEmitters.end(), a.tileId) == b.combineEmitters.end()) continue;
-			size_t ra = root(i), rb = root(next->second);
-			parent[std::max(ra,rb)] = std::min(ra,rb);
-		}
-	}
-	for (size_t i = 0; i < sources.size(); i++) {
-		const size_t r = root(i);
-		if (r == i) continue;
-		auto &a = sources[r]; const auto &b = sources[i];
-		a.power += b.power; a.sx += b.sx; a.sy += b.sy; a.sz += b.sz; a.count += b.count;
-		for (unsigned k = 0; k < 3; k++) a.color[k] += b.color[k];
-	}
-	for (size_t i = 0; i < sources.size(); i++) {
-		if (root(i) != i) continue;
-		const auto &s = sources[i];
-		RemasterFrameLight light;
-		light.x=s.sx/s.power; light.y=s.sy/s.power; light.z=s.sz/s.power;
-		// Equal emitting area: sphere area = 4*pi*r^2. This is a physical
-		// representative of missing flame pixels, not a 96px influence radius.
-		light.radius=std::sqrt(s.count/(4.0f*3.14159265358979323846f));
-		light.intensity=s.power/s.count;
-		light.red=std::pow(s.color[0]/s.power,1.0f/2.2f);
-		light.green=std::pow(s.color[1]/s.power,1.0f/2.2f);
-		light.blue=std::pow(s.color[2]/s.power,1.0f/2.2f);
-		frame.lights.push_back(light); d.lights++;
 	}
 	return d;
 }

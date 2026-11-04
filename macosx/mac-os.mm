@@ -802,7 +802,6 @@ static NSTextField *remasterOffscreenRepresentativeInput, *remasterAreaOffscreen
 static NSButton *remasterOffscreenRepresentativeEnabled;
 static NSButton *remasterAreaOffscreenRepresentativeEnabled, *remasterAreaOffscreenRepresentativeDefault;
 static NSTextField		*remasterSamplesInput;
-static NSButton			*remasterSampleAccumulationButton;
 static NSButton			*remasterSettingsSaveButton;
 static NSButton			*remasterMetricsButton;
 static NSTextField		*remasterMetricsText;
@@ -5564,7 +5563,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	benchmarkReport[@"lighting_coordinate_scale"] = @(benchmarkSceneSettings.lightingCoordinateScale);
 	benchmarkReport[@"reflectance_boost"] = @(benchmarkSceneSettings.reflectanceBoost);
 	benchmarkReport[@"original_scene_contribution"] = @(benchmarkSceneSettings.originalSceneContribution);
-	benchmarkReport[@"sample_accumulation"] = @(benchmarkSceneSettings.sampleAccumulation);
+	// Preserve the historical report identity, not an active rendering setting.
+	benchmarkReport[@"sample_accumulation"] = @(remasterEditingProfile.legacySampleAccumulation);
 	benchmarkReport[@"window_width"] = @(s9xView.window.frame.size.width);
 	benchmarkReport[@"window_height"] = @(s9xView.window.frame.size.height);
 	benchmarkReport[@"status"] = @"running";
@@ -10743,7 +10743,6 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 		remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 		[self refreshRemasterRepresentativeControls];
-		remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 		remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	}
 }
@@ -11136,7 +11135,6 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterSamplesSlider.integerValue = remasterEditingProfile.samplesPerFrame;
 	remasterSamplesInput.integerValue = remasterEditingProfile.samplesPerFrame;
 	[self refreshRemasterRepresentativeControls];
-	remasterSampleAccumulationButton.state = remasterEditingProfile.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 	remasterSettingsSaveButton.enabled = remasterEditingProfileDirty;
 	remasterMetricsButton.state = S9xRemasterPerformanceMetricsEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
 	[self refreshRemasterMetrics];
@@ -11597,7 +11595,6 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterSamplesSlider.integerValue = restored.samplesPerFrame;
 	remasterSamplesInput.integerValue = restored.samplesPerFrame;
 	[self refreshRemasterRepresentativeControls];
-	remasterSampleAccumulationButton.state = restored.sampleAccumulation ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)changeRemasterHeightScale:(id)sender
@@ -11856,20 +11853,6 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 8);
 	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)]
 		actionName:@"Change Samples Per Frame"];
-}
-
-- (void)changeRemasterSampleAccumulation:(NSButton *)sender
-{
-	if (!remasterEditingProfileLoaded)
-		return;
-	const bool enabled = sender.state == NSControlStateValueOn;
-	if (remasterEditingProfile.sampleAccumulation == enabled)
-		return;
-	const RemasterSceneSettings before = S9xRemasterGetSceneSettings(remasterEditingProfile);
-	remasterEditingProfile.sampleAccumulation = enabled;
-	remasterEditingProfile.schemaVersion = std::max<uint32_t>(remasterEditingProfile.schemaVersion, 8);
-	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)]
-		actionName:@"Toggle Sample Accumulation"];
 }
 
 - (void)changeRemasterIndirectRoughness:(id)sender

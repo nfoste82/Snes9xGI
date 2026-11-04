@@ -783,14 +783,6 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.graphics = Memory.VRAM;
 				dungeonFloor.emitterPalette = PPU.CGDATA;
 				dungeonFloor.dungeonTemplateData = Memory.ROM + 0x1b52;
-				// Small bounded immutable declaration decode. This is not the
-				// headless renderer and does not execute a CPU or observe stores.
-				static std::shared_ptr<const RemasterDungeonConstructionDeclarations> declarations;
-				if(!declarations || declarations->room!=dungeonFloor.roomIndex)
-					declarations=std::make_shared<const RemasterDungeonConstructionDeclarations>(
-						S9xRemasterDecodeDungeonDeclarations(Memory.ROM,Memory.CalculatedSize,
-							dungeonFloor.verifiedAlttpRom,dungeonFloor.roomIndex));
-				dungeonFloor.constructionDeclarations=declarations;
 				if(S9xRemasterDungeonResearchEnabled())dungeonFloor.producerWrites = &S9xRemasterDungeonWrites();
 				dungeonFloor.hasTerrainActors = true;
 				dungeonFloor.linkZ = static_cast<int16_t>(Memory.RAM[0x24] | Memory.RAM[0x25]<<8);

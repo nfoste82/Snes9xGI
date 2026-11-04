@@ -6,6 +6,7 @@
 
 #include "../runtime/remaster.h"
 #include "../runtime/profile.h"
+#include "legacy_emission_reference.h"
 
 #include <cassert>
 #include <cstdio>
@@ -43,7 +44,7 @@ int main ()
 	frame.originalSceneContribution = 0.4f;
 	frame.heightPreviewMultiplier = 12;
 	frame.samplesPerFrame = 128;
-	frame.sampleAccumulation = false;
+	frame.legacySampleAccumulation = false;
 	frame.originalRgb555 = { 0x001f, 0x03e0 };
 	frame.mainPixels.resize(2);
 	frame.subPixels.resize(2);
@@ -717,7 +718,7 @@ int main ()
 	assert(decodedFrame.heightPreviewMultiplier == 12);
 	assert(decodedFrame.samplesPerFrame == frame.samplesPerFrame);
 	assert(decodedFrame.representativeEmitters == 0);
-	assert(!decodedFrame.sampleAccumulation);
+	assert(!decodedFrame.legacySampleAccumulation);
 	assert(decodedFrame.originalRgb555 == frame.originalRgb555);
 	assert(decodedFrame.tileInstances.size() == 1);
 	assert(decodedFrame.tileInstances[0].ppuPriority == 2);
@@ -867,7 +868,7 @@ int main ()
 	assert(S9xRemasterFrameOccurrences(decodedFrame, frameAsset.tileId).size() == 1);
 	assert(S9xRemasterFrameAssetForTile(decodedFrame, frameAsset.tileId));
 	assert(S9xRemasterFrameAssetGroupVariants(decodedFrame, "animated_floor").size() == 2);
-	std::vector<RemasterFrameLight> emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	std::vector<RemasterFrameLight> emissionLights = legacyFrameEmissionLights(decodedFrame);
 	assert(emissionLights.size() == 1);
 	assert(emissionLights[0].x == 0.5f && emissionLights[0].y == 0.5f);
 	assert(emissionLights[0].z == decodedFrame.lightingCoordinateScale / 255.0f);
@@ -877,20 +878,20 @@ int main ()
 	assert(std::fabs(emissionLights[0].blue - std::pow(24.0f / 255.0f, 2.2f) / 8.0f) < 1e-6f);
 	const float fullRed = emissionLights[0].red;
 	decodedFrame.assetMetadata[0].emissionRgba[39] = 12;
-	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	emissionLights = legacyFrameEmissionLights(decodedFrame);
 	assert(emissionLights.size() == 1 && emissionLights[0].red < fullRed);
 	decodedFrame.assetMetadata[0].emissionRgba[39] = 25;
 	decodedFrame.assetMetadata[0].height[3] = 255;
 	decodedFrame.mainPixels[1].instanceId = 1;
 	decodedFrame.mainPixels[1].tilePixel = 3;
-	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	emissionLights = legacyFrameEmissionLights(decodedFrame);
 	assert(emissionLights.size() == 1 && emissionLights[0].red > fullRed);
 	assert(emissionLights[0].x == 1.0f);
 	assert(emissionLights[0].z == decodedFrame.lightingCoordinateScale * 0.5f);
 	assert(emissionLights[0].radius == 96.0f);
 	decodedFrame.assetMetadata[0].emissionRgba[12] = 128;
 	decodedFrame.assetMetadata[0].emissionRgba[15] = 50;
-	emissionLights = S9xRemasterFrameEmissionLights(decodedFrame);
+	emissionLights = legacyFrameEmissionLights(decodedFrame);
 	assert(std::fabs(emissionLights[0].red - (1.0f + 2.0f * std::pow(128.0f / 255.0f, 2.2f)) / 8.0f) < 1e-6f);
 	decodedFrame.assetMetadata[0].emissionRgba[12] = 255;
 	decodedFrame.assetMetadata[0].emissionRgba[15] = 25;
@@ -1054,7 +1055,7 @@ material = "wet_stone"
 	assert(profile.heightPreviewMultiplier == 12);
 	assert(profile.upperFloorHeight == 48);
 	assert(profile.samplesPerFrame == 128);
-	assert(!profile.sampleAccumulation);
+	assert(!profile.legacySampleAccumulation);
 	RemasterSceneSettings sceneSettings = S9xRemasterGetSceneSettings(profile);
 	sceneSettings.originalSceneContribution = 0.7f;
 	RemasterProfile sceneChangedProfile = profile;
@@ -1136,7 +1137,7 @@ material = "wet_stone"
 	assert(roundTrippedProfile.originalSceneContribution == 0.4f);
 	assert(roundTrippedProfile.heightPreviewMultiplier == 12);
 	assert(roundTrippedProfile.samplesPerFrame == 128);
-	assert(!roundTrippedProfile.sampleAccumulation);
+	assert(roundTrippedProfile.legacySampleAccumulation); // retired key is omitted on save
 	std::string invalidSamplesProfile = serializedProfile;
 	const size_t samplesBegin = invalidSamplesProfile.find("samples_per_frame = 128");
 	assert(samplesBegin != std::string::npos);
@@ -1300,7 +1301,7 @@ material = "wet_stone"
 	assert(decodedFrame.originalSceneContribution == profile.originalSceneContribution);
 	assert(decodedFrame.heightPreviewMultiplier == profile.heightPreviewMultiplier);
 	assert(decodedFrame.samplesPerFrame == profile.samplesPerFrame);
-	assert(decodedFrame.sampleAccumulation == profile.sampleAccumulation);
+	assert(decodedFrame.legacySampleAccumulation == profile.legacySampleAccumulation);
 	const RemasterFrameMaterial *capturedStone = nullptr;
 	for (const RemasterFrameMaterial &material : decodedFrame.materials)
 		if (material.name == "stone")

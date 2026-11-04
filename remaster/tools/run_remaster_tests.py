@@ -40,6 +40,10 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+    ("retired_sample_accumulation", "Retired profile key and strict byte-preserving capture compatibility"),
+    ("retired_emitter_patch", "Retired profile key/wire slot and hidden-source power compatibility"),
+    ("capture_path", "Portable unique capture names, sidecar collision and no overwrite"),
+    ("inspector_height", "Authored/effective signed height separation and local preview contrast"),
 	("dungeon_graphics_dependencies", "Exact both-map and all prospective replacement graphics bytes, bases/wraps and unknown fallback"),
 	("dungeon_classification_artwork", "Exact bounded artwork classification across plane/support changes; full map/placement/packet parity and revocation"),
 	("dungeon_seed_restore", "Ordered movement seeds: resident and unchanged-art full EndFrame cold parity with disconnected floors/thresholds/stairs"),
@@ -125,7 +129,7 @@ FULL_EXTRA = (
     ("dungeon_placement_reuse", "EndFrame relation transport and placement-cache invalidation"),
     ("dungeon_semantic_cache", "EndFrame semantic activation, facing, context and door-mask invalidation"),
     ("dungeon_producer_writes", "Live CPU Nx4 source/part/BG witnesses and equal-word/byte overwrite revocation"),
-    ("dungeon_static_assembly", "Production EndFrame explicitly lacks static declaration proof; no geometry grants"),
+    ("dungeon_static_assembly", "Offline declaration research stays unresolved; no production geometry grants"),
     ("dungeon_terrain_lifecycle", "Pickup/carried/thrown/landed support, OAM ownership and ambiguity"),
     ("dungeon_movable_replacement", "Owned opt-in replacement surfaces, authored-zero semantics, slots, BG planes, flips and secret rejection"),
     ("dungeon_persistent_support_rejection", "Dual-owner body rejection without component/constraint corruption"),

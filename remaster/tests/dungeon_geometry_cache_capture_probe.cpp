@@ -638,9 +638,7 @@ int main(int argc,char **argv){try {
      const auto &a=sources[n],&b=frame->lights[n];equal=a.x==b.x && a.y==b.y && a.z==b.z && a.radius==b.radius && a.intensity==b.intensity && a.red==b.red && a.green==b.green && a.blue==b.blue;
     }
     mismatches+=!equal;
-#ifndef ALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE
     check(equal,"stair animation source differs exact settled full solve");
-#endif
    }
    std::cout<<"animation_complete_samples="<<index<<" per_source_oracle_mismatches="<<mismatches<<" stair_endframe_total_ms="<<totalMs<<'\n';
    return 0;

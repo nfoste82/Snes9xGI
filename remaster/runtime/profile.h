@@ -385,7 +385,7 @@ struct RemasterProfile
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
-	bool sampleAccumulation = true;
+	bool legacySampleAccumulation = true; // Read-only compatibility evidence; never a rendering control.
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
 	std::map<RemasterTileContentId, RemasterAssetMetadata> assets;
@@ -447,7 +447,6 @@ struct RemasterSceneSettings
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
-	bool sampleAccumulation = true;
 	int offscreenRepresentativeEmitters = 1;
 };
 
@@ -456,7 +455,7 @@ inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile 
 	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
 		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost, profile.linkLampBrightness,
 		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
-		profile.representativeEmitters, profile.sampleAccumulation, profile.offscreenRepresentativeEmitters };
+		profile.representativeEmitters, profile.offscreenRepresentativeEmitters };
 }
 
 inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
@@ -473,7 +472,6 @@ inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const Remas
 	profile.upperFloorHeight = settings.upperFloorHeight;
 	profile.samplesPerFrame = settings.samplesPerFrame;
 	profile.representativeEmitters = settings.representativeEmitters;
-	profile.sampleAccumulation = settings.sampleAccumulation;
 	profile.offscreenRepresentativeEmitters = settings.offscreenRepresentativeEmitters;
 }
 
@@ -491,8 +489,7 @@ inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const
 		a.upperFloorHeight == b.upperFloorHeight &&
 		a.samplesPerFrame == b.samplesPerFrame &&
 		a.representativeEmitters == b.representativeEmitters &&
-		a.offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters &&
-		a.sampleAccumulation == b.sampleAccumulation;
+		a.offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters;
 }
 
 struct RemasterProfileDiagnostic
@@ -1286,7 +1283,9 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 			else if (key == "sample_accumulation")
 			{
 				hasSceneSampling = true;
-				if (!ParseBool(value, parsed.sampleAccumulation))
+				// Retired in e9b351cb. Preserve source evidence for old captures and
+				// benchmark identities, but omit the obsolete key when saving.
+				if (!ParseBool(value, parsed.legacySampleAccumulation))
 					fail(lineNumber, "sample_accumulation must be true or false");
 			}
 			else
@@ -2004,7 +2003,6 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	if (profile.representativeEmitters) output << "representative_emitters = " << unsigned(profile.representativeEmitters) << "\n";
 	if (profile.offscreenRepresentativeEmitters >= 0 && profile.offscreenRepresentativeEmitters != 1) output << "offscreen_representative_emitters = " << profile.offscreenRepresentativeEmitters << "\n";
-	output << "sample_accumulation = " << (profile.sampleAccumulation ? "true" : "false") << "\n";
 	for (const auto &entry : profile.areaSceneSettings)
 	{
 		if (entry.first != "overworld" && (!S9xRemasterValidAreaKey(entry.first) || entry.first.compare(0, 5, "room_"))) return false;

@@ -1,7 +1,7 @@
 // Retain the old approximation as a base-selection oracle; continuity_test
 // covers the new signed exact-depth transport with the same placement sources.
-#define ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES
 #include "../runtime/remaster.h"
+#include "legacy_offscreen_reference.h"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -21,7 +21,7 @@ int main() {
  map->offsets.fill(255);for(auto &v:map->planeOffsets)v.fill(255);for(auto &v:map->structuralPlaneOffsets)v.fill(255);
  map->producerHashes[cell]=id.hash;
  RemasterFrame frame;frame.width=256;frame.height=224;
- auto run=[&]{frame.lights.clear();return S9xRemasterAppendOffscreenRoomLights(frame,c,profile,map.get(),nullptr,S9xRemasterHashTile);};
+ auto run=[&]{frame.lights.clear();frame.hiddenEmitters.clear();return legacyAppendOffscreenRoomLights(frame,c,profile,map.get(),nullptr,S9xRemasterHashTile);};
  a.emissionRgba[3]=0;need(run().placements==0 && run().unknownBases==0,"all-zero authored emission is not unknown source geometry");a.emissionRgba[3]=25;
  a.emissionRgba[0]=0;need(run().placements==0,"black positive-alpha emission is not a physical source");a.emissionRgba[0]=255;
  map->offsets[cell]=0;map->planeOffsets[1][cell]=0;
@@ -44,10 +44,10 @@ int main() {
  map->roomIndex++;need(run().lights==0,"changed room cannot reuse solved base");map->roomIndex=c.roomIndex;
  (*maps)[cell*2]=(*maps)[cell*2+1]=0;
  need(run().lights==0,"distinct BG1 emitter cannot borrow solved BG2 geometry");
-  frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1,"distinct BG1 uses its own proven map");
+  frame.lights.clear();frame.hiddenEmitters.clear();need(legacyAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1,"distinct BG1 uses its own proven map");
  std::array<uint16_t,256> palette={};palette[1]=31;c.emitterPalette=palette.data();a.emissionColorMask=0;
- frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red>0 && frame.lights[0].blue==0,"offscreen artwork emission uses current red CGRAM");
+ frame.lights.clear();frame.hiddenEmitters.clear();need(legacyAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red>0 && frame.lights[0].blue==0,"offscreen artwork emission uses current red CGRAM");
  palette[1]=31<<10;
- frame.lights.clear();need(S9xRemasterAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red==0 && frame.lights[0].blue>0,"offscreen artwork emission follows palette animation");
+ frame.lights.clear();frame.hiddenEmitters.clear();need(legacyAppendOffscreenRoomLights(frame,c,profile,nullptr,map.get(),S9xRemasterHashTile).lights==1 && frame.lights[0].red==0 && frame.lights[0].blue>0,"offscreen artwork emission follows palette animation");
  std::puts("Offscreen emitter base/provenance checks passed");
 }

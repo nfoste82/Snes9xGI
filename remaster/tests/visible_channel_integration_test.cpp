@@ -13,7 +13,9 @@ int main(){
  RemasterFramePixel a{uint32_t(RemasterSourceType::Background)<<24,1,13},b{uint32_t(RemasterSourceType::Background)<<24|1<<16,2,42};
  f.mainPixels={a};f.subPixels={b};f.scenePixels={a};
  auto range=S9xRemasterFrameHeightRange(f);need(range.first==39,"height preview range must follow effective fallback donor and contextual base");
- auto lights=S9xRemasterFrameEmissionLights(f);need(!lights.empty(),"emission extraction must use common fallback donor");
+ RemasterLightingFieldCache emissionFields;emissionFields.update(f,true);
+ need(emissionFields.channelSources[0].donors[size_t(RemasterMetadataChannel::Emission)].instanceId==2 &&
+  emissionFields.emission[3]==25,"production emission field must use common fallback donor");
  std::vector<uint8_t> bytes;need(S9xSerializeRemasterFrame(f,bytes),"serialize");RemasterFrame replay;need(S9xDeserializeRemasterFrame(bytes,replay),"replay");
  RemasterLightingFieldCache cpu;cpu.update(replay,true);need(cpu.height[0]==39/255.f,"replay actual field parity");
  for(unsigned order=0;order<2;order++)for(unsigned hv=0;hv<4;hv++) {

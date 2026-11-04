@@ -25,9 +25,7 @@ int main(int argc,char **argv) {
   usages++;raised+=i.heightOffset==24;overrides+=i.hasPlacementHeight;seen.insert(cell);
   auto asset=S9xRemasterState().activeProfile.assets.find(i.tileId);check(asset!=S9xRemasterState().activeProfile.assets.end(),"own local source");
   for(const auto &a:packet->assetMetadata)if(a.tileId==i.tileId)check(a.hasHeight && a.height==asset->second.height,"actual packet authored pixels changed");
-#ifndef ALTTP_TEST_PRIOR_OBSTACLE_CONTACT_PLANES
   check(i.heightOffset==24 && !i.hasPlacementHeight,"actual own058 obstacle effective base/relief");
-#endif
  }
  check(usages>1000 && seen.size()==24,"own058 actual pixel denominator");
  std::ofstream effective(std::string(argv[2])+"-effective.json");effective<<"{\"pixel_usages\":"<<usages<<",\"raised_pixel_usages\":"<<raised<<",\"local_overrides\":"<<overrides<<",\"visible_cells\":"<<seen.size()<<"}\n";

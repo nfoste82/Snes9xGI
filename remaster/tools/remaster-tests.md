@@ -44,7 +44,7 @@ python3 remaster/tools/run_remaster_tests.py --suite full --output build/remaste
 python3 remaster/tools/run_remaster_tests.py --cxx clang++ --timeout 240
 
 # Python runner contracts; no C++ compiler or GPU required.
-python3 -m unittest discover -s tools -p test_run_remaster_tests.py
+python3 -m unittest discover -s remaster/tools -p test_run_remaster_tests.py
 ```
 
 `--metal` requires macOS, the Foundation/Metal SDK, and an accessible Metal
@@ -153,10 +153,12 @@ To investigate it explicitly:
 python3 remaster/tools/run_remaster_tests.py --legacy-smoke
 ```
 
-On this worktree it compiles but aborts at line 739:
-`S9xDeserializeRemasterFrame(previousVersionBytes, previousVersionFrame)`.
-The fixture manufactures v16 bytes by deleting hard-coded slices from a current
-serialized packet (lines 726–739); it is not a pinned historical v16 packet.
+On the November4 cleanup baseline it compiles but aborts in `singletonV25Bytes`:
+`std::equal(modernTail.begin(), modernTail.end(), result.end() - modernTail.size())`
+(baseline line773; cleanup line774). The fixture manufactures v25 and then v16
+bytes by deleting hard-coded slices from a current serialized packet; it is not
+a pinned historical packet. An earlier version instead reached the v16 decode
+assertion, which is why historical reports mention a different failure line.
 Its surgery has fallen behind the current format. The earlier hash-vector and
 other checks reached before this assertion do not turn the failed executable
 into a pass. This opt-in is a normal failure, not an expected-failure allowance.
@@ -177,13 +179,17 @@ Not covered by this gate:
 - Capture-dependent `hud_emitter_capture_test`, placement-equivalence and
   exact-capture height tests require separately pinned assets; they are not
   run without arguments and then misreported as useful coverage.
-- `capture_path_test` currently embeds a host-specific temporary directory and
-  is excluded rather than depending on that machine path.
-- `offscreen_emitters_test` and `offscreen_emitter_bases_test` explicitly enable
-  `ALTTP_TEST_LEGACY_OFFSCREEN_SPHERES`; those legacy approximation oracles are
+- `capture_path_test` uses the host temporary-directory API and is included in
+  `full`, alongside retired-setting compatibility and inspector-height checks.
+- `offscreen_emitters_test` and `offscreen_emitter_bases_test` explicitly include
+  the test-only `legacy_offscreen_reference.h`; those legacy approximation checks are
   not counted as production exact-depth coverage. `offscreen_continuity` covers
   production source continuity/HUD/hidden clustering but is not a substitute
   for all legacy fixture assertions or captured HUD replay evidence.
+- Static declaration/effect analysis lives in `remaster/tools/ALttP/dungeon_static_assembly.h`.
+  Its read-only inventory and ROM tests remain available; gameplay no longer
+  decodes or retains an unconsumed assessment. `dungeon_static_assembly` checks
+  fail-closed offline input and absence of production geometry grants.
 - This runner does not build the macOS app or verify all renderer modes.
 
 ## Observed validation

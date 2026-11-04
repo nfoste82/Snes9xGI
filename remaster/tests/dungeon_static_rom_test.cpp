@@ -1,4 +1,4 @@
-#include "../runtime/dungeon_static_assembly.h"
+#include "../tools/ALttP/dungeon_static_assembly.h"
 #include <cassert>
 #include <fstream>
 #include <iostream>

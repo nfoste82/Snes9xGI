@@ -278,7 +278,7 @@ static bool S9xPutImageMetal (int, int, const uint16 *, size_t, const uint32_t *
 	const uint8_t * = nullptr, const float * = nullptr,
 	const std::vector<RemasterGpuLight> * = nullptr, bool = false,
 	RemasterLightingView = RemasterLightingView::Composite, uint8_t = 0, float = 1.0f,
-	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1, bool = true,
+	float = 0.65f, float = 8.0f, float = 0.0f, uint8_t = 1,
 	const std::array<float, 3> * = nullptr, int = -1, bool = true,
 	const std::vector<RemasterSurfaceMesh::Cell> * = nullptr, const RemasterFrame * = nullptr,
 	const std::vector<RemasterSurfaceMesh::Sample> * = nullptr,
@@ -371,7 +371,7 @@ struct RemasterMetalResources
 	id<MTLTexture> direct = nil;
 	id<MTLTexture> bounce[2] = {};
 	id<MTLTexture> indirect[2] = {};
-	id<MTLTexture> directMean[2] = {};
+	id<MTLTexture> directResult = nil;
 	id<MTLBuffer> sourcePower = nil;
 	id<MTLBuffer> mesh = nil;
 	id<MTLBuffer> directSources = nil;
@@ -765,7 +765,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
 		lighting && !normalOffsets && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,
-		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, frame.sampleAccumulation, &frame.cameraDirection,
+		frame.heightPreviewMultiplier, frame.reflectanceBoost, frame.samplesPerFrame, &frame.cameraDirection,
 		resourceSlot, !asynchronous, &mesh, &frame, &meshSamples, &notification,
 		useScene==!frame.scenePixels.empty()?&fieldCache.channelSources:nullptr);
 }
@@ -906,7 +906,7 @@ static void S9xDeinitMetal (void)
 		resources.visibilityBlocks = nil;
 		resources.direct = resources.bounce[0] = resources.bounce[1] = nil;
 		resources.indirect[0] = resources.indirect[1] = nil;
-		resources.directMean[0] = resources.directMean[1] = nil;
+		resources.directResult = nil;
 		resources.sourcePower = nil;
 		resources.mesh = nil;
 		resources.directSources = resources.directSamples = nil;
@@ -1103,7 +1103,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const float *reflectance, const std::vector<RemasterGpuLight> *lights, bool lighting,
 	RemasterLightingView lightingView, uint8_t indirectBounceCount, float indirectRoughness,
 	float originalSceneContribution, float heightPreviewMultiplier, float reflectanceBoost,
-	uint8_t samplesPerFrame, bool sampleAccumulation,
+	uint8_t samplesPerFrame,
 	const std::array<float, 3> *cameraDirection, int resourceSlot, bool waitForCompletion,
 	const std::vector<RemasterSurfaceMesh::Cell> *mesh, const RemasterFrame *frame,
 	const std::vector<RemasterSurfaceMesh::Sample> *meshSamples,
@@ -1117,7 +1117,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	const auto lightingPreparationStarted = std::chrono::steady_clock::now();
 	double directEncodeMs = 0.0;
 	double indirectEncodeMs = 0.0;
-	double accumulationEncodeMs = 0.0;
 	double compositeEncodeMs = 0.0;
 	uint32_t frameEmitterCount = 0, frameDirectSampleCount = 0;
 	uint32_t frameSphereCount = 0, frameSphereSampleCount = 0, frameDirectBatchSize = 0;
@@ -1362,11 +1361,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					width:width height:height mipmapped:NO];
 				radianceDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 				resources->direct = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+				resources->directResult = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 				for (size_t i = 0; i < 2; i++)
 				{
 					resources->bounce[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 					resources->indirect[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
-					resources->directMean[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 				}
 			}
 			id<MTLTexture> occlusionTexture = resources->occlusion;
@@ -1671,26 +1670,22 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			{
 				id<MTLTexture> bounceTextures[2] = { resources->bounce[0], resources->bounce[1] };
 				id<MTLTexture> indirectTextures[2] = { resources->indirect[0], resources->indirect[1] };
-				id<MTLTexture> directMeanTextures[2] = { resources->directMean[0], resources->directMean[1] };
 				id<MTLTexture> finalIndirect = nil;
 				id<MTLTexture> finalDirect = nil;
 				const bool visibilityView = lightingView == RemasterLightingView::Visibility;
 				const bool directOnly = lightingView == RemasterLightingView::DirectContribution && !measureGi;
 				const uint32_t transportBounceCount = visibilityView || directOnly ? 0 : indirectBounceCount;
-				// With no indirect transport, all samples are the same deterministic direct result.
-					// The profile count now means connections per receiver within this frame.
-					const uint32_t transportSampleCount = 1;
-					const uint32_t connectionCount = uniforms.sampleCount;
-				for (uint32_t sample = 0; sample < transportSampleCount; sample++)
+				// One transport pass per frame; the profile count means connections
+				// per receiver, not repeated full-frame samples or temporal averaging.
+				const uint32_t connectionCount = uniforms.sampleCount;
 				{
-						uniforms.sampleIndex = sample;
+						uniforms.sampleIndex = 0;
 						uniforms.passIndex = 0;
 						uniforms.diagnosticStage = visibilityView ? 4 : 0;
 						uniforms.sampleCount = 1;
 						uniforms.padding = 2.0f; // Prepared, camera-independent Lambertian Direct.
-					if (sample == 0)
 					{
-						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : directMeanTextures[0];
+						finalDirect = measureGi ? [metalDevice newTextureWithDescriptor:radianceDescriptor] : resources->directResult;
 						diagnosticDirectTexture = measureGi ? finalDirect : nil;
 						if (sampledDirect) uniforms.sampleCount = sampledDirectConnections;
 						const auto batches = S9xRemasterDirectBatches(size_t(width) * height,
@@ -1885,7 +1880,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						}
 						indirectEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - indirectEncodeStarted).count();
 						previousBounce = bounceTextures[current];
-						if (measureGi && sample == 0 && bounce < 16)
+						if (measureGi && bounce < 16)
 						{
 							diagnosticBounceTextures[bounce] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 							diagnosticIndirectTextures[bounce] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
@@ -1965,7 +1960,6 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lightingPreparationStarted).count();
 			state.performanceMetrics.directEncodeMs = directEncodeMs;
 			state.performanceMetrics.indirectEncodeMs = indirectEncodeMs;
-			state.performanceMetrics.accumulationEncodeMs = accumulationEncodeMs;
 			state.performanceMetrics.compositeEncodeMs = compositeEncodeMs;
 			state.performanceMetrics.directEmitterCount = frameEmitterCount;
 			state.performanceMetrics.directSampleCount = frameDirectSampleCount;
@@ -2217,7 +2211,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		if (lighting && commandBuffer.status == MTLCommandBufferStatusCompleted) debugLastResourceSlot = resourceSlot;
 		if (wroteDirectSnapshot && commandBuffer.status == MTLCommandBufferStatusCompleted)
 		{
-			id<MTLTexture> direct = resources->directMean[0];
+			id<MTLTexture> direct = resources->directResult;
 			NSMutableData *data = [NSMutableData dataWithLength:size_t(width) * height * 8];
 			[direct getBytes:data.mutableBytes bytesPerRow:width * 8
 				fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
@@ -2231,10 +2225,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				NSLog(@"Remaster GI metrics unavailable: %@", commandBuffer.error);
 			else
 			{
-				NSLog(@"Remaster GI config: bounces=%u roughness=%.6g camera=(%.6g, %.6g, %.6g) original=%.6g samples=%u accumulation=%s",
+				NSLog(@"Remaster GI config: bounces=%u roughness=%.6g camera=(%.6g, %.6g, %.6g) original=%.6g connections=%u",
 					unsigned(indirectBounceCount), indirectRoughness, normalizedCameraDirection.x,
 					normalizedCameraDirection.y, normalizedCameraDirection.z,
-					originalSceneContribution, unsigned(samplesPerFrame), sampleAccumulation ? "on" : "off");
+					originalSceneContribution, unsigned(samplesPerFrame));
 				if (lights)
 					for (size_t lightIndex = 0; lightIndex < lights->size(); lightIndex++)
 					{

@@ -16,6 +16,8 @@ inline paths use the repository root unless stated otherwise. Return to the
 
 ## Performance and deferred plans
 
+- [Runtime Cleanup](runtime_cleanup.md): Superseded lighting/research paths, compatibility boundaries and before/after validation policy.
+
 - [Performance Stress Suite](performance_stress_suite.md): Pinned freeze/script scenarios, representative sweeps, observed workload coverage and opt-in Release regression baselines.
 
 - [Inspection CPU Work](inspection_cpu_work.md): Lightweight running inspection, full-consumer boundaries and producer-owned packet capacity reuse.

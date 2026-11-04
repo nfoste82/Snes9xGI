@@ -67,7 +67,6 @@ struct RemasterState
 		double lightingPreparationMs = 0.0;
 		double directEncodeMs = 0.0;
 		double indirectEncodeMs = 0.0;
-		double accumulationEncodeMs = 0.0;
 		double compositeEncodeMs = 0.0;
 		double presentationQueueMs = 0.0;
 		double drawableMs = 0.0;
@@ -286,10 +285,6 @@ struct RemasterState
 	uint32_t dungeonObservedMovementSeed = UINT32_MAX;
 	uint64_t dungeonTraceEventKey = 0;
 	bool dungeonSnapshotValid = false;
-	uint16_t dungeonStaticAssessmentRoom=0xffff;
-	bool dungeonStaticDeclarationsComplete=false;
-	std::shared_ptr<const RemasterDungeonConstructionDeclarations> dungeonStaticAssessmentInput;
-	std::vector<RemasterDungeonStaticCandidate> dungeonStaticCandidates;
 	bool dungeonHeightMapsPending = false;
 	bool profilePending = false;
 	RemasterSceneSettings requestedSceneSettings;
@@ -366,8 +361,6 @@ inline void S9xRemasterInvalidateDungeonContinuity()
 {
 	if(auto &trace=S9xRemasterDungeonWritesStorage())trace->clear();
 	auto &s=S9xRemasterState();s.dungeonSession++;
-	s.dungeonStaticAssessmentRoom=0xffff;s.dungeonStaticDeclarationsComplete=false;
-	s.dungeonStaticAssessmentInput.reset();s.dungeonStaticCandidates.clear();
 	for(auto &p:s.dungeonProjection)if(p)p->invalidate();
 	s.transitionSupport={};s.runtimeEntrySupport={};s.runtimeBg1EntrySupport={};s.runtimeEntryRoom=0xffff;
 	s.dungeonSnapshotValid=false;s.runtimeDungeonHeightValid=false;
@@ -813,7 +806,6 @@ inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloo
 			// The final subtile phase enters ControlShutters (no room loader).
 			// Exact final words/attributes invalidate each changed door state.
 			context.submodule==5 ||
-#ifndef ALTTP_TEST_PRIOR_STAIR_ARTWORK_GATE
 			// Verified in-room handlers retain complete room topology while VRAM
 			// flames continue animating. Refresh/solve exact current identities,
 			// rather than applying settled-state producers to different artwork.
@@ -828,9 +820,6 @@ inline bool S9xRemasterDungeonHeightInputsPublishable (const RemasterDungeonFloo
 			|| ((context.submodule==18 || context.submodule==19) && context.graphics &&
 				context.constructionPhase>=3 && context.constructionPhase<=18 &&
 				(context.hasCompletedTransitionAttributes || context.attributeConstructionState==5))
-#else
-			false
-#endif
 			) : (!context.submodule || context.roomIndex == publishedRoom));
 }
 
@@ -1498,11 +1487,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 				// canonical foot row; collapse only that proven symmetry. V or a
 				// different origin/template still means ambiguous support ownership.
 				else if(o!=owner || (*templates)[cell]!=off ||
-#ifdef ALTTP_TEST_PRIOR_OBSTACLE_SYMMETRY
-					(*flips)[cell]!=flip
-#else
 					(((*flips)[cell]^flip)&2)
-#endif
 					)o=-2;
 			}
 		}
@@ -1512,9 +1497,6 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			for(int xx=0;xx<2;xx++)for(int yy=0;yy<h;yy++)unique&=(*owners)[origin+yy*64+xx]==owner;
 			if(unique){auto &t=output[i];t.surface=Surface::Obstacle;t.obstacleAssembly=origin+1;
 				t.obstacleAssemblyHeight=h;t.obstacleTemplate=(*templates)[i];t.obstacleAssemblyFlip=(*flips)[i];
-#ifdef ALTTP_TEST_PRIOR_OBSTACLE_PART_SUPPORT
-				t.obstacleAssembly=0;t.obstacleTemplate=0;t.obstacleAssemblyHeight=0;t.obstacleAssemblyFlip=0;
-#endif
 			}
 		}
 	}
@@ -1706,7 +1688,6 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			auto &t=output[entry.first];t.doorAssembly=owner.first;t.doorDirection=owner.second;
 			t.doorTemplateOffset=closedSources.at(owner);t.closedDoorAssembly=true;t.splitDoorPart=false;
 		}
-		#ifndef ALTTP_TEST_PRIOR_LOWER_DOOR_WRITER
 #ifdef ALTTP_TEST_DOOR_WORK
 		S9xRemasterDungeonDoorWork().closedMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-doorStageStart).count();
 		doorStageStart=std::chrono::steady_clock::now();
@@ -1750,12 +1731,10 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 #ifdef ALTTP_TEST_DOOR_WORK
 		S9xRemasterDungeonDoorWork().lowerMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-doorStageStart).count();
 #endif
-		#endif
 	}
 	// Independent surviving inner jambs: exact two-word handler column/row,
 	// transformed explicit support at the roomward end, no inferred full frame.
 	// Collect every source claim first; incompatible claims withhold BOTH bands.
-	#ifndef ALTTP_TEST_PRIOR_DOORWAY_COLUMNS
 	if(context.verifiedAlttpRom && context.dungeonTemplateData) {
 #ifdef ALTTP_TEST_DOOR_WORK
 		const auto jambStart=std::chrono::steady_clock::now();
@@ -1824,7 +1803,6 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 			auto &t=output[entry.first];t.doorwayColumnContact=foot+1;t.doorwayColumnBand=band;t.doorwayColumnSource=columnSources.at(foot);
 		}
 	}
-	#endif
 	S9X_BUILD_NEXT(4); // wall and diagnostic ownership recognizers
 	// Handler01/02 (north/south) and61/62 (west/east) emit 2x4/4x2
 	// perimeter templates from the ROM predefined table. An intact exact
@@ -1994,13 +1972,7 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		// publish roles. The existing masked index is only a necessary filter:
 		// retain exact priority checks, all three words and original origin order.
 		auto cornerWords=std::make_unique<RemasterDungeonDoorWordIndex>(context.constructedMaps);
-		for(int axis=0;axis<
-#ifdef ALTTP_TEST_PRIOR_CORNER_STRIPS
-			1
-#else
-			2
-#endif
-			;axis++)for(int offset=0xb66;offset<=0xd46;offset+=0x20)
+		for(int axis=0;axis<2;axis++)for(int offset=0xb66;offset<=0xd46;offset+=0x20)
 			for(int column=0;column<4;column++) for(int start=0;start<=1;start++) {
 				const int anchor=offset+2*(axis?start*4+column:column*4+start);
 				const uint16_t word=context.dungeonTemplateData[anchor]|context.dungeonTemplateData[anchor+1]<<8;
@@ -2022,7 +1994,6 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 						// A surviving ordered strip may end at an unlabelled fold after
 						// an overwrite. Its perpendicular complete authored seam must
 						// witness the second face; strip identity alone is insufficient.
-#ifndef ALTTP_TEST_PRIOR_CORNER_STRIPS
 						if(!admitted && t.surface==Surface::Unknown && t.hasHeight) {
 							const int lo=*std::min_element(t.height.begin(),t.height.end());bool fold=true;
 							for(int py=0;py<8;py++)for(int px=0;px<8;px++)fold &= t.height[py*8+px]==lo+std::max(7-px,7-py);
@@ -2038,12 +2009,9 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 								admitted|=seam;
 							}
 						}
-#endif
 						if(word!=(src[0]|src[1]<<8) || !t.hasHeight || t.diagnosticAuthoredFloor || !admitted)exact=false;
 					}
-#ifndef ALTTP_TEST_PRIOR_CORNER_STRIPS
 					if(authoredSeeds<2)exact=false;
-#endif
 					if(exact)for(int k=0;k<3;k++){
 						const int cell=(y+(axis?0:k))*64+x+(axis?k:0);
 						if(k!=1 && !(*authoredWallSeeds)[cell]) {
@@ -3182,7 +3150,7 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 	result.representativeEmitters = state.activeProfile.representativeEmitters;
 	result.offscreenRepresentativeEmitters = state.activeProfile.offscreenRepresentativeEmitters < 0 ?
 		1 : state.activeProfile.offscreenRepresentativeEmitters;
-	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
+	result.legacySampleAccumulation = state.activeProfile.legacySampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;
 	result.originalRgb555.resize(pixelCount);
 	result.mainPixels.resize(pixelCount);
@@ -3640,8 +3608,6 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		const RemasterDungeonHeightMap *appliedDungeonHeightMap = nullptr;
 		RemasterDungeonFloorContext liveContext;
 		if(!dungeonFloor) {
-			state.dungeonStaticAssessmentRoom=0xffff;state.dungeonStaticDeclarationsComplete=false;
-			state.dungeonStaticAssessmentInput.reset();state.dungeonStaticCandidates.clear();
 			state.transitionSupport={};state.runtimeEntrySupport={};state.runtimeBg1EntrySupport={};state.runtimeEntryRoom=0xffff;
 			state.outgoingGeometry={};state.previousRuntimeDungeonHeightMap.roomIndex=0xffff;state.previousRuntimeDungeonBg1HeightMap.roomIndex=0xffff;
 		}
@@ -3651,19 +3617,6 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			S9xRemasterObserveDungeonTransition(*dungeonFloor);
 			S9xRemasterObserveOutgoingGeometry(*dungeonFloor);
 			liveContext=*dungeonFloor;
-			// Declaration/effect diagnostics cannot grant a physical equation,
-			// attachment or selected height. Missing exhaustive dynamic effects or
-			// plane-qualified contact evidence stays a rejection before any solve.
-			if(state.dungeonStaticAssessmentRoom!=liveContext.roomIndex ||
-				state.dungeonStaticAssessmentInput!=liveContext.constructionDeclarations) {
-				state.dungeonStaticAssessmentRoom=liveContext.roomIndex;
-				state.dungeonStaticAssessmentInput=liveContext.constructionDeclarations;
-				state.dungeonStaticDeclarationsComplete=liveContext.constructionDeclarations &&
-					liveContext.constructionDeclarations->complete && liveContext.constructionDeclarations->room==liveContext.roomIndex;
-				state.dungeonStaticCandidates.clear();
-				if(state.dungeonStaticDeclarationsComplete)
-					state.dungeonStaticCandidates=S9xRemasterAssessDungeonStaticCandidates(*liveContext.constructionDeclarations,liveContext.constructedMaps);
-			}
 			if(!S9xRemasterDungeonResearchEnabled())liveContext.producerWrites=nullptr;
 			if(state.outgoingGeometry.valid && state.outgoingGeometry.room!=liveContext.roomIndex)
 				liveContext.previousRoomIndex=state.outgoingGeometry.room;
@@ -4574,12 +4527,6 @@ inline const uint32_t *S9xRemasterMainOwners (void)
 {
 	const RemasterState &state = S9xRemasterState();
 	return state.mainOwners.empty() ? nullptr : state.mainOwners.data();
-}
-
-inline const uint32_t *S9xRemasterSubOwners (void)
-{
-	const RemasterState &state = S9xRemasterState();
-	return state.subOwners.empty() ? nullptr : state.subOwners.data();
 }
 
 #undef S9X_REMASTER_OBSERVED_REASON

@@ -166,9 +166,6 @@ int main()
             id<MTLComputePipelineState> composite = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterCompositeLighting"] error:&error];
             require(composite != nil, error.localizedDescription);
-            id<MTLComputePipelineState> accumulate = [device newComputePipelineStateWithFunction:
-                [library newFunctionWithName:@"remasterAccumulateSamples"] error:&error];
-            require(accumulate != nil, error.localizedDescription);
             id<MTLComputePipelineState> highlight = [device newComputePipelineStateWithFunction:
                 [library newFunctionWithName:@"remasterSelectedTileHighlight"] error:&error];
             require(highlight != nil, error.localizedDescription);
@@ -590,35 +587,6 @@ int main()
 				light.enabled = false;
 				require(parallelTrial(input).x == 0, @"Disabled parallel light contributes nothing");
 			}
-            auto average = [&](simd_float4 first, simd_float4 second) {
-                MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
-                    texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float width:1 height:1 mipmapped:NO];
-                descriptor.storageMode = MTLStorageModeShared;
-                descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-                id<MTLTexture> sample = [device newTextureWithDescriptor:descriptor];
-                id<MTLTexture> previous = [device newTextureWithDescriptor:descriptor];
-                id<MTLTexture> output = [device newTextureWithDescriptor:descriptor];
-                [sample replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&second bytesPerRow:sizeof(second)];
-                [previous replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&first bytesPerRow:sizeof(first)];
-				Uniforms uniforms = {1, 1, 0, 0, 0, 0, 1, 0.65f, 8.0f, 0.0f, 1, 2, 1, 0.0f,
-                    {0, 0, -1, 0}, {}, {}};
-                id<MTLCommandBuffer> command = [queue commandBuffer];
-                id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
-                [encoder setComputePipelineState:accumulate];
-                [encoder setTexture:sample atIndex:0];
-                [encoder setTexture:previous atIndex:1];
-                [encoder setTexture:output atIndex:2];
-                [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-                [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-                [encoder endEncoding];
-                [command commit];
-                [command waitUntilCompleted];
-                require(command.status == MTLCommandBufferStatusCompleted, command.error.localizedDescription);
-                simd_float4 result;
-                [output getBytes:&result bytesPerRow:sizeof(result) fromRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0];
-                return result;
-            };
-
             unsigned checks = 0, failures = 0;
             auto check = [&](const char *name, bool ok, simd_float4 actual, simd_float4 reference) {
                 ++checks;
@@ -1047,9 +1015,6 @@ int main()
             Result stochasticB = run(s, true, 1, 8, -1, nullptr, false, 0, 1, 1, 4, 11);
             check("stochastic samples jitter independently", stochasticA.bounce.x != stochasticB.bounce.x,
                 stochasticA.bounce, stochasticB.bounce);
-            simd_float4 stochasticMean = average(stochasticA.bounce, stochasticB.bounce);
-            near("sample accumulation computes an incremental mean", stochasticMean,
-                (stochasticA.bounce + stochasticB.bounce) * 0.5f);
 			s[Surface][emitter] = {8, -0.5f, 0, 0.8660254f};
 			Result diffuseAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 1.0f);
 			Result shinyAngled = run(s, true, 0, 8, -1, nullptr, false, 0, 0.0f);

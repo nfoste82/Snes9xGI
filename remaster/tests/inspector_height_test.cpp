@@ -47,8 +47,7 @@ int main ()
 		check(overridden.placementOverride, "placement override source");
 		for (size_t p = 0; p < 64; ++p)
 		{
-			const size_t canonical = S9xRemasterInspectorCanonicalPixel(instance, p);
-			check(canonical == (v ? 7 - p / 8 : p / 8) * 8 + (h ? 7 - p % 8 : p % 8), "flip canonical index");
+			const size_t canonical = (v ? 7 - p / 8 : p / 8) * 8 + (h ? 7 - p % 8 : p % 8);
 			check(overridden.at(canonical) == 32 + int(63 - canonical), "canonical placement override, base once");
 			check((*authored)[canonical] == canonical % 8, "override never modifies authoring");
 		}
@@ -76,17 +75,13 @@ int main ()
 	profile.romSha256 = std::string(64, '0');
 	check(!S9xRemasterInspectorAuthoredHeight(&profile, frame, tile, sampling), "loaded missing profile layer never falls back to capture");
 	auto &asset = profile.assets[tile]; asset.tileId = tile;
-	asset.height.fill(99); // stale non-authored storage must not leak on reset/first paint
-	S9xRemasterInspectorInitializeAuthoredHeight(asset);
-	check(asset.height[1] == 0, "new authored layer initialized deliberately, never capture or placement");
+	asset.hasHeight = true;
 	asset.height = captured.height;
 	asset.hasTileSemantics = true;
 	asset.tileSemanticNote = "Keep unrelated schema20 metadata";
 	std::string before, saved;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	check(S9xRemasterSerializeProfile(profile, before, diagnostics), "serialize undo snapshot");
-	S9xRemasterInspectorInitializeAuthoredHeight(asset);
-	check(asset.height == captured.height, "existing local samples survive brush initialization");
 	asset.height[3] = 9; // selected-pixel local edit
 	check(S9xRemasterSerializeProfile(profile, saved, diagnostics), "serialize local edit");
 	RemasterProfile reloaded;
@@ -146,7 +141,7 @@ int main ()
 				const auto result = S9xRemasterInspectorEffectiveHeight(&instance, authored);
 				for (size_t p = 0; p < 64; ++p)
 				{
-					const auto canonical = S9xRemasterInspectorCanonicalPixel(instance, p);
+					const auto canonical = (v ? 7 - p / 8 : p / 8) * 8 + (h ? 7 - p % 8 : p % 8);
 					check(result.at(canonical) == wall.height[canonical] - 8,
 						"wall local band and contextual base compose once after flips");
 				}

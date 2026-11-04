@@ -32,6 +32,10 @@ regressions and shared replay/corpus harnesses even when they are outside the cu
 retired without deleting their historical reports. For profile canonical round-trip
 checks, use `alttp_profile_validate.cpp` rather than a separate diagonal checker.
 
+`dungeon_static_assembly.h` is offline declaration/effect research shared by
+`alttp_static_assembly_inventory.cpp` and its ROM regressions. It is deliberately
+not included by the live frame/runtime headers and cannot authorize geometry.
+
 For assembled NPC poses, facing/animation browsing, canonical tile editing and
 image-derived default normals/heights, see [NPC-WORKBENCH.md](NPC-WORKBENCH.md).
 
