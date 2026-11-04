@@ -40,7 +40,10 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+	("dungeon_graphics_dependencies", "Exact both-map and all prospective replacement graphics bytes, bases/wraps and unknown fallback"),
 	("dungeon_classification_artwork", "Exact bounded artwork classification across plane/support changes; full map/placement/packet parity and revocation"),
+	("dungeon_seed_restore", "Ordered movement seeds: resident and unchanged-art full EndFrame cold parity with disconnected floors/thresholds/stairs"),
+	("dungeon_input_collision", "Deliberately colliding solve-input digests retain exact dependency comparison and changed-input solve boundary"),
 	("dungeon_classification_plane", "Plane-only classification independence and signed movement scratch parity"),
 	("placement_offset_editor", "Exact world-coordinate scalar transactions, strict input, dedup, bounds and preview"),
 	("terrain_offset", "Sparse coordinate terrain height/normal composition, detail rotation, flips, cache and frame evidence"),
@@ -129,6 +132,8 @@ FULL_EXTRA = (
     ("emitter_patches", "Production visible source clustering, area, transforms and animation links"),
     ("emitter_preselected", "Exact production emission donors without repeated full-frame selection"),
     ("lighting_trace", "Producing-frame timer lineage and exclusive wait accounting"),
+    ("benchmark_route", "Bounded deterministic stress input scripts and normal joypad frame boundaries"),
+    ("frame_consumer_work", "Lightweight inspection preserves solves, full consumers and producer-owned packet reuse"),
     ("live_trace", "Bounded per-frame lifecycle, skipped frames, pacing and asynchronous presentation evidence"),
     ("profiling_disabled", "Compile-time disabled profiling cannot activate timers or capture"),
     ("dungeon_trace_reasons", "Observed room/classification invalidation reasons, short circuits and per-frame dispositions"),
@@ -189,6 +194,10 @@ def test_specs(args):
                                  "-ffunction-sections", "-fdata-sections", "-Wl,-dead_strip",
                                  "-framework", "Cocoa", "-framework", "Metal", "-framework", "MetalKit",
                                  "-framework", "QuartzCore", "-framework", "Carbon"], arguments=[], kind="metal"))
+        specs.append(dict(name="metal_visibility_atlas", source="remaster/tests/visibility_atlas_metal_test.mm",
+                          description="Conservative finite-mesh atlas, partial blocks, signed bounds and exact known-opacity",
+                          flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],
+                          arguments=[], kind="metal"))
         specs.append(dict(name="metal_lighting", source="macosx/remaster-lighting-test.mm",
                           description="Production shaders, synthetic GPU transport/visibility comparisons",
                           flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],

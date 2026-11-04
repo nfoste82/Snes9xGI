@@ -277,8 +277,8 @@ int main()
                 if (bounce && !composing)
                 {
                     MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
-                        texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
-                        width:(width + 3) / 4 height:(height + 3) / 4 mipmapped:NO];
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                        width:width height:height + (height + 3) / 4 mipmapped:NO];
                     descriptor.storageMode = MTLStorageModePrivate;
                     descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
                     visibilityBlocks = [device newTextureWithDescriptor:descriptor];

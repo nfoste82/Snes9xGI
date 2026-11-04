@@ -12,7 +12,7 @@ import subprocess
 
 REQUIRED_SIDECARS = ('', '.dungeon-input.bin', '.dungeon-templates.bin',
                      '.dungeon.json', '.profile.toml')
-OPTIONAL_SIDECARS = ('.terrain-input.bin', '.sprite-input.bin')
+OPTIONAL_SIDECARS = ('.terrain-input.bin', '.sprite-input.bin', '.replacement-input.bin')
 
 
 def input_pins(binaries, captures):

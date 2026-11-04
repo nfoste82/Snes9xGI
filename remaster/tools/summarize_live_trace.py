@@ -43,7 +43,7 @@ REASONS = {1: "forced", 2: "dimensions", 4: "scene_metadata", 8: "material",
 ROOM_REASONS = dict(enumerate(("room", "snapshot_invalid", "profile", "producer",
     "rom", "entry", "plane", "collision", "maps", "attributes", "graphics",
     "templates", "stairs", "graphics_base", "missing_classification", "research",
-    "background", "verified", "unpublishable")))
+    "background", "verified", "unpublishable", "replacement_evidence", "graphics_dependencies", "movement_seed")))
 
 
 def statistics_ms(values):

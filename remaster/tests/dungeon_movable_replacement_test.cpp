@@ -173,17 +173,18 @@ int main(int argc,char **argv) {
  };
  auto parity=[&] {
   const auto inventory=dungeonMapInventory(state.runtimeDungeonHeightMap)+dungeonMapInventory(state.runtimeDungeonBg1HeightMap);
-  auto bg1=std::make_unique<std::array<C::Placement,4096>>(*state.dungeonRetainedBg1);
-  auto bg2=std::make_unique<std::array<C::Placement,4096>>(*state.dungeonRetainedBg2);
+  std::ostringstream placements;
+  for(int bg=0;bg<2;bg++)for(const auto &p:bg?*state.dungeonRetainedBg2:*state.dungeonRetainedBg1)dungeonPlacementInventory(placements,p);
   std::vector<uint8_t> warm,cold;assert(S9xSerializeRemasterFrame(*frame,warm));
+  auto resident=std::move(state.dungeonArtworkStates);
   state.dungeonClassificationInputs->valid=false;state.dungeonSnapshotValid=false;state.runtimeDungeonHeightValid=false;state.runtimeDungeonHeightKey=0;
   endFrame();assert(S9xRemasterDungeonCacheStages().classifications>=2);
   assert(inventory==dungeonMapInventory(state.runtimeDungeonHeightMap)+dungeonMapInventory(state.runtimeDungeonBg1HeightMap));
-  for(int i=0;i<4096;i++)for(int bg=0;bg<2;bg++) {
-   const auto &a=bg?(*bg2)[i]:(*bg1)[i],&b=bg?(*state.dungeonRetainedBg2)[i]:(*state.dungeonRetainedBg1)[i];
-   assert(a.tileHash==b.tileHash && a.sameGeometry(b));
-  }
+  std::ostringstream restoredPlacements;
+  for(int bg=0;bg<2;bg++)for(const auto &p:bg?*state.dungeonRetainedBg2:*state.dungeonRetainedBg1)dungeonPlacementInventory(restoredPlacements,p);
+  assert(placements.str()==restoredPlacements.str());
   assert(S9xSerializeRemasterFrame(*frame,cold) && warm==cold);
+  state.dungeonArtworkStates=std::move(resident);
  };
  pot(true);endFrame();assert((*state.dungeonRetainedBg2)[20*64+20].structuralReplacement);
  auto potential=state.runtimeDungeonHeightMap.planeOffsets;const int beforeBase=state.runtimeDungeonHeightMap.offsets[20*64+20];
@@ -212,7 +213,52 @@ int main(int argc,char **argv) {
  profile.obstacleGroups[0].movable=false;S9xRemasterSetProfile(profile);endFrame();assert(!(*state.dungeonRetainedBg2)[20*64+20].structuralReplacement);
  profile.obstacleGroups[0].movable=true;S9xRemasterSetProfile(profile);endFrame();parity();
  c.submodule=2;endFrame();c.submodule=0;endFrame();parity();
- (*attrs)[20*64+20]=1;endFrame();assert(!(*state.dungeonRetainedBg2)[20*64+20].structuralReplacement);parity();
+  (*attrs)[20*64+20]=1;endFrame();assert(!(*state.dungeonRetainedBg2)[20*64+20].structuralReplacement);parity();
+  // Review finding 2: accepted authored-zero underlays through actual resident
+  // solved hits, not a pickup/map invalidation or classification-only restore.
+  // Distinct BG bases carry identical test art; packet and BOTH map/placement
+  // inventories (recursive replacements included) use an independent cold call.
+  std::copy_n(gfx->data(),32768,gfx->data()+32768);c.bg1GraphicsBase=32768;
+  for(int phase=0;phase<4;phase++) {
+   uint8_t pixels[64]={};for(int x=0;x<8;x++)pixels[x]=(phase>>(7-x))&1;
+   RemasterTileContentId id{S9xRemasterHashTile(4,pixels),1,4};auto &a=profile.assets[id];
+   a.tileId=id;a.hasHeight=true;a.tileRole=RemasterTileRole::Floor;
+  }
+  S9xRemasterSetProfile(profile);
+  auto phase=[&](int n){(*gfx)[0]=(*gfx)[32768]=n;};
+  for(int bg=0;bg<2;bg++)for(int plane=0;plane<2;plane++)for(int flip=0;flip<4;flip++) {
+   std::cerr<<"resident bg="<<bg<<" plane="<<plane<<" flip="<<flip<<'\n';
+   maps->fill(0);attrs->fill(1);c.linkPlane=plane;
+   const int replacementPlane=bg?0:1;
+   slot.position=2*(20*64+20)|(replacementPlane?0x2000:0);
+   slot.words={0x0d0e,0x0d1e,0x4d0e,0x4d1e};
+   for(int p=0;p<2;p++)for(int y=16;y<26;y++)for(int x=16;x<26;x++)(*attrs)[p*4096+y*64+x]=0;
+   for(int x=0;x<2;x++)for(int y=0;y<2;y++) {
+    const int i=(20+y)*64+20+x,w=1+(flip&1?1-x:x)*2+(flip&2?1-y:y)+(flip<<14),at=(bg?0:8192)+2*i;
+    (*maps)[at]=w;(*maps)[at+1]=w>>8;(*attrs)[replacementPlane*4096+i]=0x75;
+   }
+   auto accepted=[&](bool expected){const auto &p=bg?*state.dungeonRetainedBg2:*state.dungeonRetainedBg1;
+    for(int x=0;x<2;x++)for(int y=0;y<2;y++) {
+     const auto &t=p[(20+y)*64+20+x];assert(bool(t.structuralReplacement)==expected);
+     if(expected){assert(t.removableSupportPlanes==(1<<replacementPlane));assert(t.structuralReplacement->hasHeight);
+      for(auto h:t.structuralReplacement->height)assert(h==0);assert(t.replacementAttribute==0);}
+    }};
+   phase(0);endFrame();accepted(true);parity();
+   phase(1);endFrame();accepted(true);parity();
+   // The oracle's temporary cold insertion must not evict a warm resident.
+   const auto hits=state.dungeonArtworkStateHits;phase(0);endFrame();accepted(true);
+   assert(state.dungeonArtworkStateHits==hits+1 && !S9xRemasterDungeonCacheStages().solves && !S9xRemasterDungeonCacheStages().classifications);parity();
+   // Four unique phases exercise actual eviction with accepted replacements.
+   for(int p=0;p<4;p++){phase(p);endFrame();accepted(true);}
+   phase(0);endFrame();assert(S9xRemasterDungeonCacheStages().solves>=2);accepted(true);parity();
+   // Source activation and ambiguous contexts revoke accepted replacements.
+   const auto floorId=RemasterTileContentId{(*(bg?state.dungeonRetainedBg2:state.dungeonRetainedBg1))[20*64+20].structuralReplacement->tileHash,1,4};
+   profile.tileContexts[floorId]["ambiguous"]={};S9xRemasterSetProfile(profile);endFrame();accepted(false);parity();
+   profile.tileContexts.erase(floorId);S9xRemasterSetProfile(profile);endFrame();accepted(true);parity();
+   const auto saved=profile.assets[floorId];profile.assets[floorId].hasHeight=false;S9xRemasterSetProfile(profile);endFrame();accepted(false);parity();
+   profile.assets[floorId]=saved;S9xRemasterSetProfile(profile);endFrame();accepted(true);parity();
+  }
+  std::cout<<"accepted replacement resident hits: 16 BG/plane/HV cases; full recursive placements/maps/owners/packet cold parity PASS\n";
  if(argc>=2) {
   std::ifstream f(argv[1],std::ios::binary);std::vector<uint8_t> rom{std::istreambuf_iterator<char>(f),{}};
   auto ram=std::make_unique<std::array<uint8_t,0x20000>>();

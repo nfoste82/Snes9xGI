@@ -583,6 +583,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	const std::vector<RemasterTileContentId> *selectedTiles, bool lighting, RemasterLightingView lightingView,
 	bool asynchronous, bool displayLiveMessages)
 {
+	if(lighting && !frame.fullGeometry)return false;
 	auto trace=frame.lightingTrace;
 	trace.bounces=frame.indirectBounceCount;trace.connections=frame.samplesPerFrame;
 	trace.representatives=frame.representativeEmitters;trace.directional=frame.directionalLight.enabled;
@@ -1348,8 +1349,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					width:width height:height mipmapped:NO];
 				resources->surface = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
 				resources->reflectance = [metalDevice newTextureWithDescriptor:surfaceDescriptor];
-				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float
-					width:(width + 3) / 4 height:(height + 3) / 4 mipmapped:NO];
+				// Per-pixel finite-mesh bounds/center/coverage, followed by 4x4 envelopes.
+				MTLTextureDescriptor *visibilityBlocksDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+					width:width height:height + (height + 3) / 4 mipmapped:NO];
 				visibilityBlocksDescriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 				resources->visibilityBlocks = [metalDevice newTextureWithDescriptor:visibilityBlocksDescriptor];
 				MTLTextureDescriptor *outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -1409,8 +1411,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			[visibilityBlocksEncoder setTexture:surfaceTexture atIndex:2];
 			[visibilityBlocksEncoder setTexture:visibilityBlocksTexture atIndex:3];
 			[visibilityBlocksEncoder setBuffer:resources->mesh offset:0 atIndex:0];
-			[visibilityBlocksEncoder dispatchThreadgroups:MTLSizeMake((visibilityBlocksTexture.width + 7) / 8,
-				(visibilityBlocksTexture.height + 7) / 8, 1)
+			[visibilityBlocksEncoder dispatchThreadgroups:MTLSizeMake(((width + 3) / 4 + 7) / 8,
+				((height + 3) / 4 + 7) / 8, 1)
 				threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			[visibilityBlocksEncoder endEncoding];
 			}

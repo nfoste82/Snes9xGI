@@ -35,9 +35,15 @@ int main(){try {
  (*maps)[1]=0;check(false,AttributeChange);(*attr)[0]=0;
  (*tpl)[12875]=1;check(false,TemplateChange);(*tpl)[12875]=0;
  (*gfx)[64000]=1;check(true,0); // unreferenced graphics must stay unexamined
- (*gfx)[0]=1;check(false,GraphicsChange);(*gfx)[0]=0;
+  (*gfx)[0]=1;check(false,GraphicsDependenciesChange);(*gfx)[0]=0;
+  c.replacementEvidence.available=true;c.replacementEvidence.room=7;check(false,ReplacementEvidenceChange);
+  S9xRemasterRememberDungeonClassification(c,*state);check(true,0);
+  c.replacementEvidence.slots[0].words[0]=100;check(false,ReplacementEvidenceChange);
+  S9xRemasterRememberDungeonClassification(c,*state);
+  (*gfx)[3200]^=1;check(false,GraphicsDependenciesChange);(*gfx)[3200]^=1;
+  c.replacementEvidence={};S9xRemasterRememberDungeonClassification(c,*state);
  c.bg1GraphicsBase=32;check(false,GraphicsBaseChange);c.bg1GraphicsBase=0xffff;
- c.placementBackgroundIndex=0;check(false,BackgroundChange);c.placementBackgroundIndex=1;
+  c.placementBackgroundIndex=0;check(false,BackgroundChange);c.placementBackgroundIndex=1;
  c.verifiedAlttpRom=true;check(false,VerifiedChange);c.verifiedAlttpRom=false;
  state->dungeonGeometryProfileKey++;check(false,ProfileChange);state->dungeonGeometryProfileKey--;
  c.roomIndex++;check(false,RoomChange);c.roomIndex--;
@@ -70,18 +76,42 @@ int main(){try {
  need(first.instanceCount==live.completedFrame.tileInstances.size(),"instance count");
  need(first.instanceBytes==first.instanceCount*sizeof(RemasterFrameTileInstance),"instance bytes");
 #endif
- auto same=run();
+  auto same=run();
 #if S9X_REMASTER_PROFILING
  need(same.roomReasons==0 && same.classificationOutcome==0,"unchanged frame considered classifier");
  need(same.projectionOutcome==1,"settled projection not retained");
+#endif
+  c.replacementEvidence.available=true;c.replacementEvidence.room=c.roomIndex;
+  auto replacement=run();
+#if S9X_REMASTER_PROFILING
+  need(replacement.roomReasons==ReplacementEvidenceChange && replacement.classificationReasons==ReplacementEvidenceChange,"replacement evidence reasons missing");
+#endif
+  c.replacementEvidence.slots[0].words={100,101,102,103};run();
+  (*gfx)[100*32]=1;auto prospective=run();
+#if S9X_REMASTER_PROFILING
+  need(prospective.roomReasons==GraphicsDependenciesChange && (prospective.classificationReasons&GraphicsDependenciesChange),"prospective graphics reasons missing"); // older resident probes may add evidence misses
+#endif
+  (*gfx)[64000]^=1;auto irrelevant=run();
+#if S9X_REMASTER_PROFILING
+  need(!irrelevant.roomReasons && !irrelevant.classificationReasons,"irrelevant graphics invalidated");
 #endif
  c.linkPlane=1;auto plane=run();
 #if S9X_REMASTER_PROFILING
  need(plane.roomReasons==PlaneChange && plane.classificationOutcome==1 && !plane.classificationReasons,"plane reuse reason");
 #endif
- (*maps)[1]=0xc0;auto changed=run();
+  c.linkX++;auto movement=run();
 #if S9X_REMASTER_PROFILING
- need(changed.roomReasons==MapChange && changed.classificationOutcome==2 && changed.classificationReasons==MapChange,"map rebuild reason");
+   need(!movement.roomReasons && !movement.classificationOutcome && !movement.classificationReasons,"certified movement rebuilt");
+#else
+  need(!movement.roomReasons,"profiling-off seed reason write");
+#endif
+   c.linkX=300;auto disconnected=run();
+#if S9X_REMASTER_PROFILING
+   need(disconnected.roomReasons==MovementSeedChange && disconnected.classificationOutcome==1 && !disconnected.classificationReasons,"uncertified movement seed reason");
+#endif
+  (*maps)[1]=0xc0;auto changed=run();
+#if S9X_REMASTER_PROFILING
+  need(changed.roomReasons==MapChange && changed.classificationOutcome==2 && (changed.classificationReasons&MapChange),"map rebuild reason"); // failed older resident probes can add replacement-evidence reasons
 #endif
  c.submodule=2;auto transition=run();
 #if S9X_REMASTER_PROFILING

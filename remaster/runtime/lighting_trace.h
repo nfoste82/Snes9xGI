@@ -36,7 +36,9 @@ enum RoomReason : uint64_t {
     AttributeChange=1ull<<9, GraphicsChange=1ull<<10, TemplateChange=1ull<<11,
     StairChange=1ull<<12, GraphicsBaseChange=1ull<<13, MissingClassification=1ull<<14,
     ResearchClassification=1ull<<15, BackgroundChange=1ull<<16,
-    VerifiedChange=1ull<<17, Unpublishable=1ull<<18
+    VerifiedChange=1ull<<17, Unpublishable=1ull<<18,
+    ReplacementEvidenceChange=1ull<<19, GraphicsDependenciesChange=1ull<<20,
+    MovementSeedChange=1ull<<21
 };
 inline double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 inline bool legacyEnabled() { return S9X_REMASTER_PROFILING && std::getenv("S9X_REMASTER_LIGHTING_TRACE") != nullptr; }

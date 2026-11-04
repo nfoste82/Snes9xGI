@@ -183,23 +183,35 @@ kernel void remasterBuildVisibilityBlocks(
 	const device RemasterMeshCell *mesh [[buffer(0)]],
 	uint2 block [[thread_position_in_grid]])
 {
-	if (block.x >= blocks.get_width() || block.y >= blocks.get_height())
+	if (block.x >= (occlusion.get_width() + 3) / 4 || block.y >= (occlusion.get_height() + 3) / 4)
 		return;
 	float minimumHeight = INFINITY;
 	float maximumHeight = -INFINITY;
 	for (uint y = block.y * 4; y < min((block.y + 1) * 4, occlusion.get_height()); y++)
 		for (uint x = block.x * 4; x < min((block.x + 1) * 4, occlusion.get_width()); x++)
-			if (occlusion.read(uint2(x, y)).r > 0.0 && heightField.read(uint2(x, y)).g >= 0.5)
 			{
-				float center = surfaceField.read(uint2(x, y)).r;
-				RemasterMeshCell patch = mesh[y * occlusion.get_width() + x];
-				float low = min(center, min(min(patch.corners.x, patch.corners.y), min(patch.corners.z, patch.corners.w)));
-				if (patch.solidWall > 0.5) low = min(low, patch.wallBase);
-				float high = max(center, max(max(patch.corners.x, patch.corners.y), max(patch.corners.z, patch.corners.w)));
-				minimumHeight = min(minimumHeight, low - patch.thickness * 0.5);
-				maximumHeight = max(maximumHeight, high + patch.thickness * 0.5);
+				uint2 pixel = uint2(x, y);
+				float center = surfaceField.read(pixel).r;
+				float coverage = heightField.read(pixel).g >= 0.5 ? occlusion.read(pixel).r : 0.0;
+				float low = INFINITY, high = -INFINITY;
+				if (coverage > 0.0)
+				{
+					RemasterMeshCell patch = mesh[y * occlusion.get_width() + x];
+					low = min(center, min(min(patch.corners.x, patch.corners.y), min(patch.corners.z, patch.corners.w)));
+					if (patch.solidWall > 0.5) low = min(low, patch.wallBase);
+					high = max(center, max(max(patch.corners.x, patch.corners.y), max(patch.corners.z, patch.corners.w)));
+					low -= patch.thickness * 0.5;
+					high += patch.thickness * 0.5;
+					minimumHeight = min(minimumHeight, low);
+					maximumHeight = max(maximumHeight, high);
+				}
+				// Exact center/known-opacity plus conservative finite-mesh bounds.
+				// Empty/unknown pixels retain an inverted interval, not a ground column.
+				blocks.write(float4(low, high, center, coverage), pixel);
 			}
-	blocks.write(float4(minimumHeight, maximumHeight, 0.0, 0.0), block);
+	// Keep the 4x4 envelopes in a separate bottom strip of the same texture.
+	blocks.write(float4(minimumHeight, maximumHeight, 0.0, 0.0),
+		uint2(block.x, block.y + occlusion.get_height()));
 }
 
 // Shading positions lie at authored surface centers. Visibility starts outside
@@ -270,8 +282,17 @@ static bool remasterTriangleHit(float3 from, float3 ray, float3 a, float3 b, flo
 	float inverse = 1.0 / determinant;
 	float3 s = from - a;
 	float u = dot(s, p) * inverse;
+#ifndef REMASTER_REFERENCE_VISIBILITY
+	// Preserve the original predicate/arithmetic, but do not finish a triangle
+	// already outside its first barycentric half-space. Negation retains NaN
+	// rejection too. The reference shader evaluates the complete predicate.
+	if (!(u >= -0.000001)) return false;
+#endif
 	float3 q = cross(s, e1);
 	float v = dot(ray, q) * inverse;
+#ifndef REMASTER_REFERENCE_VISIBILITY
+	if (!(v >= -0.000001 && u + v <= 1.000001)) return false;
+#endif
 	float t = dot(e2, q) * inverse;
 	return u >= -0.000001 && v >= -0.000001 && u + v <= 1.000001 &&
 		t > max(0.000001, entry - 0.000001) && t < min(0.999999, exit + 0.000001);
@@ -411,7 +432,7 @@ static float remasterVisibility(float3 from, float3 to,
 			float blockEntry = max(0.0, min(next.x, next.y));
 			float minimumHeight = min(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
 			float maximumHeight = max(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
-			float2 bounds = visibilityBlocks.read(uint2(block)).rg;
+			float2 bounds = visibilityBlocks.read(uint2(block.x, block.y + occlusion.get_height())).rg;
 			emptyBlock = bounds.x > maximumHeight || bounds.y < minimumHeight;
 		}
 		if (emptyBlock)
@@ -441,16 +462,31 @@ static float remasterVisibility(float3 from, float3 to,
 		if (any(cell < 0) || cell.x >= int(occlusion.get_width()) || cell.y >= int(occlusion.get_height()))
 			break;
 		uint2 sample = uint2(cell);
+		float exit = min(1.0, min(next.x, next.y));
+#ifndef REMASTER_REFERENCE_VISIBILITY
+		// This is the same conservative Z rejection as remasterMeshHit, before
+		// fetching the 48-byte patch. DDA rounding, triangle tests and attenuation
+		// order are unchanged. The origin-cell proper-crossing test stays above.
+		float4 bounds = visibilityBlocks.read(sample);
+		float z0 = from.z + segment.z * entry, z1 = from.z + segment.z * exit;
+		if (bounds.x > max(z0, z1) || bounds.y < min(z0, z1))
+			continue;
+		float coverage = bounds.a;
+		float center = bounds.b;
+#else
 		float coverage = occlusion.read(sample).r;
+		float center = surfaceField.read(sample).r;
+#endif
 		if (coverage <= 0.0)
 			continue;
-		float exit = min(1.0, min(next.x, next.y));
+#ifdef REMASTER_REFERENCE_VISIBILITY
 		if (heightField.read(sample).g < 0.5)
 			continue;
+#endif
 		RemasterMeshCell patch = mesh[sample.y * occlusion.get_width() + sample.x];
 		// Grid traversal bins triangle candidates; it does not define geometry.
 		// Count a patch once even if both triangles/shared edges are hit.
-		if (exit - entry > 0.000001 && remasterMeshHit(from, segment, cell, surfaceField.read(sample).r,
+		if (exit - entry > 0.000001 && remasterMeshHit(from, segment, cell, center,
 			patch, entry, exit))
 		{
 			visibility *= 1.0 - coverage;

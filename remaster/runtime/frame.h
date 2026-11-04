@@ -318,6 +318,10 @@ struct RemasterFrame
 {
 	// Ephemeral producer lineage; deliberately not serialized into capture bytes.
 	RemasterLightingTrace::Frame lightingTrace;
+	// Producer-only capability: lightweight inspection packets must never be
+	// mistaken for fully projected lighting/capture geometry. Not serialized;
+	// packets read from disk have the complete-capture contract by default.
+	bool fullGeometry = true;
 	uint32_t schemaVersion = REMASTER_FRAME_SCHEMA_VERSION;
 	uint32_t width = 0;
 	uint32_t height = 0;
@@ -808,6 +812,18 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 	}
 }
 
+// Owned, bounded proof of equivalence of the ORDERED first traversal, not a
+// tile/component heuristic. Only legal first seeds in its SCC are admitted.
+#define REMASTER_DUNGEON_SEED_CERTIFICATE 1
+struct RemasterDungeonSeedCertificate
+{
+	static constexpr uint32_t nodes=2*497*488;
+	std::array<uint64_t,(nodes+63)/64> members={};
+	uint32_t seed=UINT32_MAX;
+	int representative=-1;
+	bool contains(uint32_t s) const {return s<nodes && (members[s/64]&(UINT64_C(1)<<(s%64)));}
+};
+
 struct RemasterDungeonMovementCache
 {
 	bool valid=false, placed=false;
@@ -816,6 +832,7 @@ struct RemasterDungeonMovementCache
 	std::array<int16_t,8192> components;
 	std::array<int16_t,8192> thresholdOwners; // terminal claims from actual traversed bodies; -2 ambiguous
 	std::vector<std::vector<uint16_t>> cells;
+	std::shared_ptr<const RemasterDungeonSeedCertificate> seedCertificate;
 };
 
 struct RemasterDungeonHeightMap;
@@ -1035,6 +1052,36 @@ struct RemasterDungeonFloorContext
 	EntrySupport entrySupport;
 };
 
+// Closed graphics read inventory for the two constructed maps and the sole
+// replacement substitution path. Include ALL four words of EVERY slot at BOTH
+// bases, even if unplaced/ineligible today: candidate/metadata rejection is not
+// a graphics dependency proof. uint16_t preserves the consumer's VRAM wrapping.
+// Unknown producer-driven dependencies retain the full 64KiB fallback.
+template<class Visit> inline void S9xRemasterDungeonGraphicsDependencies(
+	const RemasterDungeonFloorContext &c,Visit visit)
+{
+	if(!c.constructedMaps || c.producerWrites) {
+		for(unsigned i=0;i<65536;i++)visit(uint16_t(i));
+		return;
+	}
+	std::array<bool,2048> used={};
+	auto tile=[&](int bank,uint16_t word) {
+		const int n=word&1023,slot=bank*1024+n;if(used[slot])return;used[slot]=true;
+		const int base=bank && c.bg1GraphicsBase!=0xffff?c.bg1GraphicsBase:c.graphicsBase;
+		for(int b=0;b<32;b++)visit(uint16_t(base+n*32+b));
+	};
+	for(int i=0;i<8192;i++)tile(i>=4096,c.constructedMaps[2*i]|c.constructedMaps[2*i+1]<<8);
+	if(c.replacementEvidence.available)for(const auto &s:c.replacementEvidence.slots)
+		for(auto w:s.words){tile(0,w);tile(1,w);}
+}
+
+inline bool S9xRemasterDungeonGraphicsMatch(const RemasterDungeonFloorContext &c,const uint8_t *snapshot)
+{
+	if(!c.graphics || !snapshot)return false;
+	bool equal=true;S9xRemasterDungeonGraphicsDependencies(c,[&](uint16_t at){equal &= snapshot[at]==c.graphics[at];});
+	return equal;
+}
+
 inline bool S9xRemasterReadTerrainEvidence(const std::string &path,RemasterDungeonFloorContext &c)
 {
 	std::ifstream f(path,std::ios::binary);if(!f)return false;
@@ -1181,7 +1228,9 @@ inline uint16_t S9xRemasterDungeonRoomForScreenPosition (const RemasterDungeonFl
 
 struct RemasterDungeonHeightMap
 {
+	std::shared_ptr<const RemasterDungeonSeedCertificate> seedCertificate;
 	std::shared_ptr<const RemasterRoomDiagnostics> roomDiagnostics;
+	bool seedRepresentativeInvariant=false;
 	std::array<uint64_t,4096> producerHashes = {}; // zero: legacy adapter has no producer identity
 	std::array<uint8_t,4096> producerFlips = {};
 	std::array<bool,4096> producerZeroFloor = {};
@@ -1518,6 +1567,27 @@ inline bool S9xRemasterDungeonStairProof(const RemasterDungeonFloorContext &c,
 		(s.highIsNorth?s.y-1:s.y+4)*64+s.x+1,rise,flip};return true;
 }
 
+// The first seed changes ordered component ownership even when the collision
+// graph is unchanged (directed thresholds need not be strongly connected).
+// Equality is a bounded certificate, not a same-room/component assumption.
+inline uint32_t S9xRemasterDungeonMovementSeed(const RemasterDungeonFloorContext &context)
+{
+	return (context.linkPlane * 488 + (context.linkY & 511)) * 497 + (context.linkX & 511);
+}
+
+inline bool S9xRemasterDungeonSeedEquivalent(const RemasterDungeonHeightMap &map,
+	uint32_t original, uint32_t seed)
+{
+	if(original==seed)return true;
+	const auto &c=map.seedCertificate;
+	if(!c || !c->contains(seed))return false;
+	// The traversal's first projected cell is also an exported signed-path
+	// representative. Never silently canonicalize that independently visible ID.
+	if(map.seedRepresentativeInvariant)return true;
+	const int x=seed%497,row=seed/497;
+	return (row/488)*4096+((row%488+8)/8)*64+x/8==c->representative;
+}
+
 inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext &inputContext,
 	uint8_t floorRise, RemasterDungeonHeightMap &result)
 {
@@ -1667,7 +1737,7 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 			result.candidateFloorCells[0]>0 && result.candidateFloorCells[1]>0;
 		result.planeRelationshipUnresolved = result.disconnectedPlaneCandidates;
 	}
-	seeds.push_back((context.linkPlane * 488 + (context.linkY & 511)) * 497 + (context.linkX & 511));
+	seeds.push_back(S9xRemasterDungeonMovementSeed(context));
 	for (uint8_t i = 0; i < context.stairCount; i++)
 	{
 		const auto &stair = context.stairs[i];
@@ -1687,12 +1757,13 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				walkable(p, x * 8, y * 8, 2) && walkable(p, x * 8, y * 8, 3))
 				seeds.push_back((p * 488 + y * 8) * 497 + x * 8);
 	bool movementReused=false;
+	std::shared_ptr<const RemasterDungeonSeedCertificate> seedCertificate;
 	S9X_BUILD_NEXT(7); // exact movement traversal or cache copy
 #ifndef ALTTP_TEST_REFERENCE_MOVEMENT
 	if(auto *cache=context.movementCache) {
 		movementReused=cache->valid && cache->placed==bool(context.placements) && cache->seeds==seeds &&
 			!std::memcmp(cache->attributes.data(),context.collisionAttributes,8192);
-		if(movementReused){components=cache->components;cells=cache->cells;*thresholdOwners=cache->thresholdOwners;}
+		if(movementReused){components=cache->components;cells=cache->cells;*thresholdOwners=cache->thresholdOwners;seedCertificate=cache->seedCertificate;}
 		if(movementReused)S9X_BUILD_WORK(movementHits,1);
 	}
 #endif
@@ -1776,6 +1847,35 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				}
 			}
 		}
+		if(id==0 && seed==seeds.front() && context.placements && !cells[0].empty()) {
+			// Forward traversal has completed; visited is EXACTLY R(seed). Reverse
+			// the actual directed edge predicate inside R to obtain its first SCC.
+			// SCC membership implies the same forward reach set. Internal BFS order
+			// cannot affect union claims of component 0, nor later ordered seeds,
+			// which see the identical visited set. Competing threshold owners from
+			// later components therefore remain identical too.
+			auto proof=std::make_shared<RemasterDungeonSeedCertificate>();
+			proof->seed=seed;proof->representative=cells[0][0];
+			queue.clear();queue.push_back(seed);visited[seed]=2;
+			static const int dx[4]={0,0,-1,1},dy[4]={-1,1,0,0};
+			for(size_t k=0;k<queue.size();k++) {
+				const uint32_t node=queue[k];const int x=node%497,row=node/497,p=row/488,y=row%488;
+				bool legal=true;
+				for(int yy=(y+8)/8;yy<=(y+23)/8;yy++)for(int xx=x/8;xx<=(x+15)/8;xx++)
+					legal &= context.collisionAttributes[p*4096+yy*64+xx]==0;
+				if(legal)proof->members[node/64]|=UINT64_C(1)<<(node%64);
+				for(int d=0;d<4;d++) {
+					const int px=x-dx[d],py=y-dy[d];
+					if(px<0 || px>496 || py<0 || py>487)continue;
+					const uint32_t prev=(p*488+py)*497+px;
+					if(visited[prev]!=1 || !walkable(p,x,y,d))continue;
+					const uint8_t center=context.collisionAttributes[p*4096+((py+16)/8)*64+(px+8)/8];
+					if(center>=0x80 && center<=0x8f && (center&1)!=(d>=2))continue;
+					visited[prev]=2;queue.push_back(prev);
+				}
+			}
+			seedCertificate=std::move(proof);
+		}
 	}
 
 #ifndef ALTTP_TEST_REFERENCE_MOVEMENT
@@ -1785,8 +1885,10 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 		std::copy_n(context.collisionAttributes,8192,cache.attributes.begin());
 		cache.components=components;cache.cells=cells;
 		cache.thresholdOwners=*thresholdOwners;
+		cache.seedCertificate=seedCertificate;
 	}
 #endif
+	result.seedCertificate=seedCertificate;
 	// A temporary blocker cannot merge existing movement components. Enumerate
 	// only newly legal complete bodies touching a proved removed footprint. A
 	// body must touch exactly ONE original support component; ownership is taken
@@ -3710,6 +3812,19 @@ inline bool S9xRemasterBuildDungeonHeightMap (const RemasterDungeonFloorContext 
 				}
 				result.stairAttachments.push_back(a);
 			}
+		}
+		if(seedCertificate && !cells.empty() && !cells[0].empty()) {
+			// cells[n] order is otherwise unobserved. cells[0][0] is used for
+			// terminal-low-wall eligibility and exported signed-path endpoints.
+			// Uniform floor eligibility proves no new export can appear; existing
+			// representative-bearing exports restrict reuse to the same first cell.
+			auto zeroFloor=[&](int i){const auto &t=context.placements[i%4096];return
+				t.surface==RemasterDungeonFloorContext::Surface::Floor && t.hasHeight &&
+				std::all_of(t.height.begin(),t.height.end(),[](int16_t h){return h==0;});};
+			const int rep=cells[0][0];result.seedRepresentativeInvariant=true;
+			for(auto i:cells[0])if(zeroFloor(i)!=zeroFloor(rep))result.seedRepresentativeInvariant=false;
+			for(const auto &r:result.authoredWallSupportRelations)if(r.support==rep)result.seedRepresentativeInvariant=false;
+			for(const auto &r:result.authoredSupportRelations)if(r.a==rep || r.b==rep)result.seedRepresentativeInvariant=false;
 		}
 		return true; // unresolved is a cached result too, not a reason to reuse stale geometry
 	}
@@ -6280,6 +6395,9 @@ inline std::vector<RemasterTileContentId> S9xRemasterFrameAnimationVariants (
 
 inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<uint8_t> &bytes)
 {
+	// Lightweight live inspection is not a complete capture. A caller must
+	// request a fresh full producer boundary rather than save absent projection.
+	if(!frame.fullGeometry)return false;
 	// v40 emission remains available for frozen compatibility oracles/export.
 	// It cannot claim the new saved-scalar evidence; normal captures use v41.
 	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40 && frame.schemaVersion != 41 && frame.schemaVersion != 42) ||

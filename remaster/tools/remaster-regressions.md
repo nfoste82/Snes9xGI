@@ -19,6 +19,12 @@ serialization fixture. These checks do not prove complete room-height coverage.
 
 ## Performance — freeze-based, actual Release app
 
+For pinned multi-scenario stress runs (many lights, visible/offscreen representative
+sweeps, movable-group exposure, movement and room transitions), see the
+[performance stress suite](../docs/lighting/performance_stress_suite.md).
+Its `record`/`check` gate requires locally acquired, verified freezes and a
+dedicated quiet macOS GPU run; the checked-in example is not a certified fixture.
+
 Requires an unlocked macOS desktop, Xcode command-line tools, a Release app,
 local ROM and freeze. No manual controller input is needed. Quit other Snes9x
 instances before timing; avoid concurrent GPU tests, profiler captures and heavy

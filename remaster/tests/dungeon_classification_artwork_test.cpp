@@ -24,10 +24,13 @@ int main(){try {
  }
  RemasterDungeonFloorContext c;c.verifiedAlttpRom=c.indoors=true;c.roomIndex=7;c.linkX=c.linkY=88;
  c.constructedMaps=maps->data();c.graphics=gfx->data();c.collisionAttributes=attr->data();c.dungeonTemplateData=tpl->data();
+ c.replacementEvidence.available=true;c.replacementEvidence.room=c.roomIndex;
+ c.replacementEvidence.slots[0].words={100,101,102,103}; // unplaced prospective underlays
  (*maps)[(12*64+12)*2+1]=0xc0;(*maps)[8192+(12*64+12)*2+1]=0x60;
  S9xRemasterSetLiveFramesEnabled(true);S9xRemasterSetProfile(profile);
  auto &s=S9xRemasterState();uint16_t screen[64]={};auto frame=std::make_unique<RemasterFrame>();
- auto art=[&](int phase){for(int y=0;y<8;y++){(*gfx)[y*2]=phase&1?255:0;(*gfx)[y*2+1]=phase&2?255:0;}};
+  auto art=[&](int phase){for(int y=0;y<8;y++){(*gfx)[y*2]=phase&1?255:0;(*gfx)[y*2+1]=phase&2?255:0;}};
+  bool initialSourceOracle=true; // later dependency tests intentionally move BG bases/maps
  auto run=[&]{S9xRemasterDungeonCacheStages()={};S9xRemasterBeginFrame(64,8,8,8);
   RemasterFrameTileInstance instance;instance.source=RemasterSourceType::Background;instance.sourceIndex=1;
   const int phase=(*gfx)[0]?1:(*gfx)[1]?2:0;instance.tileId=ids[phase];s.tileInstances.push_back(instance);
@@ -35,7 +38,12 @@ int main(){try {
   std::fill_n(observed.indices,64,phase);c.backgroundScrollX=c.backgroundScrollY=88;
   for(int i=0;i<64;i++){s.mainOwners[i]=s.subOwners[i]=S9xRemasterOwner(RemasterSourceType::Background,1,0);
    s.mainInstanceIds[i]=s.subInstanceIds[i]=1;s.mainTilePixels[i]=s.subTilePixels[i]=i;}
-  S9xRemasterEndFrame(screen,8,8,8,frame.get(),&c);};
+   S9xRemasterEndFrame(screen,8,8,8,frame.get(),&c);
+#ifdef ALTTP_TEST_FORCE_DUNGEON_INPUT_COLLISION
+   need(s.runtimeDungeonObservedInputKey==42,"collision seam not active");
+   if(initialSourceOracle)need((*s.dungeonRetainedBg2)[0].height[0]==(phase==0?-256:phase==1?0:256),"colliding digest restored stale source geometry");
+#endif
+  };
  auto parity=[&]{
   const auto inventory=dungeonMapInventory(s.runtimeDungeonHeightMap)+dungeonMapInventory(s.runtimeDungeonBg1HeightMap);
   auto bg1=std::make_unique<std::array<RemasterDungeonFloorContext::Placement,4096>>(*s.dungeonRetainedBg1);
@@ -62,6 +70,36 @@ int main(){try {
   need((*s.dungeonRetainedBg2)[0].height[0]==(phase==0?-256:phase==1?0:256),"stale art classification");
  }
  parity();
+ // Exact solved residency with active replacement evidence: no equivalence
+ // between genuinely different signed/zero sources is authorized.
+ c.linkPlane=0;
+ for(int phase=0;phase<3;phase++){art(phase);run();}
+ for(int n=0;n<9;n++){art(n%3);run();need(!S9xRemasterDungeonCacheStages().classifications && !S9xRemasterDungeonCacheStages().solves,"resident exact solved state missed");}
+ need(s.dungeonArtworkStates.size()==RemasterState::dungeonSolvedCapacity,"solved state bound");
+ parity();
+  // Revoke dependencies through actual EndFrame without manually dirtying it.
+  initialSourceOracle=false;
+ auto invalidates=[&]{const auto epoch=s.runtimeDungeonHeightEpoch;run();need(s.runtimeDungeonHeightEpoch>epoch && S9xRemasterDungeonCacheStages().solves>=2,"actual solve dependency ignored");parity();};
+ (*gfx)[100*32]^=1;invalidates();
+ c.replacementEvidence.slots[0].words[2]++;invalidates();
+ c.replacementEvidence.slots[0].state=0x2020;invalidates();
+ c.replacementEvidence.attributes[9]++;invalidates();
+ c.replacementEvidence.secrets.push_back({2,0x0b});invalidates();
+ c.replacementEvidence={};invalidates();
+ c.replacementEvidence.available=true;c.replacementEvidence.room=c.roomIndex;invalidates();
+ S9xRemasterSetProfile(profile);invalidates(); // unchanged publication must rebuild once
+ c.linkPlane^=1;invalidates();
+ c.romIdentity++;invalidates();
+ S9xRemasterInvalidateDungeonContinuity();invalidates();
+ c.bg1GraphicsBase=0xfff0;invalidates();c.bg1GraphicsBase=0xffff;invalidates();
+ (*maps)[1]^=0x80;invalidates();
+ (*tpl)[12875]^=1;invalidates();
+ // Four phases exceed the three-entry solved capacity. After a full boundary
+ // all have genuinely distinct metadata, so the evicted oldest must solve.
+ c.replacementEvidence.slots[0].words={100,101,102,103};
+ for(int phase=0;phase<4;phase++){art(phase);run();}
+ need(s.dungeonArtworkStates.size()==RemasterState::dungeonSolvedCapacity,"solved eviction bound");
+ art(0);run();need(S9xRemasterDungeonCacheStages().solves>=2,"evicted solved state resurrected");parity();
  // Differential every warmed artwork phase (oracle is outside the count loop).
  for(int target=0;target<3;target++) {
   for(int phase=0;phase<3;phase++){art(phase);c.linkPlane^=1;run();}
@@ -76,6 +114,11 @@ int main(){try {
  auto rejects=[&]{s.dungeonSnapshotValid=false;run();need(S9xRemasterDungeonCacheStages().classifications==2,"changed dependency reused");parity();};
  (*maps)[1]^=0x40;rejects();(*maps)[1]^=0x80;rejects();(*maps)[1]^=0x20;rejects();(*maps)[2]=1;rejects();
  (*attr)[12*64+12]=0x70;rejects();(*tpl)[12875]^=1;rejects();(*gfx)[32]^=1;rejects();
+ (*gfx)[100*32]^=1;rejects(); // absent from BOTH maps; still a replacement dependency
+ c.replacementEvidence.slots[0].words[3]++;rejects();
+ c.replacementEvidence.attributes[100]++;rejects();
+ c.replacementEvidence.secrets.push_back({0,0x80});rejects();
+ c.replacementEvidence.slots[0].state=0x1111;rejects();
  c.graphicsBase=32;rejects();c.bg1GraphicsBase=64;rejects();
  c.dungeonTemplateData=nullptr;rejects();c.dungeonTemplateData=tpl->data();rejects();
  c.roomIndex++;rejects();c.romIdentity++;rejects();
@@ -94,6 +137,9 @@ int main(){try {
  RemasterContextLocation at;at.area=c.roomIndex;at.background=1;at.x=10;at.y=10;
  profile.contextBindings[at].tile=ids[0];profile.contextBindings[at].name="one";publish();
  profile.assetGroups["obstacles"].tileIds.push_back(ids[0]);publish();
+ RemasterObstacleGroup movable;movable.name="unplaced opted-in group";movable.movable=true;
+ movable.members.push_back({ids[0],0,0,0,false,false,true});profile.obstacleGroups.push_back(movable);publish();
+ profile.obstacleGroups.back().movable=false;publish();profile.obstacleGroups.back().movable=true;publish();
  for(bool research:{true,false}){S9xRemasterSetDungeonResearchEnabled(research);rejects();}
  S9xRemasterSetDungeonResearchEnabled(true);
  auto &writes=S9xRemasterDungeonWrites();writes.enable(true);writes.room=c.roomIndex;c.producerWrites=&writes;
@@ -106,5 +152,6 @@ int main(){try {
  need(s.dungeonClassifiedArtworkStates.size()==RemasterState::dungeonClassificationCapacity,"cache bound");
  art(0);c.linkPlane^=1;run();need(S9xRemasterDungeonCacheStages().classifications==2,"oldest state not evicted");
  std::cout<<"classification_capacity="<<RemasterState::dungeonClassificationCapacity<<" entry_bytes="<<sizeof(RemasterState::DungeonClassifiedArtworkState)<<" max_bytes="<<RemasterState::dungeonClassificationCapacity*sizeof(RemasterState::DungeonClassifiedArtworkState)<<'\n';
+ std::cout<<"solved_capacity="<<RemasterState::dungeonSolvedCapacity<<" entry_bytes="<<sizeof(RemasterState::DungeonSolvedArtworkState)<<" fixed_max_bytes="<<RemasterState::dungeonSolvedCapacity*sizeof(RemasterState::DungeonSolvedArtworkState)<<" (map vectors/shared diagnostics additional)\n";
  std::cout<<"PASS production recurring-art classification across plane changes; independent solves and signed/zero relief\n";
  }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

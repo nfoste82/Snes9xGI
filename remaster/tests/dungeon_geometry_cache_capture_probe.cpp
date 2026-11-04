@@ -1,6 +1,9 @@
 // Complete own-input gameplay packet -> production EndFrame differential artifact.
 // No animation synthesis or current-profile substitution in this probe.
-#include "../runtime/remaster.h"
+#ifndef ALTTP_TEST_RUNTIME_HEADER
+#define ALTTP_TEST_RUNTIME_HEADER "../runtime/remaster.h"
+#endif
+#include ALTTP_TEST_RUNTIME_HEADER
 #include "dungeon_geometry_cache_inventory.h"
 #include <iostream>
 #include <stdexcept>
@@ -72,6 +75,23 @@ int main(int argc,char **argv){try {
  c.constructedMaps=input.data()+8;c.collisionAttributes=input.data()+16392;c.graphics=input.data()+24584;c.dungeonTemplateData=templates.data()+8;
   if(std::ifstream(path+".terrain-input.bin").good())check(S9xRemasterReadTerrainEvidence(path+".terrain-input.bin",c),"terrain evidence");
   if(std::ifstream(path+".sprite-input.bin").good())check(S9xRemasterReadSpriteObstacleEvidence(path+".sprite-input.bin",c),"sprite evidence");
+  // Never promote a legacy packet using an orphan sidecar. This is an owned
+  // snapshot replay, not an attestation of an unseen live writer/event.
+  const bool replacementSidecar=std::ifstream(path+".replacement-input.bin").good();
+  check(replacementSidecar==captured->replacementEvidence.available,"replacement packet/sidecar capability mismatch");
+  if(replacementSidecar) {
+   check(S9xRemasterReplacementSidecarMatches(read(path+".replacement-input.bin"),captured->replacementEvidence),"replacement sidecar mismatch");
+   check(captured->replacementEvidence.room==c.roomIndex && profile.romSha256=="66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb","replacement identity");
+   check(captured->profileRomSha256==profile.romSha256 && captured->area.id==c.roomIndex,"replacement packet identity envelope");
+   c.replacementEvidence=captured->replacementEvidence;
+  }
+  if(std::getenv("ALTTP_MOVABLE_PRIVATE_OFF")) {
+   check(replacementSidecar,"private control requires real evidence");
+   size_t changed=0;
+   for(auto &g:profile.obstacleGroups)if(!g.spriteAssembly && g.movable){g.movable=false;changed++;}
+   check(changed==1,"private control requires exactly one active movable group");
+   c.replacementEvidence={}; // same production extraction activation as gfx.cpp
+  }
   if(const char *crop=std::getenv("ALTTP_MANTLE_CAMERA_CROP")) {
    // Controlled camera ablation, never a claim that the input capture displayed
    // this camera. Crop existing observations only: no hidden receivers/ink added.
@@ -124,6 +144,7 @@ int main(int argc,char **argv){try {
 #ifdef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
   // Bounded baseline: ablate cache only, retaining identical classifier/solver.
   s.dungeonSnapshotValid=false;s.runtimeDungeonHeightKey=0;
+  if(s.dungeonClassificationInputs)s.dungeonClassificationInputs->valid=false;
 #endif
   S9xRemasterBeginFrame(captured->width*captured->height,captured->width,captured->width,captured->height);
   s.tileInstances=captured->tileInstances;for(auto &i:s.tileInstances){i.heightOffset=0;i.hasPlacementHeight=false;}
@@ -235,6 +256,10 @@ int main(int argc,char **argv){try {
     check(read(std::string(alternate)+".dungeon-templates.bin")==templates,"alternate templates differ");
     auto secondPacket=std::make_unique<RemasterFrame>();check(S9xReadRemasterFrame(alternate,*secondPacket),"alternate packet");
     check(secondPacket->width==captured->width && secondPacket->height==captured->height,"alternate dimensions");
+    check(secondPacket->replacementEvidence==captured->replacementEvidence,"alternate replacement evidence differs");
+    const bool alternateReplacementSidecar=std::ifstream(std::string(alternate)+".replacement-input.bin").good();
+    check(alternateReplacementSidecar==secondPacket->replacementEvidence.available,"alternate replacement capability mismatch");
+    if(alternateReplacementSidecar)check(S9xRemasterReplacementSidecarMatches(read(std::string(alternate)+".replacement-input.bin"),secondPacket->replacementEvidence),"alternate replacement sidecar mismatch");
     std::ofstream exact(out+"-alternating.bin",std::ios::binary);
     auto emit=[&](const auto &value){const uint64_t size=value.size();exact.write(reinterpret_cast<const char *>(&size),sizeof(size));exact.write(reinterpret_cast<const char *>(value.data()),value.size());};
      uint64_t coldClass=0,warmClass=0,coldSolves=0,warmSolves=0;std::vector<double> cold,warm;
@@ -295,6 +320,86 @@ int main(int argc,char **argv){try {
     std::cout<<" warm_frames="<<warm.size()<<" classifications="<<warmClass<<" solves="<<warmSolves;stats(warm);std::cout<<'\n';
     return 0;
    }
+#if defined(ALTTP_TEST_CACHE_STAGES) && defined(ALTTP_TEST_DOOR_WORK)
+   if(std::getenv("ALTTP_MOVEMENT_CERTIFICATE_REGRESSION")) {
+    // Controlled XY/graphics replay of the OWNED captured packet, not a live
+    // animation/actor annotation. Independent process forces cold every frame.
+    std::ofstream exact(out+"-motion.bin",std::ios::binary),timing(out+"-motion.csv");
+    timing<<"sample,x,y,phase,ms,classifications,solves,door_origins,hits\n";
+    auto emit=[&](const auto &v){uint64_t n=v.size();exact.write(reinterpret_cast<const char *>(&n),8);exact.write(reinterpret_cast<const char *>(v.data()),v.size());};
+    const int ox=c.linkX+(std::getenv("ALTTP_MOVEMENT_START_DELTA")?std::atoi(std::getenv("ALTTP_MOVEMENT_START_DELTA")):0),oy=c.linkY;
+    const int count=std::getenv("ALTTP_MOVABLE_SAMPLES")?std::max(8,std::atoi(std::getenv("ALTTP_MOVABLE_SAMPLES"))):40;
+    for(int n=0;n<count;n++) {
+     // Fixed deterministic one-pixel motion, returning across pixel/tile phases.
+     const int delta=n%16;c.linkX=ox+delta;c.linkY=oy;
+     if(std::getenv("ALTTP_MOVEMENT_SERIAL_FALLBACK"))c.linkPlane=n%2;
+     S9xRemasterDungeonCacheStages()={};S9xRemasterDungeonDoorWork()={};run();
+     const auto v=S9xRemasterDungeonCacheStages();
+#ifdef REMASTER_DUNGEON_SEED_CERTIFICATE
+     if(n==0)for(const auto *m:{&s.runtimeDungeonBg1HeightMap,&s.runtimeDungeonHeightMap}) {
+      const auto &p=m->seedCertificate;
+      std::cout<<"certificate seed="<<(p?p->seed:UINT32_MAX)<<" rep="<<(p?p->representative:-1)<<" invariant="<<m->seedRepresentativeInvariant<<" wall_relations="<<m->authoredWallSupportRelations.size()<<" support_relations="<<m->authoredSupportRelations.size()<<'\n';
+     }
+     if(n==0 && std::getenv("ALTTP_MOVEMENT_CERTIFICATE_DUMP"))for(const auto *m:{&s.runtimeDungeonBg1HeightMap,&s.runtimeDungeonHeightMap})
+      {for(const auto &r:m->authoredSupportRelations)std::cout<<"signed support a="<<r.a<<" b="<<r.b<<" rise="<<r.rise<<'\n';
+       int reps=0;for(const auto &r:m->authoredWallSupportRelations)if(m->seedCertificate && r.support==m->seedCertificate->representative){if(!reps)std::cout<<"wall export wall="<<r.wall<<" support="<<r.support<<" rise="<<r.rise<<'\n';reps++;}
+       std::cout<<"representative wall exports="<<reps<<'\n';}
+#endif
+     timing<<n<<','<<c.linkX<<','<<c.linkY<<",0,"<<endframeMs<<','<<v.classifications<<','<<v.solves<<','<<S9xRemasterDungeonDoorWork().openOrigins<<','<<s.dungeonArtworkStateHits<<'\n';timing.flush();
+     if(n && !std::getenv("ALTTP_MOVABLE_RECORD_BASELINE") && !std::getenv("ALTTP_MOVEMENT_SERIAL_FALLBACK"))
+      check(!v.classifications && !v.solves,"certified common motion rebuilt");
+     if(std::getenv("ALTTP_CLASSIFICATION_TIMING_ONLY"))continue;
+     std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"motion packet");emit(bytes);
+     emit(dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap));
+     std::ostringstream full;for(auto *p:{s.dungeonRetainedBg1.get(),s.dungeonRetainedBg2.get()})for(const auto &t:*p)dungeonPlacementInventory(full,t);emit(full.str());
+    }
+    std::cout<<"PASS controlled movement frames="<<count<<'\n';return 0;
+   }
+   if(std::getenv("ALTTP_MOVABLE_STEADY_REGRESSION")) {
+    check(c.roomIndex==47 && replacementSidecar,"own030 required");
+    std::ofstream exact(out+"-steady.bin",std::ios::binary),timing(out+"-steady.csv");
+    timing<<"sample,phase,ms,classifications,solves,door_origins,epoch,hits\n";
+    auto emit=[&](const auto &v){uint64_t n=v.size();exact.write(reinterpret_cast<const char *>(&n),8);exact.write(reinterpret_cast<const char *>(v.data()),v.size());};
+    const auto originalInstances=captured->tileInstances;
+    const uint8_t irrelevant=input[24584+0x7600];
+    // Controlled graphics ablation, NOT recorded water phases or pickup events.
+    const int word=c.constructedMaps[0]|c.constructedMaps[1]<<8;
+    const uint16_t visible=uint16_t(c.graphicsBase+(word&1023)*32);
+    const uint8_t art=input[24584+visible];
+    const int count=std::getenv("ALTTP_MOVABLE_SAMPLES")?std::max(8,std::atoi(std::getenv("ALTTP_MOVABLE_SAMPLES"))):36;
+    for(int n=0;n<count;n++) {
+     // A static, unrelated-byte B, A; then three exact dependent art phases.
+     const int phase=n<4?0:(n-4)%3;
+     input[24584+0x7600]=irrelevant^(n==2?1:0);
+     input[24584+visible]=art^phase;
+     captured->tileInstances=originalInstances;captured->assets.clear();std::set<uint64_t> ids;
+     for(auto &i:captured->tileInstances)if(i.source==RemasterSourceType::Background && i.sourceIndex<2) {
+      const int base=i.sourceIndex?c.graphicsBase:(c.bg1GraphicsBase==0xffff?c.graphicsBase:c.bg1GraphicsBase);
+      const uint16_t at=uint16_t(base+(i.tileNumber&1023)*32);RemasterFrameAsset a;
+      for(int y=0;y<8;y++)for(int x=0;x<8;x++){int v=0;for(int b=0;b<4;b++)v|=((c.graphics[uint16_t(at+b/2*16+y*2+b%2)]>>(7-x))&1)<<b;a.indices[y*8+x]=v;}
+      a.tileId={S9xRemasterHashTile(4,a.indices),1,4};i.tileId=a.tileId;if(ids.insert(a.tileId.hash).second)captured->assets.push_back(a);
+     }
+     S9xRemasterDungeonCacheStages()={};S9xRemasterDungeonDoorWork()={};run();
+     const auto &v=S9xRemasterDungeonCacheStages();const auto &d=S9xRemasterDungeonDoorWork();
+     timing<<n<<','<<phase<<','<<endframeMs<<','<<v.classifications<<','<<v.solves<<','<<d.openOrigins<<','<<s.runtimeDungeonHeightEpoch<<','<<s.dungeonArtworkStateHits<<'\n';timing.flush();
+#ifndef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
+     if(!std::getenv("ALTTP_MOVABLE_RECORD_BASELINE") && ((n>0 && n<4) || n>=7))check(!v.classifications && !v.solves && !d.openOrigins,"steady/recurring movable rebuilt");
+#endif
+     if(std::getenv("ALTTP_CLASSIFICATION_TIMING_ONLY"))continue;
+     std::vector<uint8_t> bytes;check(S9xSerializeRemasterFrame(*frame,bytes),"steady packet");emit(bytes);
+     emit(dungeonMapInventory(s.runtimeDungeonBg1HeightMap)+dungeonMapInventory(s.runtimeDungeonHeightMap));
+     std::ostringstream full;
+     for(auto *p:{s.dungeonRetainedBg1.get(),s.dungeonRetainedBg2.get()})for(const auto &t:*p)dungeonPlacementInventory(full,t);
+     for(const auto *m:{&s.runtimeDungeonBg1HeightMap,&s.runtimeDungeonHeightMap}) {
+      full<<m->hasActorThresholdSupport<<' ';
+      for(const auto &plane:m->occupiedFloorOwners)for(auto v:plane)full<<v<<' ';
+      for(const auto &plane:m->actorThresholdBases)for(auto v:plane)full<<v<<' ';
+      for(const auto &plane:m->actorThresholdOwners)for(auto v:plane)full<<v<<' ';
+     }emit(full.str());
+    }
+    std::cout<<"PASS controlled movable sequence frames="<<count<<" exact states="<<s.dungeonArtworkStates.size()<<'\n';return 0;
+   }
+#endif
    run();auto epoch=s.runtimeDungeonHeightEpoch;run();
    if(std::getenv("ALTTP_PROFILE_RESUME_REGRESSION")) {
     std::vector<uint8_t> before;check(S9xSerializeRemasterFrame(*frame,before),"resume baseline");

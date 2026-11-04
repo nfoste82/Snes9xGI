@@ -34,6 +34,8 @@ inline std::string dungeonMapInventory(const RemasterDungeonHeightMap &m) {
  v(m.roomIndex);array(m.offsets);for(auto &a:m.planeOffsets)array(a);
  v(m.componentCount);v(m.constraintCount);v(m.conflictingComponentCount);array(m.solvedPlaneCells);
  v(m.hasPlaneOffsets);v(m.hasRoomGeometry);array(m.fallbackDirections);
+ v(m.hasActorThresholdSupport);for(auto &a:m.actorThresholdBases)array(a);for(auto &a:m.actorThresholdOwners)array(a);
+ for(auto &a:m.occupiedFloorOwners)array(a);
  for(auto &a:m.structuralPlaneOffsets)array(a);for(auto &a:m.mixedFloorBases)array(a);
  v(m.mixedFloorUnknown);v(m.mixedFloorConflicts);array(m.requiredPlaneCells);array(m.unknownPlaneCells);
 	v(m.structuralConflicts);array(m.persistentSupportRequired);array(m.persistentSupportMissing);

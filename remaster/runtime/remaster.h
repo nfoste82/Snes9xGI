@@ -149,6 +149,9 @@ struct RemasterState
 	uint8_t activeLayerView = 0;
 	std::atomic<bool> requestedLiveFrames { false };
 	std::atomic<bool> requestedInspectableFrames { false };
+	// Producer requests full geometry for paused refresh/capture, independently
+	// of lightweight running inspection and the user's lighting toggle.
+	std::atomic<bool> requestedFullGeometry { false };
 	std::atomic<bool> requestedRoomDiagnostics { false };
 	std::atomic<bool> performanceMetricsEnabled { false };
 	std::chrono::steady_clock::time_point performanceFrameStarted;
@@ -208,13 +211,6 @@ struct RemasterState
 	std::unique_ptr<RemasterVisibleFaceTemplateCache> visibleFaceTemplateCache;
 	// Bounded exact-evidence animation states. Unlike equivalent reuse, this can
 	// retain genuinely different solved geometry without merging those states.
-	struct DungeonSolvedArtworkState {
-		uint64_t inputKey=0;
-		std::array<uint8_t,65536> graphics;
-		RemasterDungeonHeightMap bg1,bg2;
-		std::array<RemasterDungeonFloorContext::Placement,4096> placements1,placements2;
-	};
-	std::vector<std::unique_ptr<DungeonSolvedArtworkState>> dungeonArtworkStates;
 	// Classification has no actor-plane/entry-datum dependency. Keep an exact
 	// separate snapshot: observed solve inputs can advance before a solve succeeds.
 	struct DungeonClassificationInputs {
@@ -235,6 +231,15 @@ struct RemasterState
 		std::array<uint8_t,12876> templateBytes;
 	};
 	std::unique_ptr<DungeonClassificationInputs> dungeonClassificationInputs;
+	struct DungeonSolvedArtworkState {
+		uint64_t inputKey=0;
+		uint32_t movementSeed=0;
+		DungeonClassificationInputs inputs;
+		RemasterDungeonHeightMap bg1,bg2;
+		std::array<RemasterDungeonFloorContext::Placement,4096> placements1,placements2;
+	};
+	static constexpr size_t dungeonSolvedCapacity=3;
+	std::vector<std::unique_ptr<DungeonSolvedArtworkState>> dungeonArtworkStates;
 	// Classification ONLY: no solved maps, plane datums or support state. Three
 	// exact artwork states cover recurring animation without extending solve life.
 	struct DungeonClassifiedArtworkState {
@@ -269,12 +274,16 @@ struct RemasterState
 	uint16_t dungeonObservedGraphicsBase = 0xffff;
 	uint64_t dungeonObservedRomIdentity = 0;
 	RemasterDungeonReplacementEvidence dungeonObservedReplacements;
+	uint8_t dungeonObservedReplacementModule=255,dungeonObservedReplacementSubmodule=255;
+	bool dungeonObservedReplacementIndoors=false,dungeonObservedVerified=false,dungeonObservedResearch=false;
+	uint8_t dungeonObservedBackground=255;
 	uint64_t dungeonObservedProducerRevision = 0;
 	uint16_t dungeonObservedBg1GraphicsBase = 0xffff;
 	const uint8_t *dungeonObservedTemplateData = nullptr;
 	uint8_t dungeonObservedRise = 255;
 	uint8_t dungeonObservedPlane = 255;
 	uint8_t dungeonObservedCollisionMode = 255;
+	uint32_t dungeonObservedMovementSeed = UINT32_MAX;
 	uint64_t dungeonTraceEventKey = 0;
 	bool dungeonSnapshotValid = false;
 	uint16_t dungeonStaticAssessmentRoom=0xffff;
@@ -526,19 +535,7 @@ inline uint64_t S9xRemasterDungeonHeightInputKey (const RemasterDungeonFloorCont
 		for (size_t i = 0; i < 16384; i++) mix(context.constructedMaps[i]);
 	if (context.graphics && context.constructedMaps)
 	{
-		// Replacement art may not be referenced by the visible room words yet.
-		// Until sparse dependencies are retained, compare the whole bounded VRAM.
-		if(context.replacementEvidence.available)for(size_t i=0;i<65536;i++)mix(context.graphics[i]);
-		std::array<bool, 1024> used = {};
-		for (int i = 0; i < 8192; i++)
-		{
-			const int tile = (context.constructedMaps[i * 2] | (context.constructedMaps[i * 2 + 1] << 8)) & 1023;
-			if(i==4096)used.fill(false);
-			if (used[tile]) continue;
-			used[tile] = true;
-			const int base=i>=4096 && context.bg1GraphicsBase!=0xffff?context.bg1GraphicsBase:context.graphicsBase;
-			for (int b = 0; b < 32; b++) mix(context.graphics[static_cast<uint16_t>(base + tile * 32 + b)]);
-		}
+		S9xRemasterDungeonGraphicsDependencies(context,[&](uint16_t at){mix(context.graphics[at]);});
 	}
 	mix(context.graphicsBase & 255); mix(context.graphicsBase >> 8);
 	mix(context.bg1GraphicsBase & 255); mix(context.bg1GraphicsBase >> 8);
@@ -1157,21 +1154,13 @@ inline bool S9xRemasterDungeonClassificationInputsMatch(const RemasterDungeonFlo
 		S9X_REMASTER_OBSERVED_REASON(a->graphicsBase!=c.graphicsBase,classificationReasons,GraphicsBaseChange) ||
 		S9X_REMASTER_OBSERVED_REASON(a->bg1GraphicsBase!=c.bg1GraphicsBase,classificationReasons,GraphicsBaseChange) ||
 		S9X_REMASTER_OBSERVED_REASON(a->templates!=bool(c.dungeonTemplateData),classificationReasons,TemplateChange) ||
-		S9X_REMASTER_OBSERVED_REASON(a->replacements!=c.replacementEvidence,classificationReasons,ProducerChange) ||
+		S9X_REMASTER_OBSERVED_REASON(a->replacements!=c.replacementEvidence,classificationReasons,ReplacementEvidenceChange) ||
 		S9X_REMASTER_OBSERVED_REASON(c.replacementEvidence.available &&
-			(a->replacementModule!=c.module || a->replacementSubmodule!=c.submodule || a->replacementIndoors!=c.indoors || a->replacementCollision!=c.collisionMode),classificationReasons,ProducerChange) ||
+			(a->replacementModule!=c.module || a->replacementSubmodule!=c.submodule || a->replacementIndoors!=c.indoors || a->replacementCollision!=c.collisionMode),classificationReasons,ReplacementEvidenceChange) ||
 		S9X_REMASTER_OBSERVED_REASON(std::memcmp(a->maps.data(),c.constructedMaps,16384),classificationReasons,MapChange) ||
 		S9X_REMASTER_OBSERVED_REASON(std::memcmp(a->attributes.data(),c.collisionAttributes,8192),classificationReasons,AttributeChange) ||
 		S9X_REMASTER_OBSERVED_REASON(c.dungeonTemplateData && std::memcmp(a->templateBytes.data(),c.dungeonTemplateData,12876),classificationReasons,TemplateChange))return false;
-	std::array<bool,2048> used={};
-	if(c.replacementEvidence.available && std::memcmp(a->graphics.data(),c.graphics,65536))return false;
-	for(int i=0;i<8192;i++) {
-		const int tile=(c.constructedMaps[i*2]|c.constructedMaps[i*2+1]<<8)&1023;
-		const int slot=(i>=4096?1024:0)+tile;if(used[slot])continue;used[slot]=true;
-		const int base=i>=4096 && c.bg1GraphicsBase!=0xffff?c.bg1GraphicsBase:c.graphicsBase;
-		for(int b=0;b<32;b++){const uint16_t at=uint16_t(base+tile*32+b);if(S9X_REMASTER_OBSERVED_REASON(a->graphics[at]!=c.graphics[at],classificationReasons,GraphicsChange))return false;}
-	}
-	return true;
+	return !S9X_REMASTER_OBSERVED_REASON(!S9xRemasterDungeonGraphicsMatch(c,a->graphics.data()),classificationReasons,GraphicsDependenciesChange);
 }
 
 inline bool S9xRemasterDungeonClassificationMatches(const RemasterDungeonFloorContext &c,
@@ -2872,6 +2861,27 @@ inline void S9xRemasterDungeonPlacements (const RemasterDungeonFloorContext &con
 		replacements.push_back({origin,plane});
 	}
 	if(replacements.empty()){rejectUnprovenMovables();return;}
+	// A necessary post-recursion predicate uses the DEFAULT authored role, even
+	// when a placement context activates alternate relief. Prove only negatives
+	// of that exact gate; do not infer a source/height from a hash. Unknown or
+	// context/facing/flip height selection still takes the full classifier path.
+	bool allIneligible=true;
+	for(const auto &r:replacements) {
+		bool ineligible=false;
+		for(int d:{0,64,1,65}) {
+			const int i=r.origin+d,word=(*maps)[2*i]|(*maps)[2*i+1]<<8;
+			uint8_t decoded[64];
+			for(int y=0;y<8;y++)for(int x=0;x<8;x++) {
+				int v=0;for(int b=0;b<4;b++)v|=((context.graphics[uint16_t(context.graphicsBase+(word&1023)*32+b/2*16+y*2+b%2)]>>(7-x))&1)<<b;
+				decoded[y*8+x]=v;
+			}
+			const RemasterTileContentId id={S9xRemasterHashTile(4,decoded),1,4};
+			const auto a=profile.assets.find(id);
+			ineligible |= a==profile.assets.end() || a->second.tileRole!=RemasterTileRole::Floor || a->second.tileSemanticContextDependent;
+		}
+		allIneligible &= ineligible;
+	}
+	if(allIneligible){rejectUnprovenMovables();return;}
 	// Classify actual replacement identities/flips/graphics/context in place.
 	// Recursive call has no replacement evidence and cannot claim another body.
 	auto replacementContext=context;replacementContext.replacementEvidence={};
@@ -3148,6 +3158,16 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		return false;
 
 	RemasterFrame result;
+	// The caller owns these buffers exclusively. Reuse capacity without retaining
+	// any previous frame's values or optional metadata.
+	result.originalRgb555.swap(frame.originalRgb555);
+	result.mainPixels.swap(frame.mainPixels); result.subPixels.swap(frame.subPixels);
+	result.scenePixels.swap(frame.scenePixels); result.sceneRgb555.swap(frame.sceneRgb555);
+	result.observedBgPixels.swap(frame.observedBgPixels); result.observedBgDepth.swap(frame.observedBgDepth);
+	result.tileInstances.swap(frame.tileInstances);
+	result.originalRgb555.clear();result.mainPixels.clear();result.subPixels.clear();
+	result.scenePixels.clear();result.sceneRgb555.clear();result.tileInstances.clear();
+	for(unsigned n=0;n<4;n++){result.observedBgPixels[n].clear();result.observedBgDepth[n].clear();}
 	result.width = static_cast<uint32_t>(screenWidth);
 	result.height = static_cast<uint32_t>(screenHeight);
 	result.profileRomSha256 = state.activeProfile.romSha256;
@@ -3164,25 +3184,31 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 		1 : state.activeProfile.offscreenRepresentativeEmitters;
 	result.sampleAccumulation = state.activeProfile.sampleAccumulation;
 	const size_t pixelCount = screenWidth * screenHeight;
-	result.originalRgb555.reserve(pixelCount);
-	result.mainPixels.reserve(pixelCount);
-	result.subPixels.reserve(pixelCount);
+	result.originalRgb555.resize(pixelCount);
+	result.mainPixels.resize(pixelCount);
+	result.subPixels.resize(pixelCount);
+	for(unsigned n=0;n<4;n++) {
+		if(!state.observedBgPixels[n].empty())result.observedBgPixels[n].reserve(pixelCount);
+		if(!state.observedBgDepth[n].empty())result.observedBgDepth[n].reserve(pixelCount);
+	}
+	if(!state.sceneRgb.empty()){result.scenePixels.resize(pixelCount);result.sceneRgb555.resize(pixelCount);}
 	for (size_t y = 0; y < screenHeight; y++)
 	{
 		for (size_t x = 0; x < screenWidth; x++)
 		{
 			const size_t sourceOffset = y * screenPitch + x;
-			result.originalRgb555.push_back(screen[sourceOffset]);
+			const size_t targetOffset = y * screenWidth + x;
+			result.originalRgb555[targetOffset]=screen[sourceOffset];
 			RemasterFramePixel mainPixel;
 			mainPixel.owner = state.mainOwners[sourceOffset];
 			mainPixel.instanceId = state.mainInstanceIds[sourceOffset];
 			mainPixel.tilePixel = state.mainTilePixels[sourceOffset];
-			result.mainPixels.push_back(mainPixel);
+			result.mainPixels[targetOffset]=mainPixel;
 			RemasterFramePixel subPixel;
 			subPixel.owner = state.subOwners[sourceOffset];
 			subPixel.instanceId = state.subInstanceIds[sourceOffset];
 			subPixel.tilePixel = state.subTilePixels[sourceOffset];
-			result.subPixels.push_back(subPixel);
+			result.subPixels[targetOffset]=subPixel;
 			for(unsigned n=0;n<4;n++)if(sourceOffset<state.observedBgPixels[n].size()) {
 				result.observedBgPixels[n].push_back(state.observedBgPixels[n][sourceOffset]);
 				result.observedBgDepth[n].push_back(state.observedBgDepth[n][sourceOffset]);
@@ -3190,8 +3216,8 @@ inline bool S9xRemasterFinalizeFrame (RemasterFrame &frame, const uint16_t *scre
 			if (!state.sceneRgb.empty())
 			{
 				// Ordinary world geometry must not replace stock color math/artwork.
-				result.sceneRgb555.push_back(state.sceneGeometryOnly ? result.originalRgb555.back() : state.sceneRgb[sourceOffset]);
-				result.scenePixels.push_back(state.scenePixels[sourceOffset]);
+				result.sceneRgb555[targetOffset]=state.sceneGeometryOnly ? result.originalRgb555[targetOffset] : state.sceneRgb[sourceOffset];
+				result.scenePixels[targetOffset]=state.scenePixels[sourceOffset];
 			}
 		}
 	}
@@ -3523,9 +3549,16 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		state.inventoryActive = false;
 	}
 
+	const bool fullGeometry = completedFrame || state.frameCaptureActive ||
+		state.requestedLiveFrames.load(std::memory_order_relaxed) ||
+		state.requestedFullGeometry.load(std::memory_order_relaxed) ||
+		state.requestedRoomDiagnostics.load(std::memory_order_relaxed) ||
+		RemasterRecording::Global().Accepting();
 	RemasterFrame frame;
+	if(state.liveFramesActive)frame=std::move(state.completedFrame);
 	RemasterLightingTrace::Scope finalizeTimer(&lightingTrace,RemasterLightingTrace::Finalize);
 	const bool frameFinalized = S9xRemasterFinalizeFrame(frame, screen, screenPitch, screenWidth, screenHeight);
+	frame.fullGeometry=fullGeometry;
 	finalizeTimer.stop();
 	if(frameFinalized && dungeonFloor && !state.activeLayerView)S9xRemasterRestoreSceneDungeonPots(frame,*dungeonFloor);
 	if (frameFinalized && area)
@@ -3686,9 +3719,20 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 #endif
 			if (!runtimeInputsPublishable) state.dungeonSnapshotValid = false;
 			bool inputChanged = roomChanged || S9X_REMASTER_OBSERVED_REASON(!state.dungeonSnapshotValid,roomReasons,SnapshotInvalid) ||
-				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedReplacements!=dungeonFloor->replacementEvidence,roomReasons,ProducerChange) ||
+				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedReplacements!=dungeonFloor->replacementEvidence ||
+					(dungeonFloor->replacementEvidence.available && (state.dungeonObservedReplacementModule!=dungeonFloor->module ||
+					state.dungeonObservedReplacementSubmodule!=dungeonFloor->submodule || state.dungeonObservedReplacementIndoors!=dungeonFloor->indoors)),roomReasons,ReplacementEvidenceChange) ||
+				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedVerified!=dungeonFloor->verifiedAlttpRom,roomReasons,VerifiedChange) ||
+				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedResearch!=S9xRemasterDungeonResearchEnabled() ||
+					(S9xRemasterDungeonResearchEnabled() && dungeonFloor->producerWrites),roomReasons,ResearchClassification) ||
+				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedBackground!=dungeonFloor->placementBackgroundIndex,roomReasons,BackgroundChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonGeometryProfileDirty,roomReasons,ProfileChange) ||
 				S9X_REMASTER_OBSERVED_REASON(dungeonFloor->producerWrites && state.dungeonObservedProducerRevision!=dungeonFloor->producerWrites->revision,roomReasons,ProducerChange) ||
+				// External solve-local inputs have no owned snapshot. Never turn an
+				// equal digest into proof of their unchanged lifetime/content.
+				S9X_REMASTER_OBSERVED_REASON(dungeonFloor->supportRelations || dungeonFloor->wallSupportRelations ||
+					dungeonFloor->doorwaySupportRelations || dungeonFloor->peerShellMap || dungeonFloor->peerShellPlacements ||
+					dungeonFloor->peerProducerPlacements || dungeonFloor->placements,roomReasons,ProducerChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedRomIdentity != dungeonFloor->romIdentity,roomReasons,RomChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedEntrySupport.cell != dungeonFloor->entrySupport.cell ||
 					state.dungeonObservedEntrySupport.base != dungeonFloor->entrySupport.base ||
@@ -3698,6 +3742,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 					state.dungeonObservedEntrySupport.destinationState != dungeonFloor->entrySupport.destinationState,roomReasons,EntryChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedCollisionMode != dungeonFloor->collisionMode,roomReasons,CollisionChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedPlane != (dungeonFloor->linkPlane & 1),roomReasons,PlaneChange) ||
+				// Both production consumers require an owned ordered-traversal proof.
+				// Non-SCC, illegal or representative-sensitive seeds fall back exactly.
+				S9X_REMASTER_OBSERVED_REASON(!S9xRemasterDungeonSeedEquivalent(state.runtimeDungeonHeightMap,state.dungeonObservedMovementSeed,S9xRemasterDungeonMovementSeed(*dungeonFloor)) ||
+					!S9xRemasterDungeonSeedEquivalent(state.runtimeDungeonBg1HeightMap,state.dungeonObservedMovementSeed,S9xRemasterDungeonMovementSeed(*dungeonFloor)),roomReasons,MovementSeedChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedRise != state.activeProfile.upperFloorHeight,roomReasons,ProfileChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedGraphicsBase != dungeonFloor->graphicsBase,roomReasons,GraphicsBaseChange) ||
 				S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedBg1GraphicsBase != dungeonFloor->bg1GraphicsBase,roomReasons,GraphicsBaseChange) ||
@@ -3706,7 +3754,6 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			// Only artwork-only changes can enter the equivalence fast path. Keep
 			// EVERY final word and support dependency exact, including priority.
 			bool artworkOnlyEligible = !inputChanged && state.runtimeDungeonHeightValid &&
-				!dungeonFloor->replacementEvidence.available &&
 				state.runtimeDungeonObservedInputKey==state.runtimeDungeonHeightKey &&
 				state.dungeonRetainedBg2 && state.dungeonRetainedBg1 &&
 				state.runtimeDungeonHeightMap.roomIndex==dungeonFloor->roomIndex &&
@@ -3715,13 +3762,13 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.runtimeBg1EntrySupport.cell<0 && !state.runtimeDungeonHeightMap.entrySupportConsumed &&
 				!state.runtimeDungeonBg1HeightMap.entrySupportConsumed &&
 				!dungeonFloor->supportRelations && !dungeonFloor->wallSupportRelations &&
+				!dungeonFloor->doorwaySupportRelations && !dungeonFloor->peerShellMap && !dungeonFloor->peerShellPlacements &&
+				!dungeonFloor->peerProducerPlacements && !dungeonFloor->placements && !dungeonFloor->producerWrites &&
 				dungeonFloor->placementBackgroundIndex==1;
 			if(dungeonFloor->dungeonTemplateData)
 				inputChanged |= S9X_REMASTER_OBSERVED_REASON(std::memcmp(state.dungeonObservedTemplates.data(),dungeonFloor->dungeonTemplateData,12876)!=0,roomReasons,TemplateChange);
 			if (dungeonFloor->constructedMaps && dungeonFloor->graphics && dungeonFloor->collisionAttributes)
 			{
-				if(dungeonFloor->replacementEvidence.available)
-					inputChanged |= std::memcmp(state.dungeonObservedGraphics.data(),dungeonFloor->graphics,65536)!=0;
 				// memcmp is vectorized and avoids serial FNV and profile scans on
 				// unchanged frames. Hash/decode/solve only after a state change.
 				inputChanged |= S9X_REMASTER_OBSERVED_REASON(std::memcmp(state.dungeonObservedMaps.data(), dungeonFloor->constructedMaps, 16384) != 0,roomReasons,MapChange) ||
@@ -3730,20 +3777,8 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				// Completed topology/profile/support change invalidates ALL retained
 				// artwork states, even when a later input hash happens to recur.
 				if(!artworkOnlyEligible)state.dungeonArtworkStates.clear();
-				std::array<bool, 1024> used = {};
-				for (int i = 0; !inputChanged && i < 8192; i++)
-				{
-					const int tile = (dungeonFloor->constructedMaps[i * 2] | (dungeonFloor->constructedMaps[i * 2 + 1] << 8)) & 1023;
-					if(i==4096)used.fill(false);
-					if (used[tile]) continue;
-					used[tile] = true;
-					for (int b = 0; b < 32; b++)
-					{
-						const int base=i>=4096 && dungeonFloor->bg1GraphicsBase!=0xffff?dungeonFloor->bg1GraphicsBase:dungeonFloor->graphicsBase;
-						const uint16_t address = static_cast<uint16_t>(base + tile * 32 + b);
-						if (S9X_REMASTER_OBSERVED_REASON(state.dungeonObservedGraphics[address] != dungeonFloor->graphics[address],roomReasons,GraphicsChange)) inputChanged = true;
-					}
-				}
+				if(!inputChanged)inputChanged=S9X_REMASTER_OBSERVED_REASON(
+					!S9xRemasterDungeonGraphicsMatch(*dungeonFloor,state.dungeonObservedGraphics.data()),roomReasons,GraphicsDependenciesChange);
 			}
 			for (uint8_t i = 0; i < dungeonFloor->stairCount; i++)
 			{
@@ -3834,6 +3869,10 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			{
 				state.runtimeDungeonObservedInputKey = S9xRemasterDungeonHeightInputKey(*dungeonFloor,
 					state.activeProfile.upperFloorHeight) ^ state.dungeonGeometryProfileKey;
+#ifdef ALTTP_TEST_FORCE_DUNGEON_INPUT_COLLISION
+				// Regression only: an index must never certify unchanged dependencies.
+				state.runtimeDungeonObservedInputKey = 42;
+#endif
 				if (dungeonFloor->constructedMaps && dungeonFloor->graphics && dungeonFloor->collisionAttributes)
 				{
 					std::copy_n(dungeonFloor->constructedMaps, 16384, state.dungeonObservedMaps.begin());
@@ -3846,6 +3885,9 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.dungeonObservedEntrySupport = dungeonFloor->entrySupport;
 				state.dungeonObservedRomIdentity = dungeonFloor->romIdentity;
 				state.dungeonObservedReplacements=dungeonFloor->replacementEvidence;
+				state.dungeonObservedReplacementModule=dungeonFloor->module;state.dungeonObservedReplacementSubmodule=dungeonFloor->submodule;
+				state.dungeonObservedReplacementIndoors=dungeonFloor->indoors;state.dungeonObservedVerified=dungeonFloor->verifiedAlttpRom;
+				state.dungeonObservedResearch=S9xRemasterDungeonResearchEnabled();state.dungeonObservedBackground=dungeonFloor->placementBackgroundIndex;
 				state.dungeonObservedProducerRevision = dungeonFloor->producerWrites?dungeonFloor->producerWrites->revision:0;
 				state.dungeonObservedStairCount = dungeonFloor->stairCount;
 				state.dungeonObservedGraphicsBase = dungeonFloor->graphicsBase;
@@ -3854,6 +3896,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				state.dungeonObservedRise = state.activeProfile.upperFloorHeight;
 				state.dungeonObservedPlane = dungeonFloor->linkPlane & 1;
 				state.dungeonObservedCollisionMode = dungeonFloor->collisionMode;
+				state.dungeonObservedMovementSeed = S9xRemasterDungeonMovementSeed(*dungeonFloor);
 			}
 			const bool needsSpriteSupport=std::any_of(state.activeProfile.obstacleGroups.begin(),
 				state.activeProfile.obstacleGroups.end(),[](const RemasterObstacleGroup &g){return g.spriteAssembly;});
@@ -3870,32 +3913,31 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				const uint64_t key = state.runtimeDungeonObservedInputKey;
 				// Profile publication (including unchanged editor metadata on resume)
 				// revokes the solve. Equal input keys do not restore validity.
-				if (!state.runtimeDungeonHeightValid || key != state.runtimeDungeonHeightKey)
+				if (inputChanged || !state.runtimeDungeonHeightValid || key != state.runtimeDungeonHeightKey)
 				{
 					for(auto &p:state.dungeonProjection)if(p)p->invalidate();
 					bool exactStateReuse=false;
 #ifndef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
 #ifndef ALTTP_TEST_CLASSIFY_ARTWORK_REUSE
 #ifndef ALTTP_TEST_PRE_ARTWORK_CACHE
-					if(artworkOnlyEligible)for(const auto &cached:state.dungeonArtworkStates) {
+					if(artworkOnlyEligible)for(size_t ci=0;ci<state.dungeonArtworkStates.size();ci++) {
+						const auto &cached=state.dungeonArtworkStates[ci];
 						if(cached->inputKey!=key)continue;
-						// Key is an index only: compare every REFERENCED graphics byte
-						// before applying any retained geometry/producer evidence.
-						bool exact=true;std::array<bool,2048> used={};
-						for(int i=0;exact && i<8192;i++) {
-							const int tile=(dungeonFloor->constructedMaps[i*2]|dungeonFloor->constructedMaps[i*2+1]<<8)&1023;
-							const int slot=(i>=4096?1024:0)+tile;if(used[slot])continue;used[slot]=true;
-							const int base=i>=4096 && dungeonFloor->bg1GraphicsBase!=0xffff?dungeonFloor->bg1GraphicsBase:dungeonFloor->graphicsBase;
-							for(int b=0;b<32;b++){const uint16_t at=uint16_t(base+tile*32+b);exact &= cached->graphics[at]==dungeonFloor->graphics[at];}
-						}
-						if(!exact)continue;
+						if(!S9xRemasterDungeonSeedEquivalent(cached->bg2,cached->movementSeed,S9xRemasterDungeonMovementSeed(*dungeonFloor)) ||
+							!S9xRemasterDungeonSeedEquivalent(cached->bg1,cached->movementSeed,S9xRemasterDungeonMovementSeed(*dungeonFloor)))continue;
+						// Key is an index only: exact owned classification inputs include
+						// BOTH maps, replacement words/evidence, templates and graphics.
+						if(!S9xRemasterDungeonClassificationInputsMatch(*dungeonFloor,state,&cached->inputs))continue;
 #ifdef ALTTP_TEST_CACHE_STAGES
 						auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.restoreMs,stages.restores);
 #endif
 						state.runtimeDungeonHeightMap=cached->bg2;state.runtimeDungeonBg1HeightMap=cached->bg1;
 						*state.dungeonRetainedBg2=cached->placements2;*state.dungeonRetainedBg1=cached->placements1;
 						state.runtimeDungeonHeightKey=key;state.runtimeDungeonSolveGeometryKey=key;
-						state.runtimeDungeonHeightEpoch++;state.dungeonArtworkStateHits++;exactStateReuse=true;break;
+						state.runtimeDungeonHeightEpoch++;state.dungeonArtworkStateHits++;exactStateReuse=true;
+						auto hit=std::move(state.dungeonArtworkStates[ci]);
+						state.dungeonArtworkStates.erase(state.dungeonArtworkStates.begin()+ci);
+						state.dungeonArtworkStates.push_back(std::move(hit));break;
 					}
 #endif
 #endif
@@ -3904,7 +3946,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 #ifndef ALTTP_TEST_DISABLE_GEOMETRY_REUSE
 #ifndef ALTTP_TEST_CLASSIFY_ARTWORK_REUSE
 #ifndef ALTTP_TEST_PRE_ARTWORK_CACHE
-					dependencyReuse=!exactStateReuse && artworkOnlyEligible && S9xRemasterRefreshDungeonArtworkGeometry(*dungeonFloor,state.activeProfile,state);
+					dependencyReuse=!exactStateReuse && artworkOnlyEligible && !dungeonFloor->replacementEvidence.available && S9xRemasterRefreshDungeonArtworkGeometry(*dungeonFloor,state.activeProfile,state);
 #endif
 #endif
 #endif
@@ -4077,15 +4119,21 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 							S9xRemasterRememberDungeonClassification(*dungeonFloor,state);
 #if !defined(ALTTP_TEST_PRE_ARTWORK_CACHE) && !defined(ALTTP_TEST_CLASSIFY_ARTWORK_REUSE) && !defined(ALTTP_TEST_DISABLE_GEOMETRY_REUSE)
 							if(!state.transitionSupport.pending && constructed.entrySupport.cell<0 && lower.entrySupport.cell<0 &&
-								!state.runtimeDungeonHeightMap.entrySupportConsumed && !state.runtimeDungeonBg1HeightMap.entrySupportConsumed) {
+								!state.runtimeDungeonHeightMap.entrySupportConsumed && !state.runtimeDungeonBg1HeightMap.entrySupportConsumed &&
+								state.dungeonClassificationInputs && state.dungeonClassificationInputs->valid &&
+								!dungeonFloor->producerWrites && !dungeonFloor->placements && !dungeonFloor->peerProducerPlacements &&
+								!dungeonFloor->peerShellMap && !dungeonFloor->peerShellPlacements && !dungeonFloor->supportRelations &&
+								!dungeonFloor->wallSupportRelations && !dungeonFloor->doorwaySupportRelations) {
 #ifdef ALTTP_TEST_CACHE_STAGES
 								auto &stages=S9xRemasterDungeonCacheStages();RemasterDungeonStageTimer stage(stages.storeMs,stages.stores);
 #endif
+								// Evict before allocation: the transient bound is three too.
+								if(state.dungeonArtworkStates.size()>=RemasterState::dungeonSolvedCapacity)state.dungeonArtworkStates.erase(state.dungeonArtworkStates.begin());
 								auto saved=std::make_unique<RemasterState::DungeonSolvedArtworkState>();saved->inputKey=key;
-								std::copy_n(constructed.graphics,65536,saved->graphics.begin());
+								saved->movementSeed=S9xRemasterDungeonMovementSeed(*dungeonFloor);
+								saved->inputs=*state.dungeonClassificationInputs;
 								saved->bg1=state.runtimeDungeonBg1HeightMap;saved->bg2=state.runtimeDungeonHeightMap;
 								saved->placements1=*state.dungeonRetainedBg1;saved->placements2=*state.dungeonRetainedBg2;
-								if(state.dungeonArtworkStates.size()>=8)state.dungeonArtworkStates.erase(state.dungeonArtworkStates.begin());
 								state.dungeonArtworkStates.push_back(std::move(saved));
 							}
 #endif
@@ -4100,6 +4148,11 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			if (!reviewMap && runtimeInputsPublishable && state.runtimeDungeonHeightValid &&
 				state.runtimeDungeonHeightMap.roomIndex == dungeonFloor->roomIndex)
 				reviewMap = &state.runtimeDungeonHeightMap;
+			if(state.outgoingGeometry.valid && state.outgoingGeometry.room==dungeonFloor->roomIndex)
+				reviewMap=&state.previousRuntimeDungeonHeightMap;
+			// Solving/continuity above remains live even when inspection does not
+			// consume projected geometry. Do not weaken cache input invalidation.
+			if(fullGeometry) {
 			const RemasterDungeonHeightMap *sourceRoomMap = nullptr;
 			for (const RemasterDungeonHeightMap &map : state.activeDungeonHeightMaps)
 				if (map.roomIndex == dungeonFloor->previousRoomIndex) sourceRoomMap = &map;
@@ -4141,11 +4194,20 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			else
 				S9xRemasterApplyDungeonFloorHeight(frame, *dungeonFloor,
 					state.activeProfile.upperFloorHeight, nullptr);
-			// First settled destination is the completion boundary; failure to
-			// reproduce grounded support there must not anchor a later position.
+			}
+			// Continuity has the same ordering relative to BG1 application as on
+			// full frames; inspection-only frames must maintain it too.
 			if(!dungeonFloor->submodule && state.transitionSupport.pending &&
 				state.transitionSupport.destination==dungeonFloor->roomIndex)state.transitionSupport={};
 			S9xRemasterRecordGroundedDungeonSupport(*dungeonFloor,reviewMap,runtimeInputsPublishable);
+			if(fullGeometry) {
+			const bool departingCurrent=state.outgoingGeometry.valid && state.outgoingGeometry.room==dungeonFloor->roomIndex;
+			RemasterDungeonFloorContext renderContext=*dungeonFloor;
+			if(state.outgoingGeometry.valid){renderContext.retainedOutgoingMaps=state.outgoingFinalMaps.data();renderContext.retainedOutgoingRoom=state.outgoingGeometry.room;}
+			if(departingCurrent){renderContext.submodule=0;renderContext.previousRoomIndex=0xffff;}
+			const bool retainProjection=runtimeInputsPublishable && state.runtimeDungeonHeightValid &&
+				!departingCurrent && !dungeonFloor->submodule && dungeonFloor->module==7 &&
+				reviewMap==&state.runtimeDungeonHeightMap && !state.outgoingGeometry.valid;
 			if(departingCurrent)
 				S9xRemasterApplyDungeonHeightMap(frame,renderContext,state.previousRuntimeDungeonBg1HeightMap,nullptr,nullptr,0);
 			else if (runtimeInputsPublishable && (!reviewMap || reviewMap == &state.runtimeDungeonHeightMap) &&
@@ -4157,6 +4219,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				auto pending = std::make_unique<RemasterDungeonHeightMap>();
 				pending->roomIndex=dungeonFloor->roomIndex;pending->offsets.fill(255);pending->hasRoomGeometry=true;
 				S9xRemasterApplyDungeonHeightMap(frame,renderContext,*pending,&state.previousRuntimeDungeonBg1HeightMap,nullptr,0);
+			}
 			}
 			S9xRemasterRetireOutgoingGeometry(*dungeonFloor,frame.width,frame.height);
 		}
@@ -4235,17 +4298,19 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 		}
 		RemasterLightingTrace::Scope actorTimer(&lightingTrace,RemasterLightingTrace::Actors);
 		float overworldLinkBase=0;
-		const bool hasOverworldLinkBase=dungeonFloor && state.activeProfile.authoredOverworldOffsets &&
+		const bool hasOverworldLinkBase=fullGeometry && dungeonFloor && state.activeProfile.authoredOverworldOffsets &&
 			S9xRemasterApplyOverworldLinkSupport(frame,*dungeonFloor,&overworldLinkBase);
+		if(fullGeometry) {
 		S9xRemasterAlignGeneratedSpriteParts(frame, dungeonFloor);
 		// Compiled review geometry may render BGs but cannot attest actor floor
 		// components. Dynamic assemblies consume only the current complete solve.
 		S9xRemasterApplySpriteObstacles(frame,state.activeProfile,dungeonFloor,
 			runtimeInputsPublishable && state.runtimeDungeonHeightValid && dungeonFloor &&
 			state.runtimeDungeonHeightMap.roomIndex==dungeonFloor->roomIndex ? &state.runtimeDungeonHeightMap : nullptr);
+		}
 		if (hasScene) frame.mainPixels.swap(frame.scenePixels);
 		actorTimer.stop();
-		if(hasScene && dungeonFloor && runtimeInputsPublishable &&
+		if(fullGeometry && hasScene && dungeonFloor && runtimeInputsPublishable &&
 			appliedDungeonHeightMap==&state.runtimeDungeonHeightMap &&
 			state.runtimeDungeonHeightValid && state.dungeonRetainedBg1 && state.dungeonRetainedBg2) {
 			if(!state.visibleFaceTemplateCache)state.visibleFaceTemplateCache=std::make_unique<RemasterVisibleFaceTemplateCache>();
@@ -4259,7 +4324,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 			S9xRemasterProjectRoomDiagnostics(frame,*dungeonFloor,appliedDungeonHeightMap,
 				appliedDungeonHeightMap==&state.runtimeDungeonHeightMap ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				&state.previousRuntimeDungeonHeightMap,&state.previousRuntimeDungeonBg1HeightMap);
-		if (dungeonFloor) {
+		if (fullGeometry && dungeonFloor) {
 			RemasterLightingTrace::Scope offscreenTimer(&lightingTrace,RemasterLightingTrace::Offscreen);
 			// A matching room/hash/flip does not attest a cached datum when the
 			// current frame lacks publishable collision/geometry inputs. Apply
@@ -4271,7 +4336,7 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				currentEmitterBases && state.runtimeDungeonBg1HeightMap.roomIndex == dungeonFloor->roomIndex ? &state.runtimeDungeonBg1HeightMap : nullptr,
 				S9xRemasterHashTile);
 		}
-		if (heldLamp)
+		if (fullGeometry && heldLamp)
 		{
 			RemasterHeldLampState lamp = *heldLamp;
 			if(hasOverworldLinkBase)lamp.floorHeight=overworldLinkBase*frame.lightingCoordinateScale/255.0f;

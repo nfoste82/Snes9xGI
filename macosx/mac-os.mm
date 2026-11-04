@@ -78,6 +78,7 @@
 #import "mac-stringtools.h"
 #import "mac-os.h"
 #include "remaster-benchmark.h"
+#include "remaster/runtime/benchmark_route.h"
 #import "window-placement.h"
 #include <CommonCrypto/CommonDigest.h>
 
@@ -94,6 +95,8 @@ static NSMutableDictionary *benchmarkReport;
 static RemasterSceneSettings benchmarkSceneSettings;
 static unsigned benchmarkWarmupFrames = 30, benchmarkMeasureFrames = 180;
 static NSString *benchmarkMovement = @"none";
+static std::vector<RemasterBenchmarkRouteStep> benchmarkRoute;
+static NSMutableArray *benchmarkGameplay;
 static bool benchmarkDeterministicPresentation = true;
 static double benchmarkMeasurementStarted = 0;
 static NSString *benchmarkInitialRgbHash;
@@ -173,6 +176,7 @@ static void BeginBenchmarkCase()
 	GFX.InfoStringTimeout = 0;
 	benchmarkFrame = 0;
 	benchmarkInitialRgbHash = nil;
+	benchmarkGameplay = [NSMutableArray array];
 	benchmarkTag = {benchmarkCase, 0, false};
 	RemasterSceneSettings settings = benchmarkSceneSettings;
 	settings.indirectBounceCount = benchmarkBounces[benchmarkCase];
@@ -194,6 +198,24 @@ static void BeginBenchmarkCase()
 static void FinishBenchmarkFrame()
 {
 	if (!RemasterBenchmarkActive()) return;
+	// Stress evidence uses normal completed gameplay, including frames without
+	// GPU submission. Do not infer movement/transition coverage from held input.
+	if (benchmarkFrame >= benchmarkWarmupFrames && !benchmarkRoute.empty()) {
+		auto word=[](unsigned at){return unsigned(Memory.RAM[at])|(unsigned(Memory.RAM[at+1])<<8);};
+		const auto &state=S9xRemasterState();const auto *packet=S9xRemasterCompletedFrame();
+		size_t movableCells=0;
+		for(const auto *bg:{state.dungeonRetainedBg1.get(),state.dungeonRetainedBg2.get()})if(bg)
+			for(const auto &cell:*bg)if(cell.authoredObstacleGroup && cell.authoredObstacleGroup<=state.activeProfile.obstacleGroups.size() &&
+				state.activeProfile.obstacleGroups[cell.authoredObstacleGroup-1].movable)++movableCells;
+		const auto metrics=S9xRemasterGetPerformanceMetrics();
+		[benchmarkGameplay addObject:@{@"frame":@(benchmarkFrame-benchmarkWarmupFrames),
+			@"module":@(Memory.RAM[0x10]),@"submodule":@(Memory.RAM[0x11]),@"indoors":@(Memory.RAM[0x1b]!=0),
+			@"room":@(word(0xa0)),@"link_x":@(word(0x22)),@"link_y":@(word(0x20)),@"plane":@(Memory.RAM[0xee]),
+			@"refresh_ms":@(metrics.emulationFrameMs),@"epoch":@(state.runtimeDungeonHeightEpoch),
+			@"movable_placement_cells":@(movableCells),@"packet_available":@(packet!=nullptr),
+			@"effective_representatives":@(packet?packet->representativeEmitters:0),
+			@"effective_offscreen_representatives":@(packet?packet->offscreenRepresentativeEmitters:0)}];
+	}
 	if (getenv("S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION")) {
 		const auto *frame=S9xRemasterCompletedFrame();
 		if(!frame || !frame->spriteObstacleSupport)FailBenchmark(@"Movement frame lacks pinned sprite support");
@@ -275,6 +297,7 @@ static void FinishBenchmarkFrame()
 		@"dropped_since_completions": @(dropped), @"samples": raw,
 		@"ram_sha256": BenchmarkSha256([NSData dataWithBytes:Memory.RAM length:0x20000])} mutableCopy];
 	result[@"measurement_wall_seconds"] = @(ended - benchmarkMeasurementStarted);
+	if(!benchmarkRoute.empty())result[@"gameplay_frames"]=benchmarkGameplay;
 	NSMutableDictionary *stageStatistics = [NSMutableDictionary dictionary];
 	for (const auto &stage : stages)
 		stageStatistics[@(stage.first.c_str())] = BenchmarkStatistics(stage.second);
@@ -356,8 +379,11 @@ static void FinishBenchmarkFrame()
 		// Standalone benchmark process: avoid saving benchmark-driven SRAM or UI settings.
 		// The movement driver has no AppDelegate shutdown owner. Presentation was
 		// drained above; do not destruct framework statics under its live thread.
-		if(getenv("S9X_REMASTER_SPRITE_MOVEMENT_REGRESSION"))std::_Exit(0);
-		exit(0);
+		// All standalone benchmarks retain the live emulation/UI threads, not
+		// just the sprite regression. Static destruction can race their mutexes
+		// after the complete report is saved. Exit without process teardown.
+		std::fflush(nullptr);
+		std::_Exit(0);
 	}
 }
 
@@ -1630,6 +1656,7 @@ static inline void EmulationLoop (void)
 
             if (!pauseEmulation)
             {
+                S9xRemasterState().requestedFullGeometry.store(false, std::memory_order_relaxed);
                 ClearRemasterDebugLightRedraw();
                 S9xMainLoop();
 				RemasterRecording::Global().SetGameplay(false);
@@ -1639,6 +1666,9 @@ static inline void EmulationLoop (void)
             }
             else
             {
+                // Fresh paused captures, layer refresh and frame advance must
+                // retain complete geometry even when live lighting is disabled.
+                S9xRemasterState().requestedFullGeometry.store(true, std::memory_order_relaxed);
                 // Consume on the producer: change the rendered layers even while
                 // paused, then let the ordinary capture/pick path use that frame.
                 if (remasterLayerRefreshPending.load() && !frzselecting)
@@ -1737,6 +1767,13 @@ static inline void EmulationLoop (void)
                     const uint32_t lightRedraw = remasterDebugLightRedraw.exchange(0);
                     if (lightRedraw && running && pauseEmulation && !frzselecting)
                     {
+                        // Lighting may have been enabled after the last running
+                        // inspection-only frame. Rebuild at a fresh producer
+                        // boundary, never interpret its missing projection as zero.
+                        const auto *previous=S9xRemasterCompletedFrame();
+                        if(previous && !previous->fullGeometry) {
+                            macFrameSkip=1;skipFrames=1;S9xMainLoop();macFrameSkip=storedMacFrameSkip;
+                        }
                         const RemasterFrame *frame = S9xRemasterCompletedFrame();
                         if (frame && frame->width == SNES_WIDTH) {
                             // Paused live redraw is a current-profile interpretation,
@@ -3462,8 +3499,9 @@ static void ProcessInput (void)
 	{
 		benchmarkTag = {benchmarkCase, benchmarkFrame, benchmarkFrame >= benchmarkWarmupFrames};
 		const bool moving = benchmarkFrame >= benchmarkWarmupFrames;
-		const uint32_t pad = !moving ? 0 : [benchmarkMovement isEqualToString:@"left"] ? 0x0200 :
-			[benchmarkMovement isEqualToString:@"right"] ? 0x0100 : 0;
+		const uint32_t pad = !moving ? 0 : !benchmarkRoute.empty() ?
+			S9xRemasterBenchmarkRouteButtons(benchmarkRoute,benchmarkFrame-benchmarkWarmupFrames) :
+			[benchmarkMovement isEqualToString:@"left"] ? 0x0200 : [benchmarkMovement isEqualToString:@"right"] ? 0x0100 : 0;
 		for (int i = 0; i < MAC_MAX_PLAYERS; i++) ControlPadFlagsToS9xReportButtons(i, i == 0 ? pad : 0);
 		return;
 	}
@@ -5404,7 +5442,8 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	NSMutableDictionary<NSString *, NSString *> *options = [NSMutableDictionary dictionary];
 	NSSet *allowed = [NSSet setWithArray:@[@"--benchmark-rom", @"--benchmark-state", @"--benchmark-profile",
 		@"--benchmark-output", @"--benchmark-seconds", @"--benchmark-warmup-seconds", @"--benchmark-move", @"--benchmark-connections",
-		@"--benchmark-presentation"]];
+		@"--benchmark-presentation", @"--benchmark-route", @"--benchmark-representatives", @"--benchmark-offscreen-representatives",
+		@"--benchmark-frames", @"--benchmark-warmup-frames"]];
 	for (NSUInteger i = 1; i < arguments.count; i++)
 	{
 		NSString *argument = arguments[i];
@@ -5427,6 +5466,11 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	const double warmup = number(@"--benchmark-warmup-seconds", 0.5, 0, 10);
 	const double connections = number(@"--benchmark-connections", 0, 1, 255);
 	if (connections != std::floor(connections)) FailBenchmark(@"Connection count must be an integer");
+	const double representatives=number(@"--benchmark-representatives",-1,0,8);
+	const double offscreenRepresentatives=number(@"--benchmark-offscreen-representatives",-1,0,8);
+	if(representatives!=std::floor(representatives) || offscreenRepresentatives!=std::floor(offscreenRepresentatives))FailBenchmark(@"Representatives must be integers");
+	if(options[@"--benchmark-route"] && !S9xRemasterParseBenchmarkRoute(options[@"--benchmark-route"].UTF8String,benchmarkRoute))FailBenchmark(@"Invalid benchmark route");
+	if(!benchmarkRoute.empty() && options[@"--benchmark-move"] && ![options[@"--benchmark-move"] isEqualToString:@"none"])FailBenchmark(@"Route and movement are mutually exclusive");
 	benchmarkMovement = options[@"--benchmark-move"] ?: @"none";
 	NSString *presentation = options[@"--benchmark-presentation"] ?: @"deterministic";
 	if (![@[@"deterministic", @"live"] containsObject:presentation]) FailBenchmark(@"Presentation must be deterministic or live");
@@ -5454,6 +5498,10 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		@"debug_sphere_enabled": @NO, @"timing_note": @"GPU samples are per completed submitted frame. Input and duration use emulated frames; slow GPU cases take longer in wall time. Deterministic presentation waits for each GPU frame; live presentation retains bounded in-flight slots and drops. Refresh/pacing metrics are latest emulator samples, not guaranteed same-frame."} mutableCopy];
 	WriteBenchmarkReport();
 	benchmarkActive.store(true);
+	if(!benchmarkRoute.empty()) {
+		benchmarkReport[@"stress_schema"]=@1;
+		benchmarkReport[@"route"]=options[@"--benchmark-route"];
+	}
 	benchmarkReport[@"transport_threads_override"] = @(getenv("S9X_REMASTER_TRANSPORT_THREADS") ?: "default 8x8");
 	benchmarkReport[@"serial_direct_override"] = @(getenv("S9X_REMASTER_SERIAL_DIRECT") != nullptr);
 	benchmarkReport[@"serial_indirect_override"] = @(getenv("S9X_REMASTER_SERIAL_INDIRECT") != nullptr);
@@ -5474,6 +5522,17 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	NSString *profileError = [self loadRemasterProfile:[NSURL fileURLWithPath:profile]];
 	running = false;
 	if (profileError) FailBenchmark(profileError);
+	// Private in-memory overrides include area settings, otherwise a room can
+	// silently override the requested sweep. Authored files remain untouched.
+	if(representatives>=0) {
+		remasterEditingProfile.representativeEmitters=uint8_t(representatives);
+		for(auto &entry:remasterEditingProfile.areaSceneSettings)entry.second.representativeEmitters=int(representatives);
+	}
+	if(offscreenRepresentatives>=0) {
+		remasterEditingProfile.offscreenRepresentativeEmitters=int(offscreenRepresentatives);
+		for(auto &entry:remasterEditingProfile.areaSceneSettings)entry.second.offscreenRepresentativeEmitters=int(offscreenRepresentatives);
+	}
+	if(representatives>=0 || offscreenRepresentatives>=0)S9xRemasterSetProfile(remasterEditingProfile);
 	[remasterProfileSettingsPanel orderOut:nil];
 	benchmarkSceneSettings = S9xRemasterGetSceneSettings(remasterEditingProfile);
 	if (connections) benchmarkSceneSettings.samplesPerFrame = static_cast<uint8_t>(connections);
@@ -5484,8 +5543,17 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	}
 	benchmarkWarmupFrames = static_cast<unsigned>(std::round(warmup * Memory.ROMFramesPerSecond));
 	benchmarkMeasureFrames = std::max(1u, static_cast<unsigned>(std::round(seconds * Memory.ROMFramesPerSecond)));
+	const double exactFrames=number(@"--benchmark-frames",benchmarkMeasureFrames,1,36000);
+	const double exactWarmup=number(@"--benchmark-warmup-frames",benchmarkWarmupFrames,0,3600);
+	if(exactFrames!=std::floor(exactFrames) || exactWarmup!=std::floor(exactWarmup))FailBenchmark(@"Frame counts must be integers");
+	benchmarkMeasureFrames=unsigned(exactFrames);benchmarkWarmupFrames=unsigned(exactWarmup);
+	if(!benchmarkRoute.empty()) {
+		uint64_t routeFrames=0;for(const auto &step:benchmarkRoute)routeFrames+=step.frames;
+		if(routeFrames!=benchmarkMeasureFrames)FailBenchmark(@"Route duration must equal measured frames");
+	}
 	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
 	benchmarkReport[@"representative_emitters"] = @(benchmarkSceneSettings.representativeEmitters);
+	benchmarkReport[@"offscreen_representative_emitters"] = @(benchmarkSceneSettings.offscreenRepresentativeEmitters);
 	benchmarkReport[@"audio_muted"] = @YES;
 	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
 	benchmarkReport[@"measurement_frames"] = @(benchmarkMeasureFrames);

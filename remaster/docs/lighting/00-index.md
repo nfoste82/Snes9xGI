@@ -7,6 +7,7 @@ inline paths use the repository root unless stated otherwise. Return to the
 ## Lighting and source contracts
 
 - [Triangle Mesh Occlusion](lighting.md): Connected surfaces, finite shells, wall closure, source transport, acceleration and diagnostics.
+- [Conservative Visibility Atlas](direct_visibility_atlas.md): Exact finite-mesh rejection and packed visibility fields, independent GPU oracle and native timing evidence.
 - [Emission Depth and Wall Closure](../../../AIDocs/10-emission-depth-wall-closure.md): Emission authoring and historical jail/table regression evidence.
 - [Held Lamp Scene](lamp_scene.md): Lamp-free scene capture, HUD preservation, replay and recapture requirements.
 - [Offscreen Room Emitters](offscreen_emitters.md): Complete-room physical source discovery, held-lamp state and source continuity.
@@ -14,6 +15,10 @@ inline paths use the repository root unless stated otherwise. Return to the
 - [Area Lighting and Scene Settings](area_lighting.md): Room/world directional lights, per-area reflected-light boost, defaults, Area Settings and capture state.
 
 ## Performance and deferred plans
+
+- [Performance Stress Suite](performance_stress_suite.md): Pinned freeze/script scenarios, representative sweeps, observed workload coverage and opt-in Release regression baselines.
+
+- [Inspection CPU Work](inspection_cpu_work.md): Lightweight running inspection, full-consumer boundaries and producer-owned packet capacity reuse.
 
 - [Stair Classification Retention](stair_classification_cache.md): Exact per-artwork placement caching independent of plane/support solves, replay parity and limits.
 

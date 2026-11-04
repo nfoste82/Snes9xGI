@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "description": "TEMPLATE ONLY: prepare local freezes/profile and verify routes; these positions are not certified fixtures.",
+  "scenarios": [
+    {
+      "name": "room012-many-lights",
+      "kinds": ["many_lights"],
+      "rom": {"path": "~/Downloads/Zelda_ALTTP.zip"},
+      "state": {"path": "./fixtures/room012-many-lights.frz"},
+      "profile": {"path": "./fixtures/alttp-profile.toml"},
+      "initial_room": 18,
+      "final_room": 18,
+      "warmup_frames": 30,
+      "route": [{"frames": 240, "buttons": ["none"]}],
+      "representatives": [1, 3, 8],
+      "offscreen_representatives": [1, 3],
+      "presentations": ["deterministic", "live"],
+      "min_direct_samples": 100
+    },
+    {
+      "name": "movable-obstacles-cross-room",
+      "kinds": ["movable", "movement"],
+      "rom": {"path": "~/Downloads/Zelda_ALTTP.zip"},
+      "state": {"path": "./fixtures/movable-cross-room.frz"},
+      "profile": {"path": "./fixtures/alttp-profile.toml"},
+      "warmup_frames": 30,
+      "route": [{"frames": 120, "buttons": ["right"]}, {"frames": 120, "buttons": ["left"]}],
+      "representatives": [1, 3],
+      "offscreen_representatives": [1],
+      "presentations": ["deterministic", "live"],
+      "min_movable_cells": 4,
+      "min_movement_pixels": 128
+    },
+    {
+      "name": "doorway-transition",
+      "kinds": ["transition"],
+      "rom": {"path": "~/Downloads/Zelda_ALTTP.zip"},
+      "state": {"path": "./fixtures/room061-west-door.frz"},
+      "profile": {"path": "./fixtures/alttp-profile.toml"},
+      "initial_room": 97,
+      "final_room": 96,
+      "warmup_frames": 0,
+      "route": [{"frames": 180, "buttons": ["left"]}, {"frames": 60, "buttons": ["none"]}],
+      "representatives": [1, 3],
+      "offscreen_representatives": [1],
+      "presentations": ["deterministic", "live"]
+    }
+  ]
+}

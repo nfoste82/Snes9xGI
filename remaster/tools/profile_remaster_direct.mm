@@ -198,7 +198,7 @@ int main(int argc, const char **argv) {
             t[4] = texture(MTLPixelFormatRG8Unorm, u.width, u.height, @"participation.bin", 2);
             for (unsigned i = 5; i <= 8; i++) t[i] = texture(MTLPixelFormatRGBA16Float, u.width, u.height, nil, 8);
             t[9] = texture(MTLPixelFormatR8Unorm, u.width, u.height, @"opposite.bin", 1);
-            t[10] = texture(MTLPixelFormatRG32Float, (u.width + 3) / 4, (u.height + 3) / 4, nil, 8);
+            t[10] = texture(MTLPixelFormatRGBA32Float, u.width, u.height + (u.height + 3) / 4, nil, 16);
             t[11] = texture(MTLPixelFormatRGBA32Float, u.width, u.height, @"reflectance.bin", 16);
             auto emission = texture(MTLPixelFormatRGBA8Unorm, u.width, u.height, @"emission.bin", 4);
             auto output = texture(MTLPixelFormatRGBA8Unorm, u.width, u.height, nil, 4);
@@ -209,7 +209,7 @@ int main(int argc, const char **argv) {
             [e setTexture:t[1] atIndex:0]; [e setTexture:t[3] atIndex:1];
             [e setTexture:t[2] atIndex:2]; [e setTexture:t[10] atIndex:3];
             [e setBuffer:mesh offset:0 atIndex:0];
-            [e dispatchThreads:MTLSizeMake(t[10].width, t[10].height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+            [e dispatchThreads:MTLSizeMake((u.width + 3) / 4, (u.height + 3) / 4, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
             [e endEncoding];
             e = [setup computeCommandEncoder];
             [e setComputePipelineState:seed];
