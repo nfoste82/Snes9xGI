@@ -94,11 +94,11 @@ int main()
 				// Independent unaccelerated triangle oracle, not the new packed data.
 				// Exercise both XY directions, exact grid corners, horizontal/vertical
 				// rays, origin/endpoint proper crossings and sub-cell ray intervals.
-				constexpr unsigned rayCount = 2048;
-				std::vector<simd_float4> rays(rayCount*2);
+				constexpr unsigned randomRayCount = 2048;
+				std::vector<simd_float4> rays(randomRayCount*2);
 				uint32_t seed = 0x12345678;
 				auto random = [&] { seed = seed*1664525u+1013904223u; return float(seed & 65535)/65536.0f; };
-				for (unsigned i = 0; i < rayCount; i++)
+				for (unsigned i = 0; i < randomRayCount; i++)
 				{
 					rays[i*2] = {random()*width,random()*height,random()*24-12,0};
 					rays[i*2+1] = {random()*width,random()*height,random()*24-12,0};
@@ -111,6 +111,38 @@ int main()
 					}
 					if (i%7 == 4) rays[i*2+1] = rays[i*2] + simd_make_float4(0,0,2,0);
 				}
+				// First-pixel block rejection: include exact and adjacent-float block
+				// edges, corner ties, both directions, offscreen endpoints and rays
+				// ending within the first entered cell. Touch each pixel's actual
+				// finite-mesh bounds, not an assumed solid height column.
+				auto addRay = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+					rays.push_back(simd_make_float4(x0,y0,z0,0));
+					rays.push_back(simd_make_float4(x1,y1,z1,0));
+				};
+				for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
+				{
+					const unsigned i = y*width+x;
+					if (!std::isfinite(expected[i][0])) continue;
+					for (float z : {expected[i][0], expected[i][1],
+						std::nextafter(expected[i][0], -INFINITY),
+						std::nextafter(expected[i][1], INFINITY)})
+					{
+						addRay(0.25f,y+0.5f,z,width+0.5f,y+0.5f,z);
+						addRay(width-0.25f,y+0.5f,z,-0.5f,y+0.5f,z);
+						addRay(x+0.5f,0.25f,z,x+0.5f,height+0.5f,z);
+						addRay(x+0.5f,height-0.25f,z,x+0.5f,-0.5f,z);
+					}
+				}
+				for (unsigned y = 0; y < height; y += 4) for (unsigned x = 0; x < width; x += 4)
+					for (float dx : {-0.000001f, 0.0f, 0.000001f})
+						for (float direction : {-1.0f, 1.0f})
+						{
+							float px = std::max(0.0f,std::min(width-0.00001f,x+dx));
+							float py = std::max(0.0f,std::min(height-0.00001f,y+dx));
+							addRay(px,py,-12,px+direction*width,py+direction*height,12);
+							addRay(px,py,12,px+direction*0.25f,py+direction*0.25f,-12);
+						}
+				const unsigned rayCount = unsigned(rays.size()/2);
 				auto rayBuffer = [device newBufferWithBytes:rays.data() length:rays.size()*sizeof(rays[0]) options:MTLResourceStorageModeShared];
 				id<MTLBuffer> outputs[2];
 				for (unsigned mode = 0; mode < 2; mode++) {

@@ -412,29 +412,6 @@ static float remasterVisibility(float3 from, float3 to,
 	while (any(cell != endpoint))
 	{
 #ifndef REMASTER_REFERENCE_VISIBILITY
-		// The envelope is acceleration only: pixels occupy finite unit voxels,
-		// not solid columns beneath their authored height.
-		int2 block = cell / 4;
-		if (any(block != testedBlock))
-		{
-			testedBlock = block;
-			int2 remaining = int2(step.x > 0 ? 3 - (cell.x & 3) : (cell.x & 3),
-				step.y > 0 ? 3 - (cell.y & 3) : (cell.y & 3));
-			float2 blockNext = next;
-			// Match repeated pixel steps even when a boundary is almost at t=1.
-			#pragma unroll
-			for (int i = 0; i < 3; i++)
-			{
-				if (i < remaining.x && step.x) blockNext.x += delta.x;
-				if (i < remaining.y && step.y) blockNext.y += delta.y;
-			}
-			blockExit = min(1.0, min(blockNext.x, blockNext.y));
-			float blockEntry = max(0.0, min(next.x, next.y));
-			float minimumHeight = min(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
-			float maximumHeight = max(from.z + segment.z * blockEntry, from.z + segment.z * blockExit);
-			float2 bounds = visibilityBlocks.read(uint2(block.x, block.y + occlusion.get_height())).rg;
-			emptyBlock = bounds.x > maximumHeight || bounds.y < minimumHeight;
-		}
 		if (emptyBlock)
 		{
 			if (blockExit >= 1.0)
@@ -464,6 +441,32 @@ static float remasterVisibility(float3 from, float3 to,
 		uint2 sample = uint2(cell);
 		float exit = min(1.0, min(next.x, next.y));
 #ifndef REMASTER_REFERENCE_VISIBILITY
+		// Test a newly entered block before fetching even its first pixel. The
+		// envelope covers this pixel's entry through the block exit, so a rejection
+		// also proves that the first per-pixel height read would reject. It does
+		// not imply solid columns beneath the finite authored geometry.
+		int2 block = cell / 4;
+		if (any(block != testedBlock))
+		{
+			testedBlock = block;
+			int2 remaining = int2(step.x > 0 ? 3 - (cell.x & 3) : (cell.x & 3),
+				step.y > 0 ? 3 - (cell.y & 3) : (cell.y & 3));
+			float2 blockNext = next;
+			// Retain the original pixel additions, including corner rounding.
+			#pragma unroll
+			for (int i = 0; i < 3; i++)
+			{
+				if (i < remaining.x && step.x) blockNext.x += delta.x;
+				if (i < remaining.y && step.y) blockNext.y += delta.y;
+			}
+			blockExit = min(1.0, min(blockNext.x, blockNext.y));
+			float minimumHeight = min(from.z + segment.z * entry, from.z + segment.z * blockExit);
+			float maximumHeight = max(from.z + segment.z * entry, from.z + segment.z * blockExit);
+			float2 bounds = visibilityBlocks.read(uint2(block.x, block.y + occlusion.get_height())).rg;
+			emptyBlock = bounds.x > maximumHeight || bounds.y < minimumHeight;
+		}
+		if (emptyBlock)
+			continue;
 		// This is the same conservative Z rejection as remasterMeshHit, before
 		// fetching the 48-byte patch. DDA rounding, triangle tests and attenuation
 		// order are unchanged. The origin-cell proper-crossing test stays above.
