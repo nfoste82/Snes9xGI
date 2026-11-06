@@ -327,6 +327,7 @@ id<MTLComputePipelineState> remasterPreparePatchesPipelineState = nil;
 id<MTLComputePipelineState> remasterClusteredDirectPipelineState = nil;
 id<MTLComputePipelineState> remasterClusteredBatchedPipelineState = nil;
 id<MTLComputePipelineState> remasterReduceDirectPipelineState = nil;
+id<MTLComputePipelineState> remasterClearIndirectSeedPipelineState = nil;
 id<MTLComputePipelineState> remasterBatchedIndirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterSourcePowerLeavesPipelineState = nil;
 id<MTLComputePipelineState>	remasterSourcePowerReducePipelineState = nil;
@@ -372,6 +373,9 @@ struct RemasterMetalResources
 	id<MTLTexture> bounce[2] = {};
 	id<MTLTexture> indirect[2] = {};
 	id<MTLTexture> directResult = nil;
+	// Exact slot-local identity; valid only after a successful GPU completion.
+	std::atomic<bool> directResultValid { false };
+	std::vector<uint8_t> directResultKey;
 	id<MTLBuffer> sourcePower = nil;
 	id<MTLBuffer> mesh = nil;
 	id<MTLBuffer> directSources = nil;
@@ -861,6 +865,8 @@ static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLP
 		[defaultLibrary newFunctionWithName:@"remasterIndirectBounce" constantValues:directConstants error:&error] error:&error];
 	remasterReduceDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterReduceDirectPartials"] error:&error];
+	remasterClearIndirectSeedPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterClearIndirectSeed"] error:&error];
 	remasterSourcePowerLeavesPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterBuildSourcePowerLeaves"] error:&error];
 	remasterSourcePowerReducePipelineState = [metalDevice newComputePipelineStateWithFunction:
@@ -926,6 +932,7 @@ static void S9xDeinitMetal (void)
 	remasterPrepareDirectPipelineState = nil;
 	remasterDirectTransportPipelineState = nil;
 	remasterBatchedDirectPipelineState = remasterReduceDirectPipelineState = nil;
+	remasterClearIndirectSeedPipelineState = nil;
 	remasterSampledDirectPipelineState = nil;
 	remasterDirectionalPipelineState = nil;
 	remasterPreparePatchesPipelineState = nil;
@@ -1234,9 +1241,11 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 	@autoreleasepool {
 		RemasterBenchmarkGpuCapture gpuCapture(metalCommandQueue);
 		bool wroteDirectSnapshot = false;
+		bool publishDirectResult = false;
 		RemasterGpuStageCounters stageCounters(metalDevice);
 		const MTLSize transportThreads = RemasterTransportThreads();
 		RemasterMetalResources *resources = resourceSlot >= 0 ? &remasterResources[resourceSlot] : nullptr;
+		const bool hadDirectResult = resources && resources->directResultValid.exchange(false);
 		if (RemasterBenchmarkActive() && lighting) benchmarkLastResourceSlot = resourceSlot;
 		id<MTLTexture> sourceTexture = resources ? resources->source : metalTexture;
 		if (!sourceTexture || (resources && resources->device != metalDevice) ||
@@ -1315,6 +1324,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			{
 				if(trace) trace->allocations+=18;
 				resources->fieldUploads = {};
+				resources->directResultKey.clear();
 				resources->directSources = resources->directSamples = nil;
 				resources->emitterPatches = nil;
 				resources->directPartials = nil;
@@ -1379,17 +1389,17 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			};
 			bool visibilityDirty = uploadField(0, occlusionTexture, occlusion, width*2);
 			id<MTLTexture> emissionTexture = resources->emission;
-			uploadField(1, emissionTexture, emission, width*4);
+			bool directFieldsDirty = uploadField(1, emissionTexture, emission, width*4);
 			id<MTLTexture> heightTexture = resources->heightField;
 			visibilityDirty |= uploadField(2, heightTexture, heightField, width*2*sizeof(float));
 			id<MTLTexture> participationTexture = resources->participation;
-			uploadField(3, participationTexture, participation, width*2);
+			directFieldsDirty |= uploadField(3, participationTexture, participation, width*2);
 			id<MTLTexture> oppositeFacingTexture = resources->oppositeFacing;
-			uploadField(4, oppositeFacingTexture, oppositeFacing, width);
+			directFieldsDirty |= uploadField(4, oppositeFacingTexture, oppositeFacing, width);
 			id<MTLTexture> surfaceTexture = resources->surface;
 			visibilityDirty |= uploadField(5, surfaceTexture, surfaceField, width*sizeof(float)*4);
 			id<MTLTexture> reflectanceTexture = resources->reflectance;
-			uploadField(6, reflectanceTexture, reflectance, width*sizeof(float)*4);
+			directFieldsDirty |= uploadField(6, reflectanceTexture, reflectance, width*sizeof(float)*4);
 			id<MTLTexture> visibilityBlocksTexture = resources->visibilityBlocks;
 			if (!resources->mesh || !mesh || mesh->size() != static_cast<size_t>(width * height)) return false;
 			visibilityDirty |= resources->fieldUploads[7].update(mesh->data(), width*sizeof(RemasterSurfaceMesh::Cell), height,
@@ -1584,6 +1594,39 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				uniforms.debugColorIntensity = { std::pow(light.red, 2.2f), std::pow(light.green, 2.2f),
 					std::pow(light.blue, 2.2f), light.intensity / 25.0f };
 			}
+			// Hashes (including the metrics-only emitter signature) are not exact
+			// identities. Snapshot the ordered effective inputs, including layout.
+			const bool cacheableDirect = !measureGi && !sampledDirect &&
+				debugMode == RemasterDebugMode::Original &&
+				(lightingView == RemasterLightingView::Composite ||
+				 lightingView == RemasterLightingView::DirectContribution ||
+				 lightingView == RemasterLightingView::IndirectContribution ||
+				 lightingView == RemasterLightingView::DirectAndIndirectContribution) &&
+				!std::getenv("S9X_REMASTER_DISABLE_DIRECT_REUSE");
+			std::vector<uint8_t> directKey;
+			if (cacheableDirect)
+			{
+				auto append = [&](const void *data, size_t size) {
+					const auto *length = reinterpret_cast<const uint8_t *>(&size);
+					directKey.insert(directKey.end(), length, length + sizeof(size));
+					if (size) { const auto *bytes = static_cast<const uint8_t *>(data);
+						directKey.insert(directKey.end(), bytes, bytes + size); }
+				};
+				auto directUniforms = uniforms;
+				// Exhaustive prepared Direct/directional transport never reads RNG.
+				directUniforms.randomSeed = 0;
+				append(&directUniforms, sizeof(directUniforms));
+				append(buffer, size_t(width) * height * 4); // receiver albedo
+				append(directSources.data(), directSources.size() * sizeof(vector_uint2));
+				append(patches.data(), patches.size() * sizeof(RemasterEmitterPatch));
+				append(hiddenSamples.data(), hiddenSamples.size() * sizeof(RemasterHiddenDirectSample));
+				append(sceneLights.data(), sceneLights.size() * sizeof(RemasterGpuLight));
+				append(&clustered, sizeof(clustered));
+				const bool serial = std::getenv("S9X_REMASTER_SERIAL_DIRECT") != nullptr;
+				append(&serial, sizeof(serial));
+			}
+			const bool reuseDirect = cacheableDirect && hadDirectResult && !rebuildTextures &&
+				!visibilityDirty && !directFieldsDirty && directKey == resources->directResultKey;
 			id<MTLComputeCommandEncoder> computeEncoder = stageCounters.encoder(commandBuffer, "emission_seed");
 			const auto directEncodeStarted = std::chrono::steady_clock::now();
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
@@ -1702,6 +1745,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 								resources->directPartials = [metalDevice newBufferWithLength:partialBytes options:MTLResourceStorageModePrivate];
 							if (!resources->directPartials) return false;
 						}
+						if (!reuseDirect)
+						{
 						id<MTLComputeCommandEncoder> directEncoder = stageCounters.encoder(commandBuffer, "direct_transport");
 						directEncoder.label = @"Direct light transport";
 						const auto directEncodeStarted = std::chrono::steady_clock::now();
@@ -1781,9 +1826,21 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							[reduce endEncoding];
 						}
 						directEncodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - directEncodeStarted).count();
+						}
+						else
+						{
+							// Direct normally resets the indirect accumulator. A previous
+							// even bounce may have overwritten it; never reuse that seed.
+							if (!remasterClearIndirectSeedPipelineState) return false;
+							id<MTLComputeCommandEncoder> clear = stageCounters.encoder(commandBuffer, "indirect_seed");
+							[clear setComputePipelineState:remasterClearIndirectSeedPipelineState];
+							[clear setTexture:indirectTextures[0] atIndex:0];
+							[clear dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+							[clear endEncoding];
+						}
 					}
 
-					if (!visibilityView && uniforms.directionalColorBrightness.w > 0)
+					if (!reuseDirect && !visibilityView && uniforms.directionalColorBrightness.w > 0)
 					{
 						if (!remasterDirectionalPipelineState) return false;
 						id<MTLComputeCommandEncoder> directional = stageCounters.encoder(commandBuffer, "direct_directional");
@@ -1801,6 +1858,10 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directional setBuffer:resources->mesh offset:0 atIndex:3];
 						[directional dispatchThreads:MTLSizeMake(width, height, 1) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 						[directional endEncoding];
+					}
+					if (cacheableDirect) {
+						resources->directResultKey = std::move(directKey);
+						publishDirectResult = true;
 					}
 					// Direct is deterministic and need not be recomputed for each indirect sample.
 					uniforms.diagnosticStage = 0;
@@ -2178,6 +2239,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 							}];
 						}
 				}
+				// Publish only a completed result, before retiring this slot. Failed
+				// drawable acquisition/encoding never reaches this handler.
+				[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+					if (resources) resources->directResultValid.store(publishDirectResult &&
+						completed.status == MTLCommandBufferStatusCompleted);
+				}];
 				if (!waitForCompletion)
 				{
 					const int completedSlot = resourceSlot;

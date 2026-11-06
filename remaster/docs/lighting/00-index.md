@@ -8,6 +8,7 @@ inline paths use the repository root unless stated otherwise. Return to the
 
 - [Triangle Mesh Occlusion](lighting.md): Connected surfaces, finite shells, wall closure, source transport, acceleration and diagnostics.
 - [Conservative Visibility Atlas](direct_visibility_atlas.md): Exact finite-mesh rejection and packed visibility fields, independent GPU oracle and native timing evidence.
+- [Exact Direct Result Reuse](direct_result_reuse.md): Completion-gated slot-local input keys, invalidation, regression and owner-accepted median/tail tradeoff.
 - [Emission Depth and Wall Closure](../../../AIDocs/10-emission-depth-wall-closure.md): Emission authoring and historical jail/table regression evidence.
 - [Held Lamp Scene](lamp_scene.md): Lamp-free scene capture, HUD preservation, replay and recapture requirements.
 - [Offscreen Room Emitters](offscreen_emitters.md): Complete-room physical source discovery, held-lamp state and source continuity.

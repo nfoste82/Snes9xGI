@@ -1524,6 +1524,14 @@ kernel void remasterIndirectBounce(
 	nextIndirect.write(float4(accumulated, 1.0), pixel);
 }
 
+kernel void remasterClearIndirectSeed(
+	texture2d<float, access::write> indirect [[texture(0)]],
+	uint2 pixel [[thread_position_in_grid]])
+{
+	if (pixel.x < indirect.get_width() && pixel.y < indirect.get_height())
+		indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
+}
+
 kernel void remasterReduceDirectPartials(
 	const device float4 *partials [[buffer(0)]],
 	constant uint &batchCount [[buffer(1)]],

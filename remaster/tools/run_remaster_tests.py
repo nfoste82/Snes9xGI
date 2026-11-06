@@ -202,6 +202,13 @@ def test_specs(args):
                           description="Conservative finite-mesh atlas, partial blocks, signed bounds and exact known-opacity",
                           flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],
                           arguments=[], kind="metal"))
+        specs.append(dict(name="metal_direct_reuse", source="remaster/tests/direct_reuse_metal_test.mm",
+                          description="Actual renderer exact Direct reuse, invalidation and pending-completion gates",
+                          flags=["-O2", "-fobjc-arc", "-D__MACOSX__", "-DHAVE_STDINT_H", "-I.", "-Imacosx",
+                                 "-Iapu", "-Ifilter", "-Iapu/bapu", "-Imacosx/snes9x framework",
+                                 "-ffunction-sections", "-fdata-sections", "-Wl,-dead_strip",
+                                 "-framework", "Cocoa", "-framework", "Metal", "-framework", "MetalKit",
+                                 "-framework", "QuartzCore", "-framework", "Carbon"], arguments=[], kind="metal"))
         specs.append(dict(name="metal_lighting", source="macosx/remaster-lighting-test.mm",
                           description="Production shaders, synthetic GPU transport/visibility comparisons",
                           flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],
@@ -221,7 +228,7 @@ def source_snapshot(spec):
     if spec["arguments"]:
         paths.add(ROOT / PROFILE)
     if spec["kind"] == "metal":
-        if spec["name"] in ("metal_lighting_slots", "metal_placement_offset_renderer"):
+        if spec["name"] in ("metal_lighting_slots", "metal_placement_offset_renderer", "metal_direct_reuse"):
             paths.add(ROOT / "macosx/mac-render.mm")
             paths.add(ROOT / "remaster/tools/lighting_critical_path_probe.mm")
         paths.add(ROOT / "macosx/shaders.metal")
