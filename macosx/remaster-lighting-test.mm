@@ -448,6 +448,15 @@ int main()
                         [encoder setBuffer:partials offset:0 atIndex:5];
                     }
                 }
+                // New optional viewport cache ABI is explicitly disabled in this
+                // uncached independent transport oracle.
+                simd_uint4 perRayConfig = {};
+                simd_uint2 perRayGeneration = {};
+                for (unsigned binding=11;binding<=16;++binding)
+                    [encoder setBuffer:meshBuffer offset:0 atIndex:binding];
+                [encoder setBytes:&perRayConfig length:sizeof(perRayConfig) atIndex:17];
+                [encoder setBytes:&perRayGeneration length:sizeof(perRayGeneration) atIndex:18];
+                [encoder setBuffer:meshBuffer offset:0 atIndex:19];
                 [encoder dispatchThreadgroups:MTLSizeMake(width, height, batched ? batchCount : 1)
                     threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                 [encoder endEncoding];

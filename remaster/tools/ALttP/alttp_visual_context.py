@@ -130,6 +130,24 @@ def command_descriptor(bundle):
     }
 
 
+def tile_stamp(indices, tile, palette, grayscale=False, unknown_colors=None):
+    """Render one placed ROM tile; shared with the semantic world-map browser."""
+    colors = []
+    for value in indices:
+        slot = tile.palette * 16 + value
+        color = palette[slot]
+        if color is None and unknown_colors is not None:
+            unknown_colors[slot] += 1
+        colors.append((value * 17,) * 3 if grayscale or color is None else rgb555(color))
+    stamp = Image.new("RGB", (8, 8))
+    stamp.putdata(colors)
+    if tile.flip_x:
+        stamp = stamp.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if tile.flip_y:
+        stamp = stamp.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    return stamp
+
+
 def prepare(rom_path, area, output, phase=0, grayscale=False):
     # Import only ROM readers/decoders. Never import candidate/geometry tools.
     from alttp_atlas import Rom, SUPPORTED_US_SHA256, REFERENCE_COMMIT
@@ -181,19 +199,7 @@ def prepare(rom_path, area, output, phase=0, grayscale=False):
             statuses[resolved.status] += 1
             if resolved.content_id is None:
                 continue  # Visible magenta, never a silently invented tile.
-            colors = []
-            for value in by_id[resolved.content_id]:
-                slot = tile.palette * 16 + value
-                color = palette[slot]
-                if color is None:
-                    unknown_colors[slot] += 1
-                colors.append((value * 17,) * 3 if grayscale or color is None else rgb555(color))
-            stamp = Image.new("RGB", (8, 8))
-            stamp.putdata(colors)
-            if tile.flip_x:
-                stamp = stamp.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-            if tile.flip_y:
-                stamp = stamp.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            stamp = tile_stamp(by_id[resolved.content_id], tile, palette, grayscale, unknown_colors)
             image.paste(stamp, (x, y))
     if any(w is None for w in words):
         raise ValueError("incomplete area expansion")

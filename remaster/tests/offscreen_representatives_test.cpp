@@ -119,7 +119,7 @@ int main()
  // Actual historical layout, not only current-schema bytes with OER1 removed.
  RemasterFrame historical;historical.width=historical.height=1;
  historical.originalRgb555={0};historical.mainPixels.resize(1);historical.subPixels.resize(1);
- historical.representativeEmitters=3;std::vector<uint8_t> legacy;RemasterFrame old;
+  historical.representativeEmitters=3;historical.schemaVersion=43;std::vector<uint8_t> legacy;RemasterFrame old;
  assert(S9xSerializeRemasterFrame(historical,legacy));
  // With no metadata/instances the only v30+ payload difference is the final
  // empty palette-artwork count. Remove it and pin the historical v28 header.

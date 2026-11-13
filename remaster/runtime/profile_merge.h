@@ -100,9 +100,39 @@ struct RemasterProfileMergeResult
 	std::set<std::string> conflicts;
 };
 
+struct RemasterProfileMergePlan
+{
+	RemasterProfileMerge::Records saved, retained;
+	uint32_t schema = 0;
+	std::string order;
+};
+
+inline bool S9xRemasterFinishProfileMerge(const RemasterProfileMergePlan &plan, bool overwriteConflicts,
+	RemasterProfileMergeResult &result, std::vector<RemasterProfileDiagnostic> &diagnostics)
+{
+	auto saved = plan.saved;
+	if (overwriteConflicts) for (const auto &key : result.conflicts)
+	{
+		const auto local = plan.retained.find(key);
+		if (local == plan.retained.end()) saved.erase(key);
+		else saved[key] = local->second;
+	}
+	// Validate complete profiles, including cross-record references, after the
+	// user's conflict choice: one choice can be valid while the other is not.
+	using RemasterProfileMerge::Join;
+	if (!S9xRemasterParseProfile(Join(saved, plan.schema, plan.order), result.saved, diagnostics)) return false;
+	if (overwriteConflicts || result.conflicts.empty())
+	{
+		result.session = result.saved;
+		return true;
+	}
+	return S9xRemasterParseProfile(Join(plan.retained, plan.schema, plan.order), result.session, diagnostics);
+}
+
 inline bool S9xRemasterMergeProfiles(const RemasterProfile &base, const RemasterProfile &session,
 	const RemasterProfile &disk, const std::set<std::string> &pendingConflicts, bool overwriteConflicts,
-	RemasterProfileMergeResult &result, std::vector<RemasterProfileDiagnostic> &diagnostics, bool inspectConflictsOnly = false)
+	RemasterProfileMergeResult &result, std::vector<RemasterProfileDiagnostic> &diagnostics, bool inspectConflictsOnly = false,
+	RemasterProfileMergePlan *prepared = nullptr)
 {
 	using namespace RemasterProfileMerge;
 	if (base.romSha256 != disk.romSha256 || session.romSha256 != disk.romSha256)
@@ -141,10 +171,37 @@ inline bool S9xRemasterMergeProfiles(const RemasterProfile &base, const Remaster
 	// Serialization may promote a profile for newly authored features. Use the
 	// emitted schema, not the pre-serialization struct's version.
 	const auto schema = static_cast<uint32_t>(std::max({std::stoul(b.substr(17)), std::stoul(s.substr(17)), std::stoul(d.substr(17))}));
+	RemasterProfileMergePlan plan{std::move(saved), std::move(retained), schema, d + s};
+	if (prepared) *prepared = std::move(plan);
 	if (inspectConflictsOnly) return true;
-	// Validate the complete merged profile, including cross-record references.
-	return S9xRemasterParseProfile(Join(saved, schema, d + s), result.saved, diagnostics) &&
-		S9xRemasterParseProfile(Join(retained, schema, d + s), result.session, diagnostics);
+	return S9xRemasterFinishProfileMerge(prepared ? *prepared : plan, overwriteConflicts, result, diagnostics);
+}
+
+// Prepare one validated save, retaining local conflicts when overwrite is false.
+// Byte equality (not timestamps) proves there are no external edits to merge.
+inline bool S9xRemasterPrepareProfileSave(const std::string &baselineText, const std::string &diskText,
+	const RemasterProfile &session, const std::set<std::string> &pendingConflicts, bool overwriteConflicts,
+	RemasterProfileMergeResult &result, std::string &savedText, std::vector<RemasterProfileDiagnostic> &diagnostics,
+	RemasterProfileMergePlan *prepared = nullptr)
+{
+	if (baselineText == diskText && pendingConflicts.empty())
+	{
+		if (!S9xRemasterSerializeProfile(session, savedText, diagnostics, false) ||
+			!S9xRemasterParseProfile(savedText, result.saved, diagnostics)) return false;
+		// Retain the validated representation (schema promotion, rule specificity
+		// and legacy normalization), just as the normal merge round trip does.
+		result.session = result.saved;
+		result.conflicts.clear();
+		return true;
+	}
+	RemasterProfile base, disk;
+	if (!S9xRemasterParseProfile(baselineText, base, diagnostics) ||
+		!S9xRemasterParseProfile(diskText, disk, diagnostics) ||
+		!S9xRemasterMergeProfiles(base, session, disk, pendingConflicts, overwriteConflicts, result, diagnostics,
+			prepared != nullptr, prepared)) return false;
+	if (prepared) return true;
+	// Merge already validated both complete profiles, including cross-record references.
+	return S9xRemasterSerializeProfile(result.saved, savedText, diagnostics, false);
 }
 
 #endif

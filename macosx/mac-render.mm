@@ -322,6 +322,43 @@ id<MTLComputePipelineState>	remasterPrepareDirectPipelineState = nil;
 id<MTLComputePipelineState>	remasterDirectTransportPipelineState = nil;
 id<MTLComputePipelineState> remasterBatchedDirectPipelineState = nil;
 id<MTLComputePipelineState> remasterSampledDirectPipelineState = nil;
+id<MTLComputePipelineState> remasterHybridDirectPipelineState = nil;
+struct RemasterHybridConfig {
+	float tau = 0.02f;
+	uint32_t tailSamples = 8, seed = 0, clustered = 0;
+	uint32_t counts = 0;
+	float exactRadius = 0;
+	uint32_t reserved0 = 0, reserved1 = 0;
+};
+
+// Resolve once per frame, after captured/profile settings and before any source
+// preparation or result-key construction. A future room override belongs before
+// the environment layer here; benchmark overrides always have final precedence.
+static RemasterHybridConfig RemasterEffectiveHybridSettings(const RemasterFrame *frame, bool &enabled)
+{
+	RemasterHybridConfig config;
+	const auto settings = frame ? frame->hybridDirect : RemasterHybridDirectSettings{};
+	config.tau = settings.cutoff;
+	config.tailSamples = settings.tailSamples;
+	enabled = settings.enabled;
+	if (const char *value = std::getenv("S9X_REMASTER_HYBRID_DIRECT")) enabled = strcmp(value,"0") != 0;
+	auto number = [](const char *key, float fallback, float low, float high) {
+		const char *text = std::getenv(key);
+		if (!text) return fallback;
+		char *end = nullptr;
+		const float value = std::strtof(text,&end);
+		return end != text && !*end && std::isfinite(value) && value >= low && value <= high ? value : fallback;
+	};
+	config.tau = number("S9X_REMASTER_HYBRID_TAU",config.tau,0,1);
+	config.tailSamples = uint32_t(number("S9X_REMASTER_HYBRID_TAIL_SAMPLES",float(config.tailSamples),1,4096));
+	config.seed = uint32_t(number("S9X_REMASTER_HYBRID_SEED",0,0,16777215));
+	config.exactRadius = number("S9X_REMASTER_HYBRID_EXACT_RADIUS",0,0,4096);
+#ifdef REMASTER_OFFLINE_RENDERER
+	config.reserved1 = std::getenv("S9X_REMASTER_HYBRID_VISIBILITY_ABLATION") ? 1 : 0;
+#endif
+	config.counts = std::getenv("S9X_REMASTER_HYBRID_COUNTS") ? 1 : 0;
+	return config;
+}
 id<MTLComputePipelineState> remasterDirectionalPipelineState = nil;
 id<MTLComputePipelineState> remasterPreparePatchesPipelineState = nil;
 id<MTLComputePipelineState> remasterClusteredDirectPipelineState = nil;
@@ -386,8 +423,28 @@ struct RemasterMetalResources
 	RemasterFieldUploadCache sceneLightUploads;
 	uint32_t sourceLeafCount = 0;
 	std::array<RemasterFieldUploadCache, 8> fieldUploads;
+	bool shiftValid=false;
+	std::array<int,2> shiftX{},shiftY{};
+	uint32_t shiftRoom=0,shiftPlane=0,shiftMode=0;
+	std::array<id<MTLTexture>,7> shiftSpare{};
+	id<MTLBuffer> meshSpare=nil, shiftStaging=nil;
 };
+#include "remaster-per-ray-cache.h"
 static RemasterMetalResources remasterResources[remasterResourceSlotCount];
+// Immutable once committed: never alias a rotating slot's writable result.
+// renderMutex serializes encoding; this mutex also covers the presentation worker.
+struct RemasterSharedDirectResult {
+	id<MTLTexture> texture = nil;
+	id<MTLDevice> device = nil;
+	id<MTLCommandQueue> queue = nil;
+	id<MTLCommandBuffer> producer = nil;
+	std::vector<uint8_t> key;
+	std::array<std::vector<uint8_t>, 8> fields;
+	uint64_t generation = 0;
+};
+static std::mutex sharedDirectMutex;
+static std::shared_ptr<RemasterSharedDirectResult> sharedDirectResult;
+static uint64_t sharedDirectGeneration = 0;
 static uint32_t remasterRandomSeed = 0;
 static int benchmarkLastResourceSlot = -1;
 static int debugLastResourceSlot = -1;
@@ -716,8 +773,9 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		static RemasterSurfaceMesh::Cache meshCache;
 		mesh = std::getenv("S9X_REMASTER_FULL_MESH") ?
 			RemasterSurfaceMesh::build(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f) :
-			meshCache.update(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f);
-		meshTimer.stop();
+			meshCache.update(frame.width, frame.height, meshSamples, frame.lightingCoordinateScale / 255.0f,fieldCache.shiftX,fieldCache.shiftY);
+		RemasterLightingTrace::traffic(RemasterLightingTrace::Mesh,meshSamples.size()*sizeof(RemasterSurfaceMesh::Sample)*2,mesh.size()*sizeof(RemasterSurfaceMesh::Cell));
+        meshTimer.stop();
 		RemasterLightingTrace::Scope meshCopyTimer(&trace,RemasterLightingTrace::MeshCopy);
 		for (size_t i = 0; i < mesh.size(); i++)
 		{
@@ -813,6 +871,15 @@ static void S9xInitMetal (void)
 
 static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLPixelFormat format)
 {
+    remasterPerRayCache.reset();
+    remasterPerRayReceiverPipeline = [metalDevice newComputePipelineStateWithFunction:
+        [defaultLibrary newFunctionWithName:@"prvUpdateReceivers"] error:nil];
+    remasterPerRaySamplePipeline = [metalDevice newComputePipelineStateWithFunction:
+        [defaultLibrary newFunctionWithName:@"prvUpdateSamples"] error:nil];
+    remasterPerRayGroupPipeline = [metalDevice newComputePipelineStateWithFunction:
+        [defaultLibrary newFunctionWithName:@"prvGroups"] error:nil];
+    remasterPerRayChunkPipeline = [metalDevice newComputePipelineStateWithFunction:
+        [defaultLibrary newFunctionWithName:@"prvChunkGroups"] error:nil];
 	NSError *error = nil;
 
 	MTLRenderPipelineDescriptor *pipelineDescriptor = [MTLRenderPipelineDescriptor new];
@@ -848,6 +915,8 @@ static void InitializeRemasterMetalPipelines(id<MTLLibrary> defaultLibrary, MTLP
 	remasterDirectTransportPipelineState = [metalDevice newComputePipelineStateWithFunction:directTransport error:&error];
 	remasterSampledDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterSampledDirect"] error:&error];
+	remasterHybridDirectPipelineState = [metalDevice newComputePipelineStateWithFunction:
+		[defaultLibrary newFunctionWithName:@"remasterHybridDirect"] error:&error];
 	remasterDirectionalPipelineState = [metalDevice newComputePipelineStateWithFunction:
 		[defaultLibrary newFunctionWithName:@"remasterDirectionalLight"] error:&error];
 	[directConstants setConstantValue:&preparedDirect type:MTLDataTypeBool atIndex:1];
@@ -922,6 +991,10 @@ static void S9xDeinitMetal (void)
 	}
 	for (int slot : acquiredSlots)
 		ReleaseRemasterResourceSlot(slot);
+	{
+		std::lock_guard<std::mutex> sharedLock(sharedDirectMutex);
+		sharedDirectResult.reset(); ++sharedDirectGeneration;
+	}
 	metalCommandQueue = nil;
 	metalDevice = nil;
 	metalTexture = nil;
@@ -1242,6 +1315,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 		RemasterBenchmarkGpuCapture gpuCapture(metalCommandQueue);
 		bool wroteDirectSnapshot = false;
 		bool publishDirectResult = false;
+		RemasterPerRayDispatch perRayDispatch;
+		std::shared_ptr<RemasterSharedDirectResult> pendingSharedDirect;
 		RemasterGpuStageCounters stageCounters(metalDevice);
 		const MTLSize transportThreads = RemasterTransportThreads();
 		RemasterMetalResources *resources = resourceSlot >= 0 ? &remasterResources[resourceSlot] : nullptr;
@@ -1322,8 +1397,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				resources->height != static_cast<NSUInteger>(height);
 			if (rebuildTextures)
 			{
+				std::lock_guard<std::mutex> sharedLock(sharedDirectMutex);
+				sharedDirectResult.reset();
+				++sharedDirectGeneration;
 				if(trace) trace->allocations+=18;
 				resources->fieldUploads = {};
+				resources->shiftSpare={};resources->meshSpare=nil;resources->shiftStaging=nil;
 				resources->directResultKey.clear();
 				resources->directSources = resources->directSamples = nil;
 				resources->emitterPatches = nil;
@@ -1377,10 +1456,61 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					resources->bounce[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 					resources->indirect[i] = [metalDevice newTextureWithDescriptor:radianceDescriptor];
 				}
+				if(RemasterLightingFieldCache::shiftEnabled() && std::getenv("S9X_REMASTER_SHIFT_UPLOAD_SPANS") && !strcmp(std::getenv("S9X_REMASTER_SHIFT_UPLOAD_SPANS"),"1")) {
+					id<MTLTexture> textures[]={resources->occlusion,resources->emission,resources->heightField,resources->participation,resources->oppositeFacing,resources->surface,resources->reflectance};
+					for(size_t i=0;i<7;++i)resources->shiftSpare[i]=[metalDevice newTextureWithDescriptor:[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:textures[i].pixelFormat width:width height:height mipmapped:NO]];
+					resources->meshSpare=[metalDevice newBufferWithLength:size_t(width)*height*sizeof(RemasterSurfaceMesh::Cell) options:MTLResourceStorageModeShared];
+					// Slot retirement fences this reusable arena. Capacity covers worst-case
+					// spans; only actual changed bytes are ever written into it.
+					resources->shiftStaging=[metalDevice newBufferWithLength:size_t(height)*(size_t(width)*97+8*256) options:MTLResourceStorageModeShared];
+					if(trace)trace->allocations+=9;
+				}
 			}
 			id<MTLTexture> occlusionTexture = resources->occlusion;
+			int gpuDx=0,gpuDy=0;
+			if(frame && RemasterLightingFieldCache::shiftEnabled() && frame->shiftFieldsValid && resources->shiftValid && !rebuildTextures &&
+				resources->shiftRoom==frame->lightingTrace.room && resources->shiftPlane==frame->lightingTrace.plane && resources->shiftMode==frame->shiftMode) {
+				gpuDx=int16_t(uint16_t(frame->shiftScrollX[0]-resources->shiftX[0]));gpuDy=int16_t(uint16_t(frame->shiftScrollY[0]-resources->shiftY[0]));
+				if(gpuDx!=int16_t(uint16_t(frame->shiftScrollX[1]-resources->shiftX[1])) || gpuDy!=int16_t(uint16_t(frame->shiftScrollY[1]-resources->shiftY[1])) ||
+					std::abs(gpuDx)>=width || std::abs(gpuDy)>=height)gpuDx=gpuDy=0;
+			}
+			if(frame) {resources->shiftValid=frame->shiftFieldsValid;resources->shiftX=frame->shiftScrollX;resources->shiftY=frame->shiftScrollY;
+				resources->shiftRoom=frame->lightingTrace.room;resources->shiftPlane=frame->lightingTrace.plane;resources->shiftMode=frame->shiftMode;}
+			// Per-slot delta, not last CPU frame delta: slots can lag several frames.
+			id<MTLBlitCommandEncoder> shiftBlit=nil;
+			size_t stagingUsed=0;
+			if((gpuDx || gpuDy) && resources->shiftStaging && std::getenv("S9X_REMASTER_SHIFT_UPLOAD_SPANS") && !strcmp(std::getenv("S9X_REMASTER_SHIFT_UPLOAD_SPANS"),"1")) {
+				shiftBlit=[commandBuffer blitCommandEncoder];
+				auto shiftTexture=[&](id<MTLTexture> old,size_t index) {
+					id<MTLTexture> next=resources->shiftSpare[index];resources->shiftSpare[index]=old;
+					[shiftBlit copyFromTexture:old sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(std::max(0,gpuDx),std::max(0,gpuDy),0)
+						sourceSize:MTLSizeMake(width-std::abs(gpuDx),height-std::abs(gpuDy),1) toTexture:next destinationSlice:0 destinationLevel:0
+						destinationOrigin:MTLOriginMake(std::max(0,-gpuDx),std::max(0,-gpuDy),0)];return next;
+				};
+				resources->occlusion=shiftTexture(resources->occlusion,0);resources->emission=shiftTexture(resources->emission,1);
+				resources->heightField=shiftTexture(resources->heightField,2);resources->participation=shiftTexture(resources->participation,3);
+				resources->oppositeFacing=shiftTexture(resources->oppositeFacing,4);resources->surface=shiftTexture(resources->surface,5);resources->reflectance=shiftTexture(resources->reflectance,6);
+				occlusionTexture=resources->occlusion;
+			}
 			auto uploadField = [&](size_t index, id<MTLTexture> texture, const void *data, size_t stride) {
 				RemasterLightingTrace::Scope uploadTimer(trace,RemasterLightingTrace::Upload);
+				if((gpuDx || gpuDy) && !shiftBlit) {
+					auto &previous=resources->fieldUploads[index];const auto *bytes=static_cast<const uint8_t*>(data);
+					bool changed=previous.previous.size()!=stride*height || memcmp(previous.previous.data(),bytes,stride*height);
+					if(changed){[texture replaceRegion:MTLRegionMake2D(0,0,width,height) mipmapLevel:0 withBytes:data bytesPerRow:stride];
+						previous.previous.assign(bytes,bytes+stride*height);previous.rowBytes=stride;if(trace)trace->uploadBytes+=stride*height;}
+					return changed;
+				}
+				if(shiftBlit) {
+					const size_t pixel=stride/width;
+					return resources->fieldUploads[index].updateShift(data,stride,height,pixel,gpuDx,gpuDy,[&](size_t x,size_t y,size_t n) {
+						stagingUsed=(stagingUsed+255)&~size_t(255);const size_t offset=stagingUsed,bytes=n*pixel;
+						memcpy((uint8_t*)resources->shiftStaging.contents+offset,(const uint8_t*)data+y*stride+x*pixel,bytes);stagingUsed+=bytes;
+						if(trace)trace->uploadBytes+=bytes; // actual CPU staging writes, not overlap blits
+						[shiftBlit copyFromBuffer:resources->shiftStaging sourceOffset:offset sourceBytesPerRow:(bytes+255)&~size_t(255) sourceBytesPerImage:0
+							sourceSize:MTLSizeMake(n,1,1) toTexture:texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x,y,0)];
+					});
+				}
 				return resources->fieldUploads[index].update(data, stride, height, [&](size_t y, size_t rows) {
 					if(trace) trace->uploadBytes+=rows*stride;
 					[texture replaceRegion:MTLRegionMake2D(0, y, width, rows) mipmapLevel:0
@@ -1402,7 +1532,28 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			directFieldsDirty |= uploadField(6, reflectanceTexture, reflectance, width*sizeof(float)*4);
 			id<MTLTexture> visibilityBlocksTexture = resources->visibilityBlocks;
 			if (!resources->mesh || !mesh || mesh->size() != static_cast<size_t>(width * height)) return false;
-			visibilityDirty |= resources->fieldUploads[7].update(mesh->data(), width*sizeof(RemasterSurfaceMesh::Cell), height,
+			if(shiftBlit) {
+				const size_t pixel=sizeof(RemasterSurfaceMesh::Cell),stride=width*pixel;
+				id<MTLBuffer> next=resources->meshSpare;
+				if(gpuDx==0) [shiftBlit copyFromBuffer:resources->mesh sourceOffset:std::max(0,gpuDy)*stride
+					toBuffer:next destinationOffset:std::max(0,-gpuDy)*stride size:(height-std::abs(gpuDy))*stride];
+				else for(int y=std::max(0,-gpuDy);y<height-std::max(0,gpuDy);++y)
+					[shiftBlit copyFromBuffer:resources->mesh sourceOffset:(y+gpuDy)*stride+std::max(0,gpuDx)*pixel
+						toBuffer:next destinationOffset:y*stride+std::max(0,-gpuDx)*pixel size:(width-std::abs(gpuDx))*pixel];
+				visibilityDirty |= resources->fieldUploads[7].updateShift(mesh->data(),stride,height,pixel,gpuDx,gpuDy,[&](size_t x,size_t y,size_t n) {
+					stagingUsed=(stagingUsed+3)&~size_t(3);const size_t offset=stagingUsed;stagingUsed+=n*pixel;
+					memcpy((uint8_t*)resources->shiftStaging.contents+offset,(const uint8_t*)mesh->data()+y*stride+x*pixel,n*pixel);
+					if(trace)trace->uploadBytes+=n*pixel;
+					[shiftBlit copyFromBuffer:resources->shiftStaging sourceOffset:offset toBuffer:next destinationOffset:y*stride+x*pixel size:n*pixel];});
+				resources->meshSpare=resources->mesh;resources->mesh=next;[shiftBlit endEncoding];
+			} else if(gpuDx || gpuDy) {
+				const size_t stride=width*sizeof(RemasterSurfaceMesh::Cell),bytes=stride*height;
+				auto &previous=resources->fieldUploads[7];const auto *data=reinterpret_cast<const uint8_t*>(mesh->data());
+				if(previous.previous.size()!=bytes || memcmp(previous.previous.data(),data,bytes)) {
+					memcpy(resources->mesh.contents,data,bytes);previous.previous.assign(data,data+bytes);previous.rowBytes=stride;
+					visibilityDirty=true;if(trace)trace->uploadBytes+=bytes;
+				}
+			} else visibilityDirty |= resources->fieldUploads[7].update(mesh->data(), width*sizeof(RemasterSurfaceMesh::Cell), height,
 				[&](size_t y, size_t rows) { const size_t stride = width*sizeof(RemasterSurfaceMesh::Cell);
 					if(trace)trace->uploadBytes+=rows*stride;
 					memcpy(static_cast<uint8_t *>(resources->mesh.contents)+y*stride,
@@ -1500,6 +1651,21 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			const bool sampledDirect = sampledDirectConnections && remasterSampledDirectPipelineState &&
 				lightingView != RemasterLightingView::Visibility && !measureGi && !light.enabled &&
 				!std::getenv("S9X_REMASTER_EXHAUSTIVE_DIRECT");
+			bool hybridEnabled = false;
+			auto hybridConfig = RemasterEffectiveHybridSettings(frame,hybridEnabled);
+			const bool hybridDirect = hybridEnabled && remasterHybridDirectPipelineState && !sampledDirect &&
+				lightingView != RemasterLightingView::Visibility && !measureGi && !light.enabled &&
+				!std::getenv("S9X_REMASTER_EXHAUSTIVE_DIRECT");
+			const bool hybridAnimatedSeed = std::getenv("S9X_REMASTER_HYBRID_FRAME_SEED") != nullptr;
+			if (trace) {
+				trace->hybridEnabled = hybridDirect;
+				trace->hybridCutoff = hybridConfig.tau;
+				trace->hybridTailSamples = hybridConfig.tailSamples;
+				trace->hybridEnvOverrides = std::getenv("S9X_REMASTER_HYBRID_DIRECT") ||
+					std::getenv("S9X_REMASTER_HYBRID_TAU") || std::getenv("S9X_REMASTER_HYBRID_TAIL_SAMPLES") ||
+					std::getenv("S9X_REMASTER_HYBRID_EXACT_RADIUS") ||
+					std::getenv("S9X_REMASTER_HYBRID_SEED") || hybridAnimatedSeed || std::getenv("S9X_REMASTER_HYBRID_COUNTS");
+			}
 			// Comparison override retains the expanded sampled representation.
 			const bool collapsedDepth = sampledDirect && !std::getenv("S9X_REMASTER_EXPANDED_SAMPLED_DEPTH");
 			const uint32_t sourceFlag = collapsedDepth ? 0x80000000u : 0u;
@@ -1507,10 +1673,12 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				lightingView != RemasterLightingView::Visibility && !measureGi &&
 				remasterPreparePatchesPipelineState && remasterClusteredDirectPipelineState && remasterClusteredBatchedPipelineState;
 			const bool clustered = clusteringAvailable && frame->representativeEmitters > 0;
+			hybridConfig.clustered = clustered;
 			sphereTimer.stop();
 			RemasterLightingTrace::Scope hiddenTimer(trace,RemasterLightingTrace::Hidden);
 			const auto hiddenSamples = frame ? S9xRemasterHiddenDirectSamples(*frame, collapsedDepth, clusteringAvailable) : std::vector<RemasterHiddenDirectSample>{};
-			hiddenTimer.stop();
+			RemasterLightingTrace::traffic(RemasterLightingTrace::Hidden,frame?frame->hiddenEmitters.size()*sizeof(RemasterFrameHiddenEmitter):0,hiddenSamples.size()*sizeof(RemasterHiddenDirectSample));
+            hiddenTimer.stop();
 			if (panelMetrics) for (const auto &s:hiddenSamples) {
 				const auto *bytes=reinterpret_cast<const uint8_t *>(&s);
 				for(size_t j=0;j<sizeof(s);j++)frameEmitterSignature=(frameEmitterSignature^bytes[j])*1099511628211ull;
@@ -1518,7 +1686,8 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			std::vector<RemasterEmitterPatch> patches;
 			RemasterLightingTrace::Scope clusterTimer(trace,RemasterLightingTrace::Cluster);
 			if (clustered) patches = S9xRemasterEmitterPatches(*frame, emission, participation, *mesh, selectedChannels);
-			clusterTimer.stop(); framePatchCount=static_cast<uint32_t>(patches.size());
+			RemasterLightingTrace::traffic(RemasterLightingTrace::Cluster,size_t(width)*height*(sizeof(RemasterSurfaceMesh::Cell)+6),patches.size()*sizeof(RemasterEmitterPatch));
+            clusterTimer.stop(); framePatchCount=static_cast<uint32_t>(patches.size());
 			RemasterLightingTrace::Scope sourcesTimer(trace,RemasterLightingTrace::Sources);
 			std::vector<vector_uint2> directSources;
 			if (clustered) {
@@ -1569,6 +1738,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			}
 			sourcesTimer.stop();
 			RemasterLightingTrace::Scope encodeTimer(trace,RemasterLightingTrace::Encode);
+            RemasterLightingTrace::traffic(RemasterLightingTrace::Encode,directSources.size()*sizeof(vector_uint2)+patches.size()*sizeof(RemasterEmitterPatch));
 			RemasterLightingUniforms uniforms = { static_cast<uint32_t>(width), static_cast<uint32_t>(height),
 				static_cast<uint32_t>(lightingView), 0, 0, 0, indirectRoughness, originalSceneContribution,
 				heightPreviewMultiplier, 0.0f, 0,
@@ -1597,6 +1767,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			// Hashes (including the metrics-only emitter signature) are not exact
 			// identities. Snapshot the ordered effective inputs, including layout.
 			const bool cacheableDirect = !measureGi && !sampledDirect &&
+				!(hybridDirect && (hybridAnimatedSeed || hybridConfig.counts)) &&
 				debugMode == RemasterDebugMode::Original &&
 				(lightingView == RemasterLightingView::Composite ||
 				 lightingView == RemasterLightingView::DirectContribution ||
@@ -1616,6 +1787,9 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				// Exhaustive prepared Direct/directional transport never reads RNG.
 				directUniforms.randomSeed = 0;
 				append(&directUniforms, sizeof(directUniforms));
+				// Preserve the exact off-state key bytes; enabled settings are part
+				// of the completion-gated identity, including the stable seed.
+				if (hybridDirect) { append(&hybridDirect,sizeof(hybridDirect)); append(&hybridConfig,sizeof(hybridConfig)); }
 				append(buffer, size_t(width) * height * 4); // receiver albedo
 				append(directSources.data(), directSources.size() * sizeof(vector_uint2));
 				append(patches.data(), patches.size() * sizeof(RemasterEmitterPatch));
@@ -1625,8 +1799,38 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 				const bool serial = std::getenv("S9X_REMASTER_SERIAL_DIRECT") != nullptr;
 				append(&serial, sizeof(serial));
 			}
-			const bool reuseDirect = cacheableDirect && hadDirectResult && !rebuildTextures &&
+			const bool localDirectHit = cacheableDirect && hadDirectResult && !rebuildTextures &&
 				!visibilityDirty && !directFieldsDirty && directKey == resources->directResultKey;
+			const bool sharingEnabled = cacheableDirect && !rebuildTextures &&
+				!std::getenv("S9X_REMASTER_DISABLE_DIRECT_SHARING");
+			std::shared_ptr<RemasterSharedDirectResult> sharedSource;
+			if (sharingEnabled && !localDirectHit) {
+				std::lock_guard<std::mutex> sharedLock(sharedDirectMutex);
+				auto source = sharedDirectResult;
+				if (source && source->device == metalDevice && source->queue == metalCommandQueue &&
+					source->texture.width == NSUInteger(width) && source->texture.height == NSUInteger(height) &&
+					source->producer.status >= MTLCommandBufferStatusCommitted &&
+					source->producer.status != MTLCommandBufferStatusError && source->key == directKey) {
+					bool identical = true;
+					for (size_t i = 0; i < source->fields.size(); ++i)
+						identical &= source->fields[i] == resources->fieldUploads[i].previous;
+					if (identical) sharedSource = source;
+				}
+			}
+			const bool reuseDirect = localDirectHit || bool(sharedSource);
+			if (trace) {
+				trace->directReuse = sharedSource ? "shared-copy" : localDirectHit ? "hit" : "miss";
+				trace->directReuseReason = reuseDirect ? "" : !cacheableDirect ? "bypass" :
+					rebuildTextures ? "allocation" : "inputs-or-unavailable";
+			}
+			if (sharedSource) {
+				id<MTLBlitCommandEncoder> copy = [commandBuffer blitCommandEncoder];
+				if (!copy) return false;
+				[copy copyFromTexture:sharedSource->texture sourceSlice:0 sourceLevel:0
+					sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(width,height,1)
+					toTexture:resources->directResult destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+				[copy endEncoding];
+			}
 			id<MTLComputeCommandEncoder> computeEncoder = stageCounters.encoder(commandBuffer, "emission_seed");
 			const auto directEncodeStarted = std::chrono::steady_clock::now();
 			[computeEncoder setComputePipelineState:remasterLightingPipelineState];
@@ -1674,6 +1878,14 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					size:hiddenSamples.size()*sizeof(RemasterHiddenDirectSample)];
 				[copy endEncoding];
 			}
+            perRayDispatch = PrepareRemasterPerRayCache(commandBuffer,stageCounters,*resources,
+                frame,directSources,patches,hiddenSamples,visibleSampleCount,clustered,
+                !measureGi && !sampledDirect && lightingView != RemasterLightingView::Visibility,
+                reuseDirect,!RemasterPerRayTimingOnly() &&
+                (panelMetrics || (trace && trace->id) || std::getenv("S9X_REMASTER_PER_RAY_COUNTS")));
+            if (trace) { trace->perRayOutcome=perRayDispatch.outcome; trace->perRayBytes=perRayDispatch.bytes;
+                trace->roomRayChunkHits=perRayDispatch.chunkHits;trace->roomRayChunksRetained=perRayDispatch.chunkRetained;
+                trace->roomRayChunksReturning=perRayDispatch.chunkReturning;trace->roomRayAllocatedBytes=perRayDispatch.allocatedBytes; }
 			if (measureGi)
 			{
 				id<MTLTexture> discardedPreviousIndirect = [metalDevice newTextureWithDescriptor:radianceDescriptor];
@@ -1685,6 +1897,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 					uniforms.diagnosticStage = stage;
 					uniforms.padding = 2.0f;
 					id<MTLComputeCommandEncoder> diagnosticEncoder = [commandBuffer computeCommandEncoder];
+					RemasterPerRayDispatch{}.bind(diagnosticEncoder,resources->directSamples);
 					[diagnosticEncoder setComputePipelineState:remasterIndirectPipelineState];
 					[diagnosticEncoder setTexture:sourceTexture atIndex:0];
 					[diagnosticEncoder setTexture:occlusionTexture atIndex:1];
@@ -1736,6 +1949,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						const uint32_t batchCount = batches.count;
 						const size_t partialBytes = batches.bytes;
 						const bool batchedDirect = !sampledDirect && !visibilityView && !measureGi && batchCount > 1 &&
+							!hybridDirect &&
 							partialBytes <= 64 * 1024 * 1024 && !std::getenv("S9X_REMASTER_SERIAL_DIRECT");
 						if (batchedDirect)
 						{
@@ -1750,7 +1964,22 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						id<MTLComputeCommandEncoder> directEncoder = stageCounters.encoder(commandBuffer, "direct_transport");
 						directEncoder.label = @"Direct light transport";
 						const auto directEncodeStarted = std::chrono::steady_clock::now();
-						[directEncoder setComputePipelineState:sampledDirect ? remasterSampledDirectPipelineState : visibilityView ? remasterIndirectPipelineState : clustered ? (batchedDirect ? remasterClusteredBatchedPipelineState : remasterClusteredDirectPipelineState) : batchedDirect ? remasterBatchedDirectPipelineState : remasterDirectTransportPipelineState];
+						if (hybridDirect) {
+							if (hybridAnimatedSeed) hybridConfig.seed ^= uniforms.randomSeed;
+							id<MTLBuffer> statistics = [metalDevice newBufferWithLength:hybridConfig.counts ? size_t(width)*height*16 : 16 options:MTLResourceStorageModeShared];
+							[directEncoder setBytes:&hybridConfig length:sizeof(hybridConfig) atIndex:9];
+							[directEncoder setBuffer:statistics offset:0 atIndex:10];
+							if (hybridConfig.counts) {
+								NSString *prefix = [NSString stringWithUTF8String:std::getenv("S9X_REMASTER_HYBRID_COUNTS")];
+								[commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+									if (cb.status == MTLCommandBufferStatusCompleted) {
+										NSString *path = [prefix stringByAppendingFormat:@"-%u.bin",uniforms.randomSeed];
+										[[NSData dataWithBytes:statistics.contents length:size_t(width)*height*16] writeToFile:path atomically:YES];
+									}
+								}];
+							}
+						}
+						[directEncoder setComputePipelineState:hybridDirect ? remasterHybridDirectPipelineState : sampledDirect ? remasterSampledDirectPipelineState : visibilityView ? remasterIndirectPipelineState : clustered ? (batchedDirect ? remasterClusteredBatchedPipelineState : remasterClusteredDirectPipelineState) : batchedDirect ? remasterBatchedDirectPipelineState : remasterDirectTransportPipelineState];
 						[directEncoder setBuffer:clustered ? resources->emitterPatches : resources->directSources offset:0 atIndex:6];
 						[directEncoder setBuffer:clustered ? resources->emitterPatches : resources->directSources offset:0 atIndex:7];
 						[directEncoder setTexture:sourceTexture atIndex:0];
@@ -1765,6 +1994,7 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directEncoder setTexture:oppositeFacingTexture atIndex:9];
 						[directEncoder setTexture:visibilityBlocksTexture atIndex:10];
 						[directEncoder setTexture:reflectanceTexture atIndex:11];
+						perRayDispatch.bind(directEncoder,resources->directSamples);
 						[directEncoder setBuffer:resources->mesh offset:0 atIndex:3];
 						[directEncoder setBuffer:sceneLightBuffer offset:0 atIndex:8];
 						[directEncoder setBuffer:resources->directSamples offset:0 atIndex:4];
@@ -1860,6 +2090,24 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						[directional endEncoding];
 					}
 					if (cacheableDirect) {
+						if (!reuseDirect && sharingEnabled) {
+							auto snapshot = std::make_shared<RemasterSharedDirectResult>();
+							snapshot->texture = [metalDevice newTextureWithDescriptor:radianceDescriptor];
+							if (snapshot->texture) {
+								snapshot->device = metalDevice; snapshot->queue = metalCommandQueue;
+								snapshot->producer = commandBuffer; snapshot->key = directKey;
+								for (size_t i=0; i<snapshot->fields.size(); ++i)
+									snapshot->fields[i] = resources->fieldUploads[i].previous;
+								{ std::lock_guard<std::mutex> sharedLock(sharedDirectMutex);
+									snapshot->generation = sharedDirectGeneration; }
+								id<MTLBlitCommandEncoder> copy = [commandBuffer blitCommandEncoder];
+								if (!copy) return false;
+								[copy copyFromTexture:finalDirect sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+									sourceSize:MTLSizeMake(width,height,1) toTexture:snapshot->texture destinationSlice:0
+									destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+								[copy endEncoding]; pendingSharedDirect = snapshot;
+							}
+						}
 						resources->directResultKey = std::move(directKey);
 						publishDirectResult = true;
 					}
@@ -2133,7 +2381,21 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						if (@available(macOS 10.15, *)) if(traceCopy.id) if(const char *path=std::getenv("S9X_REMASTER_LIGHTING_TRACE")) {
 							static std::mutex traceMutex; std::lock_guard<std::mutex> guard(traceMutex);
 							std::ofstream out(path,std::ios::app); out<<std::setprecision(15);
-							RemasterLightingTrace::write(out,traceCopy,completed.GPUStartTime,completed.GPUEndTime,
+							auto completedTrace=traceCopy;
+                            if (perRayDispatch.counters && completed.status==MTLCommandBufferStatusCompleted) {
+                                const auto *counts=static_cast<const uint32_t *>(perRayDispatch.counters.contents);
+                                uint64_t total=0,traced=0;
+                                for (size_t i=0;i<256;++i) {
+                                    total+=counts[i*6];traced+=counts[i*6+1];
+                                    completedTrace.perRayReceiver+=counts[i*6+2];
+                                    completedTrace.perRaySample+=counts[i*6+3];
+                                    completedTrace.perRayAged+=counts[i*6+4];
+                                    completedTrace.perRaySegment+=counts[i*6+5];
+                                }
+                                completedTrace.perRayTraced=traced;
+                                completedTrace.perRayReused=total-traced;
+                            }
+                            RemasterLightingTrace::write(out,completedTrace,completed.GPUStartTime,completed.GPUEndTime,
 								traceBeginUptime,submittedUptime,queuedMs,drawableMs,presentationCpuMs,
 								width,height,frameSphereCount,frameDirectSampleCount+frameSphereSampleCount,framePatchCount,int(completed.status));
 						}
@@ -2158,7 +2420,13 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						for (const auto &stage : sums) gpuStages.push_back(stage);
 							}
 						}
-						RemasterLiveTrace::gpuStages(traceCopy.id, gpuStages);
+						if (perRayDispatch.counters && completed.status==MTLCommandBufferStatusCompleted) {
+                            const auto *counts=static_cast<const uint32_t *>(perRayDispatch.counters.contents);
+                            uint64_t total=0,traced=0;
+                            for (size_t i=0;i<256;++i) {total+=counts[i*6];traced+=counts[i*6+1];}
+                            RemasterLiveTrace::perRay(traceCopy.id,traced,total-traced,counts);
+                        }
+                        RemasterLiveTrace::gpuStages(traceCopy.id, gpuStages);
 						if (@available(macOS 10.15, *))
 							RemasterLiveTrace::gpu(traceCopy.id,completed.GPUStartTime,completed.GPUEndTime,
 								submittedUptime,queuedMs,drawableMs,presentationCpuMs,int(completed.status),traceBeginUptime);
@@ -2258,7 +2526,15 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 						TraceRemasterStairPresentation(completed.status == MTLCommandBufferStatusCompleted ?
 							"gpu_complete" : "gpu_error", width, height, resourceSlot);
 					}];
-				[commandBuffer commit];
+				// presentationQueue is serial: publish only after commit, under the
+				// same lock used by consumers. Later buffers on this queue execute
+				// after the producer; Metal retains the immutable blit resources.
+				{
+					std::lock_guard<std::mutex> sharedLock(sharedDirectMutex);
+					[commandBuffer commit];
+					if (pendingSharedDirect && pendingSharedDirect->generation == sharedDirectGeneration)
+						sharedDirectResult = pendingSharedDirect;
+				}
 				return true;
 			}
 		};
@@ -2276,6 +2552,37 @@ static bool S9xPutImageMetal (int width, int height, const uint16 *buffer16, siz
 			return false;
 		[commandBuffer waitUntilCompleted];
 		if (lighting && commandBuffer.status == MTLCommandBufferStatusCompleted) debugLastResourceSlot = resourceSlot;
+		if(lighting && commandBuffer.status==MTLCommandBufferStatusCompleted)if(const char *dir=std::getenv("SHIFT_FIELDS_DUMP")) {
+			static unsigned number=0;const std::string prefix=std::string(dir)+"/frame-"+std::to_string(number++);
+			auto dump=[&](id<MTLTexture> texture,size_t bytes,const char *suffix) {
+				std::vector<uint8_t> data(size_t(width)*height*bytes);
+				[texture getBytes:data.data() bytesPerRow:width*bytes fromRegion:MTLRegionMake2D(0,0,width,height) mipmapLevel:0];
+				std::ofstream out(prefix+suffix,std::ios::binary);out.write((const char*)data.data(),data.size());
+			};
+			dump(resources->output,4,".composite");dump(resources->direct,8,".direct");dump(resources->occlusion,2,".occlusion");
+			dump(resources->heightField,8,".height");dump(resources->surface,16,".surface");dump(resources->emission,4,".emission");
+			dump(resources->participation,2,".participation");dump(resources->reflectance,16,".reflectance");dump(resources->oppositeFacing,1,".opposite");
+			std::ofstream out(prefix+".mesh",std::ios::binary);out.write((const char*)resources->mesh.contents,size_t(width)*height*sizeof(RemasterSurfaceMesh::Cell));
+		}
+		// Opt-in synchronous replay diagnostics only. Never read GPU textures back
+		// during ordinary gameplay or timing; callers own/clean the output folder.
+		if (lighting && commandBuffer.status == MTLCommandBufferStatusCompleted)
+			if (const char *directory = std::getenv("S9X_REMASTER_FRAME_OUTPUTS")) {
+				static unsigned number = 0;
+				const std::string prefix = std::string(directory) + "/frame-" + std::to_string(number++);
+				auto dump = [&](id<MTLTexture> texture, size_t stride, const char *suffix) {
+					std::vector<uint8_t> bytes(size_t(width)*height*stride);
+					[texture getBytes:bytes.data() bytesPerRow:width*stride fromRegion:MTLRegionMake2D(0,0,width,height) mipmapLevel:0];
+					std::ofstream output(prefix+suffix,std::ios::binary);
+					output.write(reinterpret_cast<const char *>(bytes.data()),bytes.size());
+				};
+				dump(resources->output,4,".composite"); dump(resources->direct,8,".direct");
+				dump(resources->occlusion,2,".occlusion"); dump(resources->heightField,8,".height");
+				dump(resources->surface,16,".surface"); dump(resources->emission,4,".emission");
+				dump(resources->participation,2,".participation");
+				std::ofstream output(prefix+".mesh",std::ios::binary);
+				output.write(reinterpret_cast<const char *>(resources->mesh.contents),size_t(width)*height*sizeof(RemasterSurfaceMesh::Cell));
+			}
 		if (wroteDirectSnapshot && commandBuffer.status == MTLCommandBufferStatusCompleted)
 		{
 			id<MTLTexture> direct = resources->directResult;

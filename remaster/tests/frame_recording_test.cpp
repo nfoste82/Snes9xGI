@@ -41,7 +41,7 @@ int main() {
 	// v40 recording packet header/layout is still accepted, with unavailable
 	// saved-placement evidence. Empty tables avoid manufacturing legacy instances.
 	{ RemasterFrame old;old.width=old.height=1;old.originalRgb555.resize(1);old.mainPixels.resize(1);old.subPixels.resize(1);
-	  Bytes bytes;CHECK(S9xSerializeRemasterFrame(old,bytes));bytes[8]=40;
+	  old.schemaVersion=40;Bytes bytes;CHECK(S9xSerializeRemasterFrame(old,bytes));
 	  RemasterFrame read;CHECK(DecodeFrame(bytes,read));CHECK(read.schemaVersion==REMASTER_FRAME_SCHEMA_VERSION);
 	  CHECK(S9xSerializeRemasterFrame(read,bytes)); }
 	std::string error;

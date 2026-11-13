@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 IDENTITY = (
     "schema_version", "gpu", "os", "rom_file_sha256", "state_sha256", "profile_sha256",
     "movement", "presentation", "connections", "representative_emitters",
+    "hybrid_direct", "hybrid_direct_cutoff", "hybrid_direct_tail_samples",
+    "hybrid_direct_override", "hybrid_direct_cutoff_override", "hybrid_direct_tail_samples_override",
     "warmup_frames", "measurement_frames", "debug_sphere_enabled", "audio_muted",
     "transport_threads_override", "serial_direct_override", "serial_indirect_override",
     "full_mesh_override", "stage_counters_disabled", "direct_samples_override",

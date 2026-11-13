@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <ostream>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 // Set to 0 for shipping/performance-baseline builds. No timer scopes or capture
 // activation remain active; keep the value consistent across translation units.
@@ -23,12 +26,20 @@ enum Stage { EndFrame, Finalize, Room, Classification, Solve, Apply, Visible,
     Actors, Offscreen, Fields, Selection, Mesh, Setup, Upload, Scan, Spheres,
     Hidden, Cluster, Sources, Encode, LockWait, SlotWait, Recognition,
     Scene, Owners, Highlights, Normals, MeshCopy, ContextLocations, ContextBindings,
-    Terrain, DoorRecognition, Count };
+    Terrain, DoorRecognition, FieldInputs, FieldPixels, FieldSnapshot,
+    VisibleMap, VisibleTemplates, VisibleReuse, VisibleSlopes, VisibleExposure,
+    VisibleGraph, VisiblePublish, VisibleClone, FinalizePixels, FinalizeMetadata,
+    ApplyInputs, ApplyLegacy, ApplyPublish, OffscreenIdentity, OffscreenAdmission,
+    OffscreenPublish, FieldMetadata, FieldInstances, Count };
 static constexpr const char *names[] = {"endframe", "finalize", "room", "classification",
     "solve", "apply", "visible", "actors", "offscreen", "fields", "selection", "mesh",
     "setup", "upload", "scan", "spheres", "hidden", "cluster", "sources", "encode",
     "lock_wait", "slot_wait", "recognition", "scene_hud", "owners", "highlights", "normals", "mesh_copy",
-    "context_locations", "context_bindings", "terrain", "door_recognition"};
+    "context_locations", "context_bindings", "terrain", "door_recognition", "field_inputs", "field_pixels", "field_snapshot",
+    "visible_map", "visible_templates", "visible_reuse", "visible_slopes", "visible_exposure",
+    "visible_graph", "visible_publish", "visible_clone", "finalize_pixels", "finalize_metadata",
+    "apply_inputs", "apply_legacy", "apply_publish", "offscreen_identity", "offscreen_admission",
+    "offscreen_publish", "field_metadata", "field_instances"};
 enum RoomReason : uint64_t {
     RoomChange=1ull<<0, SnapshotInvalid=1ull<<1, ProfileChange=1ull<<2,
     ProducerChange=1ull<<3, RomChange=1ull<<4, EntryChange=1ull<<5,
@@ -50,6 +61,8 @@ struct Frame {
     double begin=0, producerEnd=0;
     std::array<double, Count> exclusive{};
     std::array<uint64_t, Count> calls{};
+    std::array<uint64_t, Count> bytesRead{},bytesWritten{},allocationCount{},allocationBytes{},freeCount{};
+    uint64_t cpuCacheBytes=0,footprintBytes=0;
     uint64_t epochBefore=0, epochAfter=0, inputKey=0, profileKey=0;
     uint64_t selected=0, updated=0, resolved=0, uploadBytes=0, allocations=0;
     uint64_t projectionDecisions=0;
@@ -62,6 +75,15 @@ struct Frame {
     uint32_t width=0,height=0, spheres=0,samples=0,patches=0;
     uint32_t bounces=0,connections=0,representatives=0;
     bool directional=false;
+    bool hybridEnabled=false, hybridEnvOverrides=false;
+    float hybridCutoff=0;
+    uint32_t hybridTailSamples=0;
+    const char *directReuse="miss", *directReuseReason="not-encoded";
+    const char *perRayOutcome="bypass";
+    uint64_t perRayBytes=0, perRayTraced=0, perRayReused=0;
+    uint64_t roomRayChunkHits=0,roomRayChunksRetained=0,roomRayChunksReturning=0;
+    uint64_t roomRayAllocatedBytes=0;
+    uint64_t perRayReceiver=0, perRaySample=0, perRayAged=0, perRaySegment=0;
     uint32_t room=0xffff, plane=0, submodule=0, collision=0;
     int scrollX=0, scrollY=0;
 };
@@ -87,6 +109,22 @@ struct Scope {
     }
 };
 inline Frame *current() { return activeScope() ? activeScope()->frame : nullptr; }
+inline bool memoryEnabled() { static const bool value=std::getenv("S9X_REMASTER_MEMORY_METRICS")!=nullptr;return value; }
+inline void traffic(Stage stage,uint64_t read,uint64_t written=0) {
+    if(!memoryEnabled())return;
+    if(auto *f=current()){f->bytesRead[stage]+=read;f->bytesWritten[stage]+=written;}
+}
+inline void allocation(Stage stage,uint64_t bytes) {
+    if(!memoryEnabled())return;
+    if(auto *f=current()){++f->allocationCount[stage];f->allocationBytes[stage]+=bytes;}
+}
+inline uint64_t footprint() {
+#ifdef __APPLE__
+    task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+    if(task_info(mach_task_self(),TASK_VM_INFO,reinterpret_cast<task_info_t>(&info),&count)==KERN_SUCCESS)return info.phys_footprint;
+#endif
+    return 0;
+}
 inline double cpuMs(const Frame &f) {
     double total=0; for(int i=0;i<Count;i++)if(i!=LockWait && i!=SlotWait)total+=f.exclusive[i];
     return total;
@@ -121,13 +159,39 @@ inline void write(std::ostream &out,const Frame &f,double gpuStart,double gpuEnd
          << ",\"instance_count\":" << f.instanceCount << ",\"instance_bytes\":" << f.instanceBytes
         << ",\"bounces\":" << f.bounces << ",\"connections\":" << f.connections
         << ",\"representatives\":" << f.representatives << ",\"directional\":" << int(f.directional)
+        << ",\"hybrid_direct_enabled\":" << int(f.hybridEnabled)
+        << ",\"hybrid_direct_cutoff\":" << f.hybridCutoff
+        << ",\"hybrid_direct_tail_samples\":" << f.hybridTailSamples
+        << ",\"hybrid_direct_env_overrides\":" << int(f.hybridEnvOverrides)
+        << ",\"direct_reuse\":\"" << f.directReuse << "\",\"direct_reuse_reason\":\"" << f.directReuseReason << '"'
+        << ",\"room_ray_chunk_hits\":" << f.roomRayChunkHits << ",\"room_ray_chunks_retained\":" << f.roomRayChunksRetained
+        << ",\"room_ray_chunks_returning\":" << f.roomRayChunksReturning
+        << ",\"room_ray_allocated_bytes\":" << f.roomRayAllocatedBytes
+        << ",\"per_ray_cache\":\"" << f.perRayOutcome << "\",\"per_ray_bytes\":" << f.perRayBytes
+        << ",\"per_ray_traced\":" << f.perRayTraced << ",\"per_ray_reused\":" << f.perRayReused
+        << ",\"per_ray_receiver_changed\":" << f.perRayReceiver << ",\"per_ray_sample_changed\":" << f.perRaySample
+        << ",\"per_ray_aged\":" << f.perRayAged << ",\"per_ray_changed_segment\":" << f.perRaySegment
         << ",\"allocations\":" << f.allocations << ",\"spheres\":" << spheres
         << ",\"samples\":" << samples << ",\"patches\":" << patches << ",\"status\":" << status
         << ",\"exclusive_ms\":{";
     for(int i=0;i<Count;i++)out << (i?",":"") << '"' << names[i] << "\":" << f.exclusive[i];
     out << "},\"calls\":{";
     for(int i=0;i<Count;i++)out << (i?",":"") << '"' << names[i] << "\":" << f.calls[i];
-    out << "}}\n";
+    out << '}';
+    if(memoryEnabled()) {
+        out << ",\"memory_metrics\":{\"method\":\"logical-major-buffers-v1\",\"phys_footprint_bytes\":" << f.footprintBytes
+            << ",\"cpu_cache_bytes\":" << f.cpuCacheBytes
+            << ",\"gpu_upload_bytes\":" << f.uploadBytes
+            << ",\"per_ray_accounted_bytes\":" << f.perRayBytes
+            << ",\"per_ray_pair_read_counter_estimate_bytes\":" << (f.perRayTraced+f.perRayReused)*16
+            << ",\"per_ray_pair_write_counter_estimate_bytes\":" << f.perRayTraced*16
+            << ",\"allocation_method\":\"explicit-major-buffer-events-not-malloc-hook\",\"stages\":{";
+        for(int i=0;i<Count;i++)out << (i?",":"") << '"' << names[i] << "\":{\"read_bytes\":" << f.bytesRead[i]
+            << ",\"written_bytes\":" << f.bytesWritten[i] << ",\"explicit_allocations\":" << f.allocationCount[i]
+            << ",\"explicit_allocation_bytes\":" << f.allocationBytes[i] << ",\"cpp_free_events\":" << f.freeCount[i] << '}';
+        out << "}}";
+    }
+    out << "}\n";
 }
 }
 #endif

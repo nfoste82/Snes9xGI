@@ -87,6 +87,10 @@ int main(int argc,char **argv) { @autoreleasepool { try {
     std::cerr<<"actual_renderer=1 offline_drawable=1 device="<<metalDevice.name.UTF8String
         <<" dimensions="<<frame->width<<'x'<<frame->height<<" spheres="<<frame->lights.size()
         <<" bounces="<<int(frame->indirectBounceCount)<<" connections="<<int(frame->samplesPerFrame)<<'\n';
+    auto shiftBase=*frame;
+    if(std::getenv("SHIFT_FIELDS_SYNTHETIC_SCROLL"))for(size_t i=0;i<shiftBase.tileInstances.size();++i)
+        if(shiftBase.tileInstances[i].source==RemasterSourceType::Background && shiftBase.tileInstances[i].geometryStatus!=RemasterOccurrenceGeometryStatus::Inherit)
+            shiftBase.tileInstances[i].shiftPlacementId=uint32_t(i+1);
     for(int n=0;n<std::atoi(argv[2]);n++) {
         const char *event=std::getenv("LIGHTING_REPLAY_EVENT");
         if(replay && event) {
@@ -101,6 +105,17 @@ int main(int argc,char **argv) { @autoreleasepool { try {
             (void)p;
         }
         if(replay)replay->run(*frame);
+        if(std::getenv("SHIFT_FIELDS_SYNTHETIC_SCROLL")) {
+            int offset=n;
+            if(std::getenv("ROOM_RAY_SYNTHETIC_RETURN"))offset=n<=20?n:40-n;
+            *frame=shiftBase;frame->shiftFieldsValid=true;frame->shiftMode=1;frame->shiftScrollY={offset,offset};frame->lightingTrace.room=18;
+            frame->lightingTrace.scrollY=offset;
+            auto shift=[&](auto &dst,const auto &src) {if(src.size()!=size_t(frame->width)*frame->height)return;
+                for(unsigned y=0;y<frame->height;++y)for(unsigned x=0;x<frame->width;++x)dst[y*frame->width+x]=src[((y+offset)%frame->height)*frame->width+x];};
+            shift(frame->mainPixels,shiftBase.mainPixels);shift(frame->subPixels,shiftBase.subPixels);shift(frame->scenePixels,shiftBase.scenePixels);
+            shift(frame->originalRgb555,shiftBase.originalRgb555);shift(frame->sceneRgb555,shiftBase.sceneRgb555);
+            for(int r=0;r<4;++r){shift(frame->observedBgPixels[r],shiftBase.observedBgPixels[r]);shift(frame->observedBgDepth[r],shiftBase.observedBgDepth[r]);}
+        }
         addLights();
         if(event && !strcmp(event,"light_motion"))for(auto &l:frame->lights)l.x+=n%2;
         if(n==0 && std::getenv("LIGHTING_PATCH_BYTE_CHECK")) {
@@ -124,7 +139,12 @@ int main(int argc,char **argv) { @autoreleasepool { try {
             std::ofstream out(std::string(prefix)+suffix,std::ios::binary);out.write((const char*)data.data(),data.size());
         };
         dump(r.direct,8,".direct");dump(r.output,4,".composite");
-        if(!S9xWriteRemasterFrame(*frame,std::string(prefix)+".s9xrmf"))throw std::runtime_error("packet output");
+        {RemasterFrameHeightResolver resolver(*frame);std::vector<int32_t> heights(frame->mainPixels.size(),INT_MIN);
+         for(size_t n=0;n<heights.size();n++){auto px=resolver.selectHeight(*frame,n,true).donors[size_t(RemasterMetadataChannel::Height)];
+          if(px.instanceId)heights[n]=(*resolver.effective[px.instanceId-1].height)[px.tilePixel]+frame->tileInstances[px.instanceId-1].heightOffset;}
+         std::ofstream h(std::string(prefix)+".heights",std::ios::binary);h.write((char*)heights.data(),heights.size()*sizeof(int32_t));
+         std::ofstream dims(std::string(prefix)+".dimensions.json");dims<<"["<<frame->width<<","<<frame->height<<"]";}
+        if(!S9xWriteRemasterFrame(*frame,std::string(prefix)+".s9xrmf"))std::cerr<<"WARNING packet output rejected (prototype clone metadata)\n";
     }
     return 0;
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;} } }

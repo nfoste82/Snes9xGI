@@ -124,6 +124,7 @@ struct RemasterAssetMetadata : RemasterGeometryLayers
 	std::vector<std::string> tileSemanticNormals;
 	std::string tileSemanticCorner;
 	bool tileSemanticContextDependent = false;
+	bool tileSemanticWater = false;
 	std::string tileSemanticNote;
 	std::array<std::string, 64> materialSelectors;
 	std::array<uint8_t, 64> occlusion = S9xRemasterDefaultOcclusion();
@@ -369,6 +370,21 @@ inline std::string S9xRemasterAreaSceneKey(RemasterAreaContext area)
 	return !area.valid() ? std::string{} : area.id >= 320 ? "overworld" : S9xRemasterAreaKey(area.id);
 }
 
+struct RemasterHybridDirectSettings
+{
+	bool enabled = false;
+	float cutoff = 0.02f;
+	uint8_t tailSamples = 8;
+	bool operator==(const RemasterHybridDirectSettings &b) const
+	{ return enabled == b.enabled && cutoff == b.cutoff && tailSamples == b.tailSamples; }
+};
+
+inline bool S9xRemasterValidHybridDirect(const RemasterHybridDirectSettings &settings)
+{
+	return std::isfinite(settings.cutoff) && settings.cutoff >= 0.005f && settings.cutoff <= 0.1f &&
+		settings.tailSamples >= 1 && settings.tailSamples <= 32;
+}
+
 struct RemasterProfile
 {
 	uint32_t schemaVersion = 0;
@@ -385,6 +401,7 @@ struct RemasterProfile
 	uint8_t upperFloorHeight = 0;
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
+	RemasterHybridDirectSettings hybridDirect;
 	bool legacySampleAccumulation = true; // Read-only compatibility evidence; never a rendering control.
 	std::map<std::string, RemasterMaterial> materials;
 	std::map<std::string, RemasterAssetGroup> assetGroups;
@@ -448,6 +465,7 @@ struct RemasterSceneSettings
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
 	int offscreenRepresentativeEmitters = 1;
+	RemasterHybridDirectSettings hybridDirect;
 };
 
 inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile &profile)
@@ -455,7 +473,7 @@ inline RemasterSceneSettings S9xRemasterGetSceneSettings (const RemasterProfile 
 	return { profile.schemaVersion, profile.lightingCoordinateScale, profile.cameraDirection,
 		profile.indirectBounceCount, profile.indirectRoughness, profile.reflectanceBoost, profile.linkLampBrightness,
 		profile.originalSceneContribution, profile.heightPreviewMultiplier, profile.upperFloorHeight, profile.samplesPerFrame,
-		profile.representativeEmitters, profile.offscreenRepresentativeEmitters };
+		profile.representativeEmitters, profile.offscreenRepresentativeEmitters, profile.hybridDirect };
 }
 
 inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const RemasterSceneSettings &settings)
@@ -473,6 +491,7 @@ inline void S9xRemasterApplySceneSettings (RemasterProfile &profile, const Remas
 	profile.samplesPerFrame = settings.samplesPerFrame;
 	profile.representativeEmitters = settings.representativeEmitters;
 	profile.offscreenRepresentativeEmitters = settings.offscreenRepresentativeEmitters;
+	profile.hybridDirect = settings.hybridDirect;
 }
 
 inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const RemasterSceneSettings &b)
@@ -489,7 +508,7 @@ inline bool S9xRemasterSceneSettingsEqual (const RemasterSceneSettings &a, const
 		a.upperFloorHeight == b.upperFloorHeight &&
 		a.samplesPerFrame == b.samplesPerFrame &&
 		a.representativeEmitters == b.representativeEmitters &&
-		a.offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters;
+		a.offscreenRepresentativeEmitters == b.offscreenRepresentativeEmitters && a.hybridDirect == b.hybridDirect;
 }
 
 struct RemasterProfileDiagnostic
@@ -1274,6 +1293,20 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 					fail(lineNumber, "representative_emitters must be an integer in [0, 8]");
 				else parsed.representativeEmitters = static_cast<uint8_t>(unsignedValue);
 			}
+			else if (key == "hybrid_direct" || key == "hybrid_direct_cutoff" || key == "hybrid_direct_tail_samples")
+			{
+				if (parsed.schemaVersion < 41) fail(lineNumber, "hybrid Direct requires schema_version 41");
+				if (key == "hybrid_direct") {
+					if (!ParseBool(value, parsed.hybridDirect.enabled)) fail(lineNumber, "hybrid_direct must be true or false");
+				} else if (key == "hybrid_direct_cutoff") {
+					if (!ParseFloat(value, parsed.hybridDirect.cutoff) || !S9xRemasterValidHybridDirect(parsed.hybridDirect))
+						fail(lineNumber, "hybrid_direct_cutoff must be in [0.005, 0.1]");
+				} else {
+					if (!ParseUnsigned(value, unsignedValue) || unsignedValue < 1 || unsignedValue > 32)
+						fail(lineNumber, "hybrid_direct_tail_samples must be an integer in [1, 32]");
+					else parsed.hybridDirect.tailSamples = static_cast<uint8_t>(unsignedValue);
+				}
+			}
 			else if (key == "emitter_patch_size")
 			{
 				// Retired setting: accept legacy profiles, but never retain or emit it.
@@ -1406,7 +1439,7 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				if (!valid) fail(lineNumber, "doorway_support_direction requires north, south, east, or west and schema_version 34");
 			}
 			else if (key == "tile_semantics_authored" || key == "tile_semantic_normals" ||
-				key == "tile_semantic_corner" || key == "tile_semantic_context_dependent" || key == "tile_semantic_note")
+				key == "tile_semantic_corner" || key == "tile_semantic_context_dependent" || key == "tile_semantic_water" || key == "tile_semantic_note")
 			{
 				if (parsed.schemaVersion < 20) fail(lineNumber, "tile semantic annotation requires schema_version 20");
 				if (key == "tile_semantics_authored")
@@ -1420,6 +1453,10 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 				else if (key == "tile_semantic_normals")
 				{
 					if (!ParseStringArray(value, asset->tileSemanticNormals)) fail(lineNumber, "invalid tile_semantic_normals");
+				}
+				else if (key == "tile_semantic_water")
+				{
+					if (!ParseBool(value, asset->tileSemanticWater)) fail(lineNumber, "invalid tile_semantic_water");
 				}
 				else if (key == "tile_semantic_corner")
 				{
@@ -1626,8 +1663,8 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		}
 	}
 
-	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 40)
-		fail(0, "schema_version must be an integer in [1, 40]");
+	if (parsed.schemaVersion < 1 || parsed.schemaVersion > 41)
+		fail(0, "schema_version must be an integer in [1, 41]");
 	for(const auto &r:terrain) {
 		if(parsed.schemaVersion<38 || !r.keys.count("world") || !r.keys.count("background") || !r.keys.count("x") || !r.keys.count("y") || (!r.keys.count("normal_offset")&&!r.keys.count("normal_offsets")&&!r.keys.count("height_offset")) || (r.keys.count("normal_offset")&&r.keys.count("normal_offsets")) || !S9xRemasterValidTerrainOffset(r.value))fail(0,"terrain requires schema38/39, coordinates and valid exclusive height/normal offsets");
 		else if(!parsed.overworldTerrain.emplace(r.at,r.value).second)fail(0,"duplicate terrain coordinate");
@@ -1792,13 +1829,15 @@ inline bool S9xRemasterParseProfile (const std::string &text, RemasterProfile &p
 		if (!item.hasHeight && item.heightSampling != RemasterHeightSampling::Nearest)
 			fail(0, "asset height_sampling requires height");
 		if (!item.hasTileSemantics && (!item.tileSemanticNormals.empty() || !item.tileSemanticCorner.empty() ||
-			item.tileSemanticContextDependent || !item.tileSemanticNote.empty()))
+			item.tileSemanticContextDependent || item.tileSemanticWater || !item.tileSemanticNote.empty()))
 			fail(0, "tile semantic fields require tile_semantics_authored = true");
 		if (item.hasTileSemantics)
 		{
+			if (item.tileSemanticWater && item.tileRole != RemasterTileRole::Floor)
+				fail(0, "tile_semantic_water requires floor role");
 			// Door facing is optional for backward compatibility. When supplied it
 			// is one canonical cardinal, not a wall ramp or doorway support hint.
-			const bool door = item.tileRole == RemasterTileRole::Door;
+			const bool door = item.tileRole == RemasterTileRole::Door || item.tileRole == RemasterTileRole::Doorway;
 			const size_t expected = item.tileRole == RemasterTileRole::Wall ? 1 :
 				(item.tileRole == RemasterTileRole::WallCorner ? 2 : (door && !item.tileSemanticNormals.empty() ? 1 : 0));
 			std::set<std::string> unique;
@@ -1967,7 +2006,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	}
 	const bool hasOffscreenRepresentatives = (profile.offscreenRepresentativeEmitters != 1 && profile.offscreenRepresentativeEmitters >= 0) ||
 		std::any_of(profile.areaSceneSettings.begin(), profile.areaSceneSettings.end(), [](const auto &a) { return a.second.offscreenRepresentativeEmitters >= 0; });
-	const uint32_t requiredSchema = std::max<uint32_t>(hasOffscreenRepresentatives ? 36 : hasAreaReflectanceBoost ? 35 : !profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
+	const uint32_t requiredSchema = std::max<uint32_t>(!(profile.hybridDirect == RemasterHybridDirectSettings{}) ? 41 : hasOffscreenRepresentatives ? 36 : hasAreaReflectanceBoost ? 35 : !profile.areaSceneSettings.empty() ? 33 : profile.linkLampBrightness != 200.0f ? 32 : artworkEmission ? 31 : hasSpriteAssembly ? 30 : !profile.contextBindings.empty() ? 29 : !profile.tileContexts.empty() ? 28 : hasSignedHeight ? 27 : !profile.areaLights.empty() ? 26 : hasFlipGeometry ? 25 : hasFacingGeometry ? 24 : hasFixedNormalDirection ? 23 : profile.upperFloorHeight > 0 ? 13 :
 		(profile.reflectanceBoost > 0.0f ? 12 : (hasDiffuseReflectance ? 11 : 10)),
 		hasOppositeFacingDirectLighting ? 6 : (hasNormals ? 5 :
 		(hasEmission ? 3 : (profile.assets.empty() ? profile.schemaVersion : 2))));
@@ -2002,6 +2041,12 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 		output << "upper_floor_height = " << unsigned(profile.upperFloorHeight) << "\n";
 	output << "samples_per_frame = " << unsigned(profile.samplesPerFrame) << "\n";
 	if (profile.representativeEmitters) output << "representative_emitters = " << unsigned(profile.representativeEmitters) << "\n";
+	if (profile.schemaVersion >= 41 || !(profile.hybridDirect == RemasterHybridDirectSettings{})) {
+		if (!S9xRemasterValidHybridDirect(profile.hybridDirect)) return false;
+		output << "hybrid_direct = " << (profile.hybridDirect.enabled ? "true" : "false") << "\n";
+		output << "hybrid_direct_cutoff = " << profile.hybridDirect.cutoff << "\n";
+		output << "hybrid_direct_tail_samples = " << unsigned(profile.hybridDirect.tailSamples) << "\n";
+	}
 	if (profile.offscreenRepresentativeEmitters >= 0 && profile.offscreenRepresentativeEmitters != 1) output << "offscreen_representative_emitters = " << profile.offscreenRepresentativeEmitters << "\n";
 	for (const auto &entry : profile.areaSceneSettings)
 	{
@@ -2158,6 +2203,8 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 			output << "]\ntile_semantic_context_dependent = " << (asset.tileSemanticContextDependent ? "true" : "false") << "\n";
 			if (!asset.tileSemanticCorner.empty()) output << "tile_semantic_corner = " << Quote(asset.tileSemanticCorner) << "\n";
 			output << "tile_semantic_note = " << Quote(asset.tileSemanticNote) << "\n";
+			if (asset.tileRole == RemasterTileRole::Floor || asset.tileSemanticWater)
+				output << "tile_semantic_water = " << (asset.tileSemanticWater ? "true" : "false") << "\n";
 		}
 		if (asset.emissionDepth > 0) output << "emission_depth = " << asset.emissionDepth << "\n";
 		if (asset.emissionOmnidirectional) output << "emission_omnidirectional = true\n";
@@ -2234,12 +2281,11 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	return true;
 }
 
-inline bool S9xRemasterWriteProfile (const RemasterProfile &profile, const std::string &path,
+// Write bytes already produced and validated by the profile save/merge path.
+// Keep this separate so callers need not serialize and validate the same data twice.
+inline bool S9xRemasterWriteValidatedProfileText (const std::string &text, const std::string &path,
 	std::vector<RemasterProfileDiagnostic> &diagnostics)
 {
-	std::string text;
-	if (!S9xRemasterSerializeProfile(profile, text, diagnostics))
-		return false;
 	const std::string temporaryPath = path + ".tmp";
 	std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
 	if (!output)
@@ -2256,6 +2302,14 @@ inline bool S9xRemasterWriteProfile (const RemasterProfile &profile, const std::
 		return false;
 	}
 	return true;
+}
+
+inline bool S9xRemasterWriteProfile (const RemasterProfile &profile, const std::string &path,
+	std::vector<RemasterProfileDiagnostic> &diagnostics)
+{
+	std::string text;
+	return S9xRemasterSerializeProfile(profile, text, diagnostics) &&
+		S9xRemasterWriteValidatedProfileText(text, path, diagnostics);
 }
 
 inline RemasterProfileMatch S9xRemasterMatchProfile (const RemasterProfile &profile,

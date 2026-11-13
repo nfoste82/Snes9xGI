@@ -250,7 +250,11 @@ otherwise individual pixels; it does not reproduce retired rectangle grouping.
 Visibility/diagnostic modes bypass clustering. Snapshot export does not contain
 cluster member lists.
 
-Normal Direct is deterministic and exhaustive over prepared emitter clusters
+Profile Controls also offers opt-in [Hybrid Direct](hybrid_direct.md): trace strong
+sources exactly and importance-sample the weak tail, with a live cutoff and ray
+budget. Off remains exact; older profiles/captures default off.
+
+Normal Direct defaults to deterministic exhaustive transport over prepared emitter clusters
 and adaptive sphere quadrature. Scene Controls connections per receiver controls
 indirect lighting only. Explicitly opt into stochastic Direct with
 `S9X_REMASTER_DIRECT_SAMPLES=16` (valid1..4096; unset/invalid keeps deterministic

@@ -96,6 +96,7 @@ does not launch any benchmark, emulator, or parallel test workers.
 | full adds | `dungeon_persistent_support_rejection` | Dual-owner footprint remains unresolved without merging components or corrupting constraints |
 | full adds | `emitter_patches` | Production visible source clustering: exact member coverage, holes, depth/direction boundaries, reciprocal animation links and separated repeated placements |
 | full adds | `sphere_samples` | Production distance-based sample budgets and invalid-input defaults |
+| full adds | `profile_save` | Unchanged-disk fast save validation/schema promotion, external-edit merging, reusable conflict choices, pending retries and cross-record validation |
 | full adds | `dungeon_small_stack_debug`, `dungeon_small_stack_optimized` | Solver, both application paths and `EndFrame`/cache on 512/544 KiB pthread stacks; checked-in profile; assertions/checks active in both builds |
 | opt-in | `metal_lighting` | Synthetic production GPU direct/indirect transport, depth, sampling, hidden sources, patches, visibility and reference comparisons |
 

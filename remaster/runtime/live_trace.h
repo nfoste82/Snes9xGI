@@ -60,7 +60,16 @@ public:
  void expectPresent(uint64_t id) { if(auto *r=find(id))r->presentExpected=true; }
  void presented(uint64_t id,double time) { if(auto *r=find(id)){r->presentedTime=time;r->presentDone=time>0;} }
  void failed(uint64_t id) { if(auto *r=find(id))r->presentationFailed=true; }
- void stages(uint64_t id,const std::vector<std::pair<std::string,double>> &stages) { if(auto *r=find(id))r->gpuStages=stages; }
+  void stages(uint64_t id,const std::vector<std::pair<std::string,double>> &stages) { if(auto *r=find(id))r->gpuStages=stages; }
+  void perRay(uint64_t id,uint64_t traced,uint64_t reused,const uint32_t *counts) {
+   if(auto *r=find(id)) {
+    r->frame.perRayTraced=traced;r->frame.perRayReused=reused;
+    for(size_t i=0;i<256;++i) {
+     r->frame.perRayReceiver+=counts[i*6+2];r->frame.perRaySample+=counts[i*6+3];
+     r->frame.perRayAged+=counts[i*6+4];r->frame.perRaySegment+=counts[i*6+5];
+    }
+   }
+  }
  void gpu(uint64_t id,double start,double end,double submit,double queue,double drawable,double cpu,int status,double beginUptime=0) {
   if(auto *r=find(id)){r->gpuStart=start;r->gpuEnd=end;r->submit=submit;r->queue=queue;r->drawable=drawable;r->presentation=cpu;r->status=status;r->gpuDone=true;r->beginUptime=beginUptime;}
  }
@@ -184,6 +193,9 @@ inline void presented(uint64_t id,double time) { if(id)update([&](Session &s){s.
 inline void failed(uint64_t id) { if(id)update([&](Session &s){s.failed(id);}); }
 inline void gpuStages(uint64_t id,const std::vector<std::pair<std::string,double>> &stages) {
  if(id && !stages.empty())update([&](Session &s){s.stages(id,stages);});
+}
+inline void perRay(uint64_t id,uint64_t traced,uint64_t reused,const uint32_t *counts) {
+ if(id)update([&](Session &s){s.perRay(id,traced,reused,counts);});
 }
 inline void gpu(uint64_t id,double start,double end,double submit,double queue,double drawable,double cpu,int status,double beginUptime=0) {
  if(id)update([&](Session &s){s.gpu(id,start,end,submit,queue,drawable,cpu,status,beginUptime);});

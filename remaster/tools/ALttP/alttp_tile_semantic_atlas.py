@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,10 @@ CARDINAL_NORMALS = {"north", "south", "east", "west"}
 NORMALS = CARDINAL_NORMALS | {"north_east", "south_east", "south_west", "north_west"}
 CORNER_TYPES = {"inside", "outside"}
 MAX_BODY = 64 * 1024
+# A full 512×512 world of per-coordinate baked/adjusted values fits below
+# 16 MiB, including ordinary JSON whitespace and signed scalar offsets.
+# Keep single-artwork metadata/weight requests on the smaller limit.
+MAX_OFFSET_BODY = 16 * 1024 * 1024
 ROOM_INDEX_FORMAT = "alttp-tile-room-occurrences-v2"
 
 
@@ -39,7 +44,7 @@ class AtlasError(ValueError):
 def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
     if not isinstance(value, dict):
         raise AtlasError("annotation must be an object")
-    allowed = {"role", "normals", "corner_type", "context_dependent", "note", "doorframe_mask", "doorway_support", "doorway_support_direction"}
+    allowed = {"role", "normals", "corner_type", "context_dependent", "note", "water", "doorframe_mask", "doorway_support", "doorway_support_direction"}
     extra = set(value) - allowed
     if extra:
         raise AtlasError("unknown annotation fields: " + ", ".join(sorted(extra)))
@@ -53,13 +58,16 @@ def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
     if (not isinstance(normals, list) or any(item not in NORMALS for item in normals)
             or len(set(normals)) != len(normals)):
         raise AtlasError("normals must be a list of distinct compass directions")
-    # Existing doors may have no facing. A supplied facing is cardinal only;
-    # it describes the leaf, not a doorway's independent floor contact.
-    expected = 1 if role == "wall" or (role == "door" and normals) else 2 if role == "wall_corner" else 0
+    # Missing legacy facing is tolerated on reads only; every new save must
+    # supply one cardinal facing, independent of doorway floor support data.
+    door = role in ("door", "doorway")
+    expected = 1 if role == "wall" or door else 2 if role == "wall_corner" else 0
+    if door and allow_incomplete and not normals:
+        expected = 0
     if len(normals) != expected:
         raise AtlasError(f"{role} requires {expected} wall normal(s)")
-    if role == "door" and any(normal not in CARDINAL_NORMALS for normal in normals):
-        raise AtlasError("door facing must be a cardinal direction")
+    if door and any(normal not in CARDINAL_NORMALS for normal in normals):
+        raise AtlasError("door/doorway facing must be a cardinal direction")
     if role == "wall_corner":
         if any(normal not in CARDINAL_NORMALS for normal in normals):
             raise AtlasError("wall_corner normals must be cardinal directions")
@@ -75,6 +83,10 @@ def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
         raise AtlasError("note must be a string no longer than 4000 characters")
     result = {"role": role, "normals": normals,
               "context_dependent": context_dependent, "note": note}
+    if "water" in value and (role != "floor" or not isinstance(value["water"], bool)):
+        raise AtlasError("water requires floor role and a boolean value")
+    if role == "floor":
+        result["water"] = value.get("water", False)
     if role == "wall_corner":
         result["corner_type"] = corner_type
     if "doorframe_mask" in value:
@@ -95,13 +107,18 @@ def validate_annotation(value: object, allow_incomplete: bool = False) -> dict:
 
 
 class AnnotationStore:
-    def __init__(self, path: Path, rom_sha256: str, profile_marker: Path | None = None):
+    def __init__(self, path: Path, rom_sha256: str, profile_marker: Path | None = None,
+                 profile: Path | None = None):
         self.path = path
         self.rom_sha256 = rom_sha256
         self.lock = threading.Lock()
-        self.profile_marker = profile_marker
+        # An explicit profile takes precedence over the Snes9x-written marker.
+        self.explicit_profile = profile.resolve() if profile else None
+        self.profile_marker = None if profile else profile_marker
         self.profile_path = None
         self.profile_bytes = None
+        self._profile_document = None
+        self.profile_status = "no profile selected"
         self._refresh_signature = None
         self.tiles: dict[str, dict] = {}
         if path.exists():
@@ -129,7 +146,8 @@ class AnnotationStore:
                     return None
                 stat = path.stat()
                 return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-            signature = (stamp(self.path), stamp(self.profile_marker), stamp(self.profile_path))
+            signature = (stamp(self.path), stamp(self.profile_marker),
+                         stamp(self.explicit_profile), stamp(self.profile_path))
             if signature == self._refresh_signature:
                 return self.revision()
             if self.path.exists():
@@ -138,20 +156,41 @@ class AnnotationStore:
                     raise AtlasError("annotation ROM fingerprint differs from atlas")
                 self.tiles = {key: validate_annotation(item, allow_incomplete=True)
                               for key, item in document["tiles"].items()}
+            previous_path, previous_bytes = self.profile_path, self.profile_bytes
+            previous_document = self._profile_document
             self.profile_path = None
             self.profile_bytes = None
-            if self.profile_marker and self.profile_marker.exists():
-                path = Path(json.loads(self.profile_marker.read_text())["profile"])
+            self._profile_document = None
+            path = None
+            if self.explicit_profile:
+                if not self.explicit_profile.exists():
+                    raise AtlasError(f"profile does not exist: {self.explicit_profile}")
+                path, source = self.explicit_profile, "--profile"
+            elif self.profile_marker and self.profile_marker.exists():
+                path, source = Path(json.loads(self.profile_marker.read_text())["profile"]), "Snes9x marker"
+            else:
+                self.profile_status = "no profile selected; edits save to the JSON sidecar only"
+            if path is not None:
                 snapshot = path.read_bytes()
                 from alttp_doorway_metadata import migrate_profile
-                profile = migrate_profile(tomllib.loads(snapshot.decode()))
+                # A local save or sidecar edit changes stat signatures without
+                # changing the profile bytes we have already parsed/validated.
+                document = (previous_document if path == previous_path and snapshot == previous_bytes
+                            and previous_document is not None else tomllib.loads(snapshot.decode()))
+                profile = migrate_profile(document)
                 from alttp_authored_obstacles import validate_groups
                 try:
                     validate_groups(profile)
                 except ValueError as e:
                     raise AtlasError(str(e)) from e
-                if profile.get("game", {}).get("rom_sha256") == self.rom_sha256:
+                if profile.get("game", {}).get("rom_sha256") != self.rom_sha256:
+                    if self.explicit_profile:
+                        raise AtlasError(f"profile ROM fingerprint differs from atlas: {path}")
+                    self.profile_status = f"{path} ignored (different ROM); edits save to the JSON sidecar only"
+                else:
+                    self.profile_status = f"from {source}"
                     self.profile_path, self.profile_bytes = path, snapshot
+                    self._profile_document = document
                     changed = False
                     for asset in profile.get("assets", []):
                         if not asset.get("tile_semantics_authored") and asset.get("tile_role") not in ("doorway", "door"):
@@ -162,19 +201,22 @@ class AnnotationStore:
                                  "note": asset.get("tile_semantic_note", "")}
                         if asset.get("tile_semantic_corner"):
                             value["corner_type"] = asset["tile_semantic_corner"]
+                        if "tile_semantic_water" in asset:
+                            value["water"] = asset["tile_semantic_water"]
                         if "doorframe_mask" in asset:
                             value["doorframe_mask"] = asset["doorframe_mask"]
                         for field in ('doorway_support', 'doorway_support_direction'):
                             if field in asset:
                                 value[field] = asset[field]
-                        value = validate_annotation(value)
+                        value = validate_annotation(value, allow_incomplete=True)
                         key = asset["tile_hash"]
                         if self.tiles.get(key) != value:
                             self.tiles[key] = value
                             changed = True
                     if changed:
                         self._write()
-            self._refresh_signature = (stamp(self.path), stamp(self.profile_marker), stamp(self.profile_path))
+            self._refresh_signature = (stamp(self.path), stamp(self.profile_marker),
+                                       stamp(self.explicit_profile), stamp(self.profile_path))
             return self.revision()
 
     def revision(self) -> str:
@@ -187,8 +229,9 @@ class AnnotationStore:
         if self.profile_path.read_bytes() != self.profile_bytes:
             raise AtlasError("profile changed; refresh before saving")
         text = self.profile_bytes.decode()
-        version = tomllib.loads(text)["schema_version"]
-        needs34 = annotation['role'] in ('door', 'doorway') or any(a.get('tile_role') in ('door', 'doorway') for a in tomllib.loads(text).get('assets', []))
+        baseline = self._profile_document
+        version = baseline["schema_version"]
+        needs34 = annotation['role'] in ('door', 'doorway') or any(a.get('tile_role') in ('door', 'doorway') for a in baseline.get('assets', []))
         text = re.sub(r"(?m)^schema_version\s*=\s*\d+\s*$",
                       f"schema_version = {max(34 if needs34 else 20, version)}", text, count=1)
         if version < 34:
@@ -201,6 +244,8 @@ class AnnotationStore:
                   f'tile_semantic_note = {quote(annotation["note"])}\n')
         if "corner_type" in annotation:
             fields += f'tile_semantic_corner = {quote(annotation["corner_type"])}\n'
+        if annotation['role'] == 'floor':
+            fields += f'tile_semantic_water = {str(annotation.get("water", False)).lower()}\n'
         if "doorframe_mask" in annotation:
             fields += f'doorframe_mask = {quote(annotation["doorframe_mask"])}\n'
         if annotation['role'] == 'doorway':
@@ -236,7 +281,7 @@ class AnnotationStore:
             validate_groups(parsed)
         except ValueError as e:
             raise AtlasError(str(e)) from e
-        if parsed.get('obstacle_groups') != tomllib.loads(self.profile_bytes.decode()).get('obstacle_groups'):
+        if parsed.get('obstacle_groups') != baseline.get('obstacle_groups'):
             raise AtlasError('semantic edit changed obstacle groups')
         temporary = self.profile_path.with_name(self.profile_path.name + '.semantics.tmp')
         temporary.write_text(text)
@@ -245,6 +290,7 @@ class AnnotationStore:
             raise AtlasError("profile changed; refresh before saving")
         os.replace(temporary, self.profile_path)
         self.profile_bytes = text.encode()
+        self._profile_document = parsed
 
     def save(self, content_id: str, value: object) -> dict:
         return self.save_group([content_id], value)
@@ -560,8 +606,8 @@ class RoomOccurrenceIndex:
 PAGE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ALTTP Tile Semantics</title><style>
-:root{color-scheme:dark;--ink:#e8e4da;--muted:#a9a397;--line:#49483f;--panel:#242620;--paper:#171914;--accent:#d6b86c;--blue:#84b9c4;--bad:#d68778}*{box-sizing:border-box}body{margin:0;height:100vh;overflow:hidden;background:var(--paper);color:var(--ink);font:14px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}button,input,select,textarea{font:inherit;color:inherit}header{height:76px;padding:16px 22px;border-bottom:1px solid var(--line);background:#1d201a;display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font:700 24px/1.1 Georgia,serif;letter-spacing:.03em;margin:0}.sub{color:var(--muted);margin-top:5px}.app{height:calc(100vh - 76px);display:grid;grid-template-columns:250px minmax(350px,1fr) 430px}.filters,.gridPane,.detail{overflow:auto}.filters{padding:18px;border-right:1px solid var(--line);background:#1d201a}.gridPane{padding:16px}.detail{padding:20px;border-left:1px solid var(--line);background:#20221d}label.cap{display:block;color:var(--muted);font-weight:bold;text-transform:uppercase;letter-spacing:.08em;font-size:11px;margin:0 0 6px}.field{margin-bottom:17px}input[type=search],select,textarea{width:100%;background:#11130f;border:1px solid var(--line);border-radius:4px;padding:9px}textarea{resize:vertical;min-height:80px}.checks{display:grid;gap:8px}.checks label{display:flex;align-items:center;gap:8px}.checks input{accent-color:var(--accent)}.stats{padding:10px 0;color:var(--accent)}.hint,.status{color:var(--muted);font-size:12px}.tileGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:9px}.tile{background:var(--panel);border:1px solid #383b32;border-radius:5px;padding:8px;min-width:0;text-align:left;cursor:pointer}.tile:hover,.tile.selected{border-color:var(--accent)}.tile canvas{display:block;width:64px;height:64px;margin:auto;image-rendering:pixelated;background:#0d0e0c}.tile .role{height:18px;margin-top:6px;overflow:hidden;color:var(--blue);font-size:11px;text-align:center}.tile .id{overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:9px;white-space:nowrap}.badges{height:16px;text-align:center;white-space:nowrap;overflow:hidden}.badge{display:inline-block;color:#171914;background:var(--accent);padding:1px 4px;border-radius:2px;font-size:9px;margin-right:3px}.badge.warn{background:var(--bad)}.big{width:96px;height:96px;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);display:block;margin:0 0 12px}.roomContext{margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--line)}.roomContext canvas{display:block;width:100%;height:auto;aspect-ratio:1;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);margin-top:9px}.roomLegend{display:flex;gap:15px;margin:7px 0;color:var(--muted);font-size:11px}.roomLegend i{display:inline-block;width:10px;height:10px;margin-right:5px}.roleButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.roleButtons button,.normalButtons button,.cornerButtons button,.action{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px;cursor:pointer}.roleButtons button.on,.normalButtons button.on,.cornerButtons button.on{background:#685c38;border-color:var(--accent)}.normalButtons{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.cornerButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.normalBox{margin-top:16px}.meta{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:16px 0}.meta span{color:var(--muted)}.sources{font-size:11px;border-top:1px solid var(--line);margin-top:15px;padding-top:12px}.source{margin:5px 0;color:var(--muted)}.saveState{min-height:18px;color:var(--blue);margin-top:8px}.empty{color:var(--muted);padding:30px}.context{display:flex;gap:8px;align-items:flex-start;margin-top:14px}.export{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px 12px;cursor:pointer}@media(max-width:900px){body{height:auto;overflow:auto}.app{height:auto;display:block}.filters,.gridPane,.detail{overflow:visible}.detail{border-left:0;border-top:1px solid var(--line)}}
-</style></head><body><header><div><h1>ALTTP Tile Semantics</h1><div class="sub" id="subtitle">Loading canonical background artwork...</div></div><button class="export" id="export">Export JSON</button></header><div class="app">
+:root{color-scheme:dark;--ink:#e8e4da;--muted:#a9a397;--line:#49483f;--panel:#242620;--paper:#171914;--accent:#d6b86c;--blue:#84b9c4;--bad:#d68778}*{box-sizing:border-box}body{margin:0;height:100vh;overflow:hidden;background:var(--paper);color:var(--ink);font:14px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}button,input,select,textarea{font:inherit;color:inherit}header{height:92px;padding:14px 22px;border-bottom:1px solid var(--line);background:#1d201a;display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font:700 24px/1.1 Georgia,serif;letter-spacing:.03em;margin:0}.sub{color:var(--muted);margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header>div:first-child{min-width:0}.app{height:calc(100vh - 92px);display:grid;grid-template-columns:250px minmax(350px,1fr) 430px}.filters,.gridPane,.detail{overflow:auto}.filters{padding:18px;border-right:1px solid var(--line);background:#1d201a}.gridPane{padding:16px}.detail{padding:20px;border-left:1px solid var(--line);background:#20221d}label.cap{display:block;color:var(--muted);font-weight:bold;text-transform:uppercase;letter-spacing:.08em;font-size:11px;margin:0 0 6px}.field{margin-bottom:17px}input[type=search],select,textarea{width:100%;background:#11130f;border:1px solid var(--line);border-radius:4px;padding:9px}textarea{resize:vertical;min-height:80px}.checks{display:grid;gap:8px}.checks label{display:flex;align-items:center;gap:8px}.checks input{accent-color:var(--accent)}.stats{padding:10px 0;color:var(--accent)}.hint,.status{color:var(--muted);font-size:12px}.tileGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:9px}.tile{background:var(--panel);border:1px solid #383b32;border-radius:5px;padding:8px;min-width:0;text-align:left;cursor:pointer}.tile:hover,.tile.selected{border-color:var(--accent)}.tile canvas{display:block;width:64px;height:64px;margin:auto;image-rendering:pixelated;background:#0d0e0c}.tile .role{height:18px;margin-top:6px;overflow:hidden;color:var(--blue);font-size:11px;text-align:center}.tile .id{overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:9px;white-space:nowrap}.badges{height:16px;text-align:center;white-space:nowrap;overflow:hidden}.badge{display:inline-block;color:#171914;background:var(--accent);padding:1px 4px;border-radius:2px;font-size:9px;margin-right:3px}.badge.warn{background:var(--bad)}.big{width:96px;height:96px;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);display:block;margin:0 0 12px}.roomContext{margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--line)}.roomContext canvas{display:block;width:100%;height:auto;aspect-ratio:1;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);margin-top:9px}.roomLegend{display:flex;gap:15px;margin:7px 0;color:var(--muted);font-size:11px}.roomLegend i{display:inline-block;width:10px;height:10px;margin-right:5px}.roleButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.roleButtons button,.normalButtons button,.cornerButtons button,.action{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px;cursor:pointer}.roleButtons button.on,.normalButtons button.on,.cornerButtons button.on{background:#685c38;border-color:var(--accent)}.normalButtons{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.cornerButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.normalBox{margin-top:16px}.meta{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:16px 0}.meta span{color:var(--muted)}.sources{font-size:11px;border-top:1px solid var(--line);margin-top:15px;padding-top:12px}.source{margin:5px 0;color:var(--muted)}.saveState{min-height:18px;color:var(--blue);margin-top:8px}.empty{color:var(--muted);padding:30px}.context{display:flex;gap:8px;align-items:flex-start;margin-top:14px}.export{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px 12px;cursor:pointer}@media(max-width:900px){body{height:auto;overflow:auto}.app{height:auto;display:block}.filters,.gridPane,.detail{overflow:visible}.detail{border-left:0;border-top:1px solid var(--line)}}
+</style></head><body><header><div><h1>ALTTP Tile Semantics</h1><div class="sub" id="subtitle">Loading canonical background artwork...</div><div class="sub" id="profileLine"></div></div><button class="export" id="export">Export JSON</button></header><div class="app">
 <aside class="filters"><div class="field"><label class="cap" for="search">Find tile</label><input id="search" type="search" placeholder="hash, role, note"></div><div class="field"><label class="cap" for="roleFilter">Role</label><select id="roleFilter"><option value="">All roles</option><option>unknown</option><option>floor</option><option>wall</option><option>wall_corner</option><option>stair_top</option><option>stair_bottom</option><option>other</option></select></div><div class="field"><label class="cap" for="packFilter">Graphics pack</label><select id="packFilter"><option value="">All packs</option></select></div><div class="checks"><label><input id="reviewed" type="checkbox"> Reviewed only</label><label><input id="reused" type="checkbox"> Reused artwork</label><label><input id="contextOnly" type="checkbox"> Context-dependent</label><label><input id="showLow" type="checkbox"> Show low/grayscale variants</label></div><div class="stats" id="stats"></div><p class="hint">Low and high variants are exact-source aliases created by the game's two 3bpp conversion paths. They share semantics; low variants are hidden by default. Artwork uses a diagnostic palette, not in-game CGRAM colors.</p></aside>
 <main class="gridPane"><div class="tileGrid" id="grid"></div></main><section class="detail" id="detail"><div class="empty">Select a tile to annotate it.</div></section></div>
 <script>
@@ -576,22 +622,27 @@ function roleOf(t){return t.annotation?.role||'unknown'}function filtered(){let 
 function renderGrid(){let list=filtered(),shown=list.slice(0,pageSize);document.getElementById('stats').textContent=`${shown.length} shown · ${list.length} match · ${tiles.length} runtime identities`;grid.replaceChildren();let f=document.createDocumentFragment();for(let t of shown){let b=document.createElement('button');b.className='tile'+(selected===t.content_id?' selected':'');b.onclick=()=>select(t.content_id);let c=document.createElement('canvas');draw(c,t.indices);b.append(c);let badges=document.createElement('div');badges.className='badges';let pack=document.createElement('span');pack.className='badge';pack.textContent='P'+t.first_pack+':'+t.first_tile;badges.append(pack);if(t.low_variant){let x=document.createElement('span');x.className='badge';x.textContent='low alias';badges.append(x)}else if(t.aliases.length===1&&t.source_count>1){let x=document.createElement('span');x.className='badge';x.textContent=t.source_count+' src';badges.append(x)}if(t.family_count>1){let x=document.createElement('span');x.className='badge warn';x.textContent='shared';badges.append(x)}b.append(badges);let role=document.createElement('div');role.className='role';role.textContent=labels[roleOf(t)];b.append(role);let id=document.createElement('div');id.className='id';id.textContent=t.content_id;b.append(id);f.append(b)}grid.append(f);if(shown.length<list.length){let more=document.createElement('button');more.className='action';more.textContent=`Show next ${Math.min(1000,list.length-shown.length)} tiles`;more.onclick=()=>{pageSize+=1000;renderGrid()};grid.append(more)}}
 async function select(id){if(pendingId){clearTimeout(saveTimer);await save(pendingId)}selected=id;history.replaceState(null,'','?tile='+encodeURIComponent(id));renderGrid();detail.innerHTML='<div class="empty">Loading...</div>';detailData=await fetch('/api/tile/'+encodeURIComponent(id)).then(r=>r.json());renderDetail()}
 function annotation(){let t=byId.get(selected);return t.annotation||{role:'unknown',normals:[],context_dependent:false,note:''}}
-function renderDetail(){let t=byId.get(selected),a=annotation();detail.replaceChildren();renderRoomContext();let canvas=document.createElement('canvas');canvas.className='big';draw(canvas,t.indices);detail.append(canvas);let title=document.createElement('div');title.textContent=selected;title.style.overflowWrap='anywhere';detail.append(title);let metaBox=document.createElement('div');metaBox.className='meta';for(let [k,v] of [['Bit depth',t.bit_depth],['ROM sources',t.source_count],['Background packs',t.pack_count],['Source families',t.family_count],['Overworld placements',t.placement_count]]){let s=document.createElement('span');s.textContent=k;let b=document.createElement('b');b.textContent=v;metaBox.append(s,b)}detail.append(metaBox);let cap=document.createElement('label');cap.className='cap';cap.textContent='Tile role';detail.append(cap);let rb=document.createElement('div');rb.className='roleButtons';for(let role of roles){let b=document.createElement('button');b.textContent=labels[role];b.className=a.role===role?'on':'';b.onclick=()=>changeRole(role);rb.append(b)}detail.append(rb);if(['wall','wall_corner','door'].includes(a.role))renderNormals(a);if(a.role==='wall_corner')renderCornerType(a);let context=document.createElement('label');context.className='context';context.innerHTML=`<input type="checkbox" ${a.context_dependent?'checked':''}><span>Context-dependent use: this artwork has incompatible meanings in different placements.</span>`;context.querySelector('input').onchange=e=>update({...a,context_dependent:e.target.checked});detail.append(context);let noteCap=document.createElement('label');noteCap.className='cap';noteCap.style.marginTop='16px';noteCap.textContent='Notes';detail.append(noteCap);let note=document.createElement('textarea');note.value=a.note;note.placeholder='Optional evidence or usage caveat';note.oninput=()=>{let current=annotation();byId.get(selected).annotation={...current,note:note.value};scheduleSave()};detail.append(note);let state=document.createElement('div');state.className='saveState';state.id='saveState';detail.append(state);showCompletionState(a);let src=document.createElement('div');src.className='sources';src.innerHTML='<label class="cap">ROM provenance</label>';for(let s of detailData.sources){let d=document.createElement('div');d.className='source';d.textContent=`${s.source_kind} pack ${s.pack_index??'-'} tile ${s.tile_index} ${s.conversion} @ $${s.snes_address.toString(16)}`;src.append(d)}if(detailData.usages_truncated){let d=document.createElement('div');d.className='source';d.textContent=`Showing 200 of ${detailData.usage_count} overworld placements.`;src.append(d)}detail.append(src)}
-function renderNormals(a){let cardinal=a.role==='wall_corner'||a.role==='door',box=document.createElement('div');box.className='normalBox';box.innerHTML='<label class="cap">Canonical wall / door facing (Door: optional)</label>';let nb=document.createElement('div');nb.className='normalButtons';let directions=cardinal?[['north','N'],['east','E'],['south','S'],['west','W']]:[['north','N'],['north_east','NE'],['east','E'],['south_east','SE'],['south','S'],['south_west','SW'],['west','W'],['north_west','NW']];for(let [n,label] of directions){let b=document.createElement('button');b.textContent=label;b.title=n.replace('_',' ');b.className=a.normals.includes(n)?'on':'';b.onclick=()=>toggleNormal(n);nb.append(b)}box.append(nb);detail.append(box)}
+function renderDetail(){let t=byId.get(selected),a=annotation();detail.replaceChildren();renderRoomContext();let canvas=document.createElement('canvas');canvas.className='big';draw(canvas,t.indices);detail.append(canvas);let title=document.createElement('div');title.textContent=selected;title.style.overflowWrap='anywhere';detail.append(title);let metaBox=document.createElement('div');metaBox.className='meta';for(let [k,v] of [['Bit depth',t.bit_depth],['ROM sources',t.source_count],['Background packs',t.pack_count],['Source families',t.family_count],['Overworld placements',t.placement_count]]){let s=document.createElement('span');s.textContent=k;let b=document.createElement('b');b.textContent=v;metaBox.append(s,b)}detail.append(metaBox);let cap=document.createElement('label');cap.className='cap';cap.textContent='Tile role';detail.append(cap);let rb=document.createElement('div');rb.className='roleButtons';for(let role of roles){let b=document.createElement('button');b.textContent=labels[role];b.className=a.role===role?'on':'';b.onclick=()=>changeRole(role);rb.append(b)}detail.append(rb);if(['wall','wall_corner','door','doorway'].includes(a.role))renderNormals(a);if(a.role==='wall_corner')renderCornerType(a);let context=document.createElement('label');context.className='context';context.innerHTML=`<input type="checkbox" ${a.context_dependent?'checked':''}><span>Context-dependent use: this artwork has incompatible meanings in different placements.</span>`;context.querySelector('input').onchange=e=>update({...a,context_dependent:e.target.checked});detail.append(context);let noteCap=document.createElement('label');noteCap.className='cap';noteCap.style.marginTop='16px';noteCap.textContent='Notes';detail.append(noteCap);let note=document.createElement('textarea');note.value=a.note;note.placeholder='Optional evidence or usage caveat';note.oninput=()=>{let current=annotation();byId.get(selected).annotation={...current,note:note.value};scheduleSave()};detail.append(note);let state=document.createElement('div');state.className='saveState';state.id='saveState';detail.append(state);showCompletionState(a);let src=document.createElement('div');src.className='sources';src.innerHTML='<label class="cap">ROM provenance</label>';for(let s of detailData.sources){let d=document.createElement('div');d.className='source';d.textContent=`${s.source_kind} pack ${s.pack_index??'-'} tile ${s.tile_index} ${s.conversion} @ $${s.snes_address.toString(16)}`;src.append(d)}if(detailData.usages_truncated){let d=document.createElement('div');d.className='source';d.textContent=`Showing 200 of ${detailData.usage_count} overworld placements.`;src.append(d)}detail.append(src)}
+function renderNormals(a){let cardinal=['wall_corner','door','doorway'].includes(a.role),box=document.createElement('div');box.className='normalBox';box.innerHTML='<label class="cap">Canonical facing (required to save changes)</label>';let nb=document.createElement('div');nb.className='normalButtons';let directions=cardinal?[['north','N'],['east','E'],['south','S'],['west','W']]:[['north','N'],['north_east','NE'],['east','E'],['south_east','SE'],['south','S'],['south_west','SW'],['west','W'],['north_west','NW']];for(let [n,label] of directions){let b=document.createElement('button');b.textContent=label;b.title=n.replace('_',' ');b.className=a.normals.includes(n)?'on':'';b.onclick=()=>toggleNormal(n);nb.append(b)}box.append(nb);detail.append(box)}
 function renderCornerType(a){let box=document.createElement('div');box.className='normalBox';box.innerHTML='<label class="cap">Corner type</label>';let buttons=document.createElement('div');buttons.className='cornerButtons';for(let type of ['inside','outside']){let b=document.createElement('button');b.textContent=type[0].toUpperCase()+type.slice(1);b.className=a.corner_type===type?'on':'';b.onclick=()=>update({...a,corner_type:type});buttons.append(b)}box.append(buttons);detail.append(box)}
 function renderRoomContext(){let box=document.createElement('div');box.className='roomContext';let cap=document.createElement('label');cap.className='cap';cap.textContent='Dungeon room context';box.append(cap);if(!detailData.rooms.length){let p=document.createElement('div');p.className='hint';let activeAlt=detailData.alternatives.find(a=>a.dungeon_rooms||a.loaded_rooms||a.overworld_placements);if(detailData.loaded_rooms.length)p.textContent=`Loaded in ${detailData.loaded_rooms.length} indexed dungeon graphics context${detailData.loaded_rooms.length===1?'':'s'}, but no default-state BG1/BG2 tilemap references it. It may be event or replacement art revealed by another room state.`;else if(detailData.usage_count)p.textContent=`No indexed dungeon preview. This tile is used ${detailData.usage_count} times in the overworld base tilemap, so it is not unused art.`;else if(activeAlt)p.textContent=`No placement for this palette-half conversion. The same ROM pack/tile slot has an active ${activeAlt.conversion} conversion (${activeAlt.dungeon_rooms} dungeon rooms, ${activeAlt.loaded_rooms} loaded contexts, ${activeAlt.overworld_placements} overworld placements).`;else p.textContent='No indexed dungeon or overworld-base placement was found. It may be unused decoded art, used only in an unsampled state, or referenced by another map system.';box.append(p);detail.append(box);return}let chosen=roomChoice.get(selected);if(!detailData.rooms.some(r=>r.room_id===chosen))chosen=detailData.rooms[0].room_id;roomChoice.set(selected,chosen);let select=document.createElement('select');for(let r of detailData.rooms){let o=document.createElement('option');o.value=r.room_id;o.selected=r.room_id===chosen;o.textContent=`Room 0x${r.room_id.toString(16).padStart(3,'0')} · ${r.placement_count} placements · BG1 ${r.bg1_count} / BG2 ${r.bg2_count}`;select.append(o)}select.onchange=()=>{roomChoice.set(selected,Number(select.value));renderDetail()};box.append(select);let canvas=document.createElement('canvas');canvas.width=512;canvas.height=512;box.append(canvas);let legend=document.createElement('div');legend.className='roomLegend';legend.innerHTML='<span><i style="background:#35e6ff"></i>BG1</span><span><i style="background:#ffd23f"></i>BG2</span>';box.append(legend);let note=document.createElement('div');note.className='hint';note.textContent='Exact 8x8 tilemap placements in the renderer’s default room state. Room 0x01b is placed last because its stairs are initially obscured.';box.append(note);detail.append(box);loadRoom(canvas,chosen)}
 async function loadRoom(canvas,room){let id=selected,response=await fetch(`/api/room/${room}/${encodeURIComponent(id)}`),data=await response.json();if(id!==selected)return;let image=new Image();image.onload=()=>{let c=canvas.getContext('2d');c.drawImage(image,0,0,512,512);c.lineWidth=2;for(let cell of data.cells){c.fillStyle=cell.layer?'rgba(255,210,63,.36)':'rgba(53,230,255,.36)';c.strokeStyle=cell.layer?'#ffd23f':'#35e6ff';c.fillRect(cell.x*8,cell.y*8,8,8);c.strokeRect(cell.x*8+1,cell.y*8+1,6,6)}};image.src=`/room-image/${room.toString(16).padStart(3,'0')}.png`}
-function complete(a){if(a.role==='door')return a.normals.length<=1&&a.normals.every(n=>['north','east','south','west'].includes(n));let count=a.role==='wall'?1:a.role==='wall_corner'?2:0;return a.normals.length===count&&(a.role!=='wall_corner'||['inside','outside'].includes(a.corner_type))}function showCompletionState(a){let state=document.getElementById('saveState');if(!state||complete(a))return;if(a.normals.length<(a.role==='wall_corner'?2:1))state.textContent='Choose the required wall normal'+(a.role==='wall_corner'?'s':'')+' to save';else if(a.role==='wall_corner')state.textContent='Choose inside or outside to save'}
-function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role!=='doorway'){delete a.doorframe_mask;delete a.doorway_support;delete a.doorway_support_direction;}if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall_corner'?2:1,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
+function complete(a){if(['door','doorway'].includes(a.role))return a.normals.length===1&&a.normals.every(n=>['north','east','south','west'].includes(n));let count=a.role==='wall'?1:a.role==='wall_corner'?2:0;return a.normals.length===count&&(a.role!=='wall_corner'||['inside','outside'].includes(a.corner_type))}function showCompletionState(a){renderFloorWater(a);let state=document.getElementById('saveState');if(!state||complete(a))return;if(['door','doorway'].includes(a.role))state.textContent='Choose one cardinal facing to save changes (existing metadata is retained)';else if(a.normals.length<(a.role==='wall_corner'?2:1))state.textContent='Choose the required wall normal'+(a.role==='wall_corner'?'s':'')+' to save';else if(a.role==='wall_corner')state.textContent='Choose inside or outside to save'}
+function changeRole(role){let a={...annotation(),role,normals:[]};delete a.corner_type;if(role!=='floor')delete a.water;if(role!=='doorway'){delete a.doorframe_mask;delete a.doorway_support;delete a.doorway_support_direction;}if(role==='wall_corner')a.corner_type='unknown';byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function toggleNormal(n){let a=annotation(),count=a.role==='wall_corner'?2:1,normals=a.normals.includes(n)?a.normals.filter(x=>x!==n):[...a.normals,n].slice(-count);byId.get(selected).annotation={...a,normals};renderDetail();if(complete({...a,normals}))scheduleSave()}
+function renderFloorWater(a){if(a.role!=='floor')return;let label=document.createElement('label');label.className='context';let input=document.createElement('input');input.type='checkbox';input.checked=!!a.water;input.onchange=e=>update({...annotation(),water:e.target.checked});label.append(input,document.createTextNode(' Water (still treated as floor)'));detail.append(label)}
 function update(a){byId.get(selected).annotation=a;renderDetail();if(complete(a))scheduleSave()}function scheduleSave(){clearTimeout(saveTimer);pendingId=selected;let state=document.getElementById('saveState');if(state)state.textContent='Unsaved...';saveTimer=setTimeout(()=>save(pendingId),350)}async function save(id){if(!id)return;let t=byId.get(id),snapshot=t.annotation;if(!complete(snapshot)){pendingId=null;return}saving=true;let response;try{response=await fetch('/api/annotation/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json','If-Match':meta.revision},body:JSON.stringify(snapshot)})}catch(e){saving=false;return}let value=await response.json();saving=false;if(pendingId===id)pendingId=null;let state=id===selected?document.getElementById('saveState'):null;if(!response.ok){if(state)state.textContent='Not saved: '+value.error;if(response.status===409)document.getElementById('subtitle').textContent='Metadata changed elsewhere. Reload this page to review the current data.';return}meta.revision=value.revision;let stored=(value.annotation.role==='unknown'&&!value.annotation.note&&!value.annotation.context_dependent)?null:value.annotation;for(let alias of value.content_ids)if(byId.has(alias))byId.get(alias).annotation=stored;if(state)state.textContent=`Saved to ${value.content_ids.length} runtime identit${value.content_ids.length===1?'y':'ies'}`;renderGrid()}
-let saving=false;setInterval(async()=>{if(!meta||pendingId||saving||document.activeElement?.tagName==='TEXTAREA'||(selected&&!complete(annotation())))return;try{let r=await fetch('/api/revision'),v=await r.json();if(r.ok&&v.revision!==meta.revision)location.reload()}catch(e){}},2000);
+let saving=false;setInterval(async()=>{if(!meta||pendingId||saving||document.activeElement?.tagName==='TEXTAREA'||(selected&&!complete(annotation())))return;try{let r=await fetch('/api/revision'),v=await r.json();if(!saving&&r.ok&&v.revision!==meta.revision)location.reload()}catch(e){}},2000);
 for(let id of ['search','roleFilter','packFilter','reviewed','reused','contextOnly','showLow'])document.getElementById(id).addEventListener(id==='search'?'input':'change',()=>{pageSize=1000;renderGrid()});document.getElementById('export').onclick=()=>location.href='/api/export';
-fetch('/api/catalog').then(r=>r.json()).then(data=>{meta=data;tiles=data.tiles;for(let t of tiles)byId.set(t.content_id,t);let packs=[...new Set(tiles.flatMap(t=>t.packs))].sort((a,b)=>a-b),packSelect=document.getElementById('packFilter');for(let pack of packs){let option=document.createElement('option');option.value=pack;option.textContent='Pack '+pack;packSelect.append(option)}document.getElementById('subtitle').textContent=`${tiles.length} unique background tiles · ROM ${data.rom_sha256.slice(0,12)}… · autosaves to ${data.annotation_path}`;renderGrid();let wanted=new URLSearchParams(location.search).get('tile');if(wanted&&byId.has(wanted))select(wanted)}).catch(e=>{document.getElementById('subtitle').textContent='Could not load atlas: '+e});
+fetch('/api/catalog').then(r=>r.json()).then(data=>{meta=data;tiles=data.tiles;for(let t of tiles)byId.set(t.content_id,t);let packs=[...new Set(tiles.flatMap(t=>t.packs))].sort((a,b)=>a-b),packSelect=document.getElementById('packFilter');for(let pack of packs){let option=document.createElement('option');option.value=pack;option.textContent='Pack '+pack;packSelect.append(option)}document.getElementById('subtitle').textContent=`${tiles.length} unique background tiles · ROM ${data.rom_sha256.slice(0,12)}… · sidecar ${data.annotation_path}`;let pl=document.getElementById('profileLine');if(data.profile_path){pl.textContent=`Editing profile: ${data.profile_path} (${data.profile_status})`;pl.style.color='var(--accent)'}else{pl.textContent=`No profile: ${data.profile_status}`;pl.style.color='var(--bad)'}pl.title=pl.textContent;renderGrid();let wanted=new URLSearchParams(location.search).get('tile');if(wanted&&byId.has(wanted))select(wanted)}).catch(e=>{document.getElementById('subtitle').textContent='Could not load atlas: '+e});
 </script></body></html>'''
 
 
 def make_handler(catalog: TileCatalog, store: AnnotationStore,
-                 room_index: RoomOccurrenceIndex, room_images: Path):
+                 room_index: RoomOccurrenceIndex, room_images: Path, world_cache=None, height_weights=None):
+    from alttp_tile_height_weights import HeightWeightStore, WeightConflict
+    height_weights = height_weights or HeightWeightStore(store, catalog)
+    from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict
+    height_offsets = HeightOffsetStore(store)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, pattern: str, *args) -> None:
             print(f"{self.address_string()} - {pattern % args}")
@@ -620,10 +671,58 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                     self.error(HTTPStatus.CONFLICT, str(exc))
                     return
             if path == "/":
-                body = PAGE.encode()
+                body = PAGE.replace('</body>', '<script src="/world.js"></script></body>').encode()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path in ("/world.js", "/height-worker.js", "/height-ui.js"):
+                filename = {'/world.js': 'alttp_tile_semantic_world.js',
+                            '/height-worker.js': 'alttp_tile_height_worker.js',
+                            '/height-ui.js': 'alttp_tile_height_ui.js'}[path]
+                body = Path(__file__).with_name(filename).read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header('Content-Type', 'text/javascript; charset=utf-8')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == '/api/height-offsets':
+                try:
+                    self.json_response(height_offsets.config())
+                except (OSError, ValueError, KeyError) as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+            elif path == '/api/weights':
+                try:
+                    self.json_response(height_weights.config())
+                except (OSError, ValueError, KeyError) as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+            elif path == '/api/world':
+                if world_cache is None:
+                    self.error(HTTPStatus.NOT_FOUND, 'world cache unavailable')
+                else:
+                    self.json_response(world_cache.manifest)
+            elif path == '/api/world/cell':
+                try:
+                    if world_cache is None:
+                        raise ValueError('world cache unavailable')
+                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    cell = world_cache.cell(query['world'][0], int(query['x'][0]), int(query['y'][0]))
+                    cell['annotation'] = catalog.annotation(cell['content_id'], store.tiles)
+                    self.json_response(cell)
+                except (ValueError, KeyError) as exc:
+                    self.error(HTTPStatus.BAD_REQUEST, str(exc))
+            elif path.startswith('/world/'):
+                name = path[len('/world/'):]
+                if world_cache is None or name not in {'light.png', 'dark.png', 'light.bin', 'dark.bin'}:
+                    self.error(HTTPStatus.NOT_FOUND, 'unknown world asset')
+                    return
+                body = (world_cache.path / name).read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header('Content-Type', 'image/png' if name.endswith('.png') else 'application/octet-stream')
+                self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
             elif path == "/api/status":
@@ -632,6 +731,8 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 self.json_response({"format": FORMAT, "rom_sha256": catalog.rom_sha256,
                                     "revision": store.revision(),
                                     "annotation_path": str(store.path),
+                                    "profile_path": str(store.profile_path) if store.profile_path else None,
+                                    "profile_status": store.profile_status,
                                     "tiles": catalog.tiles(store.tiles)})
             elif path == "/api/revision":
                 self.json_response({"revision": store.revision()})
@@ -702,6 +803,36 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
 
         def do_PUT(self) -> None:
             path = urllib.parse.urlsplit(self.path).path
+            if path == '/api/height-offsets':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= MAX_OFFSET_BODY:
+                        raise ValueError('invalid height-offset request body size (expected 1 byte to 16 MiB)')
+                    value = json.loads(self.rfile.read(length))
+                    if 'values' in value:
+                        result = height_offsets.save_values(value['world'], value['values'], self.headers.get('If-Match'))
+                    else:
+                        locations = value['locations'] if 'locations' in value else [dict(x=value['x'], y=value['y'])]
+                        result = height_offsets.save_group(value['world'], locations, value['offset'], self.headers.get('If-Match'))
+                    self.json_response(result)
+                except OffsetConflict as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+                except (ValueError, OSError, KeyError) as exc:
+                    self.error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if path.startswith('/api/weights/'):
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= MAX_BODY:
+                        raise ValueError('invalid request body size')
+                    value = json.loads(self.rfile.read(length))
+                    content_id = urllib.parse.unquote(path[len('/api/weights/'):])
+                    self.json_response(height_weights.save(content_id, value['weight'], self.headers.get('If-Match')))
+                except WeightConflict as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+                except (ValueError, OSError, KeyError) as exc:
+                    self.error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             if not path.startswith("/api/annotation/"):
                 self.error(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -727,6 +858,17 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
     return Handler
 
 
+def open_in_browser(url: str, name: str) -> None:
+    """Open url in a named browser; macOS app names go through `open -a`."""
+    import sys
+    if sys.platform == "darwin":
+        result = subprocess.run(["open", "-a", name, url], capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or f"open -a exited with {result.returncode}")
+        return
+    webbrowser.get(name).open(url)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--atlas", type=Path, required=True)
@@ -740,23 +882,62 @@ def main() -> None:
     parser.add_argument("--room-images", type=Path,
                         default=Path("build/remaster-geometry/room-gallery-room-local/images"))
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument('--rom', type=Path, default=Path('~/Downloads/Zelda_ALTTP.zip'),
+                        help='ROM used only to build the world cache (requires Pillow)')
+    parser.add_argument('--world-cache', type=Path,
+                        default=Path('build/remaster-geometry/tile-atlas-world'))
     parser.add_argument("--profile-marker", type=Path,
                         default=Path(__file__).resolve().parents[3] / "build/remaster-geometry/semantic-profile.json")
+    parser.add_argument("--profile", type=Path,
+                        help="profile TOML to edit; overrides the Snes9x-written --profile-marker")
+    parser.add_argument('--height-weights', type=Path,
+                        help='experimental weights sidecar (default: <profile>.height-weights.json)')
     parser.add_argument("--open", action="store_true", help="open the browser")
+    parser.add_argument("--browser", metavar="NAME",
+                        help='open the page in this browser once the server is ready, e.g. "Firefox" '
+                             'or "Google Chrome" (macOS app name; implies --open)')
     args = parser.parse_args()
+    if args.profile and not args.profile.is_file():
+        parser.error(f"profile does not exist: {args.profile}")
     catalog = TileCatalog(args.atlas)
-    store = AnnotationStore(args.annotations, catalog.rom_sha256, args.profile_marker)
+    store = AnnotationStore(args.annotations, catalog.rom_sha256, args.profile_marker, args.profile)
+    try:
+        store.refresh()
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(str(error))
     room_images = args.room_images.resolve()
     if not room_images.is_dir():
         parser.error(f"room image directory does not exist: {room_images}")
     room_index = RoomOccurrenceIndex(args.room_index, catalog.rom_sha256,
                                      args.room_renderer)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port),
-                                 make_handler(catalog, store, room_index, room_images))
+    from alttp_tile_semantic_world import WorldCache
+    from alttp_tile_height_weights import HeightWeightStore
+    try:
+        world_cache = WorldCache(args.world_cache, catalog, args.rom)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port),
+                                     make_handler(catalog, store, room_index, room_images, world_cache,
+                                                  HeightWeightStore(store, catalog, args.height_weights)))
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+        parser.error(f"port {args.port} is already in use, probably by another copy of this tool "
+                     f"(see `lsof -nP -iTCP:{args.port} -sTCP:LISTEN`). Stop it, "
+                     f"or use --port with another number.")
     url = f"http://127.0.0.1:{server.server_port}/"
-    print(f"ALTTP tile semantic atlas: {url}")
-    print(f"Annotations autosave to: {store.path.resolve()}")
-    if args.open:
+    print(f"ALTTP tile semantic atlas: {url}", flush=True)
+    print(f"Annotations autosave to: {store.path.resolve()}", flush=True)
+    print(f"Profile: {store.profile_path or 'none'} ({store.profile_status})", flush=True)
+    print(f"Running in this terminal (PID {os.getpid()}). Press Ctrl+C to stop. "
+          "Closing the browser does not stop the server.", flush=True)
+    if args.browser:
+        try:
+            open_in_browser(url, args.browser)
+        except (OSError, RuntimeError, webbrowser.Error) as error:
+            print(f"Could not open {args.browser!r}: {error}. Open {url} manually.", flush=True)
+    elif args.open:
         webbrowser.open(url)
     try:
         server.serve_forever()
@@ -764,6 +945,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        print("ALTTP tile semantic atlas stopped.", flush=True)
 
 
 if __name__ == "__main__":

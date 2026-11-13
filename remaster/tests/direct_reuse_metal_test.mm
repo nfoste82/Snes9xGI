@@ -52,6 +52,14 @@ int main(int argc, char **argv) { @autoreleasepool { try {
     frame->lights.push_back(l);compare("add-sphere");
     frame->lights.back().x+=1;compare("moving-sphere");
     frame->lights.back().hideSource=!frame->lights.back().hideSource;compare("sphere-appearance");
+    frame->hybridDirect = {true,0.02f,8};compare("hybrid-enable-next-frame");
+    frame->hybridDirect.cutoff = 0.01f;compare("hybrid-cutoff-next-frame");
+    frame->hybridDirect.tailSamples = 16;compare("hybrid-tail-next-frame");
+    frame->hybridDirect.enabled = false;compare("hybrid-disable-next-frame");
+    setenv("S9X_REMASTER_HYBRID_DIRECT","1",1);compare("hybrid-env-enables-profile-off");
+    setenv("S9X_REMASTER_HYBRID_TAU","0.02",1);compare("hybrid-env-cutoff");
+    setenv("S9X_REMASTER_HYBRID_DIRECT","0",1);compare("hybrid-env-off");
+    unsetenv("S9X_REMASTER_HYBRID_DIRECT");unsetenv("S9X_REMASTER_HYBRID_TAU");
     frame->directionalLight.enabled=true;frame->directionalLight.direction={0,0,-1};
     frame->directionalLight.color={1,.8,.6};frame->directionalLight.brightness=.5f;compare("directional");
     frame->directionalLight.brightness=.25f;compare("directional-change");
@@ -60,10 +68,92 @@ int main(int argc, char **argv) { @autoreleasepool { try {
     frame->indirectBounceCount=0;compare("zero-bounce");
     setenv("S9X_REMASTER_DIRECT_SAMPLES","8",1);frame->lights.clear();frame->directionalLight.enabled=false;
     compare("sampled-direct-bypass");unsetenv("S9X_REMASTER_DIRECT_SAMPLES");
+    frame->lights.push_back(l); // Nonzero transport for sharing/race comparisons.
     RemasterLightingFieldCache fields;fields.update(*frame,!frame->scenePixels.empty());
     auto mesh=RemasterSurfaceMesh::build(frame->width,frame->height,fields.samples,frame->lightingCoordinateScale/255.f);
     for(size_t i=0;i<mesh.size();i++){mesh[i].emissionDepth=fields.depths[i];mesh[i].emissionOmnidirectional=fields.omnidirectional[i];}
     std::vector<uint16_t> colors=frame->sceneRgb555.empty()?frame->originalRgb555:frame->sceneRgb555;
+    auto readDirect=[&](int slot) {
+        std::vector<uint8_t> bytes(frame->width*frame->height*8);
+        [remasterResources[slot].directResult getBytes:bytes.data() bytesPerRow:frame->width*8
+            fromRegion:MTLRegionMake2D(0,0,frame->width,frame->height) mipmapLevel:0];
+        return bytes;
+    };
+    auto submit=[&](int slot,bool wait,RemasterLightingTrace::Frame *trace) {
+        if(trace)trace->id=RemasterLightingTrace::nextId();
+        RemasterLightingTrace::Scope scope(trace,RemasterLightingTrace::Setup);
+        if(remasterResources[slot].inUse.exchange(true))throw std::runtime_error("test slot busy");
+        if(!S9xPutImageMetal(frame->width,frame->height,colors.data(),frame->width,nullptr,0,nullptr,0,
+            RemasterDebugMode::Original,fields.occlusion.data(),fields.emission.data(),fields.height.data(),
+            fields.surface.data(),fields.participation.data(),fields.opposite.data(),fields.reflectance.data(),nullptr,true,
+            RemasterLightingView::Composite,0,frame->indirectRoughness,frame->originalSceneContribution,
+            frame->heightPreviewMultiplier,frame->reflectanceBoost,1,&frame->cameraDirection,slot,wait,&mesh,frame.get(),
+            &fields.samples,nullptr,&fields.channelSources))throw std::runtime_error("slot renderer");
+    };
+    auto require=[&](bool ok,const char *label) {
+        if(!ok)throw std::runtime_error(label);
+        std::cout<<"PASS "<<label<<'\n';checks++;
+    };
+    // Explicit slots (ordinary synchronous Draw always acquires slot zero).
+    // Warm allocations first, then change one full-key input.
+    for(int slot=0;slot<3;slot++)submit(slot,true,nullptr);
+    for(bool hybrid:{false,true}) {
+        frame->hybridDirect={hybrid,.02f,8};
+        fields.emission[3]^=17;
+        RemasterLightingTrace::Frame a,b,c;
+        submit(0,true,&a);auto expected=readDirect(0);
+        submit(1,true,&b);submit(2,true,&c);
+        require(std::string(a.directReuse)=="miss" && std::string(b.directReuse)=="shared-copy" &&
+            std::string(c.directReuse)=="shared-copy",hybrid?"hybrid B/C shared-copy":"exhaustive B/C shared-copy");
+        require(readDirect(1)==expected && readDirect(2)==expected,"cross-slot exact bytes");
+        setenv("S9X_REMASTER_DISABLE_DIRECT_REUSE","1",1);submit(2,true,nullptr);
+        require(readDirect(2)==expected,"shared-copy versus recomputation");
+        unsetenv("S9X_REMASTER_DISABLE_DIRECT_REUSE");
+        // Sharing-only switch preserves local hits, but forbids cross-slot copies.
+        setenv("S9X_REMASTER_DISABLE_DIRECT_SHARING","1",1);
+        fields.emission[3]^=33;submit(0,true,nullptr);submit(1,true,&b);
+        require(std::string(b.directReuse)=="miss","sharing kill switch");
+        unsetenv("S9X_REMASTER_DISABLE_DIRECT_SHARING");
+        // Producer committed but GPU blocked: B must safely accept pending work.
+        id<MTLSharedEvent> producerGate=[metalDevice newSharedEvent];
+        id<MTLCommandBuffer> block=[metalCommandQueue commandBuffer];
+        [block encodeWaitForEvent:producerGate value:1];[block commit];
+        fields.emission[3]^=65;submit(0,false,&a);
+        dispatch_sync(presentationQueue,^{});
+        auto producer=sharedDirectResult->producer;
+        id<MTLSharedEvent> consumerGate=[metalDevice newSharedEvent];
+        block=[metalCommandQueue commandBuffer];[block encodeWaitForEvent:consumerGate value:1];[block commit];
+        submit(1,false,&b);submit(2,false,&c);dispatch_sync(presentationQueue,^{});
+        producerGate.signaledValue=1;[producer waitUntilCompleted];
+        // Wait only for A's lifetime retirement, not blocked B/C. Then replace
+        // its resource while the consumer copies are still pending on the GPU.
+        {std::unique_lock<std::mutex> lock(remasterResourceMutex);
+            remasterResourceAvailable.wait(lock,[&]{return !remasterResources[0].inUse.load();});}
+        expected=readDirect(0);
+        auto descriptor=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+            width:frame->width height:frame->height mipmapped:NO];
+        descriptor.usage=MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite;
+        remasterResources[0].directResult=[metalDevice newTextureWithDescriptor:descriptor];
+        std::vector<uint8_t> poison(expected.size(),0xff);
+        [remasterResources[0].directResult replaceRegion:MTLRegionMake2D(0,0,frame->width,frame->height)
+            mipmapLevel:0 withBytes:poison.data() bytesPerRow:frame->width*8];
+        remasterResources[0].directResultValid=false;
+        consumerGate.signaledValue=1;DrainRemasterPresentation();
+        require(std::string(b.directReuse)=="shared-copy" && std::string(c.directReuse)=="shared-copy" &&
+            readDirect(1)==expected && readDirect(2)==expected,"pending producer and overwritten/reallocated producer slot");
+        // Verify the actual bounded panel writer, not just a standalone trace.
+        RemasterLiveTrace::Session capture(1);
+        auto id=capture.begin(1);b.id=id;capture.renderer(b,true);
+        std::ostringstream json;capture.write(json);
+        require(json.str().find("\"direct_reuse\":\"shared-copy\"")!=std::string::npos &&
+            json.str().find(std::string("\"hybrid_direct_enabled\":")+(hybrid?"1":"0"))!=std::string::npos &&
+            json.str().find("\"hybrid_direct_tail_samples\":8")!=std::string::npos &&
+            json.str().find("\"hybrid_direct_env_overrides\":0")!=std::string::npos,"panel JSONL settings and sharing outcome");
+        // Force the production allocation branch while other slots match.
+        remasterResources[1].width=0;submit(1,true,&b);
+        require(std::string(b.directReuse)=="miss" && std::string(b.directReuseReason)=="allocation" &&
+            readDirect(1)==expected,"allocation invalidates sharing");
+    }
     auto raw=[&](const char *label) {
         auto run=[&] {
             int slot=AcquireRemasterResourceSlot(true);

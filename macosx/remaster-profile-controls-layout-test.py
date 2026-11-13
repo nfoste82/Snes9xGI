@@ -19,6 +19,22 @@ def frame(name):
 
 
 class ProfileControlsLayoutTests(unittest.TestCase):
+    def test_hybrid_controls_have_separate_rows_and_live_undo(self):
+        self.assertIn('@"Hybrid Direct (off = exact)"', SECTION)
+        self.assertIn('@"Exact cutoff (% of receiver’s unoccluded weight)"', SECTION)
+        self.assertIn('@"Rays for weaker lights (1–32)"', SECTION)
+        _, enabled, _, _ = frame("remasterHybridEnabled")
+        _, cutoff, _, height = frame("remasterHybridCutoffSlider")
+        _, tail, _, _ = frame("remasterHybridTailSlider")
+        self.assertGreaterEqual(enabled - cutoff - height, 32)
+        self.assertGreaterEqual(cutoff - tail, 60)
+        self.assertIn("remasterHybridCutoffSlider.minValue = 0.5", SECTION)
+        self.assertIn("remasterHybridCutoffSlider.maxValue = 10", SECTION)
+        self.assertIn("remasterHybridTailSlider.maxValue = 32", SECTION)
+        self.assertIn("notification.object == remasterHybridCutoffInput", SOURCE)
+        self.assertIn('actionName:@"Change Hybrid Direct"', SOURCE)
+        self.assertIn("[content setFrameSize:NSMakeSize(430, 1448)]", SECTION)
+
     @unittest.skipUnless(os.environ.get("S9X_PROFILE_CONTROLS_NATIVE_TEST") == "1",
                          "opt-in isolated AppKit fixture; never launches the emulator")
     def test_native_scrolling_resize_and_screen_clamp(self):
@@ -52,10 +68,10 @@ int main() { @autoreleasepool {
         initWithContentRect:NSMakeRect(0, 0, 450, 760)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
-    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 430, 1278)];
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 430, 1448)];
     content.autoresizingMask = NSViewNotSizable;
     // Independent terminal geometry from the fixed layout, including its shifts.
-    NSView *heading = [[NSView alloc] initWithFrame:NSMakeRect(20, 1228, 390, 24)];
+    NSView *heading = [[NSView alloc] initWithFrame:NSMakeRect(20, 1398, 390, 24)];
     NSTextField *metrics = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 43, 390, 221)];
     NSButton *save = [[NSButton alloc] initWithFrame:NSMakeRect(300, 12, 110, 30)];
     [content addSubview:heading]; [content addSubview:metrics]; [content addSubview:save];
@@ -66,7 +82,7 @@ int main() { @autoreleasepool {
         [panel setContentSize:size.sizeValue];
         [scroll tile];
         check(NSEqualSizes(scroll.frame.size, panel.contentView.bounds.size), "scroll viewport autoresizes");
-        check(NSEqualSizes(content.frame.size, NSMakeSize(430, 1278)), "document never scales");
+        check(NSEqualSizes(content.frame.size, NSMakeSize(430, 1448)), "document never scales");
         check(NSWidth(scroll.contentView.bounds) >= 430, "legacy scrollbar does not clip right labels");
         check(!scroll.hasHorizontalScroller && scroll.hasVerticalScroller, "vertical scrollbar exists");
         [content scrollPoint:NSMakePoint(0, NSHeight(content.bounds))];

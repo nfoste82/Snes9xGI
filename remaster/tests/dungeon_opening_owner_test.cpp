@@ -23,7 +23,8 @@ int main() {
  for(int split=0;split<2;split++)for(int family=0;family<(split?1:2);family++)for(int d=0;d<(family?2:4);d++)for(int flip=0;flip<4;flip++) {
   const int starts[]={0x2716,0x29f0,0x2c6a,0x2e6a};
   const int off=family?(d?0x11e8:0x11a8):starts[d],w=d<2?4:3,h=d<2?3:4;
-   tpl->fill(255);maps->fill(255);floor.height.fill(family?11:0);
+   // Unused ROM templates must not match the blank map at every origin.
+   tpl->fill(0xaa);maps->fill(255);floor.height.fill(family?11:0);
    for(int k=0;k<64;k++)door.height[k]=7-k%8;
   auto cell=[&](int x,int y){return (10+(flip&2?h-1-y:y))*64+10+(flip&1?w-1-x:x);};
   for(int x=0;x<w;x++)for(int y=0;y<h;y++) {

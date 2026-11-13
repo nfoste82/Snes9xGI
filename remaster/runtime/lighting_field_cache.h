@@ -5,6 +5,7 @@
 #include "held_lamp.h"
 #include "surface_mesh_material.h"
 #include <map>
+#include "lighting_parallel.h"
 
 #define REMASTER_FIELD_MATERIAL_WORK 1
 
@@ -26,6 +27,9 @@ struct RemasterLightingFieldCache
 	size_t updatedPixels = 0;
 	size_t selectedPixels = 0;
 	size_t resolvedInstances = 0;
+	int shiftX = 0, shiftY = 0;
+	struct Identity { uint64_t a=0,b=0; bool operator==(const Identity &o) const {return a==o.a && b==o.b;} };
+	static bool shiftEnabled() {const char *v=std::getenv("S9X_REMASTER_SHIFT_FIELDS");return !v || std::strcmp(v,"0");}
 #ifdef REMASTER_FIELD_COUNT_WORK
 	size_t materialLookups = 0;
 #endif
@@ -72,7 +76,12 @@ struct RemasterLightingFieldCache
 	void update(const RemasterFrame &frame, bool useScene, bool forceFull = false)
 	{
 		RemasterLightingTrace::Scope selectionTimer(RemasterLightingTrace::current(),RemasterLightingTrace::Selection);
+		RemasterLightingTrace::Scope inputTimer(RemasterLightingTrace::current(),RemasterLightingTrace::FieldInputs);
 		const size_t count = frame.mainPixels.size();
+		const bool enableShift=shiftEnabled();
+		RemasterLightingTrace::traffic(RemasterLightingTrace::FieldInputs,
+			frame.originalRgb555.size()*sizeof(uint16_t)+frame.tileInstances.size()*sizeof(RemasterFrameTileInstance)+
+			instances_.size()*sizeof(RemasterFrameTileInstance));
 		auto *trace=RemasterLightingTrace::current();
 		const bool diagnose=trace && trace->id;
 		reasons=0;
@@ -93,6 +102,19 @@ struct RemasterLightingFieldCache
 		if (materials_.size() != frame.materials.size()) full = true;
 		else for (size_t i = 0; i < materials_.size(); i++) if (!materialEqual(materials_[i], frame.materials[i])) { full = true; break; }
 		selectionFull = selectionFull || full || instances_.size()!=frame.tileInstances.size();
+		shiftX=shiftY=0;
+		const auto &ft=frame.lightingTrace;
+		bool shiftAllowed=enableShift && frame.shiftFieldsValid && previousShiftValid_ && !full &&
+			ft.room==lastRoom_ && ft.plane==lastPlane_ && frame.shiftMode==lastMode_;
+		int dx=int16_t(uint16_t(frame.shiftScrollX[0]-lastScrollX_[0]));
+		int dy=int16_t(uint16_t(frame.shiftScrollY[0]-lastScrollY_[0]));
+		shiftAllowed=shiftAllowed && dx==int16_t(uint16_t(frame.shiftScrollX[1]-lastScrollX_[1])) &&
+			dy==int16_t(uint16_t(frame.shiftScrollY[1]-lastScrollY_[1])) && std::abs(dx)<int(frame.width) && std::abs(dy)<int(frame.height);
+		const bool shifting=shiftAllowed && (dx || dy) && identities_.size()==count;
+		if(shifting) {shiftX=dx;shiftY=dy;}
+		if(enableShift && rasterValid_ && !shiftAllowed) {full=true;selectionFull=true;}
+		previousShiftValid_=frame.shiftFieldsValid;lastScrollX_=frame.shiftScrollX;lastScrollY_=frame.shiftScrollY;
+		lastRoom_=ft.room;lastPlane_=ft.plane;lastMode_=frame.shiftMode;
 		if (keys_.size() != count)
 		{
 			keys_.resize(count); occlusion.resize(count*2); emission.resize(count*4);
@@ -103,6 +125,9 @@ struct RemasterLightingFieldCache
 			visualClaims.resize(count);
 		}
 		std::map<RemasterTileContentId, const RemasterFrameAssetMetadata *> metadata;
+		RemasterLightingTrace::traffic(RemasterLightingTrace::FieldMetadata,
+			frame.assetMetadata.size()*sizeof(RemasterFrameAssetMetadata)+metadata_.size()*sizeof(RemasterFrameAssetMetadata));
+		RemasterLightingTrace::Scope metadataTimer(RemasterLightingTrace::current(),RemasterLightingTrace::FieldMetadata);
 		for (const auto &m : frame.assetMetadata) metadata[m.tileId] = &m;
 		// HUD classification intentionally uses FIRST original metadata, whereas
 		// field donors use LAST metadata. Do not merge those producer precedences.
@@ -124,6 +149,9 @@ struct RemasterLightingFieldCache
 		resolvedInstances = 0;
 		std::vector<bool> dirty(frame.tileInstances.size(), full);
 		std::vector<uint64_t> normalMasks(frame.tileInstances.size());
+		std::vector<uint64_t> stableTokens(frame.tileInstances.size());
+		if(full || rom_!=frame.profileRomSha256 || area_!=frame.area.id)stableInstances_.clear();
+		++stableFrame_;
 		std::map<RemasterTileContentId, bool> metadataDirty;
 		for (const auto &entry : metadata)
 		{
@@ -144,9 +172,42 @@ struct RemasterLightingFieldCache
 		}
 		for(const auto &entry:metadata_)if(!metadata.count(entry.first))emissionDirty=true;
 		if(diagnose && metadata_.size()!=metadata.size())reasons|=ContentGeometry|EmissionMetadata;
+		metadataTimer.stop();
+		RemasterLightingTrace::Scope instanceTimer(RemasterLightingTrace::current(),RemasterLightingTrace::FieldInstances);
 		for (size_t i = 0; i < frame.tileInstances.size(); i++)
 		{
 			const auto &instance = frame.tileInstances[i];
+			// Static-room published placement identity survives transient draw IDs.
+			if(enableShift && instance.source==RemasterSourceType::Background && instance.shiftPlacementId &&
+				!frame.contextGeometry.count(i+1) && instance.geometryStatus!=RemasterOccurrenceGeometryStatus::Inherit) {
+				const uint64_t placement=(uint64_t(instance.shiftPlacementId) | (uint64_t(instance.sourceIndex)<<32) |
+					(uint64_t(instance.hFlip|(instance.vFlip<<1))<<40)) ^ (instance.tileId.hash*0x9e3779b97f4a7c15ULL) ^
+					(uint64_t(uint32_t(instance.heightOffset))*0x517cc1b727220a95ULL);
+				auto &slot=stableInstances_[placement];
+				const auto found=metadata.find(instance.tileId);const auto *original=found==metadata.end()?nullptr:found->second;
+				if(!slot)slot=std::make_unique<StableInstance>();auto &cached=*slot;
+				const bool changed=!cached.valid || !instanceEqual(instance,cached.instance) ||
+					(original?metadataDirty[instance.tileId]:metadata_.count(instance.tileId)!=0) || forceFull;
+				if(changed) {
+					cached.instance=instance;cached.geometry=S9xRemasterResolveFrameGeometry(original?*original:RemasterFrameAssetMetadata{},frame,i);
+					cached.valid=true;cached.token=++stableSerial_;++resolvedInstances;
+				}
+				if(cached.frame!=stableFrame_ && original) {
+					const auto &old=cached.geometry;
+					if(old.hasEmission!=original->hasEmission || old.emissionRgba!=original->emissionRgba || old.emissionColorMask!=original->emissionColorMask ||
+						old.emissionDepth!=original->emissionDepth || old.emissionOmnidirectional!=original->emissionOmnidirectional)cached.token=++stableSerial_;
+					cached.geometry.hasEmission=original->hasEmission;cached.geometry.emissionRgba=original->emissionRgba;
+					cached.geometry.emissionColorMask=original->emissionColorMask;cached.geometry.emissionDepth=original->emissionDepth;
+					cached.geometry.emissionOmnidirectional=original->emissionOmnidirectional;cached.frame=stableFrame_;
+				}
+				if(instance.hasPaletteArtwork!=cached.instance.hasPaletteArtwork || instance.paletteRgb555!=cached.instance.paletteRgb555) {
+					emissionDirty=true;
+					cached.instance.hasPaletteArtwork=instance.hasPaletteArtwork;cached.instance.paletteRgb555=instance.paletteRgb555;cached.token=++stableSerial_;
+				}
+				stableTokens[i]=cached.token;instanceMetadata[i]=&cached.geometry;
+				dirty[i]=full || i>=stableTokens_.size() || stableTokens_[i]!=cached.token;
+				continue;
+			}
 			if(diagnose) {
 				if(i>=instances_.size() || !instanceEqual(instance,instances_[i]))reasons|=InstanceIdentity;
 				if(i>=instances_.size() || instance.hasPaletteArtwork!=instances_[i].hasPaletteArtwork || instance.paletteRgb555!=instances_[i].paletteRgb555)reasons|=Palette;
@@ -205,6 +266,7 @@ struct RemasterLightingFieldCache
 			if(diagnose && (i>=normalMasks_.size() || normalMasks[i]!=normalMasks_[i]))reasons|=NormalMask;
 		}
 		contexts_=frame.contextGeometry;
+		instanceTimer.stop();
 		locations_=frame.contextLocations;
 		// Presence depends only on resolved occurrence metadata and material,
 		// not on pixel coordinates. Compute once per update instead of repeatedly
@@ -242,7 +304,7 @@ struct RemasterLightingFieldCache
 			if(depths_!=frame.observedBgDepth)reasons|=CompositionDepth;
 			trace->fieldReasons=reasons;
 		}
-		bool selectionDirty = std::find(dirty.begin(),dirty.end(),true)!=dirty.end();
+		bool selectionDirty = shifting || std::find(dirty.begin(),dirty.end(),true)!=dirty.end();
 		for(size_t r=0;!selectionFull && r<7;r++) {
 			const auto &now=*rasters[r], &old=rasters_[r];
 			selectionFull = now.size()!=old.size();
@@ -284,9 +346,121 @@ struct RemasterLightingFieldCache
 			}
 		}
 		const RemasterHeldLampHudLookup hudLookup(frame);
-		for (size_t i = 0; i < count; i++)
+		// Fingerprint the full resolved occurrence dependency once, not per pixel.
+		// Transient draw-record IDs are deliberately excluded; content/placement and
+		// animation emission are included. Dynamic OBJ pixels never take the shortcut.
+		std::vector<uint64_t> instanceKeys(frame.tileInstances.size());
+		auto mix=[](uint64_t &h,uint64_t v) {h^=v+0x9e3779b97f4a7c15ULL+(h<<6)+(h>>2);};
+		auto bytesHash=[&](uint64_t &h,const auto &a) {const auto *p=reinterpret_cast<const uint8_t *>(&a);size_t n=0;
+			for(;n+8<=sizeof(a);n+=8) {uint64_t v;std::memcpy(&v,p+n,8);mix(h,v);}for(;n<sizeof(a);++n)mix(h,p[n]);};
+		if(enableShift)for(size_t n=0;n<instanceKeys.size();++n) {
+			const auto &in=frame.tileInstances[n];auto &h=instanceKeys[n];h=0x84222325cbf29ce4ULL;
+			if(stableTokens[n]) {h=stableTokens[n];continue;}
+			if(!dirty[n] && n<instanceFingerprints_.size() && n<instances_.size() &&
+				in.hasPaletteArtwork==instances_[n].hasPaletteArtwork && in.paletteRgb555==instances_[n].paletteRgb555) {
+				const auto a=metadata.find(in.tileId);const auto b=metadata_.find(in.tileId);
+				if(a!=metadata.end() && b!=metadata_.end() && a->second->hasEmission==b->second.hasEmission &&
+					a->second->emissionRgba==b->second.emissionRgba && a->second->emissionColorMask==b->second.emissionColorMask &&
+					a->second->emissionDepth==b->second.emissionDepth && a->second->emissionOmnidirectional==b->second.emissionOmnidirectional) {h=instanceFingerprints_[n];continue;}
+			}
+			mix(h,in.tileId.hash);mix(h,in.tileId.hashVersion);mix(h,in.tileId.bitDepth);mix(h,unsigned(in.source));mix(h,in.sourceIndex);mix(h,in.heightOffset);
+			mix(h,in.hFlip|(in.vFlip<<1));mix(h,in.normalYaw);mix(h,in.geometryFacing);
+			mix(h,unsigned(in.geometryStatus));mix(h,unsigned(in.placementTileRole));
+			mix(h,in.terrainOffset.hasHeight);if(in.terrainOffset.hasHeight)bytesHash(h,in.terrainOffset.height);
+			mix(h,in.terrainOffset.hasPixelNormals);if(in.terrainOffset.hasPixelNormals)bytesHash(h,in.terrainOffset.pixelNormals);else bytesHash(h,in.terrainOffset.normal);
+			mix(h,normalMasks[n]);
+			mix(h,in.visualClaim.mask);mix(h,in.visualClaim.cell);mix(h,in.visualClaim.component);mix(h,in.visualClaim.published);mix(h,unsigned(in.visualClaim.status));
+			for(char c:in.material)mix(h,c);for(char c:in.assetGroup)mix(h,c);
+			if(in.hasPaletteArtwork)bytesHash(h,in.paletteRgb555);
+			mix(h,in.hasPaletteArtwork);
+			if(const auto *m=instanceMetadata[n]) {
+				mix(h,m->hasHeight);if(m->hasHeight)bytesHash(h,m->height);
+				mix(h,m->hasNormals);if(m->hasNormals)bytesHash(h,m->normalXyz);
+				mix(h,m->hasOcclusion);if(m->hasOcclusion)bytesHash(h,m->occlusion);
+				mix(h,m->hasEmission);if(m->hasEmission) {bytesHash(h,m->emissionRgba);bytesHash(h,m->emissionColorMask);bytesHash(h,m->emissionDepth);mix(h,m->emissionOmnidirectional);}
+				mix(h,unsigned(m->tileRole));mix(h,m->directLightingOppositeFacing);mix(h,m->normalIgnoreTileTransform);
+				mix(h,m->hasDoorframeMask);if(m->hasDoorframeMask)bytesHash(h,m->doorframeMask);
+				mix(h,m->hasMaterialSelectors);if(m->hasMaterialSelectors)for(const auto &s:m->materialSelectors)for(char c:s)mix(h,c);
+			}
+		}
+		auto identityAt=[&](size_t i) {
+			Identity k{0x243f6a8885a308d3ULL,0x13198a2e03707344ULL};
+			for(size_t r=0;r<7;++r) {
+				uint64_t v=0;
+				if(i<rasters[r]->size()) {const auto &p=(*rasters[r])[i];
+					v=p.instanceId && p.instanceId<=instanceKeys.size()?instanceKeys[p.instanceId-1]:p.instanceId;
+					mix(v,p.owner);mix(v,p.tilePixel);
+					if(p.instanceId && p.instanceId<=frame.tileInstances.size() && frame.tileInstances[p.instanceId-1].source==RemasterSourceType::Object) k.b=0;
+				}
+				mix(k.a,v);mix(k.b,v^((r+1)*0x517cc1b727220a95ULL));
+			}
+			for(size_t r=0;r<4;++r)if(i<frame.observedBgDepth[r].size())mix(k.a,frame.observedBgDepth[r][i]);
+			mix(k.a,i<frame.originalRgb555.size()?frame.originalRgb555[i]:0);mix(k.b,hudLookup(i));
+			return k;
+		};
+		if(enableShift) {
+			oldIdentities_.swap(identities_);identities_.resize(count);
+			if(shifting) {
+				#define SF_SWAP(name) oldFields_.name.swap(name); name.resize(oldFields_.name.size())
+				SF_SWAP(occlusion);SF_SWAP(emission);SF_SWAP(participation);SF_SWAP(opposite);SF_SWAP(authoredNormals);SF_SWAP(semanticNormals);
+				SF_SWAP(height);SF_SWAP(surface);SF_SWAP(reflectance);SF_SWAP(depths);SF_SWAP(omnidirectional);SF_SWAP(samples);SF_SWAP(channelSources);SF_SWAP(visualClaims);
+				#undef SF_SWAP
+				oldKeys_.swap(keys_);keys_.resize(count);
+			}
+		}
+		inputTimer.stop();
+		RemasterLightingTrace::Scope pixelTimer(trace,RemasterLightingTrace::FieldPixels);
+		unsigned changedProbes = 0;
+		if (selectionDirty && !selectionFull) for (size_t i = 0; i < count; i += 257) {
+			bool changed = false;
+			for (size_t r = 0; r < 7 && !changed; ++r) if (i < rasters[r]->size()) {
+				const auto &a = (*rasters[r])[i], &b = rasters_[r][i];
+				changed = !samePixel(a,b) || (a.instanceId && a.instanceId <= dirty.size() && dirty[a.instanceId-1]) ||
+					(b.instanceId && b.instanceId <= dirty.size() && dirty[b.instanceId-1]);
+			}
+			changedProbes += changed;
+		}
+		const size_t workers = selectionFull || changedProbes >= 32 ? 8 : 1;
+		std::array<size_t,8> selectedCounts{}, updatedCounts{};
+		// All lookup tables and vector sizes are finalized above. Workers only
+		// read shared inputs and write their own pixels and counter slots.
+		auto process = [&](size_t worker) {
+		for (size_t i = count*worker/workers; i < count*(worker+1)/workers; i++)
 		{
+			if(shifting) {
+				const int sx=int(i%frame.width)+dx,sy=int(i/frame.width)+dy;
+				const size_t j=size_t(std::max(0,sy))*frame.width+std::max(0,sx);
+				bool dynamic=false;
+				for(size_t r=0;r<7;++r)if(i<rasters[r]->size()) {const auto &p=(*rasters[r])[i];
+					if(p.instanceId && p.instanceId<=frame.tileInstances.size() && frame.tileInstances[p.instanceId-1].source==RemasterSourceType::Object)dynamic=true;}
+				bool same=!dynamic && !full && !hudDirty && sx>=0 && sy>=0 && sx<int(frame.width) && sy<int(frame.height) &&
+					j<originalColors_.size() && i<frame.originalRgb555.size() && originalColors_[j]==frame.originalRgb555[i];
+				for(size_t r=0;same && r<7;++r) {
+					if(i>=rasters[r]->size() || j>=rasters_[r].size()) {same=i>=rasters[r]->size() && j>=rasters_[r].size();continue;}
+					const auto &a=(*rasters[r])[i],&b=rasters_[r][j];same=a.owner==b.owner && a.tilePixel==b.tilePixel;
+					if(a.instanceId || b.instanceId)same=same && a.instanceId && b.instanceId && a.instanceId<=instanceKeys.size() &&
+						b.instanceId<=instanceFingerprints_.size() && instanceKeys[a.instanceId-1]==instanceFingerprints_[b.instanceId-1];
+				}
+				for(size_t r=0;same && r<4;++r)if(i<frame.observedBgDepth[r].size())same=j<depths_[r].size() && frame.observedBgDepth[r][i]==depths_[r][j];
+				if(same && hudLookup(i)!=hudLookup(j))same=false;
+				if(same)identities_[i]=oldIdentities_[j];else identities_[i]=identityAt(i);
+				if(same) {
+					#define SF_COPY(name,n) std::copy_n(oldFields_.name.begin()+j*(n),n,name.begin()+i*(n))
+					SF_COPY(occlusion,2);SF_COPY(emission,4);SF_COPY(participation,2);SF_COPY(opposite,1);SF_COPY(authoredNormals,1);SF_COPY(semanticNormals,1);
+					SF_COPY(height,2);SF_COPY(surface,4);SF_COPY(reflectance,4);SF_COPY(depths,1);SF_COPY(omnidirectional,1);SF_COPY(samples,1);SF_COPY(channelSources,1);SF_COPY(visualClaims,1);
+					#undef SF_COPY
+					// Remap diagnostic donors into the current transient instance table.
+					auto remap=[&](RemasterFramePixel &p) {if(!p.instanceId)return;const auto oldId=p.instanceId;
+						for(size_t r=0;r<7;++r)if(j<rasters_[r].size() && rasters_[r][j].instanceId==oldId && i<rasters[r]->size()) {p=(*rasters[r])[i];return;}};
+					remap(channelSources[i].visible);for(auto &p:channelSources[i].donors)remap(p);
+					if((samples[i].domain>>48)==2 || ((samples[i].domain>>48)==4 && !visualClaims[i][0].published))
+						samples[i].domain=(samples[i].domain&0xffff000000000000ULL)|channelSources[i].donors[0].instanceId;
+					keys_[i]=oldKeys_[j];continue;
+				}
+			}
+			else if(enableShift)identities_[i]=identityAt(i);
 			bool select = selectionFull;
+			if(shifting)select=true;
 			if(!select && selectionDirty) {
 				// Every possible preferred/fallback reference is in these seven
 				// buffers. Compare BOTH old and new IDs (including invalid IDs and
@@ -303,7 +477,7 @@ struct RemasterLightingFieldCache
 			// deliberately still visit every offset (no speculative local cut).
 			if(!select && !emissionDirty)continue;
 			const bool hud = hudLookup(i);
-			if(select) ++selectedPixels;
+			if(select) ++selectedCounts[worker];
 			const auto selection = select ? S9xRemasterSelectVisibleChannelsWithPresence(frame,i,useScene,present,false,alttp) : channelSources[i];
 			const auto &hp = selection.donors[size_t(RemasterMetadataChannel::Height)];
 			const auto &np = selection.donors[size_t(RemasterMetadataChannel::Normals)];
@@ -334,6 +508,9 @@ struct RemasterLightingFieldCache
 			}
 			depths[i] = em ? em->emissionDepth : 0;
 			omnidirectional[i] = em && em->emissionOmnidirectional ? 1.0f : 0.0f;
+			// Unchanged donor dependencies cannot change geometry or visual claims.
+			// Emission has already been refreshed from this frame's palette above.
+			if (!select && !full) continue;
 			bool channelsDirty = !samePixel(selection.visible,channelSources[i].visible);
 			for(size_t c=0;c<selection.donors.size();c++) {
 				const auto &p=selection.donors[c];
@@ -341,8 +518,8 @@ struct RemasterLightingFieldCache
 			}
 			channelSources[i]=selection;
 			for(size_t c=0;c<selection.donors.size();c++)visualClaims[i][c]=S9xRemasterPixelVisualClaim(frame,selection.donors[c]);
-			if (!full && !channelsDirty && key == keys_[i] && (!valid || !dirty[pixel.instanceId-1])) continue;
-			keys_[i] = key; updatedPixels++;
+			if (!shifting && !full && !channelsDirty && key == keys_[i] && (!valid || !dirty[pixel.instanceId-1])) continue;
+			keys_[i] = key; updatedCounts[worker]++;
 			occlusion[i*2] = occlusion[i*2+1] = 0;
 			height[i*2] = height[i*2+1] = 0;
 			participation[i*2] = participation[i*2+1] = hud ? 0 : 255;
@@ -441,7 +618,21 @@ struct RemasterLightingFieldCache
 			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && (participation[i*2] != 0 || worldBehindHud);
 			samples[i].coverage = occlusion[i*2]/255.0f;
 		}
+		};
+		if (workers == 1) process(0); else S9xRemasterLightingParallel(workers,process);
+		for (size_t worker = 0; worker < workers; ++worker) {
+			selectedPixels += selectedCounts[worker]; updatedPixels += updatedCounts[worker];
+		}
+		RemasterLightingTrace::traffic(RemasterLightingTrace::FieldPixels,
+            selectedPixels*sizeof(RemasterVisibleChannelSelection),updatedPixels*(sizeof(RemasterSurfaceMesh::Sample)+sizeof(float)*15+sizeof(uint8_t)*10));
+        pixelTimer.stop();
+		RemasterLightingTrace::Scope snapshotTimer(trace,RemasterLightingTrace::FieldSnapshot);
+		RemasterLightingTrace::traffic(RemasterLightingTrace::FieldSnapshot,
+            frame.tileInstances.size()*sizeof(RemasterFrameTileInstance)+frame.originalRgb555.size()*sizeof(uint16_t),
+            frame.tileInstances.size()*sizeof(RemasterFrameTileInstance)+frame.originalRgb555.size()*sizeof(uint16_t));
+        for(const auto *r:rasters)RemasterLightingTrace::traffic(RemasterLightingTrace::FieldSnapshot,r->size()*sizeof(RemasterFramePixel),r->size()*sizeof(RemasterFramePixel));
 		instances_ = frame.tileInstances; normalMasks_ = std::move(normalMasks);
+		if(enableShift) {instanceFingerprints_=std::move(instanceKeys);stableTokens_=std::move(stableTokens);}
 		for(size_t r=0;r<7;r++) rasters_[r]=*rasters[r];
 		depths_=frame.observedBgDepth; rasterValid_=true;
 		rom_=frame.profileRomSha256; area_=frame.area.id; scene_=useScene;
@@ -454,6 +645,23 @@ struct RemasterLightingFieldCache
 		materials_ = frame.materials; width_ = frame.width; height_ = frame.height; scale_ = frame.lightingCoordinateScale;
 	}
 private:
+	struct StableInstance {RemasterFrameTileInstance instance;RemasterFrameAssetMetadata geometry;uint64_t token=0,frame=0;bool valid=false;};
+	std::unordered_map<uint64_t,std::unique_ptr<StableInstance>> stableInstances_;
+	std::vector<uint64_t> stableTokens_;
+	uint64_t stableSerial_=0,stableFrame_=0;
+	struct Fields {
+		std::vector<uint8_t> occlusion,emission,participation,opposite,authoredNormals,semanticNormals;
+		std::vector<float> height,surface,reflectance,depths,omnidirectional;
+		std::vector<RemasterSurfaceMesh::Sample> samples;
+		std::vector<RemasterVisibleChannelSelection> channelSources;
+		std::vector<std::array<RemasterVisualClaim,size_t(RemasterMetadataChannel::Count)>> visualClaims;
+	} oldFields_;
+	std::vector<Identity> identities_,oldIdentities_;
+	std::vector<uint64_t> oldKeys_;
+	std::vector<uint64_t> instanceFingerprints_;
+	bool previousShiftValid_=false;
+	std::array<int,2> lastScrollX_{},lastScrollY_{};
+	uint32_t lastRoom_=0,lastPlane_=0,lastMode_=0;
 	static bool contextEqual(const RemasterTileContext &a,const RemasterTileContext &b) {
 		return a.height==b.height && a.hasHeight==b.hasHeight && a.heightSampling==b.heightSampling &&
 			a.normalXyz==b.normalXyz && a.hasNormals==b.hasNormals &&
