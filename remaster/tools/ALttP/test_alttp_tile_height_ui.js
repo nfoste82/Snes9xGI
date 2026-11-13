@@ -488,6 +488,33 @@ async function main() {
     assert.match(prompts.at(-1),/Remove authored scalar offsets/);
     element('heightOffsetAll').checked=false;
     context.worldRecord=oldRecord;context.worldManifest=oldManifest;
+    // Explicit two-boundary gradient: preview/cancel are read-only, defaults
+    // preserve existing offsets, and replacement needs fresh confirmation.
+    const select=points=>{context.worldSelection=new Map(points.map(p=>[`${p.x}:${p.y}`,p]));context.worldCell=points.at(-1);};
+    select([{x:10,y:10},{x:12,y:10}]);element('gradientA').onclick();
+    select([{x:10,y:12},{x:12,y:12}]);element('gradientB').onclick();
+    element('gradientHeightA').value='48';element('gradientHeightB').value='32';
+    select([{x:11,y:11}]);element('heightOffset').value='99';await element('heightOffsetSave').onclick();
+    const gradientBefore=JSON.stringify(offsets);
+    element('gradientPreview').onclick();
+    assert.equal(JSON.stringify(offsets),gradientBefore);
+    assert.match(element('gradientStatus').textContent,/8 offsets, 1 existing offsets preserved/);
+    context.window.confirm=()=>false;await element('gradientSave').onclick();
+    assert.equal(JSON.stringify(offsets),gradientBefore);
+    context.window.confirm=()=>true;await element('gradientSave').onclick();
+    assert.equal(offsets.heights['light:10:10'],48);assert.equal(offsets.heights['light:10:12'],32);
+    assert.equal(offsets.heights['light:10:11'],40);assert.equal(offsets.heights['light:11:11'],99);
+    element('gradientReplace').checked=true;element('gradientPreview').onclick();
+    await element('gradientSave').onclick();assert.equal(offsets.heights['light:11:11'],40);
+    element('gradientPreview').onclick();
+    context.worldName='dark';await element('gradientSave').onclick();
+    assert.match(element('gradientStatus').textContent,/stale/);assert.equal(offsets.heights['dark:11:11'],undefined);
+    element('gradientPreview').onclick();assert.match(element('gradientStatus').textContent,/current world/);
+    context.worldName='light';
+    select([{x:11,y:11}]);element('gradientMask').checked=true;
+    element('gradientPreview').onclick();assert.match(element('gradientStatus').textContent,/1 offsets/);
+    element('gradientHeightA').oninput();assert.equal(element('gradientSave').disabled,true);
+    element('gradientClear').onclick();assert.match(element('gradientStatus').textContent,/cleared/);
     console.log('Height UI mock: snapshot, stale rejection, explicit references and world isolation passed.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,20 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {heightBoundaryGradient:gradient}=require('./alttp_tile_height_ui.js');
+const a=[0,1,2,3,4].map(x=>({x,y:0})),b=a.map(p=>({...p,y:4}));
+const r=gradient(a,b,48,32);
+assert.equal(r.length,25);
+for(const p of r)assert.equal(p.height,48-p.y*4);
+assert.deepEqual(gradient(b,a,32,48),r);
+assert.deepEqual(gradient(a,b,48,32,[{x:2,y:2},{x:2,y:2},{x:10,y:10}]),[{x:2,y:2,height:40}]);
+assert.equal(gradient([{x:0,y:0}],[{x:4,y:4}],16,0).length,5);
+assert.equal(gradient([{x:0,y:0}],[{x:4,y:0}],-16,0)[2].height,-8);
+assert.throws(()=>gradient(a,a,48,32),/overlap/);
+assert.throws(()=>gradient([],b,48,32),/both boundaries/);
+assert.throws(()=>gradient(a,b,1.5,32),/integers/);
+assert.throws(()=>gradient(a,b,48,32,[]),/No target/);
+assert.throws(()=>gradient([{x:512,y:0}],b,48,32),/coordinate/);
+// Exact sampled-distance weighting for skewed boundaries (not assumed row slope).
+const skew=gradient([{x:0,y:0},{x:0,y:4}],[{x:4,y:0},{x:4,y:4}],0,16);
+assert.equal(skew.find(p=>p.x===2&&p.y===2).height,8);
+console.log('Boundary gradient tests passed');

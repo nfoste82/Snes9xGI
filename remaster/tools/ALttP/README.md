@@ -393,3 +393,25 @@ image-derived default normals/heights, see [NPC-WORKBENCH.md](NPC-WORKBENCH.md).
 Historical notes and generated reports may refer to the former `remaster/tools/alttp…`
 paths. Use `remaster/tools/ALttP/alttp…` for those files now. Python module names remain
 unchanged; their sibling imports resolve when scripts are run directly.
+# Explicit boundary gradients
+
+In the world editor, expand **Author gradient between two boundaries**:
+
+1. Select the tiles along one boundary; click **Capture selection as A**.
+2. Select the other boundary; click **Capture selection as B**.
+3. Enter their absolute traversal heights (for example **48** and **32**).
+4. Optionally select a target region and enable **Fill current selection only**.
+5. Click **Preview gradient**, inspect the purple cells/height labels, then
+   **Save preview** and confirm. Recalculate afterward to inspect arrivals.
+
+The tool interpolates by Euclidean distance to the captured tile samples and
+rounds to integer heights. It fills only their convex hull, optionally intersected
+with the target selection. Capture dense boundaries; points are not automatically
+connected as polylines. Concave shapes should use a target selection. This is
+explicit surface authoring, not automatic conflict reconciliation or traversal
+coverage. Existing scalar offsets are preserved unless **Replace existing offsets**
+is enabled; use replacement to correct boundary values as well as the interior.
+The preview reports how many existing cells are preserved. Nonuniform terrain
+rejects the preview atomically; uniform terrain is subtracted to avoid doubling it.
+No shared artwork semantics, weights, or per-pixel fields change. Capture/preview
+state is temporary and is not restored on refresh. Clear/cancel never writes.

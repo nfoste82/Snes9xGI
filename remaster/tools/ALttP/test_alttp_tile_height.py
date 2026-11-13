@@ -293,6 +293,12 @@ assert(Number.isNaN(missing.heights[0]));
         self.assertEqual(process.returncode, 0, process.stderr)
 
     @unittest.skipUnless(shutil.which('node'), 'requires Node')
+    def test_explicit_boundary_gradient(self):
+        script = Path(__file__).with_name('test_alttp_tile_gradient.js')
+        process = subprocess.run([shutil.which('node'), str(script)], capture_output=True, text=True)
+        self.assertEqual(process.returncode, 0, process.stderr)
+
+    @unittest.skipUnless(shutil.which('node'), 'requires Node')
     def test_viewport_snapshot_bounds_and_stale_comparison(self):
         module = Path(__file__).with_name('alttp_tile_height_ui.js').resolve()
         script = r'''

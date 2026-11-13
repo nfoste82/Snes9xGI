@@ -8369,11 +8369,12 @@ normal_xyz = [128, 255, 128, 128, 255, 128, 128, 255, 128, 128, 255, 128, 128, 2
 
 [[assets]]
 tile_hash = "v1:4bpp:3a7ffc4ed3ed1821"
-tile_role = "obstacle"
+tile_role = "floor"
 tile_semantics_authored = true
 tile_semantic_normals = []
 tile_semantic_context_dependent = true
 tile_semantic_note = "Kakariko experimental house: roof raised top. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+tile_semantic_water = false
 
 [[assets]]
 tile_hash = "v1:4bpp:3a8e21ad63732905"
@@ -13747,6 +13748,12 @@ normal_xyz = [128, 128, 255, 128, 128, 255, 128, 128, 255, 128, 128, 255, 128, 1
 tile_hash = "v1:4bpp:7518a4e8ac1a5885"
 height = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 height_sampling = "nearest"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
 
 [[assets]]
 tile_hash = "v1:4bpp:7525c23e79fe043c"
@@ -15646,8 +15653,9 @@ normal_xyz = [128, 128, 255, 128, 128, 255, 128, 128, 255, 128, 128, 255, 128, 1
 tile_role = "floor"
 tile_semantics_authored = true
 tile_semantic_normals = []
-tile_semantic_context_dependent = false
-tile_semantic_note = ""
+tile_semantic_context_dependent = true
+tile_semantic_note = "Kakariko experimental house: roof raised top. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+tile_semantic_water = false
 
 [[assets]]
 tile_hash = "v1:4bpp:8b53ad7f5d489dd1"
@@ -78758,6 +78766,428 @@ tile_semantics_authored = true
 tile_semantic_normals = []
 tile_semantic_context_dependent = false
 tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:6e9f88439f56f764"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:e7dc09fb4caedfe4"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:be3f7a1800d1230f"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:e1e26283c4cd74cf"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:0ad07dd2b81fd35e"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:e9ebc819b76b780e"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:546880e70cc10625"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:908d9d6f83fdac85"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:9b21ba2dc8c6bcb3"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:d60383c9a5331da3"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:324dab32cd3eddac"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:e66398e296b02b8c"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:813b46057609fe76"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:af691c64bae3d216"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:38749df52789c8f1"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:b828f1a836c707e1"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+[[assets]]
+tile_hash = "v1:4bpp:faa1ba3b762a80a5"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
+
+
+[[assets]]
+tile_hash = "v1:4bpp:6f26c793ef5247cf"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:a5c405bbab819cf7"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:a387e0e29aa73e3c"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:f3070eacd6f0e35c"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:29882f0a8a86a56d"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:bbe013ec50577b75"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:7f56a26fd6a76f2d"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:991d508e4eeda75d"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:01ec7454e6b1695d"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:64bc770cc17d998d"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:458bdaa60d25f393"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:de085bba417bfee3"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:33959f226fb07760"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:fb0b7bb15771ec80"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:add5d2bd4fc32f82"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:effda9ed1f3e7632"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:75800b3360ea78ea"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:c8d65b336d5da82a"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:742e0e37ab1aced4"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:8a3fbe7a62976b24"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:18d46d60ee918096"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:f3cf6aceae37e50e"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:71c7fae8189094ef"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:bf05b3df875e002f"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:63b0bf3957b1d4b3"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+[[assets]]
+tile_hash = "v1:4bpp:99391ffb944693fb"
+tile_role = "obstacle"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+
+
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:132e15ca1b1843f0"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
+
+[[assets]]
+tile_hash = "v1:4bpp:b515d9ef8db16098"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
+
+
+
+[[assets]]
+tile_hash = "v1:4bpp:3d5f75d74bcae6f7"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
+
+[[assets]]
+tile_hash = "v1:4bpp:95afe97bce2fc627"
+tile_role = "floor"
+tile_semantics_authored = true
+tile_semantic_normals = []
+tile_semantic_context_dependent = false
+tile_semantic_note = ""
+tile_semantic_water = false
+
 
 [[rules]]
 asset_group = "wall_faces"
@@ -184056,3 +184486,7728 @@ background = 1
 x = 320
 y = 427
 offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 37
+y = 451
+offset = -4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 37
+y = 452
+offset = -8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 38
+y = 451
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 38
+y = 452
+offset = -4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 38
+y = 456
+offset = -12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 39
+y = 452
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 436
+offset = 30
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 155
+y = 446
+offset = 44
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 434
+y = 457
+offset = -16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 439
+y = 445
+offset = -16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 466
+y = 423
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 473
+y = 463
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 357
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 359
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 360
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 361
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 362
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 367
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 364
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 366
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 51
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 51
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 52
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 52
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 53
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 53
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 53
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 56
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 56
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 58
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 357
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 358
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 359
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 360
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 361
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 362
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 363
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 364
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 366
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 367
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 367
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 366
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 366
+offset = 13
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 367
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 368
+offset = 6
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 369
+offset = 3
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 370
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 365
+offset = 13
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 366
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 367
+offset = 7
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 368
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 369
+offset = 1
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 370
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 364
+offset = 13
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 365
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 366
+offset = 7
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 367
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 368
+offset = 1
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 369
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 370
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 362
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 364
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 365
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 366
+offset = 5
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 367
+offset = 2
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 369
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 361
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 362
+offset = 13
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 363
+offset = 11
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 365
+offset = 5
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 366
+offset = 3
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 367
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 369
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 362
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 92
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 92
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 92
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 93
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 93
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 93
+y = 366
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 373
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 371
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 367
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 369
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 369
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 370
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 372
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 371
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 90
+y = 364
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 92
+y = 366
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 363
+offset = 13
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 370
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 367
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 91
+y = 366
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 357
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 359
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 360
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 361
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 362
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 56
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 368
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 365
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 357
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 358
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 359
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 360
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 361
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 365
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 350
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 351
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 352
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 353
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 354
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 355
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 104
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 105
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 105
+y = 357
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 106
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 107
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 357
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 360
+offset = 18
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 364
+offset = 14
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 365
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 366
+offset = 6
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 367
+offset = 2
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 357
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 360
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 364
+offset = 14
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 365
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 366
+offset = 6
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 367
+offset = 2
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 364
+offset = 14
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 365
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 366
+offset = 6
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 367
+offset = 2
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 357
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 360
+offset = 18
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 364
+offset = 14
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 365
+offset = 10
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 366
+offset = 6
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 367
+offset = 2
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 368
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 357
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 360
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 358
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 350
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 351
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 352
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 353
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 354
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 357
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 359
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 341
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 342
+offset = 30
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 343
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 341
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 342
+offset = 30
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 343
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 354
+offset = 16
+
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 333
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 334
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 335
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 336
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 337
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 333
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 334
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 335
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 336
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 337
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 86
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 353
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 354
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 353
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 354
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 353
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 354
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 353
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 354
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 353
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 354
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 68
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 352
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 353
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 354
+offset = 20
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 352
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 353
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 354
+offset = 20
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 352
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 353
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 354
+offset = 20
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 71
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 352
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 353
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 354
+offset = 20
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 72
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 351
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 352
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 353
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 73
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 351
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 352
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 353
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 351
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 352
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 353
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 351
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 352
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 353
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 356
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 350
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 351
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 352
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 353
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 350
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 351
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 352
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 353
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 354
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 350
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 351
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 352
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 353
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 354
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 347
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 349
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 350
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 351
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 352
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 353
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 347
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 349
+offset = 29
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 350
+offset = 27
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 351
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 352
+offset = 21
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 353
+offset = 19
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 354
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 360
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 359
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 359
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 358
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 357
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 357
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 356
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 355
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 364
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 364
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 363
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 363
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 363
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 362
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 362
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 361
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 362
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 363
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 360
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 361
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 360
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 359
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 360
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 359
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 359
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 362
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 361
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 362
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 361
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 360
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 360
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 360
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 360
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 359
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 359
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 359
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 358
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 359
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 358
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 359
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 358
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 357
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 358
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 357
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 358
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 357
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 356
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 357
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 358
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 363
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 362
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 361
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 361
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 361
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 361
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 360
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 360
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 360
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 359
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 359
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 362
+offset = 4
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 362
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 361
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 361
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 361
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 360
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 360
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 349
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 350
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 351
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 352
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 353
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 354
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 355
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 356
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 357
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 358
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 359
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 360
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 117
+y = 363
+offset = 12
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 363
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 117
+y = 364
+offset = 8
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 117
+y = 361
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 327
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 328
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 329
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 330
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 331
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 332
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 333
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 334
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 335
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 336
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 337
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 338
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 339
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 340
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 341
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 342
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 343
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 344
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 345
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 346
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 347
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 348
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 349
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 350
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 351
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 352
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 353
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 354
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 325
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 16
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 17
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 18
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 19
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 20
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 21
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 22
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 23
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 24
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 25
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 26
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 27
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 28
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 29
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 30
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 31
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 32
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 33
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 34
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 35
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 36
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 37
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 38
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 39
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 40
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 41
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 42
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 43
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 44
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 45
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 46
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 47
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 48
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 51
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 52
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 53
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 56
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 58
+y = 324
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 18
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 19
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 24
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 25
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 30
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 31
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 36
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 37
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 42
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 43
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 48
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 338
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 326
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 338
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 332
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 344
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 58
+y = 332
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 58
+y = 344
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 353
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 352
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 353
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 353
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 353
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 353
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 354
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 354
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 354
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 354
+offset = 22
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 344
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 345
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 346
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 347
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 348
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 349
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 351
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 350
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 350
+offset = 32
+
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 344
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 344
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 344
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 345
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 339
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 342
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 343
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 339
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 342
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 343
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 339
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 342
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 62
+y = 343
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 339
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 342
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 343
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 65
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 345
+offset = 34
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 345
+offset = 34
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 345
+offset = 34
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 345
+offset = 34
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 344
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 344
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 344
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 344
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 343
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 342
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 341
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 325
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 328
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 333
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 334
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 335
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 336
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 337
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 331
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 331
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 331
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 328
+offset = 45
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 329
+offset = 41
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 330
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 331
+offset = 35
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 328
+offset = 44
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 329
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 330
+offset = 37
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 331
+offset = 35
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 327
+offset = 45
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 328
+offset = 43
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 329
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 330
+offset = 36
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 327
+offset = 45
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 328
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 329
+offset = 39
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 115
+y = 330
+offset = 35
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 328
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 329
+offset = 38
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 330
+offset = 35
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 342
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 89
+y = 341
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 340
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 60
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 61
+y = 338
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 63
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 64
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 66
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 67
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 69
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 70
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 88
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 93
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 94
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 99
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 100
+y = 320
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 336
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 320
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 320
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 320
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 320
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 336
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 87
+y = 320
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 335
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 331
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 74
+y = 334
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 330
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 331
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 85
+y = 334
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 333
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 331
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 75
+y = 332
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 331
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 84
+y = 332
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 76
+y = 332
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 77
+y = 332
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 82
+y = 332
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 331
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 83
+y = 332
+offset = 82
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 78
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 79
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 80
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 332
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 81
+y = 333
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 116
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 117
+y = 328
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 118
+y = 333
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 119
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 328
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 328
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 326
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 327
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 328
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 336
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 109
+y = 335
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 112
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 113
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 311
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 114
+y = 312
+offset = 40
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 333
+offset = 44
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 108
+y = 334
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 332
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 331
+offset = 48
+
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 333
+offset = 36
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 111
+y = 332
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 16
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 17
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 18
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 19
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 20
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 21
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 22
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 23
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 24
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 25
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 26
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 27
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 28
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 29
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 30
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 31
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 32
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 33
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 34
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 35
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 36
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 37
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 38
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 39
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 40
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 41
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 42
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 43
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 44
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 45
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 46
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 47
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 48
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 49
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 50
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 51
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 52
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 53
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 54
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 55
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 56
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 57
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 58
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 59
+y = 323
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 0
+y = 323
+offset = 96
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 1
+y = 323
+offset = 88
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 2
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 3
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 4
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 5
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 6
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 7
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 8
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 9
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 10
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 11
+y = 323
+offset = 80
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 12
+y = 323
+offset = 76
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 13
+y = 323
+offset = 68
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 14
+y = 323
+offset = 60
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 323
+offset = 52
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 0
+y = 324
+offset = 72
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 1
+y = 324
+offset = 64
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 2
+y = 324
+offset = 56
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 3
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 4
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 5
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 6
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 7
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 8
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 9
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 10
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 11
+y = 324
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 12
+y = 324
+offset = 44
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 13
+y = 324
+offset = 36
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 14
+y = 324
+offset = 28
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 324
+offset = 20
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 327
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 328
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 330
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 15
+y = 331
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 14
+y = 348
+offset = 30
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 12
+y = 346
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 6
+y = 344
+offset = 62
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 4
+y = 342
+offset = 78
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 6
+y = 369
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 7
+y = 369
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 6
+y = 368
+offset = 24
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 321
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 322
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 323
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 324
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 325
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 326
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 327
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 328
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 329
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 330
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 331
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 332
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 333
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 334
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 335
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 336
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 337
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 338
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 339
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 340
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 341
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 342
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 343
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 344
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 345
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 346
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 347
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 131
+y = 348
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 344
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 345
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 346
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 347
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 348
+offset = 16
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 332
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 333
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 334
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 335
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 336
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 337
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 338
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 339
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 340
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 341
+offset = 32
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 342
+offset = 30
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 343
+offset = 26
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 132
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 133
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 134
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 135
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 136
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 137
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 138
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 139
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 140
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 141
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 142
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 143
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 144
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 145
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 146
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 147
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 148
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 149
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 150
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 151
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 152
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 153
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 154
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 155
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 156
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 157
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 158
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 159
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 160
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 161
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 162
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 163
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 164
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 165
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 166
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 167
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 168
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 169
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 170
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 171
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 172
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 173
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 174
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 175
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 176
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 177
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 178
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 179
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 180
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 181
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 182
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 183
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 184
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 185
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 186
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 187
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 188
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 189
+y = 320
+offset = 0
+
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 320
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 321
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 322
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 323
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 324
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 325
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 326
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 327
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 328
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 329
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 330
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 331
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 332
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 333
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 334
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 335
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 336
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 337
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 338
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 339
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 340
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 341
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 342
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 343
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 344
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 345
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 346
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 347
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 348
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 349
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 350
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 351
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 352
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 353
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 354
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 355
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 356
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 357
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 358
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 359
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 360
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 361
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 362
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 363
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 364
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 365
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 190
+y = 366
+offset = 0
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 110
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 117
+y = 329
+offset = 44
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 331
+offset = 42
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 330
+offset = 46
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 120
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 121
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 122
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 123
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 124
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 125
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 126
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 127
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 128
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 129
+y = 331
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 329
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 330
+offset = 48
+
+[[overworld_offsets]]
+world = "light"
+background = 1
+x = 130
+y = 331
+offset = 48
