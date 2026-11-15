@@ -271,7 +271,6 @@ function calculateHeights(input, progress = () => {}) {
             throw Error('Invalid authored placement height');
         authoredHeights.set(`${entry.x}:${entry.y}`, entry.height);
     }
-    const nonuniform = new Set((input.nonuniformHeights || []).map(entry => `${entry.x}:${entry.y}`));
     let anchors = 0, unknownRoles = 0, missingSources = 0, missingFacings = 0, contextDependent = 0;
     progress('Resolving visible placement facings and explicit reference…');
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -297,7 +296,7 @@ function calculateHeights(input, progress = () => {}) {
                 a.normals.every(n => n === 'east' || n === 'west') ? 2 : 0) : 0;
         cells.push({north: north[i], east: east[i], facing, weight: tile?.weight ?? 8,
             straightAxes, wall, authoredHeight: authoredHeights.get(`${x+x0}:${y+y0}`),
-            resolved: !nonuniform.has(`${x+x0}:${y+y0}`) && !!tile && knownRole && (!wall || !!knownNormals && (!isDiagonal(a) || !!facing))});
+            resolved: !!tile && knownRole && (!wall || !!knownNormals && (!isDiagonal(a) || !!facing))});
         if (preset ? x + x0 < 256 && y + y0 >= 492 && tile?.sand : x + x0 === ref.x && y + y0 === ref.y) {
             anchor[i] = 1; anchors++;
         }

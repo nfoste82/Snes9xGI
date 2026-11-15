@@ -26,7 +26,11 @@ const floor = () => ({resolved:true,facing:null,north:0,east:0,weight:1});
     }
     assert.deepEqual([...calc('dark',[{x:21,y:30,height:-4}]).heights],[0,-4,-4]);
     assert.deepEqual([...calc('light',[{x:22,y:30,height:0}]).heights],[0,0,0]);
-    assert.equal(calc('light',[],[{x:21,y:30}]).assigned[2],0);
+    // Pixel detail never blocks or modifies scalar traversal, even for callers
+    // still sending the former nonuniformHeights field.
+    assert.deepEqual([...calc('light',[],[{x:21,y:30}]).heights],[0,0,0]);
+    assert.equal(calc('light',[],[{x:21,y:30}]).assigned[2],1);
+    assert.deepEqual([...calc('light',[{x:21,y:30,height:16}],[{x:21,y:30}]).heights],[0,16,16]);
     // Multiple disagreeing arrivals at the authored tile all adopt its datum.
     const square=Array.from({length:9},floor);square[4].authoredHeight=20;
     r=diagonalWalk(3,3,square,[1,0,0,0,0,0,0,0,0],0);

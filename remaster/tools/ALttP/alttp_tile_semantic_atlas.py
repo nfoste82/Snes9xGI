@@ -809,7 +809,9 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                     if not 0 < length <= MAX_OFFSET_BODY:
                         raise ValueError('invalid height-offset request body size (expected 1 byte to 16 MiB)')
                     value = json.loads(self.rfile.read(length))
-                    if 'values' in value:
+                    if value.get('action') == 'remove-terrain-heights':
+                        result = height_offsets.remove_terrain_heights(value['world'], value['locations'], self.headers.get('If-Match'))
+                    elif 'values' in value:
                         result = height_offsets.save_values(value['world'], value['values'], self.headers.get('If-Match'))
                     else:
                         locations = value['locations'] if 'locations' in value else [dict(x=value['x'], y=value['y'])]

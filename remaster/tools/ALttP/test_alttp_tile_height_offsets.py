@@ -3,13 +3,86 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
-from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict
+from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict, integer_terrain_heights, integer_terrain_profile
 from alttp_tile_semantic_atlas import AnnotationStore
 from test_alttp_tile_semantic_atlas import ROM_SHA256
 
 
 class HeightOffsets(unittest.TestCase):
+    def test_integer_pixels_roundtrip_and_preservation(self):
+        pixels = [-2.5, -1.5, -.51, -.5, -.49, 0.49, .5, .51, 1.5, 2.5] + [0.0]*54
+        expected = [-3, -2, -1, -1, 0, 0, 1, 1, 2, 3] + [0]*54
+        self.assertEqual(integer_terrain_heights(pixels), expected)
+        for invalid in ([True]*64, [float('nan')]*64, [float('inf')]*64, [0]*63):
+            with self.assertRaises(ValueError):
+                integer_terrain_heights(invalid)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/'profile.toml'
+            text = (f'schema_version = 39\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                    '[[overworld_terrain]]\nworld = "light"\nbackground = 1\nx = 1\ny = 2\n'
+                    f'height_offset = [\n{", ".join(map(str, pixels))}\n] # retain comment\n'
+                    'normal_offset = [0.1, 0.2, 0.3]\n'
+                    '[[overworld_terrain]]\nworld = "dark"\nbackground = 1\nx = 1\ny = 2\n'
+                    f'height_offset = [{", ".join(["0.1"]*64)}]\n')
+            path.write_text(text)
+            store = HeightOffsetStore(AnnotationStore(root/'annotations.json', ROM_SHA256, profile=path))
+            with self.assertRaisesRegex(ValueError, '64 integers'):
+                store.config()
+            with self.assertRaisesRegex(ValueError, '64 integers'):
+                store.save('light', 1, 2, 5, 'unused')
+            self.assertEqual(path.read_text(), text)
+            # Migration is explicit, never triggered by an editor read or save.
+            migrated = integer_terrain_profile(text)
+            path.write_text(migrated)
+            config = store.config()
+            self.assertEqual(config['terrain_heights']['light:1:2'], expected)
+            self.assertNotIn('dark:1:2', config['heights'])
+            self.assertNotIn('dark:1:2', config['nonuniform'])
+            self.assertEqual(path.read_text(), migrated)  # Reading never writes.
+            with self.assertRaises(OffsetConflict):
+                store.save('light', 1, 2, 5, 'stale')
+            self.assertEqual(path.read_text(), migrated)
+            terrain_before = tomllib.loads(migrated)['overworld_terrain']
+            with patch('alttp_tile_height_offsets.integer_terrain_profile', side_effect=AssertionError('Migration ran during save')), \
+                 patch('alttp_tile_height_offsets.integer_terrain_heights', side_effect=AssertionError('Rounding ran during save')):
+                store.save('light', 1, 2, 5, config['revision'])
+            rows = tomllib.loads(path.read_text())['overworld_terrain']
+            self.assertEqual(rows, terrain_before)
+            self.assertEqual(rows[0]['height_offset'], expected)
+            self.assertTrue(all(type(v) is int for row in rows for v in row['height_offset']))
+            self.assertEqual(rows[0]['normal_offset'], [.1, .2, .3])
+            self.assertIn('# retain comment', path.read_text())
+            self.assertEqual(integer_terrain_profile(path.read_text()), path.read_text())
+
+    def test_remove_pixel_heights_preserves_scalar_normals_and_other_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/'profile.toml'
+            pixels = ', '.join(str(i) for i in range(64))
+            path.write_text(f'schema_version = 39\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                            '[[overworld_offsets]]\nworld = "light"\nbackground = 1\nx = 32\ny = 209\noffset = 5\n'
+                            '[[overworld_terrain]]\nworld = "light"\nbackground = 1\nx = 32\ny = 209\n'
+                            f'height_offset = [\n{pixels}\n]\nnormal_offset = [0, 0, 1]\n'
+                            '[[overworld_terrain]]\nworld = "dark"\nbackground = 1\nx = 32\ny = 209\n'
+                            f'height_offset = [{pixels}]\n')
+            store = HeightOffsetStore(AnnotationStore(root/'annotations.json', ROM_SHA256, profile=path))
+            config = store.config()
+            self.assertEqual(config['terrain_heights']['light:32:209'], list(range(64)))
+            before = path.read_bytes()
+            with self.assertRaises(OffsetConflict):
+                store.remove_terrain_heights('light', [dict(x=32,y=209)], 'stale')
+            self.assertEqual(path.read_bytes(), before)
+            saved = store.remove_terrain_heights('light', [dict(x=32,y=209)], config['revision'])
+            self.assertEqual(saved['heights']['light:32:209'], 5)
+            self.assertNotIn('light:32:209', saved['terrain_heights'])
+            self.assertIn('dark:32:209', saved['terrain_heights'])
+            rows = tomllib.loads(path.read_text())['overworld_terrain']
+            self.assertEqual(rows[0]['normal_offset'], [0,0,1])
+            self.assertNotIn('height_offset', rows[0])
+
     def test_large_http_selection_save_values_remove_and_size_limit(self):
         from http.server import ThreadingHTTPServer
         import threading
@@ -128,7 +201,7 @@ class HeightOffsets(unittest.TestCase):
             initial = offsets.config()
             saved = offsets.save('light', 3, 4, -8, initial['revision'])
             self.assertEqual(saved['heights']['light:3:4'], -8)
-            self.assertEqual(saved['heights']['dark:3:4'], 2)
+            self.assertNotIn('dark:3:4', saved['heights'])
             self.assertTrue(saved['enabled'])
             before = path.read_bytes()
             with self.assertRaises(OffsetConflict):
@@ -146,11 +219,15 @@ class HeightOffsets(unittest.TestCase):
             parsed = tomllib.loads(path.read_text())
             for field in ('assets', 'overworld_terrain', 'game'):
                 self.assertEqual(parsed[field], original[field])
-            # Nonuniform terrain is never averaged into a single authored height.
+            # Neither uniform nor nonuniform pixel detail creates a scalar base.
             path.write_text(path.read_text().replace('height_offset = [2,', 'height_offset = [3,'))
             config = offsets.config()
             self.assertIn('dark:3:4', config['nonuniform'])
             self.assertNotIn('dark:3:4', config['heights'])
+            saved = offsets.save('dark', 3, 4, 12, config['revision'])
+            self.assertEqual(saved['heights']['dark:3:4'], 12)
+            removed = offsets.remove_terrain_heights('dark', [dict(x=3,y=4)], saved['revision'])
+            self.assertEqual(removed['heights'], saved['heights'])
 
     def test_http_and_missing_profile(self):
         from http.server import ThreadingHTTPServer

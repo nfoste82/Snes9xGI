@@ -45,9 +45,12 @@ async function main() {
                 const value=JSON.parse(options.body);
                 assert.equal(options.headers['If-Match'],context.meta.revision);
                 for(const at of value.values||value.locations){const {x,y}=at,key=`${value.world}:${x}:${y}`,offset=value.values?at.offset:value.offset;
-                const terrain=offsets.terrain.includes(key)?offsets.heights[key]-(offsets.offsets[key]??0):0;
+                if(value.action==='remove-terrain-heights'){
+                    delete offsets.terrain_heights[key];offsets.terrain=offsets.terrain.filter(k=>k!==key);offsets.nonuniform=offsets.nonuniform.filter(k=>k!==key);
+                    if(Object.hasOwn(offsets.offsets,key))offsets.heights[key]=offsets.offsets[key];else delete offsets.heights[key];continue;
+                }
                 if(offset===null){delete offsets.offsets[key];delete offsets.heights[key];}
-                else {offsets.offsets[key]=offset;offsets.heights[key]=offset+terrain;}
+                else {offsets.offsets[key]=offset;offsets.heights[key]=offset;}
                 }
                 offsets.revision+='-saved';config.semantic_revision=offsets.revision;config.revision+='-saved';
             }
@@ -426,10 +429,10 @@ async function main() {
     context.worldSelection=new Map([['110:211',{x:110,y:211}]]);context.worldCell={x:110,y:211};
     element('heightOffsetDelta').value='-4';await element('heightOffsetAdjust').onclick();
     assert.equal(offsets.heights['light:110:211'],-4);
-    offsets.terrain.push('light:110:211');offsets.heights['light:110:211']=3; // scalar -4 + terrain 7
+    offsets.terrain.push('light:110:211'); // Pixel detail doesn't change scalar -4.
     await run();await workers.at(-1).finish(); // refresh editor's authored snapshot
     element('heightOffsetDelta').value='2';await element('heightOffsetAdjust').onclick();
-    assert.equal(offsets.offsets['light:110:211'],-2);assert.equal(offsets.heights['light:110:211'],5);
+    assert.equal(offsets.offsets['light:110:211'],-2);assert.equal(offsets.heights['light:110:211'],-2);
     assert.deepEqual(workspace.light.previousArea,workers.at(-1).message.input.bounds);
     assert.equal(workspace.light.referenceHeight,'9');
     assert.deepEqual(workspace.light.reference,{x:101,y:201,world:'light'});
@@ -488,8 +491,8 @@ async function main() {
     assert.match(prompts.at(-1),/Remove authored scalar offsets/);
     element('heightOffsetAll').checked=false;
     context.worldRecord=oldRecord;context.worldManifest=oldManifest;
-    // Explicit two-boundary gradient: preview/cancel are read-only, defaults
-    // preserve existing offsets, and replacement needs fresh confirmation.
+    // Explicit two-boundary gradient: preview/cancel are read-only; saves
+    // replace existing offsets after explicit confirmation, even if all exist.
     const select=points=>{context.worldSelection=new Map(points.map(p=>[`${p.x}:${p.y}`,p]));context.worldCell=points.at(-1);};
     select([{x:10,y:10},{x:12,y:10}]);element('gradientA').onclick();
     select([{x:10,y:12},{x:12,y:12}]);element('gradientB').onclick();
@@ -498,13 +501,15 @@ async function main() {
     const gradientBefore=JSON.stringify(offsets);
     element('gradientPreview').onclick();
     assert.equal(JSON.stringify(offsets),gradientBefore);
-    assert.match(element('gradientStatus').textContent,/8 offsets, 1 existing offsets preserved/);
+    assert.match(element('gradientStatus').textContent,/9 offsets; 1 existing offsets will be overwritten/);
     context.window.confirm=()=>false;await element('gradientSave').onclick();
     assert.equal(JSON.stringify(offsets),gradientBefore);
-    context.window.confirm=()=>true;await element('gradientSave').onclick();
+    context.window.confirm=message=>{assert.match(message,/1 existing scalar offsets will be overwritten/);return true;};await element('gradientSave').onclick();
     assert.equal(offsets.heights['light:10:10'],48);assert.equal(offsets.heights['light:10:12'],32);
-    assert.equal(offsets.heights['light:10:11'],40);assert.equal(offsets.heights['light:11:11'],99);
-    element('gradientReplace').checked=true;element('gradientPreview').onclick();
+    assert.equal(offsets.heights['light:10:11'],40);assert.equal(offsets.heights['light:11:11'],40);
+    element('gradientPreview').onclick();
+    assert.match(element('gradientStatus').textContent,/9 offsets; 9 existing offsets will be overwritten/);
+    context.window.confirm=message=>{assert.match(message,/9 existing scalar offsets will be overwritten/);return true;};
     await element('gradientSave').onclick();assert.equal(offsets.heights['light:11:11'],40);
     element('gradientPreview').onclick();
     context.worldName='dark';await element('gradientSave').onclick();
@@ -515,6 +520,35 @@ async function main() {
     element('gradientPreview').onclick();assert.match(element('gradientStatus').textContent,/1 offsets/);
     element('gradientHeightA').oninput();assert.equal(element('gradientSave').disabled,true);
     element('gradientClear').onclick();assert.match(element('gradientStatus').textContent,/cleared/);
+    // Per-pixel authoring is labeled as a range and visible without traversal.
+    offsets.terrain_heights={'light:10:10':Array.from({length:64},(_,i)=>i)};
+    offsets.terrain=['light:10:10'];offsets.nonuniform=['light:10:10'];
+    await run();element('heightCancel').onclick();
+    context.worldX=-240;context.worldY=-240;context.worldScale=3;
+    element('worldCalculatedHeights').checked=true;element('worldHeight').checked=true;
+    const pixelLabels=[];ui.drawHeightLabels(new Proxy({fillText:text=>pixelLabels.push(text)},{get:(o,k)=>o[k]||(()=>{})}));
+    assert(pixelLabels.includes('48-111'));
+    const imagesBefore=heightImages.length;ui.drawHeight(drawing);
+    assert(heightImages.length>imagesBefore);assert(heightImages.at(-1)[0]<heightImages.at(-1)[63*4]);
+    select([{x:10,y:10}]);
+    // Bake/adjust use the base, not the minimum, maximum, or average pixel.
+    const detailBefore=JSON.stringify(offsets.terrain_heights);
+    await element('heightOffsetBake').onclick();assert.equal(offsets.offsets['light:10:10'],48);
+    element('heightOffsetDelta').value='2';await element('heightOffsetAdjust').onclick();
+    assert.equal(offsets.offsets['light:10:10'],50);
+    assert.equal(JSON.stringify(offsets.terrain_heights),detailBefore);
+    // Gradient writes also accept detailed tiles without folding in detail.
+    select([{x:10,y:10},{x:12,y:10}]);element('gradientA').onclick();
+    select([{x:10,y:12},{x:12,y:12}]);element('gradientB').onclick();
+    element('gradientMask').checked=false;
+    element('gradientPreview').onclick();assert.match(element('gradientStatus').textContent,/9 offsets/);
+    context.window.confirm=()=>true;await element('gradientSave').onclick();
+    assert.equal(offsets.offsets['light:10:10'],48);
+    assert.equal(JSON.stringify(offsets.terrain_heights),detailBefore);
+    select([{x:10,y:10}]);const pixelBefore=JSON.stringify(offsets);
+    context.window.confirm=()=>false;await element('heightTerrainRemove').onclick();assert.equal(JSON.stringify(offsets),pixelBefore);
+    context.window.confirm=()=>true;await element('heightTerrainRemove').onclick();
+    assert.equal(offsets.terrain_heights['light:10:10'],undefined);assert.equal(offsets.offsets['light:10:10'],48);
     console.log('Height UI mock: snapshot, stale rejection, explicit references and world isolation passed.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -40,7 +40,8 @@ function heightArrivalEdges(first, accepted, conflicts) {
 }
 if (typeof module !== 'undefined') Object.assign(module.exports, {heightArrivalEdges, heightArrivalLabels});
 // Explicit authoring, not traversal: interpolate distances to two sampled
-// boundaries inside their convex hull. A separate selection can restrict targets.
+// boundaries clipped on scanlines, preserving bends rather than convexifying
+// them. A separate selection can further restrict targets.
 function heightBoundaryGradient(a, b, heightA, heightB, targets = null) {
     if (!a.length || !b.length) throw Error('Capture both boundaries first.');
     if (![heightA,heightB].every(v=>Number.isInteger(v)&&Math.abs(v)<=32767)) throw Error('Boundary heights must be integers in -32767…32767.');
@@ -49,10 +50,43 @@ function heightBoundaryGradient(a, b, heightA, heightB, targets = null) {
     const key=p=>`${p.x}:${p.y}`,ak=new Set(a.map(key)),bk=new Set(b.map(key));
     if (a.some(p=>bk.has(key(p)))) throw Error('Boundaries overlap; capture disjoint sets.');
     const points=[...new Map([...a,...b].map(p=>[key(p),p])).values()].sort((p,q)=>p.x-q.x||p.y-q.y);
-    const cross=(o,p,q)=>(p.x-o.x)*(q.y-o.y)-(p.y-o.y)*(q.x-o.x);
-    const half=ps=>{const h=[];for(const p of ps){while(h.length>1&&cross(h[h.length-2],h[h.length-1],p)<=0)h.pop();h.push(p);}return h;};
-    const lo=half(points),hi=half([...points].reverse()),hull=[...lo.slice(0,-1),...hi.slice(0,-1)];
-    const inside=p=>hull.length===2?cross(hull[0],hull[1],p)===0&&p.x>=Math.min(hull[0].x,hull[1].x)&&p.x<=Math.max(hull[0].x,hull[1].x)&&p.y>=Math.min(hull[0].y,hull[1].y)&&p.y<=Math.max(hull[0].y,hull[1].y):hull.every((q,i)=>cross(q,hull[(i+1)%hull.length],p)>=0);
+    const center=ps=>ps.reduce((s,p)=>({x:s.x+p.x/ps.length,y:s.y+p.y/ps.length}),{x:0,y:0});
+    const ca=center(a),cb=center(b),horizontal=Math.abs(cb.x-ca.x)>=Math.abs(cb.y-ca.y);
+    const scan=horizontal?'y':'x',along=horizontal?'x':'y';
+    function profile(samples){
+        const rows=new Map();
+        for(const p of samples){const row=rows.get(p[scan])||{min:Infinity,max:-Infinity};row.min=Math.min(row.min,p[along]);row.max=Math.max(row.max,p[along]);rows.set(p[scan],row);}
+        const indices=[...rows.keys()].sort((x,y)=>x-y);
+        for(let i=1;i<indices.length;i++){
+            const start=indices[i-1],end=indices[i],lo=rows.get(start),hi=rows.get(end);
+            for(let k=start+1;k<end;k++){const t=(k-start)/(end-start);rows.set(k,{min:lo.min+(hi.min-lo.min)*t,max:lo.max+(hi.max-lo.max)*t});}
+        }
+        return rows;
+    }
+    const pa=profile(a),pb=profile(b),positive=cb[along]>=ca[along];
+    const ends=p=>{const indices=[...p.keys()];return {min:Math.min(...indices),max:Math.max(...indices)};};
+    const ea=ends(pa),eb=ends(pb);
+    // Close unequal spans with endpoint-to-endpoint caps, not extrapolated
+    // boundary slopes or a convex hull that would bridge interior bends.
+    function capped(p,extent,other,otherExtent,k,isA){
+        if(p.has(k))return p.get(k);
+        const end=k<extent.min?'min':'max',start=extent[end],finish=otherExtent[end];
+        if(start===finish||k<Math.min(start,finish)||k>Math.max(start,finish))return null;
+        const inward=isA===positive?'max':'min',opposite=isA===positive?'min':'max';
+        const u=p.get(start)[inward],v=other.get(finish)[opposite];
+        const value=u+(v-u)*(k-start)/(finish-start);
+        return {min:value,max:value};
+    }
+    const singlePair=ak.size===1&&bk.size===1;
+    const inside=p=>{
+        // Two isolated endpoint tiles define a segment, not an area.
+        if(singlePair){const u=a[0],v=b[0];return (p.x-u.x)*(v.y-u.y)===(p.y-u.y)*(v.x-u.x)&&p.x>=Math.min(u.x,v.x)&&p.x<=Math.max(u.x,v.x)&&p.y>=Math.min(u.y,v.y)&&p.y<=Math.max(u.y,v.y);}
+        if(ak.has(key(p))||bk.has(key(p)))return true;
+        const u=capped(pa,ea,pb,eb,p[scan],true),v=capped(pb,eb,pa,ea,p[scan],false);
+        if(!u||!v)return false;
+        const low=positive?u.max:v.max,high=positive?v.min:u.min;
+        return p[along]>=low&&p[along]<=high;
+    };
     // Multi-source Euclidean distance fields: O(world area + boundary samples),
     // not O(targets × samples). Exact separable squared-distance transform.
     function distances(samples) {
@@ -73,7 +107,7 @@ function heightBoundaryGradient(a, b, heightA, heightB, targets = null) {
         const i=p.y*512+p.x,t=da[i]/(da[i]+db[i]);
         values.push({x:p.x,y:p.y,height:ak.has(key(p))?heightA:bk.has(key(p))?heightB:Math.round(heightA+(heightB-heightA)*t)});
     }
-    if(!values.length)throw Error('No target tiles inside the boundary hull.');
+    if(!values.length)throw Error('No target tiles between the boundaries.');
     return values;
 }
 if (typeof module !== 'undefined') module.exports.heightBoundaryGradient = heightBoundaryGradient;
@@ -93,7 +127,7 @@ if (typeof document !== 'undefined') (() => {
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span id="heightOffsetCell">Select a map cell</span>
         <label>Authored height offset <input id="heightOffset" type="number" min="-32767" max="32767" step="1" style="width:90px"></label>
         <label><input id="heightOffsetAll" type="checkbox"> Apply to all instances in this world</label>
-         <button id="heightOffsetSave">Save offset</button><button id="heightOffsetRemove">Remove offset</button><button id="heightOffsetBake">Bake Current Offset</button>
+          <button id="heightOffsetSave">Save offset</button><button id="heightOffsetRemove">Remove offset</button><button id="heightTerrainRemove">Remove per-pixel heights</button><button id="heightOffsetBake">Bake Current Offset</button>
          <label>Adjust by <input id="heightOffsetDelta" type="number" step="1" value="0" style="width:80px"></label><button id="heightOffsetAdjust">Apply adjustment</button>
        <span id="heightOffsetState" class="hint"></span></div>
         <details><summary>Author gradient between two boundaries</summary>
@@ -101,18 +135,17 @@ if (typeof document !== 'undefined') (() => {
         <button id="gradientA">Capture selection as A</button><label>A height <input id="gradientHeightA" type="number" step="1" value="48" style="width:70px"></label>
         <button id="gradientB">Capture selection as B</button><label>B height <input id="gradientHeightB" type="number" step="1" value="32" style="width:70px"></label>
         <label><input id="gradientMask" type="checkbox"> Fill current selection only</label>
-        <label><input id="gradientReplace" type="checkbox"> Replace existing offsets</label>
         <button id="gradientPreview">Preview gradient</button><button id="gradientSave" disabled>Save preview</button><button id="gradientClear">Clear gradient</button></div>
         <div id="gradientStatus" class="hint" role="status">Capture two disjoint tile sets in the same world. Nothing is saved until confirmed.</div>
-        <div class="hint">Rounded distance interpolation between sampled tiles, limited to their convex hull (or its intersection with the current selection). Boundaries are tile samples, not automatically connected polylines. Irregular/concave shapes may need a target selection. Existing offsets are preserved by default. Preview is purple, not traversal coverage; inspect before saving. Shared metadata and per-pixel terrain are unchanged.</div></details>
+        <div class="hint">Rounded distance interpolation between sampled tiles, clipped between boundary shapes row by row for left/right boundaries or column by column for upper/lower boundaries (orientation inferred). Gaps in boundary samples are linearly connected. Unequal line lengths close with straight caps connecting corresponding endpoints, filling to both ends without extending beyond those caps or bridging boundary bends. Use a target selection for complex shapes. Saving replaces existing scalar offsets in the previewed area. Preview is purple, not traversal coverage; inspect before saving. Shared metadata and per-pixel terrain are unchanged.</div></details>
         <div id="heightStatus" class="hint" role="status" style="height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Not calculated.</div>
        <details id="heightHelp"><summary style="cursor:pointer">Help &amp; details</summary>
        <div style="height:180px;overflow:auto;padding:6px 0">
        <div id="heightAnchorInfo" class="hint"></div><div id="heightBounds" class="hint"></div>
         <div class="hint">Experimental diagonal-propagation-v37-1 · both worlds · explicit reference required in view.
         Authored BG2 placement offsets are absolute traversal heights: incoming heights reset to the authored value, then propagation continues. Only reached tiles reset; offsets do not launch independent seeds. A saved zero is an explicit reset. Remove offset restores automatic traversal.
-         Saved offsets use native profile units (no scaling). Per-pixel terrain is preserved: uniform fields combine with the scalar; nonuniform fields stop as unresolved rather than being averaged. Saving an offset enables the native authored-overworld-offsets mode.
-         Adjust by adds a signed integer to each selected location's own Heights label and saves the result as an authored offset. Authored heights take precedence over calculated values; stale/conflicting numeric values and display-default zero are accepted just like baking. Cells showing ? or unrepresentable results reject the whole adjustment. Independent terrain is preserved without double-counting.
+         Saved offsets use native profile units (no scaling). Per-tile bases drive traversal; per-pixel terrain is independent additive detail and never blocks scalar propagation. Saving an offset enables the native authored-overworld-offsets mode.
+          Adjust by adds a signed integer to each selected location's own scalar base and saves the result as an authored offset. Authored bases take precedence over calculated values; stale/conflicting numeric values and display-default zero are accepted just like baking. Missing scalar bases or unrepresentable results reject the whole adjustment. Per-pixel detail is preserved, not baked into the base.
       Outward directional wavefront; non-wall tiles launch perpendicular traversals toward unassigned neighbors.
        All walls and wall corners continue their crossing without launching perpendicular traversals; outward branching resumes on non-wall tiles.
        Travel along cardinal wall faces is straight-only: E/W on N/S-facing walls, N/S on E/W-facing walls. Branching resumes after leaving those faces.
@@ -121,7 +154,7 @@ if (typeof document !== 'undefined') (() => {
       Magenta cross = reference; cyan dashed box = calculated bounds. Outside calculated bounds is unknown/transparent.
          Magenta/dark-purple checker = NO HEIGHT; orange = conflicting arrival (first height retained).
          Recalc heights (prev area) reuses the last successfully calculated bounds for this world with current saved inputs and reference, even after panning or zooming. Failed or cancelled calculations do not replace that area. The reference must be inside the calculation area.
-         Heights and wall weights are mutually exclusive. Saved authored heights take priority and appear immediately in cyan, or magenta when the calculation did not reach that cell; unreached authored cells use authored-height grayscale shading instead of the checkerboard. Otherwise labels show calculated heights, or gray 0 where no calculation exists. Unreached cells without authored heights and nonuniform authored fields show ?. Conflicting calculated heights are orange; stale calculated labels fade. Display-only default zeros are not assigned traversal heights.
+           Heights and wall weights are mutually exclusive. Saved authored bases take priority and appear immediately in cyan, or magenta when the calculation did not reach that cell. Per-pixel terrain shows a blue integer min-max label and its 8×8 grayscale field, added to the authored or calculated base (display-default zero if unavailable). Pixel detail never changes scalar traversal. Per-pixel heights must be stored as integers; normal saves do not round or rewrite them. Remove per-pixel heights preserves scalar offsets and normals. Baking, adjusting and gradients edit only the scalar base, never the pixel detail. Unreached cells without authored bases still lack calculated heights; displaying authored detail is not traversal coverage. Conflicts are orange; stale calculated labels fade. Display-only default zeros are not assigned traversal heights.
        Agreeing arrivals continue in new directions; repeated coordinate/direction states and conflicts stop.
         East branches to NE SW/NE-facing and SE NW/SE-facing walls, plus E except diagonal-to-diagonal (placement flips applied).
         West branches to NW SE/NW-facing and SW NE/SW-facing walls, plus W with the same lateral restriction.
@@ -141,6 +174,44 @@ if (typeof document !== 'undefined') (() => {
     // View/layout changes stale overlay scope, not explicit saves of captured numbers.
     let editGeneration = 0;
     let offsetConfig = null, offsetSelection = '', offsetBusy = false;
+    const terrainImages=new Map();
+    function terrainRange(key){
+        const pixels=offsetConfig?.terrain_heights?.[key];
+        if(!pixels)return null;
+        const base=terrainBase(key);
+        return {min:Math.min(...pixels)+base,max:Math.max(...pixels)+base};
+    }
+    function terrainBase(key){
+        const [world,x,y]=key.split(':');
+        if(world!==worldName)return offsetConfig.offsets[key]??0;
+        const base=scalarHeight(Number(x),Number(y)).value;
+        return Number.isFinite(base)?base:0;
+    }
+    function heightDisplayScale(stats,world){
+        let min=stats?.min??Infinity,max=stats?.max??-Infinity;
+        for(const key of Object.keys(offsetConfig?.terrain_heights||{}))if(key.startsWith(world+':')){const r=terrainRange(key);min=Math.min(min,r.min);max=Math.max(max,r.max);}
+        return {min:Number.isFinite(min)?min:0,max:Number.isFinite(max)?max:0};
+    }
+    el('heightTerrainRemove').onclick=async()=>{
+        if(offsetBusy||!offsetConfig?.path)return;
+        const world=worldName,locations=offsetLocations().filter(p=>offsetConfig.terrain.includes(`${world}:${p.x}:${p.y}`));
+        if(!locations.length){el('heightOffsetState').textContent='No selected locations have per-pixel terrain heights.';return;}
+        if(!window.confirm(`Remove per-pixel height arrays from ${locations.length} selected locations in ${world} world?\n\nScalar offsets, per-pixel normals, shared artwork and other locations are preserved. This cannot be undone in the editor.`))return;
+        const revision=meta.revision;offsetBusy=true;showOffset();
+        const job=async()=>{
+            try{
+                await flushSemantics();
+                if(meta.revision!==revision)throw Error('Profile changed; reload and review the selection.');
+                saving=true;
+                const response=await fetch('/api/height-offsets',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':revision},body:JSON.stringify({world,locations,action:'remove-terrain-heights'})});
+                const value=await response.json();if(!response.ok)throw Error(value.error);
+                offsetConfig=value;meta.revision=value.revision;terrainImages.clear();invalidate();refreshHeightImage();await readConfig();drawWorld();
+                showOffset(true);el('heightOffsetState').textContent=`Removed per-pixel heights from ${locations.length} locations; scalar offsets and normals preserved. Recalculate heights.`;
+            }catch(error){el('heightOffsetState').textContent='Not removed: '+error.message;}
+            finally{saving=false;offsetBusy=false;showOffset();}
+        };
+        saveQueue=saveQueue.catch(()=>{}).then(job);await saveQueue;
+    };
     let gradientA=null,gradientB=null,gradientPreview=null;
     function clearGradientPreview(){gradientPreview=null;el('gradientSave').disabled=true;}
     for(const [id,side] of [['gradientA','A'],['gradientB','B']])el(id).onclick=()=>{
@@ -149,7 +220,7 @@ if (typeof document !== 'undefined') (() => {
         if(side==='A')gradientA={world:worldName,points};else gradientB={world:worldName,points};
         clearGradientPreview();el('gradientStatus').textContent=`Captured ${side}: ${points.length} locations in ${worldName}. A: ${gradientA?.points.length||0}; B: ${gradientB?.points.length||0}.`;drawWorld();
     };
-    for(const id of ['gradientHeightA','gradientHeightB','gradientMask','gradientReplace'])el(id).oninput=()=>{clearGradientPreview();drawWorld();};
+    for(const id of ['gradientHeightA','gradientHeightB','gradientMask'])el(id).oninput=()=>{clearGradientPreview();drawWorld();};
     el('gradientClear').onclick=()=>{gradientA=gradientB=null;clearGradientPreview();el('gradientStatus').textContent='Gradient cleared; profile unchanged.';drawWorld();};
     el('gradientPreview').onclick=()=>{
         clearGradientPreview();
@@ -159,20 +230,18 @@ if (typeof document !== 'undefined') (() => {
             const ta=el('gradientHeightA').value.trim(),tb=el('gradientHeightB').value.trim();
             if(!ta||!tb)throw Error('Enter both boundary heights.');
             const candidates=heightBoundaryGradient(gradientA.points,gradientB.points,Number(ta),Number(tb),el('gradientMask').checked?offsetLocations():null);
-            const replace=el('gradientReplace').checked,values=[],heights=new Map();let preserved=0;
+            const values=[],heights=new Map();let replaced=0;
             for(const p of candidates){
                 const key=`${worldName}:${p.x}:${p.y}`;
-                if(offsetConfig.nonuniform.includes(key))throw Error(`Cell (${p.x}, ${p.y}) has nonuniform terrain; restrict the target selection.`);
-                if(!replace&&Object.hasOwn(offsetConfig.offsets,key)){preserved++;continue;}
-                const terrain=offsetConfig.terrain.includes(key)?offsetConfig.heights[key]-(offsetConfig.offsets[key]??0):0;
-                const scalar=p.height-terrain;
+                if(Object.hasOwn(offsetConfig.offsets,key))replaced++;
+                const scalar=p.height;
                 if(!Number.isInteger(scalar)||Math.abs(scalar)>32767)throw Error(`Cell (${p.x}, ${p.y}) cannot represent this height as a scalar offset.`);
                 values.push({x:p.x,y:p.y,offset:scalar});heights.set(`${p.x}:${p.y}`,p.height);
             }
-            if(!values.length)throw Error('No writable targets; existing offsets are preserved unless replacement is enabled.');
-            gradientPreview={world:worldName,values,heights,revision:meta.revision,generation:editGeneration};
+            if(!values.length)throw Error('No writable targets.');
+            gradientPreview={world:worldName,values,heights,replaced,revision:meta.revision,generation:editGeneration};
             el('gradientSave').disabled=false;
-            el('gradientStatus').textContent=`Preview: ${values.length} offsets, ${preserved} existing offsets preserved. ${replace?'Existing offsets will be replaced. ':''}Review purple cells; Save preview requires confirmation.`;
+            el('gradientStatus').textContent=`Preview: ${values.length} offsets; ${replaced} existing offsets will be overwritten. Review purple cells; nothing changes until you save and confirm.`;
         }catch(error){el('gradientStatus').textContent='No preview: '+error.message;}
         drawWorld();
     };
@@ -181,7 +250,7 @@ if (typeof document !== 'undefined') (() => {
         if(!preview||offsetBusy||running)return;
         const fresh=()=>gradientPreview===preview&&preview.world===worldName&&preview.revision===meta.revision&&preview.generation===editGeneration;
         if(!fresh()){clearGradientPreview();el('gradientStatus').textContent='Preview stale; preview again before saving.';return;}
-        if(!window.confirm(`Save ${preview.values.length} gradient placement offsets in ${preview.world} world?\n\nOnly purple preview cells are written. Existing offsets are replaced only where included in this preview. Shared tile metadata and per-pixel terrain are unchanged. Recalculate afterward to inspect traversal conflicts.`))return;
+        if(!window.confirm(`Save ${preview.values.length} gradient placement offsets in ${preview.world} world?\n\n${preview.replaced} existing scalar offsets will be overwritten. Only purple preview cells are written. Shared tile metadata and per-pixel terrain are unchanged. Recalculate afterward to inspect traversal conflicts.`))return;
         offsetBusy=true;showOffset();
         const job=async()=>{
             try{
@@ -206,10 +275,11 @@ if (typeof document !== 'undefined') (() => {
         const available = !!locations.length && !!offsetConfig?.path && !offsetBusy;
         el('heightOffsetSave').disabled = !available;
         el('heightOffsetRemove').disabled = !available;
+        el('heightTerrainRemove').disabled = !available || !locations.some(p=>offsetConfig?.terrain.includes(`${worldName}:${p.x}:${p.y}`));
         el('heightOffsetBake').disabled = !available || running;
         el('heightOffsetAdjust').disabled = !available || running;
         el('heightOffsetDelta').disabled = !available || running;
-        el('heightOffsetBake').title = 'Save the numbers shown by Heights for selected locations, including conflicting or stale results you accept. Cells showing ? cannot be baked.';
+        el('heightOffsetBake').title = 'Save selected scalar bases, including conflicting or stale results you accept. Pixel detail is preserved separately; a min-max label is not baked into the base.';
         el('heightOffset').disabled = !available;
         el('heightOffsetAll').disabled = !available;
         if (!force && selectionKey === offsetSelection) return;
@@ -222,14 +292,14 @@ if (typeof document !== 'undefined') (() => {
         el('heightOffset').value = value === undefined ? '' : String(value);
         el('heightOffsetState').textContent = !offsetConfig?.path ? 'Requires a loaded profile' :
             locations.length > 1 ? `${mixed ? 'Mixed scalar offsets' : value === undefined ? 'No authored scalar offsets' : `Authored scalar offset ${value}`} · Save/remove applies to all ${locations.length} locations; per-pixel terrain preserved` :
-            offsetConfig.nonuniform.includes(key) ? 'Nonuniform per-pixel heights: traversal stops; terrain preserved' :
+            terrainRange(key) ? `Per-pixel heights: ${terrainRange(key).min}-${terrainRange(key).max}; scalar base ${scalarHeight(worldCell.x,worldCell.y).value} (authored, calculated or display-default). Pixel detail does not affect traversal. Remove per-pixel heights preserves normals and scalar.` :
             Object.hasOwn(offsetConfig.heights, key) ? `Authored traversal height ${offsetConfig.heights[key]}${offsetConfig.enabled ? '' : ' (native offset mode disabled)'}` : 'Automatic traversal (no authored height)';
     }
     async function readOffsets() {
         const response = await fetch('/api/height-offsets', {cache:'no-store'}), value = await response.json();
         if (!response.ok) throw Error(value.error);
         if (meta && value.revision !== meta.revision) throw Error('Profile/metadata changed elsewhere; reload before editing or calculating.');
-        offsetConfig = value; refreshHeightImage(); showOffset(true); drawWorld();
+        offsetConfig = value; terrainImages.clear(); refreshHeightImage(); showOffset(true); drawWorld();
         return value;
     }
     async function saveOffset(remove, bake = false, adjust = false) {
@@ -262,11 +332,9 @@ if (typeof document !== 'undefined') (() => {
                     if(!text||!Number.isSafeInteger(delta))throw Error('Enter a signed integer adjustment.');
                 }
                 values=locations.map(({x,y})=>{
-                    const height=displayedHeight(x,y).value,at=`${world}:${x}:${y}`;
+                    const height=scalarHeight(x,y).value;
                     if(!Number.isFinite(height))throw Error(`Cell (${x}, ${y}) shows ?; there is no numeric height to ${adjust?'adjust':'bake'}.`);
-                    // Preserve independent uniform terrain without double-adding it.
-                    const terrain=offsetConfig.terrain.includes(at)?offsetConfig.heights[at]-(offsetConfig.offsets[at]??0):0;
-                    const scalar=height+delta-terrain;
+                    const scalar=height+delta;
                     if(!Number.isInteger(scalar)||Math.abs(scalar)>32767)throw Error(`Cell (${x}, ${y}) cannot be saved as an integer offset in -32767…32767.`);
                     return {x,y,offset:scalar};
                 });
@@ -300,7 +368,7 @@ if (typeof document !== 'undefined') (() => {
                     body:JSON.stringify(bake?{world,values}:{world,locations,offset})});
                 const value = await response.json();
                 if (!response.ok) throw Error(value.error);
-                offsetConfig = value; meta.revision = value.revision;
+                offsetConfig = value; meta.revision = value.revision; terrainImages.clear();
                 refreshHeightImage();
                 await readConfig();
                 drawWorld();
@@ -652,31 +720,30 @@ if (typeof document !== 'undefined') (() => {
         c.restore();
     }
     // One source of truth for label display and explicit user-approved baking.
-    function authoredDisplayHeight(world,x,y,nonuniform) {
+    function authoredDisplayHeight(world,x,y) {
         const key=`${world}:${x}:${y}`;
-        return nonuniform.has(key)?NaN:offsetConfig?.heights[key];
+        return offsetConfig?.heights[key];
     }
     function makeHeightImage(data) {
         const s=data.stats,canvas=document.createElement('canvas');
+        const scale=heightDisplayScale(s,data.world);
         canvas.width=s.width;canvas.height=s.height;
         const context=canvas.getContext('2d'),pixels=context.createImageData(s.width,s.height);
-        const nonuniform=new Set(offsetConfig?.nonuniform||[]);
         for(let i=0;i<data.heights.length;i++) {
             const x=i%s.width,y=Math.floor(i/s.width);
-            const authored=authoredDisplayHeight(data.world,x+s.x0,y+s.y0,nonuniform);
+            const authored=authoredDisplayHeight(data.world,x+s.x0,y+s.y0);
              // Shade unreached authored heights on the same scale, without
              // claiming traversal coverage (their numeric label stays magenta).
              pixels.data.set(!data.assigned[i]&&Number.isFinite(authored)?
-                 heightPreviewColor(authored,true,false,s.min,s.max,x,y):
-                heightPreviewColor(data.heights[i],data.assigned[i],data.conflicts[i],s.min,s.max,x,y),i*4);
+                  heightPreviewColor(authored,true,false,scale.min,scale.max,x,y):
+                 heightPreviewColor(data.heights[i],data.assigned[i],data.conflicts[i],scale.min,scale.max,x,y),i*4);
         }
         context.putImageData(pixels,0,0);
         return canvas;
     }
     function refreshHeightImage(){if(result)image=makeHeightImage(result);}
-    function displayedHeight(x,y,nonuniform = new Set(offsetConfig?.nonuniform || [])) {
+    function scalarHeight(x,y) {
         const key=`${worldName}:${x}:${y}`,authored=offsetConfig?.heights[key];
-        if(nonuniform.has(key))return {value:NaN,color:'#ff66ee',alpha:1};
         const s=result?.world===worldName?result.stats:null;
         const i=s&&x>=s.x0&&x<s.x0+s.width&&y>=s.y0&&y<s.y0+s.height?(y-s.y0)*s.width+x-s.x0:-1;
         if(Number.isFinite(authored))return {value:authored,color:i>=0&&!result.assigned[i]?'#ff66ee':'#66ffff',alpha:1};
@@ -688,17 +755,20 @@ if (typeof document !== 'undefined') (() => {
         }
         return {value:0,color:'#aaa',alpha:1};
     }
+    function displayedHeight(x,y) {
+        const label=scalarHeight(x,y),range=terrainRange(`${worldName}:${x}:${y}`);
+        return range?{...label,text:`${range.min}-${range.max}`,color:'#99bbff'}:label;
+    }
     function drawHeightLabels(c) {
         if (!el('worldCalculatedHeights').checked || worldScale < 3) return;
         const visible = visibleBounds(), size = 8 * worldScale;
-        const nonuniform = new Set(offsetConfig?.nonuniform || []);
         c.save();
         c.font = `${Math.min(16, size * .4)}px sans-serif`;
         c.textAlign = 'center'; c.textBaseline = 'middle';
         c.lineWidth = 3; c.strokeStyle = '#000';
         for (let y = visible.y0; y < visible.y0 + visible.height; y++) for (let x = visible.x0; x < visible.x0 + visible.width; x++) {
             const proposed=gradientPreview?.world===worldName?gradientPreview.heights.get(`${x}:${y}`):undefined;
-            const label=proposed===undefined?displayedHeight(x,y,nonuniform):{value:proposed,color:'#dd99ff',alpha:1},text=Number.isFinite(label.value)?String(label.value):'?';
+            const label=proposed===undefined?displayedHeight(x,y):{value:proposed,color:'#dd99ff',alpha:1},text=label.text??(Number.isFinite(label.value)?String(label.value):'?');
             c.globalAlpha=label.alpha;c.fillStyle=label.color;
             const px = worldX + (x + .5) * size, py = worldY + (y + .5) * size;
             c.strokeText(text, px, py, size - 2); c.fillText(text, px, py, size - 2);
@@ -712,6 +782,18 @@ if (typeof document !== 'undefined') (() => {
             c.drawImage(image, worldX + s.x0 * 8 * worldScale, worldY + s.y0 * 8 * worldScale,
                 s.width * 8 * worldScale, s.height * 8 * worldScale);
             c.globalAlpha = 1;
+        }
+        if(el('worldHeight').checked&&offsetConfig?.terrain_heights){
+            const visible=visibleBounds(),size=8*worldScale;
+            const {min,max}=heightDisplayScale(s,worldName);
+            for(let y=visible.y0;y<visible.y0+visible.height;y++)for(let x=visible.x0;x<visible.x0+visible.width;x++){
+                const key=`${worldName}:${x}:${y}`,pixels=offsetConfig.terrain_heights[key];if(!pixels)continue;
+                const base=terrainBase(key),cacheKey=`${offsetConfig.revision}:${key}:${base}:${min}:${max}`;
+                let tile=terrainImages.get(cacheKey);
+                if(!tile){tile=document.createElement('canvas');tile.width=tile.height=8;const ctx=tile.getContext('2d'),data=ctx.createImageData(8,8);
+                    pixels.forEach((h,i)=>data.data.set(heightPreviewColor(h+base,true,false,min,max,i%8,Math.floor(i/8)),i*4));ctx.putImageData(data,0,0);terrainImages.set(cacheKey,tile);}
+                c.save();c.imageSmoothingEnabled=false;c.globalAlpha=Number(el('heightOpacity').value);c.drawImage(tile,worldX+x*size,worldY+y*size,size,size);c.restore();
+            }
         }
         if(gradientPreview&&gradientPreview.world===worldName){
             const size=8*worldScale;c.save();c.fillStyle='#b060ff';c.globalAlpha=.35;
@@ -750,8 +832,6 @@ if (typeof document !== 'undefined') (() => {
             const offsets = await readOffsets();
             const authoredHeights = Object.entries(offsets.heights).filter(([key]) => key.startsWith(worldName + ':'))
                 .map(([key,height]) => { const [,x,y] = key.split(':'); return {x:Number(x),y:Number(y),height}; });
-            const nonuniformHeights = offsets.nonuniform.filter(key => key.startsWith(worldName + ':'))
-                .map(key => { const [,x,y] = key.split(':'); return {x:Number(x),y:Number(y)}; });
             if (requestID !== runID) return;
             if (pendingId || saving || selected && !complete(annotation())) throw Error('Semantic edits changed while preparing the snapshot. Finish saving, then recalculate.');
             if (config.semantic_revision !== meta.revision) throw Error('Semantics/profile changed externally; reload the page.');
@@ -779,7 +859,7 @@ if (typeof document !== 'undefined') (() => {
                 compact.setUint32(offset, ids.get(key), true); compact.setUint8(offset + 7, cell.flips);
             }
             setPhase('Starting height worker');
-            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-1-trace1');
+            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-1-scalar-base2');
             worker.onmessage = async event => {
                 if (requestID !== runID) return;
                 try {
@@ -838,7 +918,7 @@ if (typeof document !== 'undefined') (() => {
                 finishRun('Worker communication failed');
             };
             status('Calculating raw heights in worker…');
-            worker.postMessage({id: token, input: {world: name, bounds, mode: 'manual', reference, grid: buffer, tiles, authoredHeights, nonuniformHeights}}, [buffer]);
+            worker.postMessage({id: token, input: {world: name, bounds, mode: 'manual', reference, grid: buffer, tiles, authoredHeights}}, [buffer]);
         } catch (error) {
             if (requestID !== runID) return;
             worker?.terminate(); worker = null;

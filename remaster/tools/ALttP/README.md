@@ -145,7 +145,8 @@ checkbox and **Wall weights** uncheck each other. Saved authored heights appear
 immediately in cyan and take precedence over calculated values, including after
 an offset edit without recalculating. Otherwise labels show calculated heights,
 or gray `0` where no calculation exists (display only, not traversal coverage).
-Unreached calculated cells and nonuniform authored fields display `?`; calculated
+Unreached calculated cells display `?`; pixel-authored cells show blue min-max
+ranges independently of scalar traversal. Calculated
 conflicts display the retained height in orange, and stale calculated labels fade.
 
 **Cmd-click** adds/removes exact map locations. Adding a second location switches
@@ -194,21 +195,21 @@ toggle those locations again. Selection changes still wait for pending edits to
 save, and normal dragging, Cmd-click and Shift-click keep their existing behavior.
 
 **Bake Current Offset** (beside Remove offset) saves each selected location's
-own numeric **Heights** label as an authored offset in one atomic profile update.
+own scalar base as an authored offset in one atomic profile update.
 Baking is explicit human approval: conflicting retained values and stale calculated
 values are accepted, and successive selections can be baked without recalculation.
 The exact display precedence applies: authored height, otherwise calculated height,
 otherwise display-default zero. Even default zeros can be explicitly baked; cells
 showing `?` cannot. Every scalar must be representable as an integer in
-−32767…32767; any invalid cell prevents the whole bake. Independent terrain is preserved: uniform
-terrain is subtracted from the scalar being saved to avoid double-counting;
-nonuniform fields show `?` and cannot be baked. Saving marks the calculation stale
+−32767…32767; any invalid cell prevents the whole bake. Independent pixel terrain
+is preserved; the base is baked without including or subtracting pixel detail,
+even when the label shows a range. Saving marks the calculation stale
 but does not prevent baking another selection. Snapshot/revision checks still
 reject external profile edits or changes occurring while a bake is being prepared.
 Clicking Bake with unusable values reports the reason beside the offset controls.
 
 **Adjust by** and **Apply adjustment** add a signed integer to each selected
-location's own numeric **Heights** label, then save the new value as an authored
+location's own scalar base, then save the new value as an authored
 offset in one atomic update. For example, heights 16 and 12 adjusted by `-4`
 become 12 and 8, rather than both becoming one common value. Enter/Return in
 the adjustment field also applies it. Subsequent adjustments use the newly saved
@@ -240,9 +241,9 @@ When traversal reaches an authored coordinate, its saved height replaces the
 incoming calculated height and traversal continues from there. Different incoming
 heights do not conflict at that coordinate. This does not seed unreachable cells,
 bypass unresolved facings/wall-boundary rules, or reconcile conflicts elsewhere.
-The authored value also wins if the reference is that coordinate. Uniform per-pixel
-terrain heights combine with the scalar; nonuniform fields remain preserved but
-stop traversal as unresolved (a tile-level traversal cannot represent 64 heights).
+The authored value also wins if the reference is that coordinate. Per-pixel
+terrain heights are additive surface detail only and do not change traversal,
+whether uniform or nonuniform.
 Removing a scalar does not remove independent terrain offsets. Reload after edits
 in Snes9x; stale profile revisions reject writes and calculation results.
 
@@ -395,6 +396,29 @@ paths. Use `remaster/tools/ALttP/alttp…` for those files now. Python module na
 unchanged; their sibling imports resolve when scripts are run directly.
 # Explicit boundary gradients
 
+Per-pixel placement terrain is also visible in the world editor: **Heights** labels
+show blue integer `min-max` ranges (scalar base included), and **Heightmap (raw)**
+renders the actual 8×8 field without averaging it or requiring a calculation.
+Scalar traversal uses only the per-tile base: an authored scalar offset when
+reached, otherwise the calculated height. Uniform and nonuniform pixel arrays
+are independent additive detail; neither changes nor blocks scalar traversal.
+Labels and pixel shading add detail to that base (display-default zero when no
+numeric base is available). Displaying detail does not establish traversal
+coverage or seed unreachable tiles. Bake, Adjust and gradients write only bases,
+preserving pixel detail without subtracting or averaging it. To discard detail, select locations and
+click **Remove per-pixel heights** beside **Remove offset**, then confirm. This
+removes only the selected BG2 terrain `height_offset` arrays in the current world,
+including uniform arrays. Scalar offsets, per-pixel normals, shared asset geometry,
+other locations and the other world remain unchanged. Recalculate afterward.
+
+Per-pixel overworld height offsets must be stored as integers. Normal editor
+reads and saves validate them without rounding or rewriting terrain arrays.
+The existing profile was migrated once. For a separate legacy profile only,
+run `python3 -B remaster/tools/ALttP/alttp_tile_height_offsets.py --round-profile PATH`
+explicitly to round pixels to the nearest integer (halves away from zero).
+That migration preserves scalar offsets, normals, and unrelated authored data;
+it is never part of an ordinary save.
+
 In the world editor, expand **Author gradient between two boundaries**:
 
 1. Select the tiles along one boundary; click **Capture selection as A**.
@@ -405,13 +429,21 @@ In the world editor, expand **Author gradient between two boundaries**:
    **Save preview** and confirm. Recalculate afterward to inspect arrivals.
 
 The tool interpolates by Euclidean distance to the captured tile samples and
-rounds to integer heights. It fills only their convex hull, optionally intersected
-with the target selection. Capture dense boundaries; points are not automatically
-connected as polylines. Concave shapes should use a target selection. This is
+rounds to integer heights. It clips between the boundary shapes row by row for
+left/right boundaries, or column by column for upper/lower boundaries, inferring
+orientation from the boundary centers. Bends are preserved rather than bridged
+by a convex hull. Missing scanlines between samples are linearly interpolated;
+unequal spans close with straight end caps connecting corresponding low/high
+scanline endpoints. This fills the end wedges up to both lines' ends, without
+extending beyond the caps or replacing bent boundaries with a convex hull.
+Selected boundary tiles are included. Thick boundaries use their inward
+edges for interior clipping. A target selection can further restrict the fill,
+but cannot extend it outside the boundaries. Complex looping or crossing shapes
+should be split into simpler boundary pairs. This is
 explicit surface authoring, not automatic conflict reconciliation or traversal
-coverage. Existing scalar offsets are preserved unless **Replace existing offsets**
-is enabled; use replacement to correct boundary values as well as the interior.
-The preview reports how many existing cells are preserved. Nonuniform terrain
-rejects the preview atomically; uniform terrain is subtracted to avoid doubling it.
+coverage. Saving overwrites existing scalar offsets in the previewed area,
+including boundary values. Previewing is read-only even when every target already
+has an offset. The preview and confirmation report the overwrite count. Pixel terrain
+does not restrict previews or change the scalar values saved.
 No shared artwork semantics, weights, or per-pixel fields change. Capture/preview
 state is temporary and is not restored on refresh. Clear/cancel never writes.
