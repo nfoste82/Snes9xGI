@@ -12,6 +12,9 @@ async function main(){
         detail:element('detail'),select:async id=>{context.selected=id;}};
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(require.resolve('./alttp_tile_semantic_world.js'),'utf8'),context);
+    const mapHelp=vm.runInContext('worldPane.innerHTML',context).split('<details id="worldMapHelp"')[1].split('</details>')[0];
+    assert(mapHelp.includes('id="worldInfo"'));assert(mapHelp.includes('id="worldLegend"'));
+    assert(!mapHelp.includes('id="worldViewport"'));
     vm.runInContext(`worldManifest={content_ids:['floor'],counts:{light:{floor:262144}}};worldGrid=new DataView(new ArrayBuffer(512*512*8));worldScale=1;worldActive=true;drawWorld=()=>{};`,context);
     const vp=element('worldViewport');
     const event=(x,y,flags={})=>({button:0,pointerId:1,clientX:x*8+4,clientY:y*8+4,...flags});

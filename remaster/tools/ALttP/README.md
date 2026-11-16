@@ -141,6 +141,17 @@ Changing away from Floor removes the flag. No existing tiles are automatically
 classified as water.
 
 Use **Heights (zoom ≥3×)** to display numeric heights on visible tiles. This
+control, the heightmap/opacity and traversal overlays, calculation buttons/status,
+and reference controls live in the left sidebar under collapsible **Height controls**
+(shown in World map mode). Sidebar text scales with available column width within
+an 11–14px range; checkbox labels stay beside their checkboxes, and opacity uses
+a flexible slider on the same row. Short overlay labels retain zoom thresholds
+and explanatory tooltips. Existing sidebar search/filter controls
+are under **Tile filters & search**. Above the map, **Map instructions & selection
+details** is collapsed by default; expand it for navigation help, facing colors,
+and the full selection explanation. Offset editing remains above the map.
+
+The **Heights**
 checkbox and **Wall weights** uncheck each other. Saved authored heights appear
 immediately in cyan and take precedence over calculated values, including after
 an offset edit without recalculating. Otherwise labels show calculated heights,
@@ -161,6 +172,11 @@ and corner metadata must be completed before changing selection. Height offsets
 apply to every selected location (not other copies of the artwork); mixed scalar
 offsets show `–`. Save, **Enter/Return**, and Remove offset operate on the whole
 selection in one atomic profile update, preserving independent terrain offsets.
+Bulk role/facing/corner edits across different IDs use one metadata batch request,
+one profile parse/replacement, one sidecar write, and one post-save grid/map refresh
+instead of saving the whole profile once per ID. All annotations are validated
+before writing; required facings/corners must be completed first. Alias families
+still share metadata, and conflicting alias values reject the whole batch.
 Press **Enter/Return** in that input to
 save, exactly like **Save offset**.
 
@@ -216,6 +232,17 @@ the adjustment field also applies it. Subsequent adjustments use the newly saved
 authored values without requiring recalculation. The same display precedence,
 stale/conflict acceptance, `?` rejection, scalar range and terrain preservation
 rules as baking apply. This changes only selected locations, not shared artwork.
+
+Check **Only authored heights** beside **Adjust by** to shift only existing
+authored scalar offsets in the target selection, including explicit zeros.
+Calculated/default heights and tiles with only pixel detail are skipped; no new
+scalar offsets are created. Each existing offset receives the same signed delta,
+so relative differences are preserved. The result reports adjusted and skipped
+counts; no authored targets means nothing is saved. Integer/range validation is
+atomic. Per-pixel detail, normals, and the other world remain unchanged. This
+unchecked-by-default option applies only to adjustment (including Enter), not
+Save, Bake, or Remove. If all-instance mode is enabled, its world-local alias
+expansion happens first, then the authored-only filter, with confirmation.
 
 **Apply to all instances in this world** is unchecked by default and is not
 persisted. When checked, Save offset (including Enter), Remove offset, Bake and
@@ -396,6 +423,15 @@ paths. Use `remaster/tools/ALttP/alttp…` for those files now. Python module na
 unchanged; their sibling imports resolve when scripts are run directly.
 # Explicit boundary gradients
 
+The selected tile’s right-hand detail panel shows a two-row grid of **Art,
+Height, Normal, Emission, and Occlusion** previews. These are exact-asset profile
+layers, not shared semantic aliases, placement offsets, or calculated geometry.
+Missing layers are checkered and labeled **Not authored**. Height uses tile-local
+min/max grayscale with the numeric range shown; normals use encoded RGB and
+occlusion uses raw grayscale. Artwork-colored emission displays grayscale
+intensity because the atlas has no live CGRAM palette; explicit emission uses
+its authored color multiplied by intensity. Previews are read-only.
+
 Per-pixel placement terrain is also visible in the world editor: **Heights** labels
 show blue integer `min-max` ranges (scalar base included), and **Heightmap (raw)**
 renders the actual 8×8 field without averaging it or requiring a calculation.
@@ -410,6 +446,11 @@ click **Remove per-pixel heights** beside **Remove offset**, then confirm. This
 removes only the selected BG2 terrain `height_offset` arrays in the current world,
 including uniform arrays. Scalar offsets, per-pixel normals, shared asset geometry,
 other locations and the other world remain unchanged. Recalculate afterward.
+If height removal leaves a terrain record with only world/background/coordinates,
+the empty record is removed too, since the native profile loader rejects it.
+Normal-only terrain records remain intact. Native apps built before water semantic
+support must be rebuilt to load `tile_semantic_water`; do not strip water annotations
+to work around an outdated app.
 
 Per-pixel overworld height offsets must be stored as integers. Normal editor
 reads and saves validate them without rounding or rewriting terrain arrays.

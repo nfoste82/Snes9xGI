@@ -224,6 +224,9 @@ class AnnotationStore:
                               (self.profile_bytes or b"")).hexdigest()
 
     def _save_profile(self, content_ids: list[str], annotation: dict) -> None:
+        self._save_profile_batch({key: annotation for key in content_ids})
+
+    def _save_profile_batch(self, annotations: dict[str, dict]) -> None:
         if self.profile_path is None:
             return
         if self.profile_path.read_bytes() != self.profile_bytes:
@@ -231,34 +234,37 @@ class AnnotationStore:
         text = self.profile_bytes.decode()
         baseline = self._profile_document
         version = baseline["schema_version"]
-        needs34 = annotation['role'] in ('door', 'doorway') or any(a.get('tile_role') in ('door', 'doorway') for a in baseline.get('assets', []))
+        needs34 = any(a['role'] in ('door', 'doorway') for a in annotations.values()) or any(a.get('tile_role') in ('door', 'doorway') for a in baseline.get('assets', []))
         text = re.sub(r"(?m)^schema_version\s*=\s*\d+\s*$",
                       f"schema_version = {max(34 if needs34 else 20, version)}", text, count=1)
         if version < 34:
             text = re.sub(r'(?m)^tile_role\s*=\s*"door"\s*$', 'tile_role = "doorway"', text)
         quote = lambda value: '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
-        fields = (f'tile_role = {quote(annotation["role"])}\n'
+        def fields_for(annotation):
+            fields = (f'tile_role = {quote(annotation["role"])}\n'
                   'tile_semantics_authored = true\n'
                   'tile_semantic_normals = [' + ', '.join(map(quote, annotation["normals"])) + ']\n'
                   f'tile_semantic_context_dependent = {str(annotation["context_dependent"]).lower()}\n'
                   f'tile_semantic_note = {quote(annotation["note"])}\n')
-        if "corner_type" in annotation:
-            fields += f'tile_semantic_corner = {quote(annotation["corner_type"])}\n'
-        if annotation['role'] == 'floor':
-            fields += f'tile_semantic_water = {str(annotation.get("water", False)).lower()}\n'
-        if "doorframe_mask" in annotation:
-            fields += f'doorframe_mask = {quote(annotation["doorframe_mask"])}\n'
-        if annotation['role'] == 'doorway':
-            fields += 'doorway_support = ' + str(annotation.get('doorway_support', False)).lower() + '\n'
-            if annotation.get('doorway_support'):
-                fields += f'doorway_support_direction = {quote(annotation["doorway_support_direction"])}\n'
-        remaining = set(content_ids)
+            if "corner_type" in annotation:
+                fields += f'tile_semantic_corner = {quote(annotation["corner_type"])}\n'
+            if annotation['role'] == 'floor':
+                fields += f'tile_semantic_water = {str(annotation.get("water", False)).lower()}\n'
+            if "doorframe_mask" in annotation:
+                fields += f'doorframe_mask = {quote(annotation["doorframe_mask"])}\n'
+            if annotation['role'] == 'doorway':
+                fields += 'doorway_support = ' + str(annotation.get('doorway_support', False)).lower() + '\n'
+                if annotation.get('doorway_support'):
+                    fields += f'doorway_support_direction = {quote(annotation["doorway_support_direction"])}\n'
+            return fields
+        remaining = set(annotations)
         def replace(match):
             block = match.group()
             key = re.search(r'(?m)^tile_hash\s*=\s*"([^"]+)"', block)
             if not key or key[1] not in remaining:
                 return block
             remaining.remove(key[1])
+            annotation = annotations[key[1]]
             # Omission in a Door annotation edits semantics, not the independent
             # authored pixel mask. Preserve each member's own mask (including
             # explicit empty); replacing it requires an explicit mask field.
@@ -268,9 +274,9 @@ class AnnotationStore:
             if not preserve_mask:
                 removed += '|doorframe_mask'
             block = re.sub(r'(?m)^(' + removed + r')\s*=.*\n?', '', block)
-            return block.rstrip() + '\n' + fields + '\n'
+            return block.rstrip() + '\n' + fields_for(annotation) + '\n'
         text = re.sub(r'(?ms)^\[\[assets\]\]\s*\n.*?(?=^\[|\Z)', replace, text)
-        additions = ''.join('\n[[assets]]\ntile_hash = ' + quote(key) + '\n' + fields
+        additions = ''.join('\n[[assets]]\ntile_hash = ' + quote(key) + '\n' + fields_for(annotations[key])
                             for key in sorted(remaining))
         rule = re.search(r'(?m)^\[\[rules\]\]', text)
         offset = rule.start() if rule else len(text)
@@ -297,18 +303,25 @@ class AnnotationStore:
 
     def save_group(self, content_ids: list[str], value: object, expected_revision: str | None = None) -> dict:
         annotation = validate_annotation(value)
+        self.save_batch({key: annotation for key in content_ids}, expected_revision)
+        return annotation
+
+    def save_batch(self, values: dict[str, dict], expected_revision: str | None = None) -> dict:
+        annotations = {key: validate_annotation(value) for key, value in values.items()}
+        if not annotations:
+            raise AtlasError('Expected nonempty annotation batch')
         with self.lock:
             if expected_revision is not None and expected_revision != self.revision():
                 raise AtlasError("metadata changed; refresh before saving")
-            self._save_profile(content_ids, annotation)
-            for content_id in content_ids:
+            self._save_profile_batch(annotations)
+            for content_id, annotation in annotations.items():
                 if (annotation["role"] == "unknown" and not annotation["note"]
                         and not annotation["context_dependent"]):
                     self.tiles.pop(content_id, None)
                 else:
                     self.tiles[content_id] = annotation.copy()
             self._write()
-        return annotation
+        return annotations
 
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -607,8 +620,22 @@ PAGE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ALTTP Tile Semantics</title><style>
 :root{color-scheme:dark;--ink:#e8e4da;--muted:#a9a397;--line:#49483f;--panel:#242620;--paper:#171914;--accent:#d6b86c;--blue:#84b9c4;--bad:#d68778}*{box-sizing:border-box}body{margin:0;height:100vh;overflow:hidden;background:var(--paper);color:var(--ink);font:14px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}button,input,select,textarea{font:inherit;color:inherit}header{height:92px;padding:14px 22px;border-bottom:1px solid var(--line);background:#1d201a;display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font:700 24px/1.1 Georgia,serif;letter-spacing:.03em;margin:0}.sub{color:var(--muted);margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header>div:first-child{min-width:0}.app{height:calc(100vh - 92px);display:grid;grid-template-columns:250px minmax(350px,1fr) 430px}.filters,.gridPane,.detail{overflow:auto}.filters{padding:18px;border-right:1px solid var(--line);background:#1d201a}.gridPane{padding:16px}.detail{padding:20px;border-left:1px solid var(--line);background:#20221d}label.cap{display:block;color:var(--muted);font-weight:bold;text-transform:uppercase;letter-spacing:.08em;font-size:11px;margin:0 0 6px}.field{margin-bottom:17px}input[type=search],select,textarea{width:100%;background:#11130f;border:1px solid var(--line);border-radius:4px;padding:9px}textarea{resize:vertical;min-height:80px}.checks{display:grid;gap:8px}.checks label{display:flex;align-items:center;gap:8px}.checks input{accent-color:var(--accent)}.stats{padding:10px 0;color:var(--accent)}.hint,.status{color:var(--muted);font-size:12px}.tileGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:9px}.tile{background:var(--panel);border:1px solid #383b32;border-radius:5px;padding:8px;min-width:0;text-align:left;cursor:pointer}.tile:hover,.tile.selected{border-color:var(--accent)}.tile canvas{display:block;width:64px;height:64px;margin:auto;image-rendering:pixelated;background:#0d0e0c}.tile .role{height:18px;margin-top:6px;overflow:hidden;color:var(--blue);font-size:11px;text-align:center}.tile .id{overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:9px;white-space:nowrap}.badges{height:16px;text-align:center;white-space:nowrap;overflow:hidden}.badge{display:inline-block;color:#171914;background:var(--accent);padding:1px 4px;border-radius:2px;font-size:9px;margin-right:3px}.badge.warn{background:var(--bad)}.big{width:96px;height:96px;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);display:block;margin:0 0 12px}.roomContext{margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--line)}.roomContext canvas{display:block;width:100%;height:auto;aspect-ratio:1;image-rendering:pixelated;background:#0d0e0c;border:1px solid var(--line);margin-top:9px}.roomLegend{display:flex;gap:15px;margin:7px 0;color:var(--muted);font-size:11px}.roomLegend i{display:inline-block;width:10px;height:10px;margin-right:5px}.roleButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.roleButtons button,.normalButtons button,.cornerButtons button,.action{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px;cursor:pointer}.roleButtons button.on,.normalButtons button.on,.cornerButtons button.on{background:#685c38;border-color:var(--accent)}.normalButtons{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.cornerButtons{display:grid;grid-template-columns:1fr 1fr;gap:6px}.normalBox{margin-top:16px}.meta{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:16px 0}.meta span{color:var(--muted)}.sources{font-size:11px;border-top:1px solid var(--line);margin-top:15px;padding-top:12px}.source{margin:5px 0;color:var(--muted)}.saveState{min-height:18px;color:var(--blue);margin-top:8px}.empty{color:var(--muted);padding:30px}.context{display:flex;gap:8px;align-items:flex-start;margin-top:14px}.export{background:#30332b;border:1px solid var(--line);border-radius:4px;padding:8px 12px;cursor:pointer}@media(max-width:900px){body{height:auto;overflow:auto}.app{height:auto;display:block}.filters,.gridPane,.detail{overflow:visible}.detail{border-left:0;border-top:1px solid var(--line)}}
+summary{cursor:pointer;font-weight:bold}summary:focus-visible{outline:2px solid var(--accent)}
+.filters{container-type:inline-size;min-width:0}.app{grid-template-columns:clamp(220px,19vw,290px) minmax(350px,1fr) 430px}
+#worldHeightSidebar{display:none;font-size:12px;font-size:clamp(11px,5.6cqi,14px)}
+#worldHeightSidebar button{width:100%;min-width:0;max-width:100%;white-space:normal;padding:4px;font-size:inherit}
+#heightViewControls{min-width:0;overflow-wrap:normal}#heightViewControls summary{font-size:inherit}
+#heightViewControls .height-view-options{padding-top:8px;min-width:0}
+#heightViewControls label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:center;min-width:0}
+#heightViewControls label span{min-width:0}#heightViewControls input[type=checkbox]{margin:0;flex-shrink:0}
+#heightViewControls label.height-opacity{grid-template-columns:auto minmax(0,1fr)}
+#heightViewControls input[type=range]{width:100%;min-width:0;margin:0}
+#heightViewControls .height-reference-controls{display:grid;gap:8px;padding-top:8px;min-width:0}
+#heightViewControls .height-reference-controls label{grid-template-columns:minmax(0,1fr) minmax(48px,.65fr)}
+#heightViewControls input[type=number]{width:100%;min-width:0;font-size:inherit}
+.tile-layer-previews{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}.tile-layer-previews figure{margin:0;min-width:0}.tile-layer-previews figcaption{font-weight:bold;margin-bottom:4px}.tile-layer-previews canvas{display:block;width:100%;max-width:96px;aspect-ratio:1;image-rendering:pixelated;border:1px solid var(--line)}.tile-layer-previews .hint{font-size:11px;overflow-wrap:anywhere}
 </style></head><body><header><div><h1>ALTTP Tile Semantics</h1><div class="sub" id="subtitle">Loading canonical background artwork...</div><div class="sub" id="profileLine"></div></div><button class="export" id="export">Export JSON</button></header><div class="app">
-<aside class="filters"><div class="field"><label class="cap" for="search">Find tile</label><input id="search" type="search" placeholder="hash, role, note"></div><div class="field"><label class="cap" for="roleFilter">Role</label><select id="roleFilter"><option value="">All roles</option><option>unknown</option><option>floor</option><option>wall</option><option>wall_corner</option><option>stair_top</option><option>stair_bottom</option><option>other</option></select></div><div class="field"><label class="cap" for="packFilter">Graphics pack</label><select id="packFilter"><option value="">All packs</option></select></div><div class="checks"><label><input id="reviewed" type="checkbox"> Reviewed only</label><label><input id="reused" type="checkbox"> Reused artwork</label><label><input id="contextOnly" type="checkbox"> Context-dependent</label><label><input id="showLow" type="checkbox"> Show low/grayscale variants</label></div><div class="stats" id="stats"></div><p class="hint">Low and high variants are exact-source aliases created by the game's two 3bpp conversion paths. They share semantics; low variants are hidden by default. Artwork uses a diagnostic palette, not in-game CGRAM colors.</p></aside>
+<aside class="filters"><details id="tileFilterControls"><summary>Tile filters &amp; search</summary><div style="padding-top:12px"><div class="field"><label class="cap" for="search">Find tile</label><input id="search" type="search" placeholder="hash, role, note"></div><div class="field"><label class="cap" for="roleFilter">Role</label><select id="roleFilter"><option value="">All roles</option><option>unknown</option><option>floor</option><option>wall</option><option>wall_corner</option><option>stair_top</option><option>stair_bottom</option><option>other</option></select></div><div class="field"><label class="cap" for="packFilter">Graphics pack</label><select id="packFilter"><option value="">All packs</option></select></div><div class="checks"><label><input id="reviewed" type="checkbox"> Reviewed only</label><label><input id="reused" type="checkbox"> Reused artwork</label><label><input id="contextOnly" type="checkbox"> Context-dependent</label><label><input id="showLow" type="checkbox"> Show low/grayscale variants</label></div><div class="stats" id="stats"></div><p class="hint">Low and high variants are exact-source aliases created by the game's two 3bpp conversion paths. They share semantics; low variants are hidden by default. Artwork uses a diagnostic palette, not in-game CGRAM colors.</p></div></details><div id="worldHeightSidebar" style="margin-top:16px"></div></aside>
 <main class="gridPane"><div class="tileGrid" id="grid"></div></main><section class="detail" id="detail"><div class="empty">Select a tile to annotate it.</div></section></div>
 <script>
 const roles=['unknown','floor','wall','wall_corner','stair_top','stair_bottom','obstacle','other','door','doorway','particle','out-of-bounds'];const labels={unknown:'Unknown',floor:'Floor',wall:'Wall',wall_corner:'Wall corner',stair_top:'Stair top (high)',stair_bottom:'Stair bottom (low)',obstacle:'Obstacle',other:'Other / non-geometry',door:'Door (leaf)',doorway:'Doorway',particle:'Particle','out-of-bounds':'Out of bounds (crest plateau)'};const palette=['#10110f','#36382f','#555747','#74765f','#939579','#b2b894','#d2d7ad','#f0ebcb','#3e5355','#55777a','#6f9da0','#92c5c6','#5d4936','#85633e','#b68b4f','#e1bd70'];let meta,tiles=[],selected=null,detailData=null,saveTimer=null,pendingId=null,pageSize=1000;const roomChoice=new Map(),byId=new Map();const grid=document.getElementById('grid'),detail=document.getElementById('detail');
@@ -671,17 +698,18 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                     self.error(HTTPStatus.CONFLICT, str(exc))
                     return
             if path == "/":
-                body = PAGE.replace('</body>', '<script src="/world.js"></script></body>').encode()
+                body = PAGE.replace('</body>', '<script src="/tile-layers.js"></script><script src="/world.js"></script></body>').encode()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif path in ("/world.js", "/height-worker.js", "/height-ui.js"):
+            elif path in ("/world.js", "/height-worker.js", "/height-ui.js", "/tile-layers.js"):
                 filename = {'/world.js': 'alttp_tile_semantic_world.js',
                             '/height-worker.js': 'alttp_tile_height_worker.js',
-                            '/height-ui.js': 'alttp_tile_height_ui.js'}[path]
+                             '/height-ui.js': 'alttp_tile_height_ui.js',
+                             '/tile-layers.js': 'alttp_tile_layer_previews.js'}[path]
                 body = Path(__file__).with_name(filename).read_bytes()
                 self.send_response(HTTPStatus.OK)
                 self.send_header('Content-Type', 'text/javascript; charset=utf-8')
@@ -761,6 +789,12 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                         room["room_id"] == 27, -room["placement_count"], room["room_id"]))
                     detail["loaded_rooms"] = sorted(loaded_rooms)
                     detail["semantic_aliases"] = aliases
+                    with store.lock:
+                        asset = next((row for row in (store._profile_document or {}).get('assets', [])
+                                      if row.get('tile_hash') == content_id), {})
+                        detail['layers'] = {'fields': {key: asset[key] for key in (
+                            'height', 'normal_xyz', 'occlusion', 'emission_intensity',
+                            'emission_rgba', 'emission_color_mask') if key in asset}}
                     for alternative in detail["alternatives"]:
                         alternative["dungeon_rooms"] = len(
                             room_index.rooms(alternative["content_id"]))
@@ -833,6 +867,33 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 except WeightConflict as exc:
                     self.error(HTTPStatus.CONFLICT, str(exc))
                 except (ValueError, OSError, KeyError) as exc:
+                    self.error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
+            if path == '/api/annotations':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= MAX_OFFSET_BODY:
+                        raise AtlasError('invalid annotation batch body size')
+                    entries = json.loads(self.rfile.read(length))['entries']
+                    if not isinstance(entries, list) or not 0 < len(entries) <= 512*512:
+                        raise AtlasError('Expected nonempty annotation entries')
+                    values = {}
+                    for entry in entries:
+                        content_id = entry['content_id']
+                        if not catalog.contains(content_id):
+                            raise AtlasError('unknown background tile')
+                        annotation = validate_annotation(entry['annotation'])
+                        for alias in catalog.semantic_group(content_id):
+                            if alias in values and values[alias] != annotation:
+                                raise AtlasError('Conflicting annotations for shared artwork aliases')
+                            values[alias] = annotation
+                    revision = store.refresh()
+                    if self.headers.get('If-Match') != revision:
+                        self.error(HTTPStatus.CONFLICT, 'Metadata changed elsewhere; refresh before saving')
+                        return
+                    annotations = store.save_batch(values, revision)
+                    self.json_response({'annotations': annotations, 'revision': store.revision()})
+                except (ValueError, OSError, KeyError, TypeError) as exc:
                     self.error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
             if not path.startswith("/api/annotation/"):

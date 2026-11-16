@@ -123,6 +123,8 @@ class HeightOffsetStore:
                     row = tomllib.loads(match.group())['overworld_terrain'][0]
                     if row['world'] != world or row['background'] != 1 or (row['x'], row['y']) not in targets:
                         return match.group()
+                    if not set(row) - {'world', 'background', 'x', 'y', 'height_offset'}:
+                        return ''  # Native profiles reject empty terrain records.
                     # Remove only this field, including multiline arrays. Retain
                     # normals and every other property of the placement.
                     return re.sub(r'(?ms)^height_offset\s*=\s*\[.*?\][ \t]*(?:\n|$)', '', match.group())
@@ -149,6 +151,8 @@ class HeightOffsetStore:
                         row = dict(row)
                         if row['world'] == world and row['background'] == 1 and (row['x'], row['y']) in targets:
                             row.pop('height_offset', None)
+                            if not set(row) - {'world', 'background', 'x', 'y'}:
+                                continue
                         expected.append(row)
                     if parsed.get(field, []) != expected:
                         raise ValueError('Terrain removal changed unrelated placement fields')

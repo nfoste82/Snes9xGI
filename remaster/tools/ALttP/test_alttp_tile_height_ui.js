@@ -9,7 +9,7 @@ async function main() {
     const elements = new Map(), workers = [],heightImages=[];
     const element = id => {
         if (!elements.has(id)) elements.set(id, {value: '', checked: false, textContent: '',
-            style: {}, append() {}, remove() {}, addEventListener(event, handler) { this[event] = handler; }});
+            style: {}, children:[], append(...items) {this.children.push(...items);}, remove() {}, addEventListener(event, handler) { this[event] = handler; }});
         return elements.get(id);
     };
     for (const [id, value] of [['worldChoice', 'light'], ['heightReference', '0'], ['heightOpacity', '.85']]) element(id).value = value;
@@ -32,6 +32,11 @@ async function main() {
         complete: () => true, annotation: () => floor.annotation,
         save() {}, renderDetail() {}, renderGrid() {}, changeRole() {}, toggleNormal() {}, update() {}, scheduleSave() {},
         fetch: async (url, options) => {
+            if(url==='/api/annotations'&&options?.method==='PUT'){
+                const {entries}=JSON.parse(options.body);
+                config.semantic_revision+='-batch';offsets.revision=config.semantic_revision;config.revision+='-batch';
+                return {ok:true,json:async()=>({annotations:Object.fromEntries(entries.map(e=>[e.content_id,e.annotation])),revision:config.semantic_revision})};
+            }
             if(url.startsWith('/api/annotation/')&&options?.method==='PUT') {
                 const id=decodeURIComponent(url.split('/').at(-1)),annotation=JSON.parse(options.body);
                 config.semantic_revision+='-semantic';offsets.revision=config.semantic_revision;config.revision+='-semantic';
@@ -75,6 +80,20 @@ async function main() {
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(require.resolve('./alttp_tile_height_ui.js'), 'utf8'), context);
     const ui = context.window.experimentalHeightUI;
+    assert(element('worldHeightSidebar').children.includes(element('heightViewControls')));
+    const markup=fs.readFileSync(require.resolve('./alttp_tile_height_ui.js'),'utf8');
+    const sidebarMarkup=markup.split('controls.innerHTML = `')[1].split('</details>')[0];
+    for(const id of ['worldHeight','heightOpacity','worldWeights','worldCalculatedHeights','worldHeightArrows','heightRun','heightRunPrevious','heightCancel','heightActivity','heightAnchor','heightReference'])
+        assert(sidebarMarkup.includes(`id="${id}"`),`${id} must be inside the sidebar disclosure`);
+    assert(!sidebarMarkup.includes('id="heightOffset"'));
+    for(const id of ['worldHeight','worldWeights','worldCalculatedHeights','worldHeightArrows'])
+        assert.match(sidebarMarkup,new RegExp(`<input id="${id}" type="checkbox"><span>[^<]+</span></label>`));
+    assert(!sidebarMarkup.includes('width:190px'));
+    assert(sidebarMarkup.includes('class="height-opacity"'));
+    const page=fs.readFileSync(require.resolve('./alttp_tile_semantic_atlas.py'),'utf8');
+    assert(page.includes('font-size:clamp(11px,5.6cqi,14px)'));
+    assert(page.includes('grid-template-columns:auto minmax(0,1fr)'));
+    assert(!page.includes('#worldHeightSidebar label{flex-wrap:wrap}'));
     await Promise.resolve(); await Promise.resolve();
     const run = () => element('heightRun').onclick();
     const setHeight = value => { element('heightReference').value = value; element('heightReference').oninput(); };
@@ -549,6 +568,50 @@ async function main() {
     context.window.confirm=()=>false;await element('heightTerrainRemove').onclick();assert.equal(JSON.stringify(offsets),pixelBefore);
     context.window.confirm=()=>true;await element('heightTerrainRemove').onclick();
     assert.equal(offsets.terrain_heights['light:10:10'],undefined);assert.equal(offsets.offsets['light:10:10'],48);
+    // Authored-only adjustment includes explicit zero, skips calculated/default
+    // tiles without creating offsets, and leaves other worlds/detail unchanged.
+    assert.equal(!!element('heightOffsetAuthoredOnly').checked,false);
+    select([{x:11,y:10}]);element('heightOffset').value='0';await element('heightOffsetSave').onclick();
+    offsets.terrain_heights={'light:10:10':Array(64).fill(3)};offsets.terrain=['light:10:10'];
+    select([{x:10,y:10},{x:11,y:10},{x:20,y:20},{x:21,y:20}]);
+    const authoredDetail=JSON.stringify(offsets.terrain_heights),darkBefore=Object.entries(offsets.offsets).filter(([key])=>key.startsWith('dark:'));
+    element('heightOffsetAuthoredOnly').checked=true;element('heightOffsetDelta').value='-16';
+    await element('heightOffsetAdjust').onclick();
+    assert.equal(offsets.offsets['light:10:10'],32);assert.equal(offsets.offsets['light:11:10'],-16);
+    assert(!Object.hasOwn(offsets.offsets,'light:20:20'));assert(!Object.hasOwn(offsets.offsets,'light:21:20'));
+    assert.match(element('heightOffsetState').textContent,/Adjusted 2 authored heights by -16; 2 unauthored locations skipped/);
+    assert.equal(JSON.stringify(offsets.terrain_heights),authoredDetail);
+    assert.deepEqual(Object.entries(offsets.offsets).filter(([key])=>key.startsWith('dark:')),darkBefore);
+    // Enter uses the same filter; repeated shifts need no recalculation.
+    element('heightOffsetDelta').value='4';await element('heightOffsetDelta').onkeydown({key:'Enter',preventDefault(){}});
+    assert.equal(offsets.offsets['light:10:10'],36);assert.equal(offsets.offsets['light:11:10'],-12);
+    const authoredBefore=JSON.stringify(offsets);
+    element('heightOffsetDelta').value='32767';await element('heightOffsetAdjust').onclick();
+    assert.match(element('heightOffsetState').textContent,/Not adjusted:.*cannot be saved/);
+    assert.equal(JSON.stringify(offsets),authoredBefore);
+    select([{x:20,y:20},{x:21,y:20}]);element('heightOffsetDelta').value='-16';
+    await element('heightOffsetAdjust').onclick();
+    assert.match(element('heightOffsetState').textContent,/No authored scalar heights.*2 unauthored locations skipped/);
+    assert.equal(JSON.stringify(offsets),authoredBefore);
+    // Distinct-ID metadata changes issue one request, not one save per ID.
+    const batchTiles=['batch-a','batch-b','batch-c'].map((content_id,i)=>({content_id,aliases:[content_id],annotation:{role:'floor',normals:[],note:`note ${i}`,context_dependent:false}}));
+    for(const tile of batchTiles)context.byId.set(tile.content_id,tile);
+    context.worldSelectedTiles=()=>batchTiles;
+    context.roles=['floor','other'];context.labels={floor:'Floor',other:'Other'};
+    context.detail={replaceChildren(){},append(){}};
+    select([{x:1,y:1},{x:2,y:1},{x:3,y:1}]);
+    const batchFetch=context.fetch;let batchRequests=0;
+    context.fetch=async(url,options)=>{
+        if(url==='/api/annotations'){
+            batchRequests++;const {entries}=JSON.parse(options.body);
+            assert.equal(entries.length,3);
+            entries.forEach((entry,i)=>{assert.equal(entry.annotation.role,'other');assert.equal(entry.annotation.note,`note ${i}`);});
+        }
+        assert(!url.startsWith('/api/annotation/'),'Batch must not send individual writes');
+        return batchFetch(url,options);
+    };
+    context.changeRole('other');await ui.selectionChanging();
+    assert.equal(batchRequests,1);
     console.log('Height UI mock: snapshot, stale rejection, explicit references and world isolation passed.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

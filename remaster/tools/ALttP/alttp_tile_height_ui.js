@@ -113,22 +113,22 @@ function heightBoundaryGradient(a, b, heightA, heightB, targets = null) {
 if (typeof module !== 'undefined') module.exports.heightBoundaryGradient = heightBoundaryGradient;
 if (typeof document !== 'undefined') (() => {
     const controls = document.createElement('div');
-    controls.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">
-      <label><input id="worldHeight" type="checkbox"> Heightmap (raw)</label>
-      <label>Opacity <input id="heightOpacity" type="range" min="0" max="1" step=".05" value=".85"></label>
-       <label><input id="worldWeights" type="checkbox"> Wall weights (zoom ≥3×)</label>
-       <label><input id="worldCalculatedHeights" type="checkbox"> Heights (zoom ≥3×)</label>
-       <label><input id="worldHeightArrows" type="checkbox"> Height traversal arrows (zoom ≥2×)</label>
+    controls.innerHTML = `<details id="heightViewControls" open><summary>Height controls</summary><div class="checks height-view-options">
+      <label><input id="worldHeight" type="checkbox"><span>Heightmap (raw)</span></label>
+      <label class="height-opacity"><span>Opacity</span><input id="heightOpacity" type="range" min="0" max="1" step=".05" value=".85"></label>
+       <label title="Show wall weights at zoom 3× or higher"><input id="worldWeights" type="checkbox"><span>Wall weights (≥3×)</span></label>
+       <label title="Show height labels at zoom 3× or higher"><input id="worldCalculatedHeights" type="checkbox"><span>Heights (≥3×)</span></label>
+       <label title="Show height traversal arrows at zoom 2× or higher"><input id="worldHeightArrows" type="checkbox"><span>Traversal arrows (≥2×)</span></label>
       <span>Scope: Visible area</span>
-        <button id="heightRun" style="width:190px;flex-shrink:0">Recalculate heights</button><button id="heightRunPrevious" disabled>recalc heights (prev area)</button><button id="heightCancel" disabled>Cancel</button></div>
+        <button id="heightRun">Recalculate heights</button><button id="heightRunPrevious" disabled>Recalc previous area</button><button id="heightCancel" disabled>Cancel</button></div>
         <div id="heightActivity" role="status" aria-live="polite" style="height:1.4em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;font-weight:bold">Idle — no calculation yet</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button id="heightAnchor">Use selected tile as reference</button>
-       <label>Reference height <input id="heightReference" type="number" step="any" value="0" style="width:90px"></label></div>
+       <div class="height-reference-controls"><button id="heightAnchor" title="Use the selected tile as the height calculation reference">Use selected reference</button>
+        <label><span>Reference height</span><input id="heightReference" type="number" step="any" value="0"></label></div></details>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span id="heightOffsetCell">Select a map cell</span>
         <label>Authored height offset <input id="heightOffset" type="number" min="-32767" max="32767" step="1" style="width:90px"></label>
         <label><input id="heightOffsetAll" type="checkbox"> Apply to all instances in this world</label>
           <button id="heightOffsetSave">Save offset</button><button id="heightOffsetRemove">Remove offset</button><button id="heightTerrainRemove">Remove per-pixel heights</button><button id="heightOffsetBake">Bake Current Offset</button>
-         <label>Adjust by <input id="heightOffsetDelta" type="number" step="1" value="0" style="width:80px"></label><button id="heightOffsetAdjust">Apply adjustment</button>
+         <label>Adjust by <input id="heightOffsetDelta" type="number" step="1" value="0" style="width:80px"></label><label title="Adjust existing authored scalar offsets only; skip calculated and unauthored tiles. Applies only to Adjust by."><input id="heightOffsetAuthoredOnly" type="checkbox"> Only authored heights</label><button id="heightOffsetAdjust">Apply adjustment</button>
        <span id="heightOffsetState" class="hint"></span></div>
         <details><summary>Author gradient between two boundaries</summary>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -164,6 +164,8 @@ if (typeof document !== 'undefined') (() => {
        <div id="heightStatusDetail" class="hint"></div><div id="heightStorage" class="hint" style="overflow-wrap:anywhere"></div>
        <div id="heightPlacement" class="hint"></div></div></details>`;
     worldPane.insertBefore(controls, document.getElementById('worldViewport'));
+    const sidebar=document.getElementById('worldHeightSidebar');
+    if(sidebar)sidebar.append(document.getElementById('heightViewControls'));
     const el = id => document.getElementById(id);
     // Dynamic text must not resize the viewport it describes: that would create
     // a ResizeObserver -> changed bounds -> stale text -> resize feedback loop.
@@ -279,6 +281,7 @@ if (typeof document !== 'undefined') (() => {
         el('heightOffsetBake').disabled = !available || running;
         el('heightOffsetAdjust').disabled = !available || running;
         el('heightOffsetDelta').disabled = !available || running;
+        el('heightOffsetAuthoredOnly').disabled = !available || running;
         el('heightOffsetBake').title = 'Save selected scalar bases, including conflicting or stale results you accept. Pixel detail is preserved separately; a min-max label is not baked into the base.';
         el('heightOffset').disabled = !available;
         el('heightOffsetAll').disabled = !available;
@@ -306,6 +309,8 @@ if (typeof document !== 'undefined') (() => {
         if (!worldCell || !offsetConfig?.path || offsetBusy) return;
         let locations = offsetLocations();
         const world = worldName, key = offsetSelectionKey(), allInstances=el('heightOffsetAll').checked;
+        const authoredOnly=adjust&&el('heightOffsetAuthoredOnly').checked;
+        let skipped=0;
         const text = el('heightOffset').value.trim(), offset = remove ? null : Number(text);
         if (!bake && !remove && (!text || !Number.isInteger(offset) || Math.abs(offset) > 32767)) {
             el('heightOffsetState').textContent = 'Not saved: enter an integer from -32767 to 32767.'; return;
@@ -331,8 +336,14 @@ if (typeof document !== 'undefined') (() => {
                     delta=Number(text);
                     if(!text||!Number.isSafeInteger(delta))throw Error('Enter a signed integer adjustment.');
                 }
+                if(authoredOnly){
+                    const count=locations.length;
+                    locations=locations.filter(({x,y})=>Object.hasOwn(offsetConfig.offsets,`${world}:${x}:${y}`));
+                    skipped=count-locations.length;
+                    if(!locations.length)throw Error(`No authored scalar heights in the target area; ${skipped} unauthored locations skipped. Nothing changed.`);
+                }
                 values=locations.map(({x,y})=>{
-                    const height=scalarHeight(x,y).value;
+                    const height=authoredOnly?offsetConfig.offsets[`${world}:${x}:${y}`]:scalarHeight(x,y).value;
                     if(!Number.isFinite(height))throw Error(`Cell (${x}, ${y}) shows ?; there is no numeric height to ${adjust?'adjust':'bake'}.`);
                     const scalar=height+delta;
                     if(!Number.isInteger(scalar)||Math.abs(scalar)>32767)throw Error(`Cell (${x}, ${y}) cannot be saved as an integer offset in -32767…32767.`);
@@ -341,7 +352,7 @@ if (typeof document !== 'undefined') (() => {
             } catch(error){el('heightOffsetState').textContent=(adjust?'Not adjusted: ':'Not baked: ')+error.message;return;}
         }
         if(allInstances) {
-            const action=adjust?`Adjust each displayed height by ${delta>=0?'+':''}${delta}`:bake?'Bake each displayed height':remove?'Remove authored scalar offsets':`Set authored scalar offset to ${offset}`;
+            const action=adjust?`Adjust each ${authoredOnly?'authored scalar':'displayed'} height by ${delta>=0?'+':''}${delta}${authoredOnly?` (${skipped} unauthored locations skipped)`:''}`:bake?'Bake each displayed height':remove?'Remove authored scalar offsets':`Set authored scalar offset to ${offset}`;
             if(!window.confirm(`${action} for ALL ${locations.length} matching tile locations in the ${world==='light'?'Light':'Dark'} World?\n\nThis includes matching artwork aliases outside your selection and visible area, even where the artwork is used in a different context. Existing scalar offsets will be replaced${remove?' or removed':''}. The other world and per-pixel terrain are unchanged.\n\nConfirm to save, or Cancel to leave the profile unchanged.`)) {
                 el('heightOffsetState').textContent='Cancelled — no offsets saved.';return;
             }
@@ -372,7 +383,7 @@ if (typeof document !== 'undefined') (() => {
                 refreshHeightImage();
                 await readConfig();
                 drawWorld();
-                if (key === offsetSelectionKey()) { showOffset(true); el('heightOffsetState').textContent += adjust ? ` · Adjusted ${locations.length} displayed heights by ${delta>=0?'+':''}${delta}` : bake ? ` · Baked ${locations.length} displayed heights` : remove ? locations.length > 1 ? ' · Offsets removed' : ' · Offset removed' : allInstances ? ` · Saved to profile for all ${locations.length} matching locations in ${world} world` : ' · Saved to profile'; }
+                if (key === offsetSelectionKey()) { showOffset(true); el('heightOffsetState').textContent += adjust ? ` · Adjusted ${locations.length} ${authoredOnly?'authored':'displayed'} heights by ${delta>=0?'+':''}${delta}${authoredOnly?`; ${skipped} unauthored locations skipped`:''}` : bake ? ` · Baked ${locations.length} displayed heights` : remove ? locations.length > 1 ? ' · Offsets removed' : ' · Offset removed' : allInstances ? ` · Saved to profile for all ${locations.length} matching locations in ${world} world` : ' · Saved to profile'; }
             } catch (error) {
                 el('heightOffsetState').textContent = 'Not saved: ' + error.message; throw error;
             } finally { saving = false; offsetBusy = false; showOffset(); }
@@ -461,10 +472,29 @@ if (typeof document !== 'undefined') (() => {
         if([...batchPending].some(id=>!complete(byId.get(id).annotation)))throw Error('Complete facing/corner metadata for all selected tiles first.');
         batchFlush=(async()=>{
             while(batchPending.size){
-                const id=batchPending.values().next().value,snapshot=byId.get(id).annotation;
-                if(!complete(snapshot))throw Error('Complete facing/corner metadata for all selected tiles first.');
-                await save(id);
-                if(byId.get(id).annotation===snapshot || JSON.stringify(byId.get(id).annotation)===JSON.stringify(snapshot))batchPending.delete(id);
+                const job=async()=>{
+                    const entries=[...batchPending].map(id=>({content_id:id,annotation:byId.get(id).annotation}));
+                    if(entries.some(entry=>!complete(entry.annotation)))throw Error('Complete facing/corner metadata for all selected tiles first.');
+                    const snapshots=new Map(entries.map(entry=>[entry.content_id,entry.annotation]));
+                    saving=true;
+                    try{
+                        const response=await fetch('/api/annotations',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':meta.revision},body:JSON.stringify({entries})});
+                        const value=await response.json();if(!response.ok)throw Error(value.error);
+                        meta.revision=value.revision;
+                        for(const [id,annotation] of Object.entries(value.annotations)){
+                            const tile=byId.get(id);if(!tile)continue;
+                            if(!snapshots.has(id)||tile.annotation===snapshots.get(id))tile.annotation=annotation;
+                        }
+                        for(const [id,sent] of snapshots){
+                            if(byId.get(id).annotation===sent||JSON.stringify(byId.get(id).annotation)===JSON.stringify(value.annotations[id]))batchPending.delete(id);
+                            if(pendingId===id&&!batchPending.has(id))pendingId=null;
+                        }
+                        semanticError=null;renderGrid();drawWorld();
+                    }catch(error){semanticError='Semantic edits not saved: '+error.message;throw error;}
+                    finally{saving=false;}
+                };
+                semanticQueue=semanticQueue.then(job,job);semanticQueue.catch(()=>{});
+                await semanticQueue;
             }
         })();
         try{await batchFlush;}finally{batchFlush=null;}

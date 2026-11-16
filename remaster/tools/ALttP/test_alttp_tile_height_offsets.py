@@ -11,6 +11,20 @@ from test_alttp_tile_semantic_atlas import ROM_SHA256
 
 
 class HeightOffsets(unittest.TestCase):
+    def test_remove_last_terrain_field_removes_empty_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/'profile.toml'
+            path.write_text(f'schema_version = 39\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                            '[[overworld_offsets]]\nworld = "light"\nbackground = 1\nx = 3\ny = 4\noffset = 16\n'
+                            '[[overworld_terrain]]\nworld = "light"\nbackground = 1\nx = 3\ny = 4\n'
+                            'height_offset = [' + ', '.join(['2']*64) + ']\n')
+            store = HeightOffsetStore(AnnotationStore(root/'annotations.json', ROM_SHA256, profile=path))
+            before = store.config()
+            saved = store.remove_terrain_heights('light', [dict(x=3,y=4)], before['revision'])
+            self.assertEqual(saved['heights'], before['heights'])
+            self.assertNotIn('overworld_terrain', tomllib.loads(path.read_text()))
+
     def test_integer_pixels_roundtrip_and_preservation(self):
         pixels = [-2.5, -1.5, -.51, -.5, -.49, 0.49, .5, .51, 1.5, 2.5] + [0.0]*54
         expected = [-3, -2, -1, -1, 0, 0, 1, 1, 2, 3] + [0]*54

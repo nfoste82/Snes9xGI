@@ -56,6 +56,34 @@ def make_database(path: Path) -> None:
 
 
 class TileSemanticAtlasTests(unittest.TestCase):
+    def test_distinct_metadata_batch_saves_profile_and_sidecar_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root/'profile.toml'
+            profile.write_text(f'schema_version = 39\n[game]\nrom_sha256 = "{ROM_SHA256}"\n'
+                               '[[assets]]\ntile_hash = "first"\nheight = [7]\n')
+            store = AnnotationStore(root/'annotations.json', ROM_SHA256, profile=profile)
+            revision = store.refresh()
+            values = {key: dict(role='floor', normals=[], note=key, context_dependent=False)
+                      for key in ('first', 'second', 'third')}
+            before = profile.read_bytes()
+            with self.assertRaises(AtlasError):
+                store.save_batch(dict(values, third=dict(role='wall', normals=[])), revision)
+            self.assertEqual(profile.read_bytes(), before)
+            with mock.patch.object(store, '_save_profile_batch', wraps=store._save_profile_batch) as save_profile, \
+                 mock.patch.object(store, '_write', wraps=store._write) as write:
+                store.save_batch(values, revision)
+                self.assertEqual(save_profile.call_count, 1)
+                self.assertEqual(write.call_count, 1)
+            rows = tomllib.loads(profile.read_text())['assets']
+            self.assertEqual(rows[0]['height'], [7])
+            self.assertEqual({r['tile_hash']: r['tile_semantic_note'] for r in rows},
+                             {key: key for key in values})
+            before = profile.read_bytes()
+            with self.assertRaises(AtlasError):
+                store.save_batch(values, revision)
+            self.assertEqual(profile.read_bytes(), before)
+
     def test_world_cache_animated_selection_matches_rendered_phase(self):
         try:
             from PIL import Image
