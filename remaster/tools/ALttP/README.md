@@ -179,6 +179,9 @@ before writing; required facings/corners must be completed first. Alias families
 still share metadata, and conflicting alias values reject the whole batch.
 Press **Enter/Return** in that input to
 save, exactly like **Save offset**.
+Enter keeps the offset input focused, and clicking the map while that input is
+active preserves focus for repeated tile → numpad value → Enter authoring.
+Clicking another control moves focus normally; background saves do not steal it.
 
 **Shift-click** selects the inclusive rectangle between the most recently
 selected location and the clicked location, replacing the selection.
@@ -263,6 +266,24 @@ native tile inspector, preserve all local geometry/terrain/normals, and enable
 Unlike the native scalar control, saving **0** keeps an explicit zero entry so it
 can reset traversal; **Remove offset** removes that scalar entry. Native profile
 units are used directly, with no conversion to wall-weight units.
+
+Scalar-offset saves reuse the already parsed artwork/terrain document, first
+checking that all text outside scalar-offset, placement-mode and schema sections
+is unchanged. Only those editable tables are reparsed, avoiding a full parse of
+large pixel arrays per edit. Writes remain immediate, atomic and revision/byte
+guarded; this is not delayed autosave. Terrain-removal edits retain the full
+preservation-validation path.
+
+Ordinary **Save offset** / **Remove offset** edits update the map locally and
+write in a serialized background queue. You can change selection and submit
+more scalar edits while a write is in flight; newer local values are reapplied
+over older save responses. The queue status distinguishes pending edits from
+**All height edits saved to disk**. Closing/reloading with pending edits warns
+you. If a write fails, the queue stops and retains local values in the page;
+do not close/reload, since those values are not durable. No failed write is
+silently retried over an external profile change. Wait for the queue before
+shared metadata changes, Bake/Adjust, gradients, or pixel removal. Recalculation
+waits for queued saves. These operations retain their existing guarded behavior.
 
 When traversal reaches an authored coordinate, its saved height replaces the
 incoming calculated height and traversal continues from there. Different incoming
@@ -422,6 +443,23 @@ Historical notes and generated reports may refer to the former `remaster/tools/a
 paths. Use `remaster/tools/ALttP/alttp…` for those files now. Python module names remain
 unchanged; their sibling imports resolve when scripts are run directly.
 # Explicit boundary gradients
+
+Height calculation also runs a second, up-to-four-pass nearby-wall fill after the
+directional wavefront. Only unassigned resolved walls without authored scalar
+offsets or existing conflicts qualify. Diagonal walls inspect one and two steps
+along their two ground-parallel tangent directions, using placement-flipped normals:
+SE/NW-facing walls check NE/SW, and NE/SW-facing walls check NW/SE. They never
+search up/down the wall. Cardinal faces inspect one and two steps along
+their tangent axis (E/W for N/S faces, N/S for E/W faces). An intervening different
+ID does not block the two-step check, allowing alternating artwork patterns.
+Donors must have the exact same placement tile ID, valid metadata,
+and an authored scalar or conflict-free calculated height within calculation
+bounds. Agreeing donors supply the height; disagreements leave it missing and
+are counted separately. Each pass snapshots donor availability, so newly filled
+tiles may donate starting on the next pass, never during the same scan. Stop after
+four passes or the first pass with no new fills. This does not restart traversal. Results stay
+calculated, not baked; status and placement diagnostics identify phase-two copies.
+This is an editor inference rule, not validated runtime geometry.
 
 The selected tile’s right-hand detail panel shows a two-row grid of **Art,
 Height, Normal, Emission, and Occlusion** previews. These are exact-asset profile

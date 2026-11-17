@@ -17,6 +17,11 @@ async function main(){
     assert(!mapHelp.includes('id="worldViewport"'));
     vm.runInContext(`worldManifest={content_ids:['floor'],counts:{light:{floor:262144}}};worldGrid=new DataView(new ArrayBuffer(512*512*8));worldScale=1;worldActive=true;drawWorld=()=>{};`,context);
     const vp=element('worldViewport');
+    context.document.activeElement=element('heightOffset');
+    let focusPrevented=false;
+    vp.onpointerdown({button:0,pointerId:1,clientX:4,clientY:4,preventDefault(){focusPrevented=true;}});
+    assert(focusPrevented,'Map pointerdown must retain active offset input focus');
+    context.document.activeElement=null;
     const event=(x,y,flags={})=>({button:0,pointerId:1,clientX:x*8+4,clientY:y*8+4,...flags});
     const cells=()=>JSON.parse(vm.runInContext('JSON.stringify([...worldSelection.keys()])',context));
     const click=async(x,y,flags={})=>{vp.onpointerdown(event(x,y,flags));await vp.onpointerup(event(x,y,flags));};

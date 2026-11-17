@@ -129,7 +129,7 @@ if (typeof document !== 'undefined') (() => {
         <label><input id="heightOffsetAll" type="checkbox"> Apply to all instances in this world</label>
           <button id="heightOffsetSave">Save offset</button><button id="heightOffsetRemove">Remove offset</button><button id="heightTerrainRemove">Remove per-pixel heights</button><button id="heightOffsetBake">Bake Current Offset</button>
          <label>Adjust by <input id="heightOffsetDelta" type="number" step="1" value="0" style="width:80px"></label><label title="Adjust existing authored scalar offsets only; skip calculated and unauthored tiles. Applies only to Adjust by."><input id="heightOffsetAuthoredOnly" type="checkbox"> Only authored heights</label><button id="heightOffsetAdjust">Apply adjustment</button>
-       <span id="heightOffsetState" class="hint"></span></div>
+       <span id="heightOffsetState" class="hint"></span><span id="heightSaveQueueState" class="hint" role="status"></span></div>
         <details><summary>Author gradient between two boundaries</summary>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button id="gradientA">Capture selection as A</button><label>A height <input id="gradientHeightA" type="number" step="1" value="48" style="width:70px"></label>
@@ -176,6 +176,25 @@ if (typeof document !== 'undefined') (() => {
     // View/layout changes stale overlay scope, not explicit saves of captured numbers.
     let editGeneration = 0;
     let offsetConfig = null, offsetSelection = '', offsetBusy = false;
+    const pendingOffsets=[];
+    let offsetSaveError=null;
+    function applyOffsetEdit(edit){
+        for(const {x,y,offset} of edit.values){const key=`${edit.world}:${x}:${y}`;
+            if(offset===null){delete offsetConfig.offsets[key];delete offsetConfig.heights[key];}
+            else{offsetConfig.offsets[key]=offset;offsetConfig.heights[key]=offset;}
+        }
+    }
+    function showOffsetQueue(){
+        window.heightOffsetsPending=!!pendingOffsets.length;
+        // The legacy revision poll uses this latch; keep it suspended while
+        // a profile write could otherwise be mistaken for an external edit.
+        saving=!!pendingOffsets.length;
+        el('heightSaveQueueState').textContent=offsetSaveError?`NOT SAVED: ${offsetSaveError}. ${pendingOffsets.length} edits retained in this page; do not close or reload.`:
+            pendingOffsets.length?`${pendingOffsets.length} height edits saving in background…`:'All height edits saved to disk';
+    }
+    window.addEventListener?.('beforeunload',event=>{
+        if(pendingOffsets.length){event.preventDefault();event.returnValue='';}
+    });
     const terrainImages=new Map();
     function terrainRange(key){
         const pixels=offsetConfig?.terrain_heights?.[key];
@@ -195,7 +214,7 @@ if (typeof document !== 'undefined') (() => {
         return {min:Number.isFinite(min)?min:0,max:Number.isFinite(max)?max:0};
     }
     el('heightTerrainRemove').onclick=async()=>{
-        if(offsetBusy||!offsetConfig?.path)return;
+        if(offsetBusy||pendingOffsets.length||!offsetConfig?.path)return;
         const world=worldName,locations=offsetLocations().filter(p=>offsetConfig.terrain.includes(`${world}:${p.x}:${p.y}`));
         if(!locations.length){el('heightOffsetState').textContent='No selected locations have per-pixel terrain heights.';return;}
         if(!window.confirm(`Remove per-pixel height arrays from ${locations.length} selected locations in ${world} world?\n\nScalar offsets, per-pixel normals, shared artwork and other locations are preserved. This cannot be undone in the editor.`))return;
@@ -227,7 +246,7 @@ if (typeof document !== 'undefined') (() => {
     el('gradientPreview').onclick=()=>{
         clearGradientPreview();
         try{
-            if(!offsetConfig?.path||running||offsetBusy)throw Error('Load a profile and finish pending height operations first.');
+            if(!offsetConfig?.path||running||offsetBusy||pendingOffsets.length)throw Error('Load a profile and finish pending height operations first.');
             if(gradientA?.world!==worldName||gradientB?.world!==worldName)throw Error('Capture both boundaries in the current world.');
             const ta=el('gradientHeightA').value.trim(),tb=el('gradientHeightB').value.trim();
             if(!ta||!tb)throw Error('Enter both boundary heights.');
@@ -249,7 +268,7 @@ if (typeof document !== 'undefined') (() => {
     };
     el('gradientSave').onclick=async()=>{
         const preview=gradientPreview;
-        if(!preview||offsetBusy||running)return;
+        if(!preview||offsetBusy||running||pendingOffsets.length)return;
         const fresh=()=>gradientPreview===preview&&preview.world===worldName&&preview.revision===meta.revision&&preview.generation===editGeneration;
         if(!fresh()){clearGradientPreview();el('gradientStatus').textContent='Preview stale; preview again before saving.';return;}
         if(!window.confirm(`Save ${preview.values.length} gradient placement offsets in ${preview.world} world?\n\n${preview.replaced} existing scalar offsets will be overwritten. Only purple preview cells are written. Shared tile metadata and per-pixel terrain are unchanged. Recalculate afterward to inspect traversal conflicts.`))return;
@@ -277,9 +296,9 @@ if (typeof document !== 'undefined') (() => {
         const available = !!locations.length && !!offsetConfig?.path && !offsetBusy;
         el('heightOffsetSave').disabled = !available;
         el('heightOffsetRemove').disabled = !available;
-        el('heightTerrainRemove').disabled = !available || !locations.some(p=>offsetConfig?.terrain.includes(`${worldName}:${p.x}:${p.y}`));
-        el('heightOffsetBake').disabled = !available || running;
-        el('heightOffsetAdjust').disabled = !available || running;
+        el('heightTerrainRemove').disabled = !available || !!pendingOffsets.length || !locations.some(p=>offsetConfig?.terrain.includes(`${worldName}:${p.x}:${p.y}`));
+        el('heightOffsetBake').disabled = !available || running || !!pendingOffsets.length;
+        el('heightOffsetAdjust').disabled = !available || running || !!pendingOffsets.length;
         el('heightOffsetDelta').disabled = !available || running;
         el('heightOffsetAuthoredOnly').disabled = !available || running;
         el('heightOffsetBake').title = 'Save selected scalar bases, including conflicting or stale results you accept. Pixel detail is preserved separately; a min-max label is not baked into the base.';
@@ -306,7 +325,7 @@ if (typeof document !== 'undefined') (() => {
         return value;
     }
     async function saveOffset(remove, bake = false, adjust = false) {
-        if (!worldCell || !offsetConfig?.path || offsetBusy) return;
+        if (!worldCell || !offsetConfig?.path || offsetBusy || offsetSaveError || (bake&&pendingOffsets.length)) return;
         let locations = offsetLocations();
         const world = worldName, key = offsetSelectionKey(), allInstances=el('heightOffsetAll').checked;
         const authoredOnly=adjust&&el('heightOffsetAuthoredOnly').checked;
@@ -357,6 +376,28 @@ if (typeof document !== 'undefined') (() => {
                 el('heightOffsetState').textContent='Cancelled — no offsets saved.';return;
             }
         }
+        if(!bake){
+            const edit={world,values:locations.map(({x,y})=>({x,y,offset}))};
+            pendingOffsets.push(edit);applyOffsetEdit(edit);invalidate();refreshHeightImage();showOffset(true);showOffsetQueue();
+            const job=async()=>{
+                if(offsetSaveError)return;
+                try{
+                    await flushSemantics();
+                    const response=await fetch('/api/height-offsets',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':meta.revision},body:JSON.stringify(edit)});
+                    const value=await response.json();if(!response.ok)throw Error(value.error);
+                    pendingOffsets.splice(pendingOffsets.indexOf(edit),1);
+                    offsetConfig=value;meta.revision=value.revision;
+                    for(const pending of pendingOffsets)applyOffsetEdit(pending);
+                    terrainImages.clear();
+                    if(!pendingOffsets.length)await readConfig();
+                    refreshHeightImage();showOffset(true);drawWorld();
+                }catch(error){offsetSaveError=error.message;}
+                finally{showOffsetQueue();showOffset();}
+            };
+            saveQueue=saveQueue.catch(()=>{}).then(job);
+            await saveQueue;
+            return;
+        }
         const bakeRevision=meta.revision, bakeWeights=config?.revision;
         offsetBusy = true; invalidate(); showOffset();
         const bakeGeneration=editGeneration;
@@ -393,7 +434,14 @@ if (typeof document !== 'undefined') (() => {
     }
     el('heightOffsetSave').onclick = () => saveOffset(false);
     el('heightOffset').onkeydown = event => {
-        if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); return saveOffset(false); }
+        if (event.key === 'Enter' && !event.isComposing) {
+            event.preventDefault();
+            const saved=saveOffset(false);
+            // Restore synchronously, never after a disk response: a late save
+            // must not steal focus back from another control the user chose.
+            el('heightOffset').focus({preventScroll:true});
+            return saved;
+        }
     };
     el('heightOffsetRemove').onclick = () => saveOffset(true);
     el('heightOffsetBake').onclick = () => saveOffset(false, true);
@@ -448,6 +496,7 @@ if (typeof document !== 'undefined') (() => {
         state.textContent=batchPending.size?'Choose required facing/corner metadata to save all selected tiles.':'';detail.append(state);
     }
     function batchEdit(field,value) {
+        if(pendingOffsets.length){el('saveState').textContent='Wait for background height saves before editing shared metadata.';return;}
         const targets=selectionTiles();
         for(const tile of targets) {
             const a={...(tile.annotation||{role:'unknown',normals:[],note:'',context_dependent:false})};
@@ -566,6 +615,7 @@ if (typeof document !== 'undefined') (() => {
     save = id => {
         const job = async () => {
             if (!id) return;
+            if(pendingOffsets.length)throw Error('Wait for background height saves before saving shared metadata.');
             const tile = byId.get(id), sent = tile.annotation;
             if (!sent || !complete(sent)) { semanticError = 'Complete the pending semantic annotation first.'; return; }
             saving = true;
@@ -698,7 +748,7 @@ if (typeof document !== 'undefined') (() => {
         const s = result?.stats;
         const inBounds = result?.world === worldName && x >= s.x0 && x < s.x0 + s.width && y >= s.y0 && y < s.y0 + s.height;
         const i = inBounds ? (y - s.y0) * s.width + x - s.x0 : -1;
-        const raw = inBounds ? (result.assigned[i] ? result.heights[i] : 'UNSET — no path assigned a height') : 'unknown / outside calculated bounds';
+        const raw = inBounds ? (result.assigned[i] ? `${result.heights[i]}${result.adjacentWallFilled?.[i]?' (phase 2 adjacent same-ID wall copy)':''}` : result.adjacentWallConflicts?.[i]?'UNSET — adjacent wall donors disagree':'UNSET — no path assigned a height') : 'unknown / outside calculated bounds';
         const current = inBounds && resultGeneration === generation;
         const actual = current && result.conflicts[i] ? ' · CONFLICT: another path disagreed; first arrival retained' : '';
         let diagnostics = '';
@@ -858,6 +908,7 @@ if (typeof document !== 'undefined') (() => {
         try {
             if (!worldActive || !worldGrid || el('worldChoice').value !== worldName) throw Error('Wait for the selected world map to load.');
             await flushSemantics(); await saveQueue;
+            if(offsetSaveError)throw Error('Height edits not saved: '+offsetSaveError);
             await readConfig();
             const offsets = await readOffsets();
             const authoredHeights = Object.entries(offsets.heights).filter(([key]) => key.startsWith(worldName + ':'))
@@ -889,7 +940,7 @@ if (typeof document !== 'undefined') (() => {
                 compact.setUint32(offset, ids.get(key), true); compact.setUint8(offset + 7, cell.flips);
             }
             setPhase('Starting height worker');
-            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-1-scalar-base2');
+            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-1-wall-fill-tangent6');
             worker.onmessage = async event => {
                 if (requestID !== runID) return;
                 try {
@@ -924,7 +975,7 @@ if (typeof document !== 'undefined') (() => {
                 const nextImage = makeHeightImage(data), s = data.stats;
                 result = data; resultGeneration = token; image = nextImage;
                 el('worldHeight').checked = true;
-                status(`${name} calculated ${describeBounds(bounds)} · reference (${ref.x}, ${ref.y}) = ${reference.height} · raw grayscale black ${s.min} → white ${s.max} · ${s.computed} assigned, ${s.missing} NO HEIGHT (magenta checker), ${s.conflictCount} conflicts (orange), ${s.authoredResets} authored arrival resets. NOT validated geometry. Warnings: ${s.unknownRoles} unknown roles, ${s.missingSources} missing sources, ${s.missingFacings} missing wall facings, ${s.contextDependent} context-dependent placements.`);
+                status(`${name} calculated ${describeBounds(bounds)} · reference (${ref.x}, ${ref.y}) = ${reference.height} · raw grayscale black ${s.min} → white ${s.max} · ${s.computed} assigned, ${s.missing} NO HEIGHT (magenta checker), ${s.conflictCount} conflicts (orange), ${s.authoredResets} authored arrival resets. Phase 2: ${s.adjacentWallFills??0} adjacent wall copies, ${s.adjacentWallConflictCount??0} donor disagreements left unresolved. NOT validated geometry. Warnings: ${s.unknownRoles} unknown roles, ${s.missingSources} missing sources, ${s.missingFacings} missing wall facings, ${s.contextDependent} context-dependent placements.`);
                 drawWorld();
                 previousAreas[name] = {...bounds};
                 workspace?.updateWorld(name,{previousArea:{...bounds},reference:{...ref},referenceHeight:referenceValues[name]});
@@ -969,7 +1020,7 @@ if (typeof document !== 'undefined') (() => {
             clearTimeout(saveTimer);await semanticQueue;await flushBatch();
             if(pendingId)await save(pendingId);
             if(pendingId||semanticError)throw Error(semanticError||'Complete pending metadata before changing selection.');
-            await saveQueue;
+            if(!pendingOffsets.length)await saveQueue;
         },
         selectionChanged:()=>{offsetSelection='';}};
     viewChanged();
@@ -978,7 +1029,7 @@ if (typeof document !== 'undefined') (() => {
     // External weight-only edits do not change the semantic revision polled by
     // the original editor. Mark stale but never overwrite local unsaved controls.
     setInterval(async () => {
-        if (!config || running || saving || pendingId) return;
+        if (!config || running || saving || pendingId || pendingOffsets.length) return;
         try {
             const response = await fetch('/api/weights', {cache: 'no-store'});
             const value = await response.json();

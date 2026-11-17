@@ -39,6 +39,27 @@ class OffsetConflict(ValueError):
     pass
 
 
+def parse_scalar_edit(text, baseline_text, baseline):
+    """Parse only changed scalar tables after proving all other text identical."""
+    import tomllib
+    sections = r'(?ms)^\[\[overworld_offsets\]\][^\n]*\n.*?(?=^\[|\Z)|^\[overworld_placement\][^\n]*\n.*?(?=^\[|\Z)'
+    schema = r'(?m)^schema_version\s*=\s*\d+\s*$'
+    def unchanged(value):
+        return re.sub(schema, '', re.sub(sections, '', value)).strip()
+    if unchanged(text) != unchanged(baseline_text):
+        raise ValueError('Scalar edit changed unrelated profile text')
+    version = re.search(schema, text)
+    if version is None:
+        raise ValueError('Missing schema_version')
+    changed = tomllib.loads(version.group() + '\n' + '\n'.join(m.group() for m in re.finditer(sections, text)))
+    parsed = dict(baseline)
+    for field in ('schema_version', 'overworld_offsets', 'overworld_placement'):
+        parsed.pop(field, None)
+        if field in changed:
+            parsed[field] = changed[field]
+    return parsed
+
+
 class HeightOffsetStore:
     def __init__(self, annotations):
         self.annotations = annotations
@@ -111,9 +132,9 @@ class HeightOffsetStore:
                 raise ValueError('Select a profile with --profile to save placement offsets')
             baseline = store.profile_bytes
             text = baseline.decode()
+            scalar_rows = iter(store._profile_document.get('overworld_offsets', []))
             def replace(match):
-                import tomllib
-                row = tomllib.loads(match.group())['overworld_offsets'][0]
+                row = next(scalar_rows)
                 if row['world'] == world and row['background'] == 1 and (row['x'], row['y']) in targets:
                     return ''
                 return match.group()
@@ -142,7 +163,8 @@ class HeightOffsetStore:
                     text = re.sub(r'(?ms)(^\[overworld_placement\][^\n]*\n)(.*?)(?=^\[|\Z)',
                                   lambda m: m[1] + re.sub(r'(?m)^mode\s*=.*$', 'mode = "authored_overworld_offsets"', m[2]), text)
             import tomllib
-            parsed = tomllib.loads(text)
+            parsed = (tomllib.loads(text) if remove_terrain else
+                      parse_scalar_edit(text, baseline.decode(), store._profile_document))
             # Never rewrite assets, terrain arrays, normals, other coordinates or groups.
             for field in set(parsed) | set(store._profile_document):
                 if remove_terrain and field == 'overworld_terrain':

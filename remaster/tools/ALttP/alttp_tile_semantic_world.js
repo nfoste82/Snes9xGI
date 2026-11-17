@@ -163,6 +163,9 @@ function brushWorldSelection(e,drag) {
 }
 vp.onpointerdown=e=>{
     if(e.button!==0||worldSelecting)return;
+    // Keep numpad authoring active when selecting the next map tile. Prevent
+    // only the map's default focus transfer, not selection/pan handlers.
+    if(document.activeElement===document.getElementById('heightOffset'))e.preventDefault();
     vp.setPointerCapture(e.pointerId);
     worldDrag={x:e.clientX,y:e.clientY,ox:worldX,oy:worldY,moved:false,noPan:e.altKey,visited:new Set()};
     if(!e.altKey&&['keep','remove'].includes(worldBoxMode.value)) {

@@ -3,7 +3,83 @@ const assert = require('node:assert/strict');
 const {calculateHeights, crossingFacing, eastwardSteps, westwardSteps, traversalDelta, diagonalWalk} = require('./alttp_tile_height_worker.js');
 const {heightPreviewColor,heightArrivalEdges,heightArrivalLabels} = require('./alttp_tile_height_ui.js');
 const floor = () => ({resolved:true,facing:null,north:0,east:0,weight:1});
+// Phase two is radius-two, exact-ID, noncascading and conflict preserving.
+{
+    const {fillAdjacentWallHeights:fill}=require('./alttp_tile_height_worker.js');
+    const cells=Array.from({length:9},()=>({...floor(),wall:true,tileId:1,straightAxes:1}));
+    const result=()=>({heights:new Float64Array(9),assigned:new Uint8Array(9),conflicts:new Uint8Array(9)});
+    let r=result();r.assigned[3]=1;r.heights[3]=16;
+    let out=fill(3,3,cells,r);assert.equal(r.heights[4],16);assert.equal(out.filled[4],1);
+    assert.equal(r.heights[5],16); // Direct distance-two donor, not a cascade.
+    r=result();cells[3].authoredHeight=0;out=fill(3,3,cells,r);assert.equal(out.filled[4],1);assert.equal(r.heights[4],0);
+    cells[5].authoredHeight=32;r=result();out=fill(3,3,cells,r);
+    assert.equal(out.rejected[4],1);assert.equal(r.assigned[4],0);
+    delete cells[3].authoredHeight;delete cells[5].authoredHeight;
+    cells[4].diagonal=true;cells[4].facing=[1,-1];r=result();r.assigned[0]=1;r.heights[0]=48;
+    out=fill(3,3,cells,r);assert.equal(out.filled[4],1);assert.equal(r.heights[4],48);
+    cells[0].tileId=2;r=result();r.assigned[0]=1;out=fill(3,3,cells,r);assert.equal(out.filled[4],0);
+    cells[0].tileId=1;r=result();r.assigned[0]=1;r.conflicts[0]=1;out=fill(3,3,cells,r);assert.equal(out.filled[4],0);
+    cells[4].diagonal=false;cells[4].straightAxes=2;r=result();r.assigned[1]=1;r.heights[1]=-16;
+    out=fill(3,3,cells,r);assert.equal(r.heights[4],-16);assert.equal(out.filled[4],1);
+    cells[4].authoredHeight=7;r=result();r.assigned[1]=1;out=fill(3,3,cells,r);assert.equal(out.filled[4],0);
+    delete cells[4].authoredHeight;cells[4].resolved=false;r=result();r.assigned[1]=1;out=fill(3,3,cells,r);assert.equal(out.filled[4],0);
+}
+{
+    const {fillAdjacentWallHeights:fill}=require('./alttp_tile_height_worker.js');
+    for(const [dx,dy,diagonal,straightAxes] of [[1,0,false,1],[0,1,false,2],[1,1,true,0],[1,-1,true,0]]){
+        const n=7,center=3*n+3;
+        const cells=Array.from({length:n*n},()=>({...floor(),wall:true,tileId:2,diagonal,straightAxes,facing:diagonal?[dy,-dx]:null}));
+        cells[center].tileId=1;
+        const donor=(3+2*dy)*n+3+2*dx;cells[donor].tileId=1;
+        const make=()=>({heights:new Float64Array(n*n),assigned:new Uint8Array(n*n),conflicts:new Uint8Array(n*n)});
+        let r=make();r.assigned[donor]=1;r.heights[donor]=24;
+        let out=fill(n,n,cells,r);assert.equal(out.filled[center],1);assert.equal(r.heights[center],24);
+        // A closer differing-ID tile doesn't block the alternating pattern.
+        assert.equal(cells[(3+dy)*n+3+dx].tileId,2);
+        const opposite=(3-dy)*n+3-dx;cells[opposite].tileId=1;
+        r=make();r.assigned[donor]=r.assigned[opposite]=1;r.heights[donor]=24;r.heights[opposite]=16;
+        out=fill(n,n,cells,r);assert.equal(out.rejected[center],1);assert.equal(r.assigned[center],0);
+        cells[opposite].tileId=2;cells[donor].tileId=2;
+        const far=(3+3*dy)*n+3+3*dx;cells[far].tileId=1;
+        r=make();r.assigned[far]=1;r.heights[far]=48;
+        out=fill(n,n,cells,r);assert.equal(out.filled[center],0); // No radius-three lookup or cascade.
+    }
+}
+// Phase two must stay along the wall, using flipped semantic normals even at
+// zero weight. Test both tangent directions and both forbidden slope directions.
+for(const normal of ['south_east','north_west','north_east','south_west'])for(const flips of [0,1,2,3]){
+    const annotation={role:'wall',normals:[normal]},facing=crossingFacing(annotation,flips);
+    for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1]])for(const distance of [1,2]){
+        const n=7,center=3*n+3,grid=new ArrayBuffer(n*n*8),view=new DataView(grid);
+        const donor=(3+dy*distance)*n+3+dx*distance;
+        for(const i of [center,donor]){view.setUint32(i*8,1,true);view.setUint8(i*8+7,flips);}
+        view.setUint32(0,2,true);
+        const r=calculateHeights({world:'light',mode:'manual',bounds:{x0:0,y0:0,width:n,height:n},grid,
+            tiles:[{annotation:{role:'unknown'}},{annotation,weight:0},{annotation:{role:'floor'}}],
+            reference:{world:'light',x:0,y:0,height:0},
+            authoredHeights:[{x:donor%n,y:Math.floor(donor/n),height:24}]});
+        const tangent=dx*facing[0]+dy*facing[1]===0;
+        assert.equal(r.assigned[center],Number(tangent),`${normal} flips=${flips} direction=${dx},${dy} distance=${distance}`);
+        if(tangent)assert.equal(r.heights[center],24);
+    }
+}
 // Authored placement heights reset incoming paths, not wall weights or geometry.
+{
+    // Disconnected diagonal artwork chain grows two cells per synchronous pass.
+    // An authored donor is allowed without becoming a phase-one traversal seed.
+    const n=12,grid=new ArrayBuffer(n*n*8),view=new DataView(grid);
+    for(let i=0;i<n*n;i++)view.setUint32(i*8,1,true);
+    for(let i=0;i<n;i++)view.setUint32((i*n+i)*8,2,true);
+    view.setUint32((n-1)*8,0,true);
+    const r=calculateHeights({world:'light',mode:'manual',bounds:{x0:0,y0:0,width:n,height:n},grid,
+        tiles:[{annotation:{role:'floor'}},{annotation:{role:'unknown'}},{annotation:{role:'wall',normals:['north_east']}}],
+        reference:{world:'light',x:n-1,y:0,height:0},authoredHeights:[{x:0,y:0,height:32}]});
+    assert.equal(r.stats.adjacentWallPasses,4);
+    assert.equal(r.stats.adjacentWallFills,8);
+    for(let i=1;i<=8;i++){assert.equal(r.assigned[i*n+i],1);assert.equal(r.heights[i*n+i],32);}
+    assert.equal(r.assigned[9*n+9],0); // Fifth pass would be needed.
+    assert.equal(r.assigned[0],0); // Authored donor is not a traversal seed.
+}
 {
     const cells = [floor(), {...floor(), authoredHeight:10}, floor(), floor()];
     let r = diagonalWalk(4,1,cells,[1,0,0,0],0);

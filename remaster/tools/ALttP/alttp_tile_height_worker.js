@@ -244,6 +244,35 @@ function diagonalWalk(width, height, cells, anchors, referenceHeight = 0) {
         seededColumns: seedColumns.size, expandedStates: queue.length};
 }
 
+function fillAdjacentWallHeights(width, height, cells, result) {
+    const assigned=result.assigned.slice(),conflicts=result.conflicts.slice();
+    const filled=new Uint8Array(cells.length),rejected=new Uint8Array(cells.length);
+    let count=0,conflictCount=0;
+    for(let i=0;i<cells.length;i++){
+        const cell=cells[i];
+        if(assigned[i]||conflicts[i]||!cell.wall||!cell.resolved||Number.isFinite(cell.authoredHeight))continue;
+        // Follow the ground-parallel tangent of the placement-flipped normal,
+        // never its uphill/downhill axis. Do not infer orientation from weight.
+        const directions=cell.diagonal?(cell.facing?
+            [[-cell.facing[1],cell.facing[0]],[cell.facing[1],-cell.facing[0]]]:[]):
+            cell.straightAxes===1?[[1,0],[-1,0]]:cell.straightAxes===2?[[0,1],[0,-1]]:[];
+        const donors=[];
+        for(const [dx,dy] of directions)for(const distance of [1,2]){
+            const x=i%width+dx*distance,y=Math.floor(i/width)+dy*distance;
+            if(x<0||x>=width||y<0||y>=height)continue;
+            const j=y*width+x,donor=cells[j];
+            if(donor.tileId!==cell.tileId||!donor.resolved)continue;
+            const value=Number.isFinite(donor.authoredHeight)?donor.authoredHeight:
+                assigned[j]&&!conflicts[j]?result.heights[j]:NaN;
+            if(Number.isFinite(value))donors.push(value);
+        }
+        if(!donors.length)continue;
+        if(donors.some(value=>value!==donors[0])){rejected[i]=1;conflictCount++;continue;}
+        result.heights[i]=donors[0];result.assigned[i]=1;filled[i]=1;count++;
+    }
+    return {filled,rejected,count,conflictCount};
+}
+
 function calculateHeights(input, progress = () => {}) {
     if (!['light', 'dark'].includes(input.world)) throw Error('Invalid world');
     const {x0, y0, width, height} = input.bounds || {};
@@ -295,6 +324,7 @@ function calculateHeights(input, progress = () => {}) {
             (a.normals.every(n => n === 'north' || n === 'south') ? 1 :
                 a.normals.every(n => n === 'east' || n === 'west') ? 2 : 0) : 0;
         cells.push({north: north[i], east: east[i], facing, weight: tile?.weight ?? 8,
+            tileId:grid.getUint32(offset,true),diagonal:isDiagonal(a),
             straightAxes, wall, authoredHeight: authoredHeights.get(`${x+x0}:${y+y0}`),
             resolved: !!tile && knownRole && (!wall || !!knownNormals && (!isDiagonal(a) || !!facing))});
         if (preset ? x + x0 < 256 && y + y0 >= 492 && tile?.sand : x + x0 === ref.x && y + y0 === ref.y) {
@@ -303,6 +333,18 @@ function calculateHeights(input, progress = () => {}) {
     }
     progress('Propagating directional wavefront with diagonal wall crossings (no interpolation)…');
     const result = diagonalWalk(width, height, cells, anchor, preset ? 0 : ref.height);
+    const adjacent={filled:new Uint8Array(cells.length),rejected:new Uint8Array(cells.length),count:0,conflictCount:0,passes:0};
+    for(let pass=1;pass<=4;pass++){
+        progress(`Phase 2: nearby same-ID wall fill, pass ${pass}/4…`);
+        const round=fillAdjacentWallHeights(width,height,cells,result);
+        adjacent.passes=pass;adjacent.count+=round.count;
+        for(let i=0;i<cells.length;i++){
+            adjacent.filled[i]|=round.filled[i];
+            adjacent.rejected[i]=result.assigned[i]?0:round.rejected[i];
+        }
+        if(!round.count)break;
+    }
+    adjacent.conflictCount=adjacent.rejected.reduce((sum,value)=>sum+value,0);
     let min = Infinity, max = -Infinity;
     let computed = 0, conflictCount = 0;
     for (let i = 0; i < result.heights.length; i++) {
@@ -311,6 +353,7 @@ function calculateHeights(input, progress = () => {}) {
     }
     return {world: input.world, bounds: {x0, y0, width, height}, reference: preset ? null : {...ref},
         heights: result.heights, assigned: result.assigned, conflicts: result.conflicts,
+        adjacentWallFilled:adjacent.filled,adjacentWallConflicts:adjacent.rejected,
         processed: result.processed, stopReasons: result.stopReasons,
         traceFormat: 'incoming-neighbors-v1', firstArrival: result.firstArrival,
         acceptedArrivals: result.acceptedArrivals, conflictArrivals: result.conflictArrivals,
@@ -319,10 +362,13 @@ function calculateHeights(input, progress = () => {}) {
         min, max, anchors, seededColumns: result.seededColumns, expandedStates: result.expandedStates,
         computed, missing: width * height - computed, conflictCount, stops: result.stops, agreeingArrivals: result.agreeingArrivals,
         authoredArrivals: result.authoredArrivals, authoredResets: result.authoredResets,
+        adjacentWallFills:adjacent.count,adjacentWallConflictCount:adjacent.conflictCount,
+        adjacentWallPasses:adjacent.passes,
         unknownRoles, missingSources, missingFacings, contextDependent, validatedGeometry: false}};
 }
 
 if (typeof module !== 'undefined') module.exports = {heightDeltas, isDiagonal, crossingFacing, eastwardSteps, westwardSteps, traversalDelta, diagonalWalk, filterContributions, anchoredWalk, calculateHeights, SAND_HASHES, ARRIVAL_OFFSETS};
+if (typeof module !== 'undefined') module.exports.fillAdjacentWallHeights=fillAdjacentWallHeights;
 if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
     self.onmessage = event => {
         const {id, input} = event.data;

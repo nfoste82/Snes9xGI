@@ -9,7 +9,7 @@ async function main() {
     const elements = new Map(), workers = [],heightImages=[];
     const element = id => {
         if (!elements.has(id)) elements.set(id, {value: '', checked: false, textContent: '',
-            style: {}, children:[], append(...items) {this.children.push(...items);}, remove() {}, addEventListener(event, handler) { this[event] = handler; }});
+            style: {}, children:[], focus(){context.document.activeElement=this;}, append(...items) {this.children.push(...items);}, remove() {}, addEventListener(event, handler) { this[event] = handler; }});
         return elements.get(id);
     };
     for (const [id, value] of [['worldChoice', 'light'], ['heightReference', '0'], ['heightOpacity', '.85']]) element(id).value = value;
@@ -612,6 +612,42 @@ async function main() {
     };
     context.changeRole('other');await ui.selectionChanging();
     assert.equal(batchRequests,1);
+    // A slow disk response must not block selection or another scalar edit.
+    context.fetch=batchFetch;
+    const queuedFetch=context.fetch;let releaseFirst,startedFirst;
+    const firstStarted=new Promise(resolve=>{startedFirst=resolve;});
+    const firstGate=new Promise(resolve=>{releaseFirst=resolve;});
+    let inFlight=0,maxInFlight=0,writes=0;
+    context.fetch=async(url,options)=>{
+        if(url==='/api/height-offsets'&&options?.method==='PUT'){
+            inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);writes++;
+            if(writes===1){startedFirst();await firstGate;}
+            const response=await queuedFetch(url,options);inFlight--;return response;
+        }
+        return queuedFetch(url,options);
+    };
+    select([{x:30,y:30}]);element('heightOffset').value='16';
+    const firstSave=element('heightOffset').onkeydown({key:'Enter',preventDefault(){}});await firstStarted;
+    assert.equal(context.document.activeElement,element('heightOffset'));
+    await ui.selectionChanging(); // Would deadlock here under the old behavior.
+    select([{x:30,y:30},{x:31,y:30}]);element('heightOffset').value='32';
+    const secondSave=element('heightOffsetSave').onclick();
+    const pendingLabels=[];context.worldX=-30*24;context.worldY=-30*24;
+    ui.drawHeightLabels(new Proxy({fillText:text=>pendingLabels.push(text)},{get:(o,k)=>o[k]||(()=>{})}));
+    assert(pendingLabels.includes('32'),'Queued newer edit displays immediately');
+    assert.equal(writes,1);assert.match(element('heightSaveQueueState').textContent,/2 height edits/);
+    context.document.activeElement=element('heightOffsetDelta');
+    releaseFirst();await Promise.all([firstSave,secondSave]);
+    assert.equal(context.document.activeElement,element('heightOffsetDelta'),'Late saves must not steal focus');
+    assert.equal(maxInFlight,1);assert.equal(writes,2);
+    assert.equal(offsets.offsets['light:30:30'],32);assert.equal(offsets.offsets['light:31:30'],32);
+    assert.match(element('heightSaveQueueState').textContent,/All height edits saved/);
+    context.fetch=async(url,options)=>url==='/api/height-offsets'&&options?.method==='PUT'?
+        {ok:false,json:async()=>({error:'Profile changed externally'})}:queuedFetch(url,options);
+    select([{x:32,y:30}]);element('heightOffset').value='48';await element('heightOffsetSave').onclick();
+    assert.match(element('heightSaveQueueState').textContent,/NOT SAVED: Profile changed externally.*retained/);
+    assert.equal(offsets.offsets['light:32:30'],undefined);
+    assert.equal(context.window.heightOffsetsPending,true);
     console.log('Height UI mock: snapshot, stale rejection, explicit references and world isolation passed.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

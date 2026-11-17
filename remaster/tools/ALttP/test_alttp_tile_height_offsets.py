@@ -5,12 +5,26 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict, integer_terrain_heights, integer_terrain_profile
+from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict, integer_terrain_heights, integer_terrain_profile, parse_scalar_edit
 from alttp_tile_semantic_atlas import AnnotationStore
 from test_alttp_tile_semantic_atlas import ROM_SHA256
 
 
 class HeightOffsets(unittest.TestCase):
+    def test_scalar_fast_parse_matches_full_parse_and_rejects_unrelated_changes(self):
+        original = ('schema_version = 39\n[game]\ntitle = "example"\n'
+                    '[[assets]]\ntile_hash = "first"\nheight = [1, 2, 3]\n'
+                    '[[overworld_offsets]]\nworld = "light"\nbackground = 1\nx = 1\ny = 2\noffset = 3\n')
+        baseline = tomllib.loads(original)
+        for text in (original.replace('offset = 3','offset = -16'),
+                     original + '\n[overworld_placement]\nmode = "authored_overworld_offsets"\n',
+                     original.split('[[overworld_offsets]]')[0]):
+            self.assertEqual(parse_scalar_edit(text, original, baseline), tomllib.loads(text))
+        for text in (original.replace('height = [1, 2, 3]', 'height = [4, 5, 6]'),
+                     original.replace('title = "example"', 'title = "changed"')):
+            with self.assertRaisesRegex(ValueError, 'unrelated profile text'):
+                parse_scalar_edit(text, original, baseline)
+
     def test_remove_last_terrain_field_removes_empty_record(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
