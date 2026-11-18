@@ -161,6 +161,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:01927c149d2231c4": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:01977d8fc369b384": {
       "role": "obstacle",
       "normals": [],
@@ -219,6 +226,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:022b7f1d11347546": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -456,6 +469,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:04bf774cbd52fe51": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:04de7104f21fd357": {
       "role": "obstacle",
       "normals": [],
@@ -536,6 +555,12 @@
       "doorway_support": false
     },
     "v1:4bpp:05db901d8d666905": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:05fe016ec2797d61": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -626,6 +651,12 @@
       "normals": [
         "north_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:06cb19c8b84815f1": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -763,6 +794,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:0828509cd18ac583": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:084ddc7451551eaa": {
       "role": "obstacle",
@@ -951,6 +988,14 @@
     "v1:4bpp:0a8d9a817267d4f2": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:0aa6f526cb7dc9d5": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -1192,6 +1237,15 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:0d6c5b6d31e6cf97": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
+    },
     "v1:4bpp:0d94e4ac10078ff1": {
       "role": "obstacle",
       "normals": [],
@@ -1336,6 +1390,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:0f89316348fd5a7d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:0f8bd48822ede082": {
       "role": "wall_corner",
       "normals": [
@@ -1365,6 +1425,12 @@
       "note": ""
     },
     "v1:4bpp:1010b3702f30d28c": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1044ac4d71852372": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -1858,6 +1924,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:16552871a47c8259": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:16918e7bbe6d132c": {
       "role": "obstacle",
       "normals": [],
@@ -1957,6 +2029,12 @@
       "water": false
     },
     "v1:4bpp:17aaa383b803ca46": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:17ae8a08a0392359": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -2445,6 +2523,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1d4bae8e9b72f2fd": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:1d65321b64a7a3d9": {
       "role": "obstacle",
       "normals": [],
@@ -2803,6 +2888,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2220cde0a93bfa1b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2246afa6b07ea180": {
       "role": "wall",
       "normals": [
@@ -2841,6 +2932,12 @@
     },
     "v1:4bpp:229e9903c0056861": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:22c11334169e6dc3": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -2893,6 +2990,14 @@
     "v1:4bpp:23883e3a93becd0f": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:238e9370cd6674bc": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -3045,6 +3150,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:25557f30ebf860b2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:255bc79c66d2ab87": {
       "role": "wall",
       "normals": [
@@ -3186,6 +3297,13 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:272207e3afb2e4c9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
     },
     "v1:4bpp:272c4284dcfebd18": {
       "role": "wall",
@@ -3430,6 +3548,15 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2aa371183863a5d1": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
+    },
     "v1:4bpp:2aa78fd7374f746a": {
       "role": "wall",
       "normals": [
@@ -3472,6 +3599,12 @@
       "note": ""
     },
     "v1:4bpp:2ad3233860fffd3b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2ae1431abf727561": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -3555,6 +3688,12 @@
       "note": ""
     },
     "v1:4bpp:2bebc4b7e0773eae": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2c33f09704254c99": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -3694,6 +3833,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:2df724ba1b5483c4": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2e33ab61cc3dd0b6": {
       "role": "wall",
       "normals": [
@@ -3705,6 +3850,14 @@
     "v1:4bpp:2e3de1e1802fb5c5": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2e6411c4486fbb8d": {
+      "role": "wall",
+      "normals": [
+        "west"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -3853,6 +4006,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:2fc16164f76667f2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:2fd108c8737d6459": {
       "role": "wall",
@@ -4008,6 +4167,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:317a607c7cf55381": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:31a26359ad6a567d": {
       "role": "obstacle",
       "normals": [],
@@ -4063,6 +4228,12 @@
       "note": ""
     },
     "v1:4bpp:327a7ac22596c0c4": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:328829891cff0952": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -4282,6 +4453,12 @@
       "context_dependent": true,
       "note": "Kakariko village: roof sign upper bevel. Geometry bound by verified Light World coordinates; metadata shared per tile ID."
     },
+    "v1:4bpp:35328178e9d00a75": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3560ad39c1e57a6a": {
       "role": "floor",
       "normals": [],
@@ -4422,6 +4599,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:368fbb84940f5ca0": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:369f0fa05a8c2daa": {
       "role": "obstacle",
       "normals": [],
@@ -4464,6 +4647,14 @@
     "v1:4bpp:36eb9667d6009141": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3715b6e03eee3721": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -4546,6 +4737,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:382316a7bc051cce": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:382499b97a3721bf": {
       "role": "wall",
@@ -4788,6 +4985,15 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3a99b71de5f3b00b": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
+    },
     "v1:4bpp:3aab1e7161d019f9": {
       "role": "obstacle",
       "normals": [],
@@ -4835,6 +5041,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3b9d94f50ba39cfb": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -5029,6 +5241,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3e6af56613c05eb8": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3e798683665bf4b6": {
       "role": "obstacle",
       "normals": [],
@@ -5186,6 +5404,14 @@
     "v1:4bpp:40ba8632a133b60f": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:40d7bc47c12390e3": {
+      "role": "wall",
+      "normals": [
+        "north_east"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -5564,6 +5790,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:44c983c1f8b759c7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:44cb3025919ef1a1": {
       "role": "obstacle",
       "normals": [],
@@ -5712,6 +5944,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:464cb5dc5d98d675": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:46b5bcf36893992c": {
       "role": "door",
       "normals": [
@@ -5754,6 +5992,12 @@
       "water": false
     },
     "v1:4bpp:470687877230e043": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:470e919432b96746": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -6028,6 +6272,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:4a832a041e3f1662": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4a8879fdad8816c0": {
       "role": "obstacle",
       "normals": [],
@@ -6120,6 +6370,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4ba0f5160f8f44d1": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -6556,6 +6812,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:513348d11cbdceb2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:514b40d88ed636e4": {
       "role": "floor",
       "normals": [],
@@ -6747,6 +7009,13 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:535b2cd4bc264fcd": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
     },
     "v1:4bpp:535fcd3d38904889": {
       "role": "floor",
@@ -6952,6 +7221,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:55e7df0351e6cce3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:5620875293557269": {
       "role": "other",
@@ -7238,6 +7513,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5a9e37b276c76363": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5ac218ab8618f0a1": {
       "role": "floor",
       "normals": [],
@@ -7253,6 +7534,12 @@
       "water": false
     },
     "v1:4bpp:5ae781919ad14a25": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5afb099a58f9b0a7": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -7340,6 +7627,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5be757ce06e021d8": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:5c1f3eb7ca040c7c": {
       "role": "obstacle",
       "normals": [],
@@ -7394,6 +7688,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5ccbc1fca4aef46f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:5ce4a53ebc4122a4": {
       "role": "floor",
       "normals": [],
@@ -7440,6 +7741,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5d62c8892af1c9ef": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5da9971f9c797be0": {
       "role": "obstacle",
       "normals": [],
@@ -7447,6 +7754,12 @@
       "note": ""
     },
     "v1:4bpp:5ddb9489027bfb88": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:5dfafdd076171846": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -7639,6 +7952,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:602d4adb9fc95302": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:604ce76bccc556b6": {
       "role": "obstacle",
       "normals": [],
@@ -7674,11 +7993,25 @@
       "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
       "doorway_support": false
     },
+    "v1:4bpp:60c3fec433e138b6": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:60cc41ebee147a71": {
       "role": "wall",
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:60dd52eca6d9c1cc": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -7753,6 +8086,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:61e2ce86e651b036": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:62112d6380887711": {
       "role": "wall",
@@ -7888,6 +8227,14 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:642756d9a1c3a9e1": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:64502952150ecc61": {
       "role": "floor",
       "normals": [],
@@ -7918,6 +8265,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:64a264cefeb293bd": {
+      "role": "wall",
+      "normals": [
+        "west"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:64a9230103f3b137": {
       "role": "wall",
       "normals": [
@@ -7937,6 +8292,12 @@
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:64de639619f92ecc": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -8290,6 +8651,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:6949d72e14367de6": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:69965e9f4526c3b2": {
       "role": "wall_corner",
       "normals": [
@@ -8424,6 +8793,13 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:6bb63a27adb69044": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
     },
     "v1:4bpp:6bbbf39567b3799c": {
       "role": "wall",
@@ -8585,6 +8961,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:6ded439b9adba522": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:6df91e59c0ea9c61": {
       "role": "floor",
@@ -8816,6 +9198,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:708288454cd50ed1": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7086bb3ff2421f1a": {
       "role": "doorway",
       "normals": [
@@ -9011,6 +9401,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:72979b318187eb07": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:734066a1796f9d27": {
       "role": "floor",
       "normals": [],
@@ -9167,6 +9563,12 @@
       "note": ""
     },
     "v1:4bpp:75800b3360ea78ea": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:75824fb7022f9739": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -9333,6 +9735,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:77486bf96cbcf79b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:77578cdf307bbe3d": {
       "role": "wall_corner",
@@ -9888,6 +10296,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7fa03db0a3331a72": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7fb77b0946ecc31f": {
       "role": "obstacle",
       "normals": [],
@@ -10019,6 +10435,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:813c9f1b201b5fd3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:816a3c46df631795": {
       "role": "floor",
       "normals": [],
@@ -10093,6 +10515,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:823a3c5c62865561": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -10230,6 +10658,12 @@
       "note": "",
       "water": true
     },
+    "v1:4bpp:8457b968a46f6651": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8492ae4337d23c85": {
       "role": "floor",
       "normals": [],
@@ -10366,6 +10800,15 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:866d6ffc5afcb801": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
     },
     "v1:4bpp:867265b1281af2fb": {
       "role": "obstacle",
@@ -10794,6 +11237,14 @@
       "note": "",
       "water": true
     },
+    "v1:4bpp:8bbf6f5850c4ce6d": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8bc9993bb372b55a": {
       "role": "obstacle",
       "normals": [],
@@ -10877,6 +11328,13 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:8cf505685638ff6f": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
     },
     "v1:4bpp:8cf92f60832b1ea6": {
       "role": "obstacle",
@@ -11039,6 +11497,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:8f1484a160bcbc85": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8f1e66204853faf0": {
       "role": "obstacle",
       "normals": [],
@@ -11167,6 +11631,12 @@
       "water": true
     },
     "v1:4bpp:904c264469963ff9": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:90684eab3d877e25": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -11390,6 +11860,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:93758abaa3def809": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:939bf45e1b7e15ba": {
       "role": "obstacle",
       "normals": [],
@@ -11577,6 +12053,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:95e0ce1ccd8b62c8": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:95ee52b24c3a8486": {
       "role": "obstacle",
@@ -11788,6 +12270,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9943aceeb8976d41": {
+      "role": "wall",
+      "normals": [
+        "south_east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:9943c286d5e45726": {
       "role": "obstacle",
       "normals": [],
@@ -11795,6 +12285,12 @@
       "note": ""
     },
     "v1:4bpp:994864582c5572a7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9958a63a2d444b10": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -12164,6 +12660,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9d6f0b3a767bd339": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:9d86499278747d4a": {
       "role": "wall",
       "normals": [
@@ -12418,6 +12921,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:a00627d2a4e45923": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -12989,6 +13498,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:a684c79ac30a1954": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:a68581c1161b9abe": {
       "role": "obstacle",
       "normals": [],
@@ -13067,6 +13582,14 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:a7b94b3828bfbf91": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:a7b968f2f7e8eff0": {
       "role": "wall",
@@ -13555,6 +14078,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ae86218c8fb3198f": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ae89f14ee9bad26d": {
       "role": "doorway",
       "normals": [
@@ -13630,6 +14159,14 @@
     "v1:4bpp:af88dee3664fb0e3": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:af9b2dca9212c23c": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -13936,6 +14473,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b37f57c49740f6f5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b3881650e2d5d461": {
       "role": "floor",
       "normals": [],
@@ -14198,6 +14741,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b6824b4c5da5f3af": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b69b9cf053738ccd": {
       "role": "obstacle",
       "normals": [],
@@ -14327,6 +14876,12 @@
       "note": ""
     },
     "v1:4bpp:b828f1a836c707e1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:b8307484f81365d0": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -14690,6 +15245,20 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:bcdd89d7c4b36dcb": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bcdf5c76b3d975b1": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:bcf33bcf303f9e00": {
       "role": "obstacle",
       "normals": [],
@@ -14747,6 +15316,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:bd9b76c77106e1a5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:bda012c4f7a49a2b": {
       "role": "wall",
@@ -14933,6 +15508,14 @@
       "role": "wall",
       "normals": [
         "east"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bfa2160044a33613": {
+      "role": "wall",
+      "normals": [
+        "north_east"
       ],
       "context_dependent": false,
       "note": ""
@@ -15188,6 +15771,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:c27e6a0e6c29b2ef": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c285b5b3dda2c3e0": {
       "role": "wall",
       "normals": [
@@ -15222,6 +15811,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:c2e3291f1ad8adec": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:c2ed44c46c222267": {
       "role": "obstacle",
@@ -15260,6 +15855,12 @@
       "note": ""
     },
     "v1:4bpp:c345d6c8bc80cca1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c3861ee66fa0597d": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -15480,6 +16081,21 @@
       "corner_type": "inside"
     },
     "v1:4bpp:c63a3a58154d0fa6": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c67534dce05086f7": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
+    },
+    "v1:4bpp:c684623b3caa8ca2": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -15955,6 +16571,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:cc1b91e8eaf3948a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:cc2dfaed80c3574c": {
       "role": "floor",
@@ -16529,6 +17151,12 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:d2b0b45d971fdbc1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:d2bfb488cd63fa12": {
       "role": "obstacle",
       "normals": [],
@@ -16789,6 +17417,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:d60b2c0f1cf2c1fc": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:d62e634fe0cb2121": {
       "role": "wall",
       "normals": [
@@ -16994,6 +17628,12 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:d879c4a321f75841": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:d89710b6db585091": {
       "role": "floor",
       "normals": [],
@@ -17174,6 +17814,12 @@
       "corner_type": "outside"
     },
     "v1:4bpp:da6567c46ebef145": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:dab8bf2bc8dbebb3": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -17508,6 +18154,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:def0628c0c73d8ab": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:df09ced213c7b88d": {
       "role": "obstacle",
       "normals": [],
@@ -17578,6 +18230,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:e00068218dc41d97": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:e006916113ee4c32": {
       "role": "wall",
@@ -17707,6 +18365,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:e26bde9dd405e102": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:e27e4eafd3c8b9f4": {
       "role": "door",
@@ -18239,6 +18903,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:e8b5ec779c9c7663": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:e8ce267c609d3016": {
       "role": "floor",
       "normals": [],
@@ -18403,6 +19073,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:eabb4b1314adf82e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:eb3e35dba424a6df": {
       "role": "obstacle",
       "normals": [],
@@ -18468,6 +19144,14 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ebfe2da03f0347b5": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ec05507acc8de4a8": {
       "role": "obstacle",
       "normals": [],
@@ -18475,6 +19159,12 @@
       "note": ""
     },
     "v1:4bpp:ec1334fe7fc19549": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ec26be9d8d92d519": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -18508,6 +19198,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:ec7e2d342b9447cb": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:eca2633ecc50f3dc": {
       "role": "obstacle",
@@ -18646,6 +19342,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ed983767da37708a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:eda72d0311ba1b48": {
       "role": "floor",
       "normals": [],
@@ -18740,6 +19442,13 @@
       "context_dependent": false,
       "note": "Kakariko experimental house: door handle, door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
+    "v1:4bpp:eef64d5e9ebf7bb8": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:ef0307c769ca32f0": {
       "role": "floor",
       "normals": [],
@@ -18810,6 +19519,14 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:efbbc72421225992": {
+      "role": "wall",
+      "normals": [
+        "south_west"
+      ],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:efcff172dbcd3719": {
       "role": "wall",
@@ -18922,6 +19639,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:f146c68db64ff000": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f151965fe2203689": {
       "role": "wall",
       "normals": [
@@ -19006,6 +19729,14 @@
     "v1:4bpp:f22b143c5c7a9b14": {
       "role": "obstacle",
       "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:f251d88f7f4c53ad": {
+      "role": "wall",
+      "normals": [
+        "south"
+      ],
       "context_dependent": false,
       "note": ""
     },
@@ -19251,6 +19982,15 @@
       "normals": [],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:f58c959071d2c9db": {
+      "role": "doorway",
+      "normals": [
+        "south"
+      ],
+      "context_dependent": false,
+      "note": "",
+      "doorway_support": false
     },
     "v1:4bpp:f5e6a401b589df86": {
       "role": "other",
@@ -19719,6 +20459,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:fbb31a2329135cd1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:fbbac3e10f04b217": {
       "role": "wall",
       "normals": [
@@ -19905,6 +20651,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:fdcd5984fcedaa49": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:fdda58ff8ee3fae9": {
       "role": "other",
