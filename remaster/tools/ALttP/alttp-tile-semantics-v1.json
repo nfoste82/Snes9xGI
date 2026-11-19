@@ -174,6 +174,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:01a996ef4f3bd46d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:01a9f3a3aa4f21d2": {
       "role": "wall",
       "normals": [
@@ -719,6 +725,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:07225c6051b6b351": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:073648fb78b2ede2": {
       "role": "floor",
       "normals": [],
@@ -835,6 +848,12 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:0880b2530f2ab3c5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:088660844b887649": {
       "role": "wall",
       "normals": [
@@ -911,6 +930,12 @@
       "note": ""
     },
     "v1:4bpp:0999f55d8ff66aca": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:099fc79e67cf742a": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -1319,6 +1344,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:0e86d07ad01ac61e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:0ec2ad6c926ca11b": {
       "role": "obstacle",
       "normals": [],
@@ -1523,6 +1554,12 @@
       "note": ""
     },
     "v1:4bpp:1109642bc780950a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:113732322690181d": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -1805,6 +1842,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:14dc63cc7ea2c2ab": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:14ee3519261bb772": {
       "role": "wall",
       "normals": [
@@ -2021,6 +2064,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:178aecc42d5e6cf2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:17936bb9947b4a29": {
       "role": "floor",
       "normals": [],
@@ -2086,6 +2135,12 @@
       "water": false
     },
     "v1:4bpp:1818530c3aec1c3e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1840e6e80c4e75b5": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -2206,6 +2261,12 @@
       "note": ""
     },
     "v1:4bpp:19c851db3abf4861": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:19fe0ba86e31632d": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -2440,6 +2501,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1c7448f5c1d2207b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1c90558a7b87c9ad": {
       "role": "wall",
       "normals": [
@@ -2518,6 +2585,12 @@
       "note": ""
     },
     "v1:4bpp:1d2f12d2b4991a4d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1d36e63ad2c85f12": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -2660,6 +2733,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:1f275b8756604bd5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:1f39a62786d41788": {
       "role": "obstacle",
       "normals": [],
@@ -2680,6 +2759,12 @@
       "note": ""
     },
     "v1:4bpp:1f71c1532ddf5ca2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:1f83db5335247465": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -2714,13 +2799,10 @@
       "note": ""
     },
     "v1:4bpp:203a7ed00064f701": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:204c0bf4a616c72c": {
       "role": "other",
@@ -3143,6 +3225,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:252574860029376e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:254d835ec568d509": {
       "role": "obstacle",
@@ -3649,6 +3737,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:2b3af3eea1f20658": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2b41b1b0a8d6a8ec": {
       "role": "obstacle",
       "normals": [],
@@ -3891,6 +3985,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:2e89e92e96dfcf5b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2e8f451156600d62": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2eadd028ec680d29": {
       "role": "obstacle",
       "normals": [],
@@ -3950,6 +4056,12 @@
     },
     "v1:4bpp:2f35350bdeb423a4": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:2f42d658acff4112": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -4339,13 +4451,10 @@
       "note": ""
     },
     "v1:4bpp:33c7d0353a47a31a": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:33ef7caafb083e08": {
       "role": "wall",
@@ -4676,6 +4785,12 @@
       "context_dependent": false,
       "note": "",
       "doorway_support": false
+    },
+    "v1:4bpp:3735bee95e02fdb1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:373e74025c3edeee": {
       "role": "obstacle",
@@ -5097,6 +5212,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3c7412cc2debe0d0": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3c9f149edb6242fe": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3cb06643371c3579": {
       "role": "obstacle",
       "normals": [],
@@ -5118,6 +5245,12 @@
       "note": ""
     },
     "v1:4bpp:3ce98e80f879a985": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3d2f07113bbc1d20": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -5155,6 +5288,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:3d713689f8fa7842": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:3d8b87d7a28ea607": {
       "role": "wall",
@@ -5229,6 +5368,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3e5daf67836f6034": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3e5e2d32e878fec6": {
       "role": "obstacle",
       "normals": [],
@@ -5298,6 +5443,12 @@
       "water": true
     },
     "v1:4bpp:3f266f86874e2ad4": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3f2c8149557d1cc7": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -5463,6 +5614,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:413346327edbe4bd": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4137c4b2874cbeba": {
       "role": "floor",
       "normals": [],
@@ -5608,6 +5765,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4246890ca3dcb254": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -5890,6 +6053,12 @@
       "note": ""
     },
     "v1:4bpp:458bdaa60d25f393": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:458fd57f65534d2a": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -6179,6 +6348,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:492d81cb00d7376b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:4945d2445a19ed68": {
       "role": "wall",
       "normals": [
@@ -6342,10 +6517,8 @@
       "note": ""
     },
     "v1:4bpp:4b4fec9512a239ce": {
-      "role": "door",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": "Kakariko experimental house: door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
@@ -6630,6 +6803,12 @@
       "normals": [
         "south_east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4f79b9dacc142590": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -7130,6 +7309,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:54b8d8c24b686b8d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:54c6258ccf3771eb": {
       "role": "obstacle",
       "normals": [],
@@ -7293,11 +7478,23 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:56dd4feb7c61a551": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:57179ab347723279": {
       "role": "wall",
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:57349661f01f195c": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -7904,6 +8101,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:5fcfd1ca53740af2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5fde2d7f69952c60": {
       "role": "floor",
       "normals": [],
@@ -7985,13 +8188,10 @@
       "note": ""
     },
     "v1:4bpp:60added055d44b31": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:60c3fec433e138b6": {
       "role": "wall",
@@ -8144,6 +8344,12 @@
       "water": false
     },
     "v1:4bpp:6266d45209e31e59": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:6270b98bec4a8ea0": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -8394,6 +8600,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:65e21fd1a07ee1b5": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:65f08ccdef99437c": {
       "role": "obstacle",
       "normals": [],
@@ -8537,6 +8749,12 @@
       "note": "",
       "water": true
     },
+    "v1:4bpp:68318f808c778018": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": "Kakariko experimental house: door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+    },
     "v1:4bpp:6843fa04a51fd92a": {
       "role": "wall",
       "normals": [
@@ -8604,6 +8822,12 @@
       "note": ""
     },
     "v1:4bpp:68cf0791099ab1cb": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:68fac5245a63acc2": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -8888,6 +9112,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:6d31289a99ff9a5e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:6d3f0de9abae4469": {
       "role": "obstacle",
       "normals": [],
@@ -9094,6 +9324,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:6f71278bfd6e338b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:6f7b064eab85aa39": {
       "role": "obstacle",
       "normals": [],
@@ -9128,6 +9364,12 @@
       "note": ""
     },
     "v1:4bpp:6fe085563f16c647": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7001584952a242eb": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -9207,13 +9449,10 @@
       "note": ""
     },
     "v1:4bpp:7086bb3ff2421f1a": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:708960f468cdf977": {
       "role": "floor",
@@ -9407,6 +9646,18 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:729ae806bbf15280": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:72ba15ffb416a6dd": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:734066a1796f9d27": {
       "role": "floor",
       "normals": [],
@@ -9507,6 +9758,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:750d2dc832609b60": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:7518595e103dbf40": {
       "role": "wall",
       "normals": [
@@ -9521,6 +9778,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:751f3da7cc12836b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:7525c23e79fe043c": {
       "role": "floor",
@@ -9780,6 +10043,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:77d27071ccab5d17": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:781e9404657e2823": {
       "role": "obstacle",
       "normals": [],
@@ -9931,6 +10200,12 @@
       "note": "",
       "corner_type": "outside"
     },
+    "v1:4bpp:7a9184be79b68aee": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": "Kakariko experimental house: door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+    },
     "v1:4bpp:7a99d4061af260b9": {
       "role": "floor",
       "normals": [],
@@ -10030,6 +10305,18 @@
       "note": ""
     },
     "v1:4bpp:7bf398d4a34018e8": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7c066a0f26bad389": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:7c3a0eac130dea0a": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -10249,6 +10536,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:7ef90222fbee89a9": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:7f11b8b3a13e619a": {
       "role": "wall",
       "normals": [
@@ -10429,6 +10723,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:811dae053b27cf69": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:813b46057609fe76": {
       "role": "obstacle",
       "normals": [],
@@ -10569,6 +10869,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:830b72dcd0740305": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8314c6468a159ca2": {
       "role": "obstacle",
       "normals": [],
@@ -10684,6 +10990,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:85295a94d791659e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:85614379e2796519": {
       "role": "obstacle",
@@ -10895,6 +11207,12 @@
     },
     "v1:4bpp:8731ac983e10c761": {
       "role": "other",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:874088664e2a4688": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -11161,11 +11479,16 @@
       "note": "Kakariko experimental house: eave edge / timber bevel, raised top perimeter trim, roof rear hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:8ac2095165d05a61": {
-      "role": "floor",
+      "role": "obstacle",
       "normals": [],
       "context_dependent": true,
-      "note": "Kakariko experimental house: roof east hip, roof front hip, roof west hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "water": false
+      "note": "Kakariko experimental house: roof east hip, roof front hip, roof west hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+    },
+    "v1:4bpp:8ac37ab994cfac49": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:8ad25bda3513c73e": {
       "role": "floor",
@@ -11252,13 +11575,10 @@
       "note": ""
     },
     "v1:4bpp:8bf4ac4e564a0d2d": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:8bf5097e06d8aedc": {
       "role": "wall",
@@ -11642,6 +11962,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:9070e17319d76c3c": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:908d9d6f83fdac85": {
       "role": "obstacle",
       "normals": [],
@@ -11705,6 +12032,12 @@
       "note": ""
     },
     "v1:4bpp:9179831cd55b5194": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:918544a6fad923b5": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -11915,6 +12248,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:93f6ccf0f9caa65b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:940702f7b665f911": {
       "role": "wall",
       "normals": [
@@ -11999,6 +12338,12 @@
     },
     "v1:4bpp:954bb11dcd670e2d": {
       "role": "stair_top",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:95532d8d3687cf4b": {
+      "role": "obstacle",
       "normals": [],
       "context_dependent": false,
       "note": ""
@@ -12122,6 +12467,12 @@
       "water": false
     },
     "v1:4bpp:96fa7ca4c34c98d8": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:9728fa6411fa9219": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -12471,6 +12822,12 @@
       "context_dependent": false,
       "note": "",
       "doorway_support": false
+    },
+    "v1:4bpp:9b35d3a746a6a67a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:9b47af243a586f44": {
       "role": "obstacle",
@@ -13742,6 +14099,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:aa145018e6714f87": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:aa24e7c6c9873029": {
       "role": "obstacle",
       "normals": [],
@@ -13809,6 +14172,12 @@
       ],
       "context_dependent": false,
       "note": ""
+    },
+    "v1:4bpp:ab4b8b0ebaa15d61": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": true,
+      "note": "Kakariko experimental house: doorway lintel, roof front hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:ab66057f6aaa2c90": {
       "role": "wall",
@@ -13894,11 +14263,10 @@
       "note": ""
     },
     "v1:4bpp:ac442a5e11290261": {
-      "role": "floor",
+      "role": "obstacle",
       "normals": [],
       "context_dependent": true,
-      "note": "Kakariko experimental house: roof east hip, roof front hip, roof west hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "water": false
+      "note": "Kakariko experimental house: roof east hip, roof front hip, roof west hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:ac475e2c5d86c540": {
       "role": "wall",
@@ -13993,6 +14361,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:ad6deea48d5342a7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": true,
+      "note": "Kakariko experimental house: eave edge / timber bevel, roof east hip, roof west hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+    },
     "v1:4bpp:ad79eb7ebc2d37cd": {
       "role": "floor",
       "normals": [],
@@ -14085,13 +14459,10 @@
       "note": ""
     },
     "v1:4bpp:ae89f14ee9bad26d": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway jamb. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:aec1a32a4884836c": {
       "role": "obstacle",
@@ -14554,6 +14925,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:b41edd4967195345": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": "Kakariko experimental house: door handle, door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
+    },
     "v1:4bpp:b421dec913b5c464": {
       "role": "obstacle",
       "normals": [],
@@ -14735,6 +15112,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:b651d1c3340809d1": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:b65da26b7d1284a6": {
       "role": "obstacle",
       "normals": [],
@@ -14860,6 +15243,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:b80ed88f4dbbcf3a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:b81f51c6fdb8550c": {
       "role": "obstacle",
@@ -15153,6 +15542,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:bbadb18ee450f9f3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:bbb6f9809384bb3c": {
       "role": "obstacle",
       "normals": [],
@@ -15411,6 +15806,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:be9f2f077bc5706a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:bea74dfc800bffa3": {
       "role": "obstacle",
       "normals": [],
@@ -15471,6 +15872,24 @@
       "water": false
     },
     "v1:4bpp:bf24cf6ec34ef38d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bf37980ca34c53ad": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bf3a10458c93cfbc": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bf461810950e1d55": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -15608,6 +16027,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:c0bd05d0f000b778": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:c0cfb7abd5a9c9d2": {
       "role": "obstacle",
@@ -15791,6 +16216,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:c2949593592c2e4d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:c2996cda9e173869": {
       "role": "obstacle",
@@ -16113,6 +16544,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:c6a899517de32e6e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:c6b1ff4ed0392e82": {
       "role": "doorway",
       "normals": [],
@@ -16196,6 +16633,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "inside"
+    },
+    "v1:4bpp:c70c8250bc8246f3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:c71154c75bf0924b": {
       "role": "wall",
@@ -16307,14 +16750,24 @@
       "note": ""
     },
     "v1:4bpp:c85d3d8e287cd2a8": {
-      "role": "door",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": "Kakariko experimental house: door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:c89f6511df33890f": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c8bd1b7cab0aa8d7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:c8c18d1ad3cb12a8": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -16541,6 +16994,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:cc0182579b725e2a": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:cc01bae704553b00": {
       "role": "floor",
@@ -16770,6 +17229,12 @@
       "note": "",
       "corner_type": "inside"
     },
+    "v1:4bpp:ce83726ab9696395": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:ce86ab2ca3d11172": {
       "role": "wall",
       "normals": [
@@ -16914,6 +17379,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:cfb467487457c54e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:cfb6a15917192c78": {
       "role": "obstacle",
       "normals": [],
@@ -16926,6 +17397,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:cfd36a28c97f2ccb": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:cfe1778d8f477d09": {
       "role": "floor",
@@ -17292,6 +17769,12 @@
       "normals": [
         "east"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d45351fe953645ce": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
@@ -17694,6 +18177,12 @@
       "note": "Kakariko village: annex wood slope. Geometry bound by verified Light World coordinates; metadata shared per tile ID."
     },
     "v1:4bpp:d9278dd2ab9f6cb7": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:d9414c2bd32a6a9b": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -18110,6 +18599,12 @@
       "note": ""
     },
     "v1:4bpp:de9c74059bd6eb1b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:dea340df5223a531": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -18607,6 +19102,12 @@
       "context_dependent": true,
       "note": "Kakariko experimental house: doorway lintel, roof front hip. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
+    "v1:4bpp:e59dde782a117f10": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:e5ca311911aabb33": {
       "role": "floor",
       "normals": [],
@@ -18621,13 +19122,10 @@
       "note": ""
     },
     "v1:4bpp:e5d86d3787cf94aa": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:e5e93032c5d9bb6b": {
       "role": "floor",
@@ -18990,6 +19488,13 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:e9f8d2e26fee98bc": {
+      "role": "floor",
+      "normals": [],
+      "context_dependent": false,
+      "note": "",
+      "water": false
+    },
     "v1:4bpp:ea019341245a6f54": {
       "role": "obstacle",
       "normals": [],
@@ -19171,6 +19676,12 @@
       "note": ""
     },
     "v1:4bpp:ec2c5dfe079dab17": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:ec3193b50aba516e": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -19435,10 +19946,8 @@
       "note": ""
     },
     "v1:4bpp:eee04058d94fec05": {
-      "role": "door",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": "Kakariko experimental house: door handle, door leaf. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
@@ -20075,6 +20584,12 @@
       "note": "",
       "water": true
     },
+    "v1:4bpp:f6cba7814b23474b": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f6d77e342fed74e8": {
       "role": "wall",
       "normals": [
@@ -20235,6 +20750,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:f88d240e5f8d384e": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:f88d4ff168277b94": {
       "role": "obstacle",
       "normals": [],
@@ -20271,6 +20792,12 @@
       "context_dependent": false,
       "note": "",
       "corner_type": "outside"
+    },
+    "v1:4bpp:f90e663bf0821c85": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:f91826cad69954c9": {
       "role": "obstacle",
@@ -20558,6 +21085,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:fc947f43db7ca3fd": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:fca0626aec934633": {
       "role": "floor",
       "normals": [],
@@ -20677,13 +21210,10 @@
       "note": ""
     },
     "v1:4bpp:fe4689207b01228a": {
-      "role": "doorway",
-      "normals": [
-        "south"
-      ],
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
-      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
-      "doorway_support": false
+      "note": "Kakariko experimental house: doorway lintel. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed."
     },
     "v1:4bpp:fe630bf28976e706": {
       "role": "wall",
@@ -20698,6 +21228,12 @@
       "normals": [
         "south"
       ],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fea42eb4f6107648": {
+      "role": "obstacle",
+      "normals": [],
       "context_dependent": false,
       "note": ""
     },
