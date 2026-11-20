@@ -1,6 +1,7 @@
 #ifndef REMASTER_PLACEMENT_OFFSET_EDITOR_H
 #define REMASTER_PLACEMENT_OFFSET_EDITOR_H
 #include "placement_offset_debug.h"
+#include "overworld_offsets.h"
 #include <climits>
 inline bool S9xRemasterPlacementMapsEqual(const std::map<RemasterContextLocation,int16_t> &a,const std::map<RemasterContextLocation,int16_t> &b) {
 	if(a.size()!=b.size())return false;auto x=a.begin(),y=b.begin();
@@ -27,9 +28,9 @@ inline bool S9xRemasterEditPlacementOffsets(RemasterProfile &p,const RemasterFra
 	std::set<RemasterContextLocation> targets;if(!S9xRemasterPlacementTargets(p,f,ids,targets,error))return false;
 	if(value < -32767 || value > 32767 || (relative && value!=-1 && value!=1)){error="Offset must be an integer in -32767…32767.";return false;}
 	std::map<RemasterContextLocation,int16_t> edits;
-	for(const auto &at:targets){auto old=p.overworldOffsets.find(at);int now=relative?(old==p.overworldOffsets.end()?0:old->second)+value:value;
+	for(const auto &at:targets){int now=relative?S9xRemasterResolveOverworldOffset(p,at).value+value:value;
 		if(now < -32767 || now > 32767){error="Whole selection unchanged: an offset would exceed -32767…32767.";return false;}edits[at]=int16_t(now);}
-	for(const auto &e:edits){if(e.second)p.overworldOffsets[e.first]=e.second;else p.overworldOffsets.erase(e.first);}
+	for(const auto &e:edits)p.overworldOffsets[e.first]=e.second;
 	p.schemaVersion=std::max<uint32_t>(p.schemaVersion,37);return true;
 }
 // Edit the combined support offset (scalar + terrain), never local asset relief.
@@ -42,7 +43,7 @@ inline bool S9xRemasterEditPlacementPixelHeight(RemasterProfile &p,const Remaste
 	std::map<RemasterContextLocation,RemasterTerrainOffset> edits;
 	for(const auto &at:targets) {
 		auto found=p.overworldTerrain.find(at);RemasterTerrainOffset t=found==p.overworldTerrain.end()?RemasterTerrainOffset{}:found->second;
-		auto scalar=p.overworldOffsets.find(at);const float base=scalar==p.overworldOffsets.end()?0:scalar->second;
+		const float base=S9xRemasterResolveOverworldOffset(p,at).value;
 		if(!t.hasHeight)t.height.fill(0);
 		const float adjustment=relative?t.height[pixel]+value:value-base;
 		if(!std::isfinite(adjustment)||std::abs(adjustment)>32767){error="Whole selection unchanged: pixel adjustment exceeds bounds.";return false;}
@@ -59,11 +60,11 @@ struct RemasterPlacementLayer {
 	RemasterTerrainOffset terrain;
 };
 inline RemasterPlacementLayer S9xRemasterCopyPlacementLayer(const RemasterProfile &p,const RemasterContextLocation &at) {
-	RemasterPlacementLayer layer;auto s=p.overworldOffsets.find(at);if(s!=p.overworldOffsets.end())layer.scalar=s->second;
+	RemasterPlacementLayer layer;layer.scalar=S9xRemasterResolveOverworldOffset(p,at).value;
 	auto t=p.overworldTerrain.find(at);if(t!=p.overworldTerrain.end())layer.terrain=t->second;return layer;
 }
 inline bool S9xRemasterPastePlacementLayer(RemasterProfile &p,const RemasterFrame &f,
-	const std::set<uint32_t> &ids,const RemasterPlacementLayer &layer,bool normal,std::string &error) {
+	const std::set<uint32_t> &ids,const RemasterPlacementLayer &layer,bool normal,std::string &error,bool clear=false) {
 	std::set<RemasterContextLocation> targets;if(!S9xRemasterPlacementTargets(p,f,ids,targets,error))return false;
 	if(!S9xRemasterValidTerrainOffset(layer.terrain)||layer.scalar < -32767){error="Invalid offset clipboard; whole selection unchanged.";return false;}
 	for(const auto &at:targets) {
@@ -75,8 +76,10 @@ inline bool S9xRemasterPastePlacementLayer(RemasterProfile &p,const RemasterFram
 			if(!t.hasHeight)t.height={};
 			// A combined zero field clears even a nonzero scalar cancelled by pixels.
 			bool zero=true;for(unsigned k=0;k<64;k++)zero &= layer.scalar+(t.hasHeight?t.height[k]:0)==0;
-			if(zero){p.overworldOffsets.erase(at);t.hasHeight=false;t.height={};}
-			else if(layer.scalar)p.overworldOffsets[at]=layer.scalar;else p.overworldOffsets.erase(at);}
+			if(zero){t.hasHeight=false;t.height={};}
+			const int scalar=zero?0:layer.scalar;
+			if(!clear && (scalar || S9xRemasterOverworldFallback(p.calculatedOverworldHeights.get(),at).status==3))p.overworldOffsets[at]=scalar;
+			else p.overworldOffsets.erase(at);}
 		if(t.identity())p.overworldTerrain.erase(at);else p.overworldTerrain[at]=t;
 	}
 	p.schemaVersion=std::max<uint32_t>(p.schemaVersion,layer.terrain.hasPixelNormals?39:38);return true;
@@ -91,13 +94,13 @@ inline void S9xRemasterPreviewPlacementOffsets(const RemasterProfile &p,Remaster
 		const bool verified=S9xRemasterPlacementCoordinateVerified(f,id);
 		i.savedPlacementCoordinateVerified=verified;
 		const bool available=enabled && verified;
-		auto at=available?p.overworldOffsets.find(f.contextLocations.at(id)):p.overworldOffsets.end();
-		const int value=at==p.overworldOffsets.end()?0:at->second;
+		const auto offset=available?S9xRemasterResolveOverworldOffset(p,f.contextLocations.at(id)):RemasterResolvedOverworldOffset{0,0};
 		// Only remove our own previous scalar; actor/dungeon/other datums survive.
 		if(i.savedPlacementOffsetStatus)i.heightOffset-=i.savedPlacementOffset;
-		if(available)i.heightOffset+=value;
-		i.savedPlacementOffset=available?value:0;
-		i.savedPlacementOffsetStatus=available?(at==p.overworldOffsets.end()?1:2):0;
+		i.heightOffset+=offset.value;
+		i.savedPlacementOffset=offset.value;
+		i.savedPlacementOffsetStatus=offset.status;
+		if(offset.status==3) f.schemaVersion=std::max<uint32_t>(f.schemaVersion,45);
 		i.terrainOffset={};
 		if(available){auto t=p.overworldTerrain.find(f.contextLocations.at(id));if(t!=p.overworldTerrain.end())i.terrainOffset=t->second;}
 	}

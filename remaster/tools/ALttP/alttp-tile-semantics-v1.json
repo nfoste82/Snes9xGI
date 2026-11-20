@@ -3497,6 +3497,12 @@
       "doorframe_mask": "ffffffffffffffff",
       "doorway_support": false
     },
+    "v1:4bpp:285bf829e919cce3": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:2869f7d9fb2db0f3": {
       "role": "floor",
       "normals": [],
@@ -5309,7 +5315,19 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:3db43b74ed76b6e6": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:3dc3cd9496e47601": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:3dc541bc9f8c0349": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -6686,6 +6704,12 @@
       "water": false
     },
     "v1:4bpp:4d8b147361d73706": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:4d9a5481fbe6c023": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -8114,6 +8138,12 @@
       "note": "",
       "water": false
     },
+    "v1:4bpp:5ff2e85985e1c843": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:5ff6a078fbb9f0d2": {
       "role": "obstacle",
       "normals": [],
@@ -9251,6 +9281,12 @@
       "context_dependent": false,
       "note": "",
       "water": false
+    },
+    "v1:4bpp:6e5f12c9829017c6": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
     },
     "v1:4bpp:6e6cccc12f4f4109": {
       "role": "wall",
@@ -11266,6 +11302,12 @@
       "context_dependent": false,
       "note": ""
     },
+    "v1:4bpp:88028b0f191ddbc2": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
     "v1:4bpp:8810cedcc0f0faa6": {
       "role": "floor",
       "normals": [],
@@ -12160,6 +12202,12 @@
       "note": ""
     },
     "v1:4bpp:931f3390a6dd7a4c": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:93277dcce94db4a2": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -15827,6 +15875,12 @@
       "note": ""
     },
     "v1:4bpp:bec1fe2e3c67304d": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:bef0fac5fd3a0673": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,
@@ -21204,6 +21258,12 @@
       "note": ""
     },
     "v1:4bpp:fe131914a3456a47": {
+      "role": "obstacle",
+      "normals": [],
+      "context_dependent": false,
+      "note": ""
+    },
+    "v1:4bpp:fe3b695a3863fab9": {
       "role": "obstacle",
       "normals": [],
       "context_dependent": false,

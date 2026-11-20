@@ -669,7 +669,9 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
     from alttp_tile_height_weights import HeightWeightStore, WeightConflict
     height_weights = height_weights or HeightWeightStore(store, catalog)
     from alttp_tile_height_offsets import HeightOffsetStore, OffsetConflict
+    from alttp_calculated_heights import CalculatedHeightStore, CalculatedHeightConflict
     height_offsets = HeightOffsetStore(store)
+    calculated_heights = CalculatedHeightStore(store, height_weights)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, pattern: str, *args) -> None:
             print(f"{self.address_string()} - {pattern % args}")
@@ -717,6 +719,11 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == '/api/calculated-heights':
+                try:
+                    self.json_response(calculated_heights.config())
+                except (OSError, ValueError, KeyError) as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
             elif path == '/api/height-offsets':
                 try:
                     self.json_response(height_offsets.config())
@@ -837,6 +844,18 @@ def make_handler(catalog: TileCatalog, store: AnnotationStore,
 
         def do_PUT(self) -> None:
             path = urllib.parse.urlsplit(self.path).path
+            if path == '/api/calculated-heights':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= MAX_OFFSET_BODY:
+                        raise ValueError('invalid calculated height request body size')
+                    value = json.loads(self.rfile.read(length))
+                    self.json_response(calculated_heights.save(value, self.headers.get('If-Match')))
+                except CalculatedHeightConflict as exc:
+                    self.error(HTTPStatus.CONFLICT, str(exc))
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    self.error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             if path == '/api/height-offsets':
                 try:
                     length = int(self.headers.get('Content-Length', '0'))

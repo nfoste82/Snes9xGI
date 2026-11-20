@@ -173,6 +173,27 @@ if (typeof document !== 'undefined') (() => {
     // The closed help panel takes only its summary row; open content has a
     // fixed scroll area so changing diagnostics cannot resize the map.
     let config = null, result = null, image = null, generation = 0, resultGeneration = -1;
+    let calculated = null;
+    const calculatedImages = new Map();
+    function installCalculated(value) {
+        const raw = value.cells ? window.atob(value.cells) : null;
+        if (raw && raw.length !== 2*512*512*3) throw Error('Invalid calculated height layer size');
+        calculated = {...value, raw};
+        calculatedImages.clear();
+        terrainImages.clear();
+    }
+    async function readCalculated() {
+        const response = await fetch('/api/calculated-heights', {cache:'no-store'}), value = await response.json();
+        if (!response.ok) throw Error(value.error);
+        return value;
+    }
+    function calculatedCell(world,x,y) {
+        const raw = calculated?.raw;
+        if (!raw || x<0 || x>=512 || y<0 || y>=512) return [0,0];
+        const i = 3*((world==='dark'?512*512:0)+y*512+x);
+        const bits = raw.charCodeAt(i+1) | raw.charCodeAt(i+2)<<8;
+        return [raw.charCodeAt(i), (bits ^ 32768)-32768];
+    }
     // View/layout changes stale overlay scope, not explicit saves of captured numbers.
     let editGeneration = 0;
     let offsetConfig = null, offsetSelection = '', offsetBusy = false;
@@ -748,7 +769,8 @@ if (typeof document !== 'undefined') (() => {
         const s = result?.stats;
         const inBounds = result?.world === worldName && x >= s.x0 && x < s.x0 + s.width && y >= s.y0 && y < s.y0 + s.height;
         const i = inBounds ? (y - s.y0) * s.width + x - s.x0 : -1;
-        const raw = inBounds ? (result.assigned[i] ? `${result.heights[i]}${result.adjacentWallFilled?.[i]?' (phase 2 adjacent same-ID wall copy)':''}` : result.adjacentWallConflicts?.[i]?'UNSET — adjacent wall donors disagree':'UNSET — no path assigned a height') : 'unknown / outside calculated bounds';
+        const [flag, saved] = calculatedCell(worldName,x,y);
+        const raw = inBounds ? (result.assigned[i] ? `${result.heights[i]}${result.adjacentWallFilled?.[i]?' (phase 2 adjacent same-ID wall copy)':''}` : result.adjacentWallConflicts?.[i]?'UNSET — adjacent wall donors disagree':'UNSET — no path assigned a height') : flag===1 || flag===2 ? `${saved} (saved calculation${flag===2?', conflicting first arrival':''})` : flag===3 ? 'UNSET — saved calculation did not reach this tile; runtime defaults to 0' : 'unknown / outside calculated bounds';
         const current = inBounds && resultGeneration === generation;
         const actual = current && result.conflicts[i] ? ' · CONFLICT: another path disagreed; first arrival retained' : '';
         let diagnostics = '';
@@ -814,26 +836,45 @@ if (typeof document !== 'undefined') (() => {
             const authored=authoredDisplayHeight(data.world,x+s.x0,y+s.y0);
              // Shade unreached authored heights on the same scale, without
              // claiming traversal coverage (their numeric label stays magenta).
-             pixels.data.set(!data.assigned[i]&&Number.isFinite(authored)?
-                  heightPreviewColor(authored,true,false,scale.min,scale.max,x,y):
-                 heightPreviewColor(data.heights[i],data.assigned[i],data.conflicts[i],scale.min,scale.max,x,y),i*4);
+            const assigned = data.assigned[i] && !data.authoredKeys?.has(`${x+s.x0}:${y+s.y0}`);
+            const explicit = Number.isFinite(authored);
+            pixels.data.set(heightPreviewColor(explicit?authored:data.heights[i],explicit||assigned,
+                !explicit&&data.conflicts[i],scale.min,scale.max,x,y),i*4);
         }
         context.putImageData(pixels,0,0);
         return canvas;
     }
-    function refreshHeightImage(){if(result)image=makeHeightImage(result);}
+    function refreshHeightImage(){calculatedImages.clear();if(result)image=makeHeightImage(result);}
     function scalarHeight(x,y) {
         const key=`${worldName}:${x}:${y}`,authored=offsetConfig?.heights[key];
         const s=result?.world===worldName?result.stats:null;
         const i=s&&x>=s.x0&&x<s.x0+s.width&&y>=s.y0&&y<s.y0+s.height?(y-s.y0)*s.width+x-s.x0:-1;
-        if(Number.isFinite(authored))return {value:authored,color:i>=0&&!result.assigned[i]?'#ff66ee':'#66ffff',alpha:1};
-        if(s&&x>=s.x0&&x<s.x0+s.width&&y>=s.y0&&y<s.y0+s.height){
-            const i=(y-s.y0)*s.width+x-s.x0;
-            return {value:result.assigned[i]?result.heights[i]:NaN,
-                color:!result.assigned[i]?'#ff66ee':result.conflicts[i]?'#ff9100':'#fff',
-                alpha:resultGeneration===generation?1:.45};
+        const [flag,value] = calculatedCell(worldName,x,y);
+        if(Number.isFinite(authored))return {value:authored,color:(i>=0?!result.assigned[i]:flag===3)?'#ff66ee':'#66ffff',alpha:1};
+        if(i>=0){
+            if (!result.authoredKeys?.has(`${x}:${y}`)) return {value:result.assigned[i]?result.heights[i]:NaN,
+                color:!result.assigned[i]?'#ff66ee':result.conflicts[i]?'#ff9100':'#fff',alpha:resultGeneration===generation?1:.45};
         }
+        if(flag===1 || flag===2) return {value,color:flag===2?'#ff9100':'#fff',alpha:1};
+        if(flag===3) return {value:NaN,color:'#ff66ee',alpha:1};
         return {value:0,color:'#aaa',alpha:1};
+    }
+    function savedHeightImage(world) {
+        if (calculatedImages.has(world)) return calculatedImages.get(world);
+        if (!calculated?.raw && !Object.keys(offsetConfig?.heights||{}).length) {calculatedImages.set(world,null);return null;}
+        const canvas=document.createElement('canvas');canvas.width=canvas.height=512;
+        const context=canvas.getContext('2d'),pixels=context.createImageData(512,512);
+        const values=new Int16Array(512*512), flags=new Uint8Array(512*512);
+        let min=Infinity,max=-Infinity;
+        for(let i=0;i<values.length;i++){
+            const x=i%512,y=i>>9,[flag,height]=calculatedCell(world,x,y),authored=authoredDisplayHeight(world,x,y);
+            flags[i]=authored!==undefined?1:flag; values[i]=authored??height;
+            if(flags[i]===1||flags[i]===2){min=Math.min(min,values[i]);max=Math.max(max,values[i]);}
+        }
+        for(let i=0;i<values.length;i++)if(flags[i])pixels.data.set(heightPreviewColor(values[i],flags[i]!==3,flags[i]===2,min,max,i%512,i>>9),i*4);
+        context.putImageData(pixels,0,0);
+        const overlay={canvas,min:Number.isFinite(min)?min:0,max:Number.isFinite(max)?max:0};
+        calculatedImages.set(world,overlay);return overlay;
     }
     function displayedHeight(x,y) {
         const label=scalarHeight(x,y),range=terrainRange(`${worldName}:${x}:${y}`);
@@ -857,7 +898,20 @@ if (typeof document !== 'undefined') (() => {
     }
     function drawHeight(c) {
         const s = result?.world === worldName ? result.stats : null;
-        if (image && s && el('worldHeight').checked) {
+        const saved = el('worldHeight').checked ? savedHeightImage(worldName) : null;
+        const localImage = image && s && !result.persisted;
+        if (saved) {
+            c.save();c.imageSmoothingEnabled=false;c.globalAlpha=Number(el('heightOpacity').value);
+            const size=8*worldScale;
+            const draw=(x,y,w,h)=>{if(w&&h)c.drawImage(saved.canvas,x,y,w,h,worldX+x*size,worldY+y*size,w*size,h*size);};
+            if (localImage) {
+                const right=s.x0+s.width,bottom=s.y0+s.height;
+                draw(0,0,512,s.y0);draw(0,bottom,512,512-bottom);
+                draw(0,s.y0,s.x0,s.height);draw(right,s.y0,512-right,s.height);
+            } else draw(0,0,512,512);
+            c.restore();
+        }
+        if (localImage && el('worldHeight').checked) {
             c.globalAlpha = Number(el('heightOpacity').value);
             c.drawImage(image, worldX + s.x0 * 8 * worldScale, worldY + s.y0 * 8 * worldScale,
                 s.width * 8 * worldScale, s.height * 8 * worldScale);
@@ -865,7 +919,7 @@ if (typeof document !== 'undefined') (() => {
         }
         if(el('worldHeight').checked&&offsetConfig?.terrain_heights){
             const visible=visibleBounds(),size=8*worldScale;
-            const {min,max}=heightDisplayScale(s,worldName);
+            const {min,max}=heightDisplayScale(localImage?s:saved,worldName);
             for(let y=visible.y0;y<visible.y0+visible.height;y++)for(let x=visible.x0;x<visible.x0+visible.width;x++){
                 const key=`${worldName}:${x}:${y}`,pixels=offsetConfig.terrain_heights[key];if(!pixels)continue;
                 const base=terrainBase(key),cacheKey=`${offsetConfig.revision}:${key}:${base}:${min}:${max}`;
@@ -911,6 +965,9 @@ if (typeof document !== 'undefined') (() => {
             if(offsetSaveError)throw Error('Height edits not saved: '+offsetSaveError);
             await readConfig();
             const offsets = await readOffsets();
+            const persisted = await readCalculated();
+            if (requestID !== runID) return;
+            installCalculated(persisted);
             const authoredHeights = Object.entries(offsets.heights).filter(([key]) => key.startsWith(worldName + ':'))
                 .map(([key,height]) => { const [,x,y] = key.split(':'); return {x:Number(x),y:Number(y),height}; });
             if (requestID !== runID) return;
@@ -971,15 +1028,40 @@ if (typeof document !== 'undefined') (() => {
                         'edits, reference, or view changed during calculation';
                     status(`STALE — calculation discarded: ${reason}. Recalculate.`); return;
                 }
+                const authoredKeys = new Set(authoredHeights.map(({x,y})=>`${x}:${y}`));
+                data.authoredKeys = authoredKeys;
+                let persistence = ' · Preview only (no selected profile)';
+                if (persisted.path) {
+                    const cells = Array.from(data.heights, (height,i) => !data.assigned[i] ? [3,0] :
+                        authoredKeys.has(`${bounds.x0+i%bounds.width}:${bounds.y0+Math.floor(i/bounds.width)}`) ? null :
+                        [data.conflicts[i]?2:1,height]);
+                    if (cells.some(cell=>cell&&(!Number.isInteger(cell[1])||Math.abs(cell[1])>32767))) {
+                        persistence = ' · Preview only: calculated bases must be integers in −32767…32767 to save';
+                    } else {
+                        setPhase('Saving calculated heights');
+                        el('heightCancel').disabled = true; // atomic commit has started
+                        try {
+                            const saved = await fetch('/api/calculated-heights',{method:'PUT',
+                                headers:{'Content-Type':'application/json','If-Match':persisted.revision},
+                                body:JSON.stringify({world:name,bounds,cells,input_revision:revision})});
+                            const value = await saved.json();
+                            if (!saved.ok) throw Error(value.error);
+                            installCalculated(value);
+                            data.persisted = true;
+                            persistence = ' · Calculated layer saved';
+                        } catch (error) { persistence = ' · CALCULATED LAYER NOT SAVED: '+error.message; }
+                    }
+                }
                 setPhase('Rendering heightmap');
                 const nextImage = makeHeightImage(data), s = data.stats;
                 result = data; resultGeneration = token; image = nextImage;
                 el('worldHeight').checked = true;
-                status(`${name} calculated ${describeBounds(bounds)} · reference (${ref.x}, ${ref.y}) = ${reference.height} · raw grayscale black ${s.min} → white ${s.max} · ${s.computed} assigned, ${s.missing} NO HEIGHT (magenta checker), ${s.conflictCount} conflicts (orange), ${s.authoredResets} authored arrival resets. Phase 2: ${s.adjacentWallFills??0} adjacent wall copies, ${s.adjacentWallConflictCount??0} donor disagreements left unresolved. NOT validated geometry. Warnings: ${s.unknownRoles} unknown roles, ${s.missingSources} missing sources, ${s.missingFacings} missing wall facings, ${s.contextDependent} context-dependent placements.`);
+                const scale=heightDisplayScale(data.persisted?savedHeightImage(name):s,name);
+                status(`${name} calculated ${describeBounds(bounds)} · reference (${ref.x}, ${ref.y}) = ${reference.height}${persistence} · raw grayscale black ${scale.min} → white ${scale.max} · ${s.computed} assigned, ${s.missing} NO HEIGHT (magenta checker), ${s.conflictCount} conflicts (orange), ${s.authoredResets} authored arrival resets. Phase 2: ${s.adjacentWallFills??0} adjacent wall copies, ${s.adjacentWallConflictCount??0} donor disagreements left unresolved. NOT validated geometry. Warnings: ${s.unknownRoles} unknown roles, ${s.missingSources} missing sources, ${s.missingFacings} missing wall facings, ${s.contextDependent} context-dependent placements.`);
                 drawWorld();
                 previousAreas[name] = {...bounds};
                 workspace?.updateWorld(name,{previousArea:{...bounds},reference:{...ref},referenceHeight:referenceValues[name]});
-                finishRun('Complete — heightmap shown');
+                finishRun(persistence.includes('NOT SAVED')?'Preview shown — calculated layer not saved':'Complete — heightmap shown');
                 } catch (error) {
                     status('Calculation/display failed: ' + error.message);
                     finishRun('Failed — see details below');
@@ -1026,6 +1108,11 @@ if (typeof document !== 'undefined') (() => {
     viewChanged();
     readConfig().then(renderWeightPanel).catch(error => status(error.message));
     readOffsets().catch(error => status(error.message));
+    readCalculated().then(value=>{
+        if(running)return;
+        installCalculated(value);
+        if(value.cells){el('worldHeight').checked=true;status('Saved calculated heights restored. Recalculate to refresh heights and traversal arrows.');drawWorld();}
+    }).catch(error=>{if(!running)status(error.message);});
     // External weight-only edits do not change the semantic revision polled by
     // the original editor. Mark stale but never overwrite local unsaved controls.
     setInterval(async () => {

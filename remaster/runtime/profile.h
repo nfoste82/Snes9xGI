@@ -24,6 +24,7 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -385,6 +386,14 @@ inline bool S9xRemasterValidHybridDirect(const RemasterHybridDirectSettings &set
 		settings.tailSamples >= 1 && settings.tailSamples <= 32;
 }
 
+// Optional generated BG2 layer, kept out of authored TOML and shared by profile copies.
+struct RemasterCalculatedOverworldHeights
+{
+	static constexpr size_t Width = 512, Cells = Width * Width;
+	static constexpr int16_t Missing = -32768;
+	std::array<int16_t, 2 * Cells> values;
+};
+
 struct RemasterProfile
 {
 	uint32_t schemaVersion = 0;
@@ -414,6 +423,7 @@ struct RemasterProfile
 	std::map<RemasterContextLocation, RemasterContextBinding> contextBindings;
 	bool authoredOverworldOffsets = false;
 	std::map<RemasterContextLocation, int16_t> overworldOffsets;
+	std::shared_ptr<const RemasterCalculatedOverworldHeights> calculatedOverworldHeights;
 	std::map<RemasterContextLocation, RemasterTerrainOffset> overworldTerrain;
 	int offscreenRepresentativeEmitters = 1; // Independent default; legacy -1 also resolves to 1.
 };
@@ -1903,7 +1913,47 @@ inline bool S9xRemasterLoadProfile (const std::string &path, RemasterProfile &pr
 		return false;
 	}
 	std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-	return S9xRemasterParseProfile(text, profile, diagnostics);
+	RemasterProfile parsed;
+	if (!S9xRemasterParseProfile(text, parsed, diagnostics)) return false;
+	if (parsed.authoredOverworldOffsets)
+	{
+		const auto sidecar = path + ".calculated-heights.bin";
+		errno = 0;
+		std::ifstream generated(sidecar, std::ios::binary);
+		if (generated)
+		{
+			using Layer = RemasterCalculatedOverworldHeights;
+			const std::string header = "ALTPCH1\n" + parsed.romSha256;
+			std::string actual(header.size(), '\0');
+			generated.read(&actual[0], actual.size());
+			auto layer = std::make_shared<Layer>();
+			std::vector<unsigned char> bytes(3 * layer->values.size());
+			if (actual == header && generated.read(reinterpret_cast<char *>(bytes.data()), bytes.size()) &&
+				generated.peek() == std::char_traits<char>::eof() && !generated.bad())
+			{
+				bool valid = true;
+				for (size_t i = 0; i < layer->values.size(); ++i)
+				{
+					const unsigned flags = bytes[3*i], bits = bytes[3*i+1] | (unsigned(bytes[3*i+2]) << 8);
+					valid &= flags <= 3 && ((flags == 1 || flags == 2) ? bits != 32768 : bits == 0);
+					layer->values[i] = flags == 1 || flags == 2 ? int16_t(int(bits ^ 32768) - 32768) : Layer::Missing;
+				}
+				if (valid) parsed.calculatedOverworldHeights = std::move(layer);
+			}
+			if (!parsed.calculatedOverworldHeights)
+			{
+				diagnostics.push_back({0, "Invalid or ROM-mismatched calculated height sidecar: " + sidecar});
+				return false;
+			}
+		}
+		else if (errno != ENOENT)
+		{
+			diagnostics.push_back({0, "Unable to read calculated height sidecar: " + sidecar});
+			return false;
+		}
+	}
+	profile = std::move(parsed);
+	return true;
 }
 
 namespace RemasterProfileSerialization
@@ -2235,7 +2285,7 @@ inline bool S9xRemasterSerializeProfile (const RemasterProfile &profile, std::st
 	if (profile.authoredOverworldOffsets || !profile.overworldOffsets.empty()) {
 		output << "\n[overworld_placement]\nmode = " << Quote(profile.authoredOverworldOffsets ? "authored_overworld_offsets" : "legacy") << "\n";
 		for (const auto &r : profile.overworldOffsets) {
-			if(!r.second)continue; // sparse identity: absent is exactly zero
+			// Explicit zero must survive save/merge: absent may use a calculated base.
 			if (r.first.area < 320 || r.first.area > 321 || r.first.background > 1 || r.first.x > 8191 || r.first.y > 8191 || r.second == -32768) return false;
 			output << "\n[[overworld_offsets]]\nworld = " << Quote(r.first.area == 320 ? "light" : "dark")
 				<< "\nbackground = " << unsigned(r.first.background) << "\nx = " << r.first.x << "\ny = " << r.first.y << "\noffset = " << r.second << "\n";

@@ -87,12 +87,31 @@ Worker/result-version and rendering errors are displayed rather than silently
 leaving a nonworking overlay. Reload the page after updating editor scripts;
 the server sends HTML/JavaScript with `Cache-Control: no-store`.
 
+With a profile selected, a successful integer calculation also saves a separate
+`<profile>.calculated-heights.bin` next to the TOML. It replaces calculated values
+only inside that rectangle and world; it does not edit authored offsets or use
+previous calculations as traversal seeds. Reopening the editor restores the
+combined map automatically. Traversal arrows still require a fresh calculation.
+Fractional or out-of-range results remain preview-only rather than being rounded.
+Conflicts retain the displayed first arrival, not a claim of validated geometry.
+Unreached cells stay marked in the editor but supply no calculated base in-game.
+
+For a game profile with `authored_overworld_offsets` enabled, the BG2 placement
+base is **authored offset (including 0) → saved calculated offset → 0**.
+Per-pixel terrain and local tile relief are applied separately. Reload the
+profile in Snes9x after recalculating; the app does not watch the file for changes.
+Keep the generated file beside its matching profile when copying or sharing it.
+Existing authored offsets are not migrated; recalculate the desired area to
+create the generated layer. Use **Bake Current Offset** only for values you intend
+to keep as explicit authored overrides.
+
 **Scope: Visible area** snapshots the current viewport after pending saves finish,
 snaps outward to whole 8×8 cells, and intersects the 512×512 world grid. The UI
 shows exact end-exclusive cell bounds; only these cells are sent to the worker.
 There is no hidden southwest/full-world computation or automatic pan/zoom.
-Cyan dashed edges mark the calculated rectangle, even when it belongs to a previous
-view. Outside it is unknown/transparent, not zero. Opacity blends grayscale with
+Cyan dashed edges mark the latest calculation rectangle in the current session.
+Outside it, saved calculated and authored values remain visible; unvisited cells
+without either are transparent. Opacity blends grayscale with
 artwork; the legend gives the raw numeric black/white endpoints without clamping.
 Select a tile to see its raw height (or **UNSET**) and configured placement-flipped
 cardinal-axis contributions. Diagonal crossings use one signed weight instead.

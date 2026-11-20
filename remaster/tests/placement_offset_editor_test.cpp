@@ -12,9 +12,9 @@ auto a=f.contextLocations[1],b=f.contextLocations[2],dark=a;dark.area=321;p.over
 std::string error;CHECK(S9xRemasterEditPlacementOffsets(p,f,{1,2,3},1,true,error));CHECK(p.overworldOffsets[a]==-39 && p.overworldOffsets[b]==25 && p.overworldOffsets[dark]==80);
 CHECK(S9xRemasterEditPlacementOffsets(p,f,{1,2},-8,false,error));CHECK(p.overworldOffsets[a]==-8 && p.overworldOffsets[b]==-8);
 p.overworldOffsets[b]=32767;CHECK(!S9xRemasterEditPlacementOffsets(p,f,{1,2},1,true,error));CHECK(p.overworldOffsets[a]==-8);
-CHECK(S9xRemasterEditPlacementOffsets(p,f,{1},0,false,error));CHECK(!p.overworldOffsets.count(a));
+CHECK(S9xRemasterEditPlacementOffsets(p,f,{1},0,false,error));CHECK(p.overworldOffsets.at(a)==0);
 int n;for(auto s:{"","1.0","32768","-32768","1x","999999999999999999999"," 1"})CHECK(!S9xRemasterParsePlacementScalar(s,n));CHECK(S9xRemasterParsePlacementScalar("-32767",n)&&n==-32767);
-f.tileInstances[1].source=RemasterSourceType::Object;CHECK(!S9xRemasterEditPlacementOffsets(p,f,{1,2},1,true,error));CHECK(!p.overworldOffsets.count(a));
+f.tileInstances[1].source=RemasterSourceType::Object;CHECK(!S9xRemasterEditPlacementOffsets(p,f,{1,2},1,true,error));CHECK(p.overworldOffsets.at(a)==0);
 f.tileInstances[1]=i;S9xRemasterPreviewPlacementOffsets(p,f);CHECK(f.tileInstances[1].savedPlacementOffset==32767);CHECK(f.tileInstances[1].heightOffset==32767);
 auto snapshot=f;S9xRemasterPreviewPlacementOffsets(p,f);CHECK(f.tileInstances[1].heightOffset==snapshot.tileInstances[1].heightOffset);
 // Retained live/replay current-profile packets: remove only our scalar, retain

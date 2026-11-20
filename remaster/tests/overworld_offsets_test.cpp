@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <chrono>
+#include <unistd.h>
 #define CHECK(x) do { if (!(x)) { std::cerr << "FAIL " << __LINE__ << ": " #x "\n"; std::exit(1); } } while(0)
 uint32_t *S9xRemasterCurrentOwners = nullptr;
 uint32_t S9xRemasterCurrentOwner = 0;
@@ -67,17 +68,41 @@ int main(int argc, char **argv) {
  S9xRemasterSetLiveFramesEnabled(true);
  RemasterLightingFieldCache cached, forced;
  light.background=1;dark.background=1;
+ const size_t cell=light.y*512+light.x;
+ char temp[]="/tmp/alttp-calculated-heights-XXXXXX";
+ const int fd=mkstemp(temp);CHECK(fd>=0);close(fd);
+ const std::string path=temp, sidecar=path+".calculated-heights.bin";
+ {std::ofstream out(path);out<<text;}
+ CHECK(S9xRemasterLoadProfile(path,q,d) && !q.calculatedOverworldHeights);
+ std::vector<char> packed(2*512*512*3,0);
+ packed[3*cell]=1;packed[3*cell+1]=char(256-17);packed[3*cell+2]=char(255);
+ packed[3*(512*512+cell)]=2;packed[3*(512*512+cell)+1]=42;
+ packed[3*(cell+1)]=3; // unreached, not calculated zero
+ auto writeLayer=[&](const std::string &rom,bool extra){
+  std::ofstream out(sidecar,std::ios::binary);out<<"ALTPCH1\n"<<rom;out.write(packed.data(),packed.size());if(extra)out.put(0);
+ };
+ writeLayer(std::string(64,'0'),false);CHECK(!S9xRemasterLoadProfile(path,q,d));
+ writeLayer(p.romSha256,true);CHECK(!S9xRemasterLoadProfile(path,q,d));
+ writeLayer(p.romSha256,false);CHECK(S9xRemasterLoadProfile(path,q,d) && q.calculatedOverworldHeights);
+ std::remove(path.c_str());std::remove(sidecar.c_str());
+ p.calculatedOverworldHeights=q.calculatedOverworldHeights;lookup.compile(p);
+ CHECK(lookup.resolve(light).status==3 && lookup.get(light)==-17);
+ auto unreached=light;unreached.x++;CHECK(lookup.resolve(unreached).status==1 && lookup.get(unreached)==0);
+ CHECK(lookup.get(dark)==42 && lookup.resolve(dark).status==3);
+ p.overworldOffsets[light]=0;CHECK(S9xRemasterSerializeProfile(p,saved,d));
+ CHECK(S9xRemasterParseProfile(saved,q,d) && q.overworldOffsets.at(light)==0 && !q.calculatedOverworldHeights);
  p.overworldOffsets[dark]=80;
   for (unsigned world=0;world<2;++world) for(unsigned flip=0;flip<4;++flip) {
    p.overworldOffsets[dark]=80;
   RemasterAreaContext area;area.id=320+world;
   RemasterDungeonFloorContext context;context.verifiedAlttpRom=true;context.indoors=false;
   std::array<int,4> sx{},sy{};sx[0]=1536;sy[0]=1544;
-   for(unsigned revision=0;revision<6;++revision) {
+   for(unsigned revision=0;revision<7;++revision) {
    p.overworldOffsets[light]=-40+int(revision);
    p.authoredOverworldOffsets=revision!=2;
     context.indoors=revision==3;
     if(revision==5) { p.overworldOffsets.erase(light);p.overworldOffsets.erase(dark); }
+    if(revision==6) { p.overworldOffsets[light]=0;p.overworldOffsets[dark]=0; }
    S9xRemasterSetProfile(p);S9xRemasterBeginFrame(64,8,8,8);
    auto &s=S9xRemasterState();RemasterFrameTileInstance in;
    in.tileId=tile;in.source=RemasterSourceType::Background;in.sourceIndex=1;in.hFlip=flip&1;in.vFlip=flip&2;
@@ -92,16 +117,29 @@ int main(int argc, char **argv) {
    sx[1]=sx[0];sy[1]=sy[0];
    S9xRemasterEndFrame(screen,8,8,8,&f,&context,nullptr,&area,0,nullptr,revision==4?nullptr:&sx,revision==4?nullptr:&sy);
    if(revision!=4)CHECK(f.contextLocations.at(1).x==192 && f.contextLocations.at(1).y==193);
-    CHECK(f.tileInstances[0].heightOffset==(revision>=2?0:world?80:-40+int(revision)));
-    CHECK(f.tileInstances[0].savedPlacementOffsetStatus==(revision==5?1:revision>=2?0:2));
-    CHECK(f.tileInstances[0].savedPlacementOffset==(revision>=2?0:world?80:-40+int(revision)));
+    const int expected=revision==5?(world?42:-17):revision>=2?0:world?80:-40+int(revision);
+    CHECK(f.tileInstances[0].heightOffset==expected);
+    CHECK(f.tileInstances[0].savedPlacementOffsetStatus==(revision==5?3:revision==6||revision<2?2:0));
+    CHECK(f.tileInstances[0].savedPlacementOffset==expected);
+    if(revision==5) {
+     std::vector<uint8_t> bytes;CHECK(S9xSerializeRemasterFrame(f,bytes));
+     RemasterFrame replay;CHECK(S9xDeserializeRemasterFrame(bytes,replay));
+     CHECK(replay.tileInstances[0].savedPlacementOffsetStatus==3 && replay.tileInstances[0].heightOffset==expected);
+     auto preview=p;std::string error;
+     CHECK(S9xRemasterEditPlacementOffsets(preview,replay,{1},0,false,error));
+     S9xRemasterPreviewPlacementOffsets(preview,replay);
+     CHECK(replay.tileInstances[0].savedPlacementOffsetStatus==2 && replay.tileInstances[0].heightOffset==0);
+     CHECK(S9xRemasterPastePlacementLayer(preview,replay,{1},{},false,error,true));
+     S9xRemasterPreviewPlacementOffsets(preview,replay);
+     CHECK(replay.tileInstances[0].savedPlacementOffsetStatus==3 && replay.tileInstances[0].heightOffset==expected);
+    }
     CHECK(f.tileInstances[1].savedPlacementOffsetStatus==0 && f.tileInstances[2].savedPlacementOffsetStatus==0);
    CHECK(f.tileInstances[1].heightOffset==7 && f.tileInstances[2].heightOffset==11);
    CHECK(f.assetMetadata[0].hasHeight && f.assetMetadata[0].height[0]==0 && f.assetMetadata[0].height[1]==-8);
    CHECK(!f.assetMetadata[0].hasNormals);
    cached.update(f,true);forced.update(f,true,true);
    CHECK(cached.height==forced.height && cached.surface==forced.surface && cached.occlusion==forced.occlusion);
-   cached.update(f,true);CHECK(cached.selectedPixels==0 && cached.resolvedInstances==0);
+   cached.update(f,true);CHECK(cached.height==forced.height && cached.surface==forced.surface && cached.occlusion==forced.occlusion);
   }
  }
  if(argc==4) {

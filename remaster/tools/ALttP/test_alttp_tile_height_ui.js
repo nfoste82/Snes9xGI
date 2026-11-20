@@ -16,6 +16,7 @@ async function main() {
     const drawing = new Proxy({}, {get: (target, key) => target[key] || (() => {})});
     const config = {revision: 'weights-1', semantic_revision: 'semantics-1', weights: {}, path: 'temporary-mock-only'};
     const offsets = {revision:'semantics-1',path:'mock-profile',enabled:true,offsets:{},heights:{},nonuniform:[],terrain:[]};
+    let persist = false, calculated = {path:null,revision:'empty',cells:null};
     const floor = {content_id: 'bg', annotation: {role: 'floor'}, aliases: ['bg']};
     const context = {
         console, setInterval() {}, clearInterval() {}, clearTimeout() {},
@@ -32,6 +33,20 @@ async function main() {
         complete: () => true, annotation: () => floor.annotation,
         save() {}, renderDetail() {}, renderGrid() {}, changeRole() {}, toggleNormal() {}, update() {}, scheduleSave() {},
         fetch: async (url, options) => {
+            if(url==='/api/calculated-heights') {
+                if(options?.method==='PUT') {
+                    assert.equal(options.headers['If-Match'],calculated.revision);
+                    const {world,bounds,cells,input_revision}=JSON.parse(options.body);
+                    assert.equal(input_revision,config.revision);
+                    const data=calculated.cells?Buffer.from(calculated.cells,'base64'):Buffer.alloc(2*512*512*3);
+                    cells.forEach((cell,i)=>{
+                        const at=3*((world==='dark'?512*512:0)+(bounds.y0+Math.floor(i/bounds.width))*512+bounds.x0+i%bounds.width);
+                        data[at]=cell?.[0]??0;data.writeInt16LE(cell?.[1]??0,at+1);
+                    });
+                    calculated={path:'mock-profile.calculated-heights.bin',revision:calculated.revision+'-saved',cells:data.toString('base64')};
+                } else if(persist && !calculated.path) calculated.path='mock-profile.calculated-heights.bin';
+                return {ok:true,json:async()=>structuredClone(calculated)};
+            }
             if(url==='/api/annotations'&&options?.method==='PUT'){
                 const {entries}=JSON.parse(options.body);
                 config.semantic_revision+='-batch';offsets.revision=config.semantic_revision;config.revision+='-batch';
@@ -72,7 +87,7 @@ async function main() {
         }
     };
     const workspace={light:{},dark:{}};
-    context.window = {tileSemanticWorkspace:{getWorld:name=>workspace[name],updateWorld:(name,patch)=>Object.assign(workspace[name],structuredClone(patch))}};
+    context.window = {atob,tileSemanticWorkspace:{getWorld:name=>workspace[name],updateWorld:(name,patch)=>Object.assign(workspace[name],structuredClone(patch))}};
     context.drawWorld = () => {
         context.window.experimentalHeightUI?.viewChanged();
         context.window.experimentalHeightUI?.showPlacement();
@@ -456,20 +471,29 @@ async function main() {
     assert.equal(workspace.light.referenceHeight,'9');
     assert.deepEqual(workspace.light.reference,{x:101,y:201,world:'light'});
     assert.equal(workspace.dark.referenceHeight,'-4');
-    // A new UI instance restores both worlds without calculation result arrays.
+    // Recalculate into the generated layer without editing the authored offsets.
+    persist=true;
+    const authored=JSON.stringify(offsets);
+    await element('heightRunPrevious').onclick();await workers.at(-1).finish();
+    assert.equal(JSON.stringify(offsets),authored);
+    assert.match(element('heightStatus').textContent,/Calculated layer saved/);
+    assert(calculated.cells);
+    // A new UI instance restores both worlds without running the worker.
     const restoredElements=new Map();
     const restoredElement=id=>{
         if(!restoredElements.has(id))restoredElements.set(id,{value:'',checked:false,style:{},append(){},remove(){},addEventListener(event,handler){this[event]=handler;}});
         return restoredElements.get(id);
     };
     restoredElement('worldChoice').value='light';
-    const restored={...context,window:{tileSemanticWorkspace:context.window.tileSemanticWorkspace},
+    const restored={...context,window:{atob,tileSemanticWorkspace:context.window.tileSemanticWorkspace},
         document:{...context.document,getElementById:restoredElement},
         update(){},save(){},renderDetail(){},renderGrid(){},changeRole(){},toggleNormal(){},scheduleSave(){}};
     restored.drawWorld=()=>{restored.window.experimentalHeightUI?.viewChanged();};
     vm.createContext(restored);
     vm.runInContext(fs.readFileSync(require.resolve('./alttp_tile_height_ui.js'),'utf8'),restored);
-    await Promise.resolve();await Promise.resolve();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(restoredElement('worldHeight').checked,true);
+    assert.match(restoredElement('heightStatus').textContent,/Saved calculated heights restored/);
     assert.equal(restoredElement('heightReference').value,'9');
     assert.equal(restoredElement('heightRunPrevious').disabled,false);
     assert.match(restoredElement('heightAnchorInfo').textContent,/light reference: cell \(101, 201\)/);

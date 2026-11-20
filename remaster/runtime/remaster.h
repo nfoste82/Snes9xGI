@@ -3605,16 +3605,15 @@ inline uint8_t S9xRemasterEndFrame (const uint16_t *screen = nullptr, size_t scr
 				// USA ALTTP's world map is BG2; BG1 can be weather/parallax with
 				// unrelated scroll. It is not independently world-mapped here.
 				if (in.source!=RemasterSourceType::Background || in.sourceIndex!=1) continue;
-				// Assignment, not accumulation: missing and unsupported are exactly zero.
+				// Assignment, not accumulation: authored, then calculated, then zero.
 				const auto at=frame.contextLocations.find(uint32_t(i+1));
 				in.heightOffset=0;
 				if(at!=frame.contextLocations.end() && at->second.area==frame.area.id && at->second.background==1 &&
 					at->second.x<=8191 && at->second.y<=8191) {
-					const auto &entries=S9xRemasterOverworldLookup().entries;
-					const auto saved=entries.find(S9xRemasterOverworldOffsetKey(at->second));
-					in.heightOffset=saved==entries.end()?0:saved->second;
+					const auto saved=S9xRemasterOverworldLookup().resolve(at->second);
+					in.heightOffset=saved.value;
 					in.savedPlacementOffset=in.heightOffset;
-					in.savedPlacementOffsetStatus=saved==entries.end()?1:2;
+					in.savedPlacementOffsetStatus=saved.status;
 					const auto terrain=state.activeProfile.overworldTerrain.find(at->second);
 					if(terrain!=state.activeProfile.overworldTerrain.end())in.terrainOffset=terrain->second;
 				}

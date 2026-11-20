@@ -22,7 +22,14 @@ int main(int argc,char **argv) {
  CHECK(restored.tileInstances[1].savedPlacementOffset==24);
  // Truncation and malformed scalar/status are never silently accepted.
  auto truncated=bytes; truncated.resize(truncated.size()/2); CHECK(!S9xDeserializeRemasterFrame(truncated,restored));
- f.tileInstances[0].savedPlacementOffsetStatus=3; CHECK(!S9xSerializeRemasterFrame(f,bytes));
+ f.tileInstances[0].savedPlacementOffsetStatus=3; f.tileInstances[0].savedPlacementOffset=-17;
+ S9xRemasterPlacementOffsetField(f,false,other); CHECK(other[0]==-17 && other[1]==3);
+ CHECK(S9xRemasterSavedPlacementDescription(f,1).find("(calculated)")!=std::string::npos);
+ CHECK(S9xSerializeRemasterFrame(f,bytes)); CHECK(S9xDeserializeRemasterFrame(bytes,restored));
+ CHECK(restored.tileInstances[0].savedPlacementOffset==-17 && restored.tileInstances[0].savedPlacementOffsetStatus==3);
+ f.schemaVersion=44; CHECK(!S9xSerializeRemasterFrame(f,bytes));
+ f.schemaVersion=REMASTER_FRAME_SCHEMA_VERSION;
+ f.tileInstances[0].savedPlacementOffsetStatus=4; CHECK(!S9xSerializeRemasterFrame(f,bytes));
  f.tileInstances[0].savedPlacementOffsetStatus=1; f.tileInstances[0].savedPlacementOffset=1; CHECK(!S9xSerializeRemasterFrame(f,bytes));
  f.tileInstances[0].savedPlacementOffset=0;
  // Transparent BG1 contributes no visible ownership: visible BG2 in sub/scene

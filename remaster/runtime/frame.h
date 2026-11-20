@@ -43,7 +43,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 44;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 45;
 
 struct RemasterFramePixel
 {
@@ -174,7 +174,7 @@ struct RemasterFrameTileInstance
 	uint8_t ppuPriority = 0;
 	int32_t heightOffset = 0; // signed placement datum, added to signed int16 local relief
 	// Saved world-coordinate DATA, never composed height. 0 unsupported/legacy,
-	// 1 absent entry (default zero), 2 explicit entry (including authored zero).
+	// 1 default zero, 2 explicit entry (including authored zero), 3 calculated.
 	int32_t savedPlacementOffset = 0;
 	RemasterTerrainOffset terrainOffset;
 	uint8_t savedPlacementOffsetStatus = 0;
@@ -5872,10 +5872,10 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		}
 		if(result.schemaVersion>=41) {
 			uint32_t bits;
-			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>2 || !input.ReadU32(bits))return false;
+			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>(result.schemaVersion>=45?3:2) || !input.ReadU32(bits))return false;
 			std::memcpy(&instance.savedPlacementOffset,&bits,sizeof(bits));
 			if(instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
-				(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+				(instance.savedPlacementOffsetStatus<2 && instance.savedPlacementOffset!=0))return false;
 		}
 	}
 	result.lights.resize(lightCount);
@@ -6323,7 +6323,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	if(!frame.fullGeometry)return false;
 	// v40 emission remains available for frozen compatibility oracles/export.
 	// It cannot claim the new saved-scalar evidence; normal captures use v41.
-	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40 && frame.schemaVersion != 41 && frame.schemaVersion != 42 && frame.schemaVersion != 43) ||
+	if ((frame.schemaVersion < 40 || frame.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION) ||
 		frame.width == 0 || frame.height == 0 ||
 		frame.width > UINT32_MAX / frame.height)
 		return false;
@@ -6599,8 +6599,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			if(t.hasPixelNormals)for(float n:t.pixelNormals)RemasterFrameSerialization::Float(bytes,n);
 		}
 		if(frame.schemaVersion>=41) {
-		if(instance.savedPlacementOffsetStatus>2 || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
-			(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+		if(instance.savedPlacementOffsetStatus>(frame.schemaVersion>=45?3:2) || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
+			(instance.savedPlacementOffsetStatus<2 && instance.savedPlacementOffset!=0))return false;
 		RemasterFrameSerialization::U8(bytes,instance.savedPlacementOffsetStatus);
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.savedPlacementOffset));
 		}

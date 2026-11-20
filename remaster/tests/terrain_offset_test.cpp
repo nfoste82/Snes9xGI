@@ -15,7 +15,7 @@ int main(){
 	auto zero=at;zero.x++;p.overworldOffsets[zero]=0;p.overworldTerrain[zero]={};
 	std::string text,again;std::vector<RemasterProfileDiagnostic>d;RemasterProfile q;
 	if(!S9xRemasterSerializeProfile(p,text,d)){for(auto &e:d)std::cerr<<e.line<<": "<<e.message<<'\n';check(false,"schema38 serialize");}if(!S9xRemasterParseProfile(text,q,d)){for(auto &e:d)std::cerr<<e.line<<": "<<e.message<<'\n';check(false,"schema38 parse");}
-	check(q.overworldTerrain.size()==2&&q.overworldOffsets.size()==1,"multiple terrain records / sparse identity omitted");
+	check(q.overworldTerrain.size()==2&&q.overworldOffsets.size()==2&&q.overworldOffsets.at(zero)==0,"identity terrain omitted, explicit scalar zero preserved");
 	check(S9xRemasterSerializeProfile(q,again,d)&&text==again,"stable roundtrip");
 	for(auto replacement:{std::string("[0, 0, 0]"),std::string("[0, 0, -1]"),std::string("[nan, 0, 1]")}){
 		auto bad=text;auto pos=bad.find("normal_offsets = ");auto end=bad.find('\n',pos);bad.replace(pos,end-pos,"normal_offset = "+replacement);RemasterProfile invalid;check(!S9xRemasterParseProfile(bad,invalid,d),"invalid support normal rejected");
