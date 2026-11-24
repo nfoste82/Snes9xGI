@@ -1,4 +1,5 @@
 #include "../runtime/lighting_field_cache.h"
+#include "../runtime/surface_mesh_cache.h"
 #include <cstdlib>
 #include <iostream>
 
@@ -7,8 +8,60 @@ static void check(bool value, const char *message)
 	if (!value) { std::cerr << message << '\n'; std::exit(1); }
 }
 
+static void testSignedCellDatum()
+{
+	RemasterFrame f;
+	f.width = 5; f.height = 2; f.area.id = 320;
+	f.profileRomSha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
+	f.mainPixels.resize(10); f.subPixels.resize(10); f.observedBgPixels[1].resize(10);
+	for (auto &p : f.mainPixels) p.owner = uint32_t(RemasterSourceType::Backdrop) << 24;
+	RemasterFrameTileInstance tile;
+	tile.tileId = {123, 1, 4}; tile.source = RemasterSourceType::Background; tile.sourceIndex = 1;
+	tile.hFlip = tile.vFlip = true;
+	tile.heightOffset = tile.savedPlacementOffset = -16; tile.savedPlacementOffsetStatus = 3;
+	f.tileInstances.push_back(tile);
+	// Cell boundary at x=3. A flipped opaque sample at x=1 proves the
+	// datum of x=0 and x=2, never x=3 in the wholly unobserved next cell.
+	f.observedBgPixels[1][1] = f.mainPixels[1] = {uint32_t(RemasterSourceType::Background) << 24, 1, 1};
+	RemasterLightingFieldCache cache;
+	cache.update(f, false);
+	const auto z = S9xRemasterSignedHeightField(-16, 0);
+	check(cache.height[0] == z && cache.height[4] == z && cache.height[6] == 0, "same clipped/flipped cell provides signed datum only inside that cell");
+	check(cache.samples[0].domain == cache.samples[1].domain && cache.samples[0].height == cache.samples[1].height,
+		"backdrop and visible provisional ground share the same height and domain");
+	check(!S9xRemasterFrameVisibleInstanceAt(f, 0, 0) && !cache.authoredNormals[0], "no ownership or authored coverage invented");
+	cache.update(f, false);
+	check(cache.updatedPixels == 0, "unchanged signed backdrop cache reuse");
+	f.tileInstances[0].savedPlacementOffset = -11;
+	cache.update(f, false);
+	check(cache.height[0] == S9xRemasterSignedHeightField(-11, 0), "datum changes invalidate otherwise unchanged transparent pixels");
+	f.tileInstances[0].savedPlacementOffsetStatus = 1;
+	cache.update(f, false);
+	check(cache.height[0] == 0, "missing datum restores legacy backdrop");
+	f.tileInstances[0].savedPlacementOffsetStatus = 2;
+	f.tileInstances.push_back(f.tileInstances[0]); f.tileInstances[1].savedPlacementOffset = -2;
+	f.observedBgPixels[1][2] = {uint32_t(RemasterSourceType::Background) << 24, 2, 0};
+	cache.update(f, false);
+	check(cache.height[0] == 0, "conflicting same-cell evidence does not assign a datum");
+	using namespace RemasterSurfaceMesh;
+	std::vector<Sample> samples(3, {0, 1, true, true, FloorDomain});
+	samples[0].height = 2;
+	samples[2].domain = uint64_t(3) << 48;
+	Cache mesh;
+	check(mesh.update(3, 1, samples, 1)[1].corners[1] == -1, "separate surface retains its boundary slope");
+	samples[2].fallbackGround = true;
+	const auto welded = mesh.update(3, 1, samples, 1);
+	check(welded[1].corners[1] == 0 && welded[2].corners[0] == 0, "same-height floor seam welds in cached mesh");
+	samples[2].wallBase = -2;
+	const auto separate = mesh.update(3, 1, samples, 1);
+	check(separate[1].corners[1] == -1 && separate[2].corners[0] == 0, "different placement datums remain separate");
+}
+
 int main(int argc, char **argv)
 {
+	// Exercise the incremental non-scroll cache on these synthetic frames.
+	setenv("S9X_REMASTER_SHIFT_FIELDS", "0", 1);
+	testSignedCellDatum();
 	RemasterFrame frame;
 	frame.width = 2; frame.height = 1;
 	frame.area.id = 320;
@@ -63,13 +116,15 @@ int main(int argc, char **argv)
 		RemasterFrame captured;
 		check(S9xReadRemasterFrame(argv[arg], captured), "read capture");
 		cache.update(captured, false);
+		const RemasterBackdropGroundBases bases(captured, true);
 		size_t ground = 0, authored = 0;
 		for (size_t i = 0; i < captured.mainPixels.size(); ++i)
 		{
 			if (S9xRemasterFrameBackdropGroundAt(captured, i))
 			{
 				++ground;
-				check(cache.samples[i].fallbackGround && cache.height[i*2] == 0 && cache.height[i*2+1] == 1,
+				check(cache.samples[i].fallbackGround && cache.height[i*2] ==
+					S9xRemasterSignedHeightField(bases.at(i % captured.width, i / captured.width), 0) && cache.height[i*2+1] == 1,
 					"capture backdrop ground has no height holes");
 				check(!S9xRemasterFrameVisibleInstanceAt(captured, i % captured.width, i / captured.width),
 					"capture backdrop has no selectable tile");

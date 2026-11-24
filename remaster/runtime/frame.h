@@ -5116,11 +5116,8 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.emissionDepth = source.emissionDepth;
 		metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 		metadata.combineEmitters = source.combineEmitters;
-		metadata.tileRole = source.tileSemanticContextDependent ? RemasterTileRole::Unknown : source.tileRole;
-		// Door authoring is preserved even when contextual use is unresolved. It is
-		// not consumed by placement solving or lighting geometry.
-		if (source.tileRole == RemasterTileRole::Doorway || source.tileRole == RemasterTileRole::Door ||
-			source.tileRole == RemasterTileRole::OutOfBounds) metadata.tileRole = source.tileRole;
+		// Named tile contexts can replace local geometry, not the asset's role.
+		metadata.tileRole = source.tileRole;
 		metadata.doorframeMask = source.doorframeMask;
 		metadata.hasDoorframeMask = source.hasDoorframeMask;
 		metadata.doorwaySupport = source.doorwaySupport;
@@ -6030,7 +6027,8 @@ inline bool S9xReadRemasterFrame (const std::string &path, RemasterFrame &frame)
 
 // ALTTP's outdoor color-zero backdrop is visible ground between transparent
 // foliage pixels. It has no decoded tile to author or select. Keep this a
-// provisional zero-base surface, never authored object/terrain coverage.
+// provisional surface, never authored object/terrain coverage. Lighting can
+// recover a signed placement base separately from same-cell BG2 evidence.
 inline bool S9xRemasterFrameBackdropGroundAt (
 	const RemasterFrame &frame, size_t offset, bool useScene = false)
 {

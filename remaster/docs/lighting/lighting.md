@@ -350,8 +350,9 @@ data writes are involved. These surfaces participate in normal visibility and
 transport, with the existing per-pixel opacity and material participation.
 Missing normals use +Z; explicitly authored normals still take precedence.
 
-Fallback sheets use an isolated domain per exact signed placement base so they
-cannot deform authored ramps or weld across different floor levels. They have no
+Fallback sheets use a separate domain per exact signed placement base. They
+can weld to an authored floor only at matching sample height and placement base;
+they do not establish continuity across a change in elevation. They have no
 shell thickness or structural wall closure, even if their unknown relief belongs
 to wall/prop artwork. `Sample::fallbackGround` retains provisional status for the
 green Mesh diagnostic and the capture probe's CSV. It is not solved-height
@@ -363,6 +364,15 @@ nonzero placement datum retains its previous geometry behavior. Only visible
 samples are represented: ground underneath a canopy still requires another plane.
 Authored zero-height obstacle samples keep their shell semantics, so the mixed
 tree ground-contact outline remains a separate issue.
+
+ALTTP outdoor color-zero backdrop pixels have no selectable tile. If the observed
+BG2 raster proves a regular 8×8 grid, the opaque part of the same cell can supply
+its saved explicit or calculated scalar placement datum. Local relief, adjacent
+cells, conflicting placement values and unresolved occurrences are not sources
+of that datum. With no same-cell evidence the legacy zero-base fallback remains.
+In `frame_overworld_x037b_y09bb.s9xrmf`, all 2,063 backdrop samples had a
+same-cell datum; mismatched sheet edges involving those samples fell from 926 to
+145. The remaining edges separate different heights; they are not force-welded.
 
 Validation: `fallback_ground_test.cpp` covers signed bases, +Z and authored-normal
 precedence, authored/placement relief, UI/sprite/unresolved exclusions, subscreen
@@ -401,13 +411,24 @@ projectile IDs; a multi-slot actor therefore remains multiple independent pieces
 Whole-actor grouping requires a ROM-specific object-to-OAM mapping.
 
 Connectivity requires known heights, nonzero opacity, matching domains, and
-compatible height continuation. Small quantized steps connect; larger ramps need
-matching continuation evidence. Abrupt ledges remain hard boundaries. Corner
+compatible height continuation. Floor sheets connect across steps of up to six
+authored height units; other domains retain the smaller quantized step allowance.
+Larger ramps need matching continuation evidence. Abrupt ledges beyond the step
+allowance remain hard boundaries. Corner
 vertices weld within cardinally connected local regions; diagonal-only contacts
 and transparent holes do not bridge objects. Disconnected levels are not stretched
 into ramps. Floors, rails, and props are not automatically extended downward.
 Monotone slope reconstruction preserves linear ramps without inventing raised
 ridges where a flat plateau meets a descending edge.
+
+ALTTP overworld BG2 floors with saved scalar placements and explicitly flat
+local relief reconstruct a lighting-only ramp for rises of up to three height
+units. The tile-wide filter spreads the rise across eight source pixels rather
+than concentrating it at the welded seam. It does not borrow through unknown,
+transparent, non-floor, or explicitly height-modeled terrain samples, or across
+larger rises. The reconstructed centers feed the mesh, visibility, and Height
+debug view together; raw heights, saved placement offsets, and actor support
+are unchanged.
 
 Structural wall faces/tops close their sides down to the placement floor base
 (`heightOffset × coordinateScale / 255`). The visible smooth ramp stays unchanged

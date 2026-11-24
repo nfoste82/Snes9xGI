@@ -749,6 +749,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	highlightsTimer.stop();
 	static RemasterLightingFieldCache fieldCache;
 	static std::vector<float> placementOffsetField;
+	static std::vector<float> reconstructedHeightField;
 	auto &lightingField = fieldCache.occlusion;
 	auto &emissionField = fieldCache.emission;
 	auto &participationField = fieldCache.participation;
@@ -761,6 +762,7 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	auto &emissionOmnidirectional = fieldCache.omnidirectional;
 	auto &meshSamples = fieldCache.samples;
 	static std::vector<RemasterSurfaceMesh::Cell> mesh;
+	const float *renderHeightField = nullptr;
 	mesh.clear();
 	if (lighting && lightingView!=RemasterLightingView::HeightOffsets && lightingView!=RemasterLightingView::NormalOffsets && frame.schemaVersion >= 5)
 	{
@@ -784,8 +786,18 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		}
 		meshCopyTimer.stop();
 		RemasterLightingTrace::Scope normalsTimer(&trace,RemasterLightingTrace::Normals);
+		if (fieldCache.reconstructedFloor) {
+			reconstructedHeightField = heightField;
+			for (size_t i = 0; i < mesh.size(); ++i)
+				if (meshSamples[i].floorAdjustment != 0)
+					reconstructedHeightField[i*2] = meshSamples[i].meshHeight() / frame.lightingCoordinateScale;
+			renderHeightField = reconstructedHeightField.data();
+		}
 		for (size_t i = 0; i < mesh.size(); i++)
+		{
+			surfaceField[i*4] = meshSamples[i].meshHeight();
 			if (!authoredNormals[i]) std::copy(mesh[i].normal, mesh[i].normal + 3, surfaceField.begin() + i * 4 + 1);
+		}
 		meshMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - meshStarted).count();
 	}
 	if (panelMetrics)
@@ -823,7 +835,8 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 	return S9xPutImageMetal(static_cast<int>(frame.width), static_cast<int>(frame.height),
 		normalOffsets?normalOffsetColors.data():useScene ? sceneColors.data() : frame.originalRgb555.data(), frame.width, owners.data(), frame.width,
 		highlights.empty() ? nullptr : highlights.data(), frame.width, debugMode,
-		lightingField.data(), emissionField.data(), lightingView==RemasterLightingView::HeightOffsets ? placementOffsetField.data() : heightField.data(), surfaceField.data(), participationField.data(),
+		lightingField.data(), emissionField.data(), lightingView==RemasterLightingView::HeightOffsets ? placementOffsetField.data() :
+			renderHeightField ? renderHeightField : heightField.data(), surfaceField.data(), participationField.data(),
 		oppositeFacingField.data(), reflectanceField.data(), nullptr,
 		lighting && !normalOffsets && !meshView && frame.schemaVersion >= 5,
 		lightingView, frame.indirectBounceCount, frame.indirectRoughness, frame.originalSceneContribution,

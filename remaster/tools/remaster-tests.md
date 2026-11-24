@@ -75,6 +75,8 @@ does not launch any benchmark, emulator, or parallel test workers.
 | full adds | `dungeon_placement_reuse` | `EndFrame`: retained placement relations, irrelevant VRAM/actor reuse and complete map/plane/profile invalidation |
 | full adds | `held_lamp_hud_lookup` | Shared production indexed HUD classification and scene-color preparation; original-predicate oracle, first-match duplicates, contrasting colors, malformed inputs and actual field-consumer parity |
 | full adds | `lighting_local_selection` | Exact local old/new raster and candidate invalidation versus frozen and fresh consumers; complete donors, claims, fields, normals and mesh, authored zeros and global fallbacks |
+| full adds | `backdrop_ground` | Signed same-cell BG2 datum for transparent outdoor ground, conflict/legacy fallback, cache invalidation and same-level floor welding |
+| full adds | `scalar_floor_ramp` | Tile-wide slope reconstruction from flat scalar placements, preserved ledges and detail, raw height preservation and cached mesh parity |
 | full adds | `visible_face_annotation_work` | Invocation-local placement-identity memo work counts, occurrence/cell eviction, forced instance growth and ordered-output differential evidence |
 | full adds | `context_location_publication` | `EndFrame`: BG locations remain selectable with zero, one or multiple named contexts; capture roundtrip |
 | full adds | `layer_view` | Exhaustive background enable/forced masks, subscreen-only exposure, OBJ exclusion and frame-boundary inspection latch |

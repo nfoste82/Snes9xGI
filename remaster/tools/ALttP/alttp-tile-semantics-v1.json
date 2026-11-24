@@ -5082,8 +5082,8 @@
     "v1:4bpp:3a7ffc4ed3ed1821": {
       "role": "floor",
       "normals": [],
-      "context_dependent": true,
-      "note": "Kakariko experimental house: roof raised top. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
+      "context_dependent": false,
+      "note": "",
       "water": false
     },
     "v1:4bpp:3a84bdbcb67aec60": {
@@ -11556,8 +11556,8 @@
     "v1:4bpp:8b4910f87dcaa021": {
       "role": "floor",
       "normals": [],
-      "context_dependent": true,
-      "note": "Kakariko experimental house: roof raised top. Geometry is location-bound; metadata is shared per tile ID. No automatic outdoor support solving is claimed.",
+      "context_dependent": false,
+      "note": "",
       "water": false
     },
     "v1:4bpp:8b53ad7f5d489dd1": {

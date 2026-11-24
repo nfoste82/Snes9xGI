@@ -9,6 +9,10 @@ enabled saved offsets, and explicit Floor metadata. Walls/obstacles, missing
 observations and unresolved geometry do not supply support; no nearest/highest
 floor search or previous-frame base is used.
 
+The runtime uses the authored asset role even if the asset is marked
+context-dependent. Named tile contexts can replace local relief but do not
+override the role used to decide whether the pixel supports Link.
+
 Coordinate publication includes all four independently observed BG planes, not
 just main/sub/scene composites. Otherwise Link can completely cover a floor tile,
 leaving that observed floor without a coordinate/base and resetting actor support

@@ -4,6 +4,8 @@
 #include "frame.h"
 #include "held_lamp.h"
 #include "surface_mesh_material.h"
+#include "backdrop_ground.h"
+#include "scalar_floor_ramp.h"
 #include <map>
 #include "lighting_parallel.h"
 
@@ -28,6 +30,8 @@ struct RemasterLightingFieldCache
 	size_t selectedPixels = 0;
 	size_t resolvedInstances = 0;
 	int shiftX = 0, shiftY = 0;
+	bool reconstructedFloor = false;
+	std::vector<float> floorScratch;
 	struct Identity { uint64_t a=0,b=0; bool operator==(const Identity &o) const {return a==o.a && b==o.b;} };
 	static bool shiftEnabled() {const char *v=std::getenv("S9X_REMASTER_SHIFT_FIELDS");return !v || std::strcmp(v,"0");}
 #ifdef REMASTER_FIELD_COUNT_WORK
@@ -60,7 +64,8 @@ struct RemasterLightingFieldCache
 	static bool instanceEqual(const RemasterFrameTileInstance &a, const RemasterFrameTileInstance &b)
 	{
 		return a.terrainOffset == b.terrainOffset && a.visualClaim == b.visualClaim && a.tileId == b.tileId && a.source == b.source && a.sourceIndex == b.sourceIndex &&
-			a.heightOffset == b.heightOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
+			a.heightOffset == b.heightOffset && a.savedPlacementOffsetStatus == b.savedPlacementOffsetStatus &&
+			a.savedPlacementOffset == b.savedPlacementOffset && a.hasPlacementHeight == b.hasPlacementHeight &&
 			a.placementHeight == b.placementHeight && a.hFlip == b.hFlip && a.vFlip == b.vFlip &&
 			a.geometryStatus == b.geometryStatus && a.placementTileRole == b.placementTileRole &&
 			a.hasPlacementNormals == b.hasPlacementNormals && a.placementNormalXyz == b.placementNormalXyz &&
@@ -346,6 +351,20 @@ struct RemasterLightingFieldCache
 			}
 		}
 		const RemasterHeldLampHudLookup hudLookup(frame);
+		const bool outdoorBackdrop = alttp && (frame.area.id == 320 || frame.area.id == 321);
+		const RemasterBackdropGroundBases backdropBases(frame, alttp);
+		std::vector<uint8_t> scalarFloors;
+		if (outdoorBackdrop) {
+			scalarFloors.resize(frame.tileInstances.size());
+			for (size_t i = 0; i < scalarFloors.size(); ++i) {
+				const auto &tile = frame.tileInstances[i];
+				const auto *m = instanceMetadata[i];
+				scalarFloors[i] = tile.source == RemasterSourceType::Background && tile.sourceIndex == 1 &&
+					tile.savedPlacementOffsetStatus >= 2 && tile.heightOffset == tile.savedPlacementOffset &&
+					!tile.terrainOffset.hasHeight && m && m->hasHeight &&
+					std::all_of(m->height.begin(), m->height.end(), [](int16_t h) { return h == 0; });
+			}
+		}
 		// Fingerprint the full resolved occurrence dependency once, not per pixel.
 		// Transient draw-record IDs are deliberately excluded; content/placement and
 		// animation emission are included. Dynamic OBJ pixels never take the shortcut.
@@ -364,6 +383,7 @@ struct RemasterLightingFieldCache
 					a->second->emissionDepth==b->second.emissionDepth && a->second->emissionOmnidirectional==b->second.emissionOmnidirectional) {h=instanceFingerprints_[n];continue;}
 			}
 			mix(h,in.tileId.hash);mix(h,in.tileId.hashVersion);mix(h,in.tileId.bitDepth);mix(h,unsigned(in.source));mix(h,in.sourceIndex);mix(h,in.heightOffset);
+			if (outdoorBackdrop) { mix(h, in.savedPlacementOffsetStatus); mix(h, in.savedPlacementOffset); }
 			mix(h,in.hFlip|(in.vFlip<<1));mix(h,in.normalYaw);mix(h,in.geometryFacing);
 			mix(h,unsigned(in.geometryStatus));mix(h,unsigned(in.placementTileRole));
 			mix(h,in.terrainOffset.hasHeight);if(in.terrainOffset.hasHeight)bytesHash(h,in.terrainOffset.height);
@@ -427,6 +447,7 @@ struct RemasterLightingFieldCache
 		auto process = [&](size_t worker) {
 		for (size_t i = count*worker/workers; i < count*(worker+1)/workers; i++)
 		{
+			const bool backdropCandidate = outdoorBackdrop && S9xRemasterFrameBackdropGroundAt(frame, i, useScene);
 			if(shifting) {
 				const int sx=int(i%frame.width)+dx,sy=int(i/frame.width)+dy;
 				const size_t j=size_t(std::max(0,sy))*frame.width+std::max(0,sx);
@@ -444,7 +465,7 @@ struct RemasterLightingFieldCache
 				for(size_t r=0;same && r<4;++r)if(i<frame.observedBgDepth[r].size())same=j<depths_[r].size() && frame.observedBgDepth[r][i]==depths_[r][j];
 				if(same && hudLookup(i)!=hudLookup(j))same=false;
 				if(same)identities_[i]=oldIdentities_[j];else identities_[i]=identityAt(i);
-				if(same) {
+				if(same && !backdropCandidate) {
 					#define SF_COPY(name,n) std::copy_n(oldFields_.name.begin()+j*(n),n,name.begin()+i*(n))
 					SF_COPY(occlusion,2);SF_COPY(emission,4);SF_COPY(participation,2);SF_COPY(opposite,1);SF_COPY(authoredNormals,1);SF_COPY(semanticNormals,1);
 					SF_COPY(height,2);SF_COPY(surface,4);SF_COPY(reflectance,4);SF_COPY(depths,1);SF_COPY(omnidirectional,1);SF_COPY(samples,1);SF_COPY(channelSources,1);SF_COPY(visualClaims,1);
@@ -472,6 +493,8 @@ struct RemasterLightingFieldCache
 				}
 				for(size_t r=0;r<4 && !select;++r)if(i<depths_[r].size())select=depths_[r][i]!=frame.observedBgDepth[r][i];
 			}
+			// A transparent pixel can depend on another pixel in its BG2 cell.
+			select |= backdropCandidate && selectionDirty;
 			// No dependency of this offset changed. Retain fields, claims and
 			// renderer-written derived normals verbatim. Emission-only changes
 			// deliberately still visit every offset (no speculative local cut).
@@ -493,9 +516,10 @@ struct RemasterLightingFieldCache
 				!(static_cast<RemasterSourceType>(pixel.owner >> 24) == RemasterSourceType::Background &&
 				  ((pixel.owner >> 16) & 255u) == 2);
 			const bool valid = (!hud || worldBehindHud) && pixel.instanceId && pixel.instanceId <= frame.tileInstances.size() && pixel.tilePixel < 64;
-			const bool backdropGround = !hud && S9xRemasterFrameBackdropGroundAt(frame, i, useScene);
+			const bool backdropGround = !hud && backdropCandidate;
+			const int backdropBase = backdropGround ? backdropBases.at(i % frame.width, i / frame.width) : 0;
 			const uint64_t key = valid ? (uint64_t(hud) << 63) | (uint64_t(pixel.instanceId) << 8) | pixel.tilePixel :
-				hud ? UINT64_MAX : backdropGround ? UINT64_MAX - 1 : 0;
+				hud ? UINT64_MAX : backdropGround ? (UINT64_MAX - 1) - uint16_t(backdropBase) : 0;
 			const auto *m = valid ? instanceMetadata[pixel.instanceId-1] : nullptr;
 			// Sources animate independently of cached surface fields.
 			std::fill_n(emission.begin()+i*4, 4, 0);
@@ -530,14 +554,17 @@ struct RemasterLightingFieldCache
 			samples[i] = {};
 			if (backdropGround)
 			{
-				// Same provisional domain as unauthored BG ground at base zero.
+				// Same provisional domain as unauthored BG ground at this datum.
 				// No tile identity, authored normal, material or emission is invented.
+				height[i*2] = S9xRemasterSignedHeightField(backdropBase, 0);
 				height[i*2+1] = 1;
 				occlusion[i*2] = occlusion[i*2+1] = 255;
+				surface[i*4] = height[i*2] * frame.lightingCoordinateScale;
 				surface[i*4+3] = 1;
 				samples[i].known = samples[i].sheet = samples[i].fallbackGround = true;
+				samples[i].height = samples[i].wallBase = surface[i*4];
 				samples[i].coverage = 1;
-				samples[i].domain = uint64_t(3) << 48;
+				samples[i].domain = (uint64_t(3) << 48) | uint32_t(backdropBase);
 			}
 			if (!valid) continue;
 			const auto &instance = frame.tileInstances[pixel.instanceId-1];
@@ -617,9 +644,14 @@ struct RemasterLightingFieldCache
 			}
 			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && (participation[i*2] != 0 || worldBehindHud);
 			samples[i].coverage = occlusion[i*2]/255.0f;
+			samples[i].scalarFloor = outdoorBackdrop && samples[i].domain == RemasterSurfaceMesh::FloorDomain && scalarFloors[pixel.instanceId-1];
 		}
 		};
 		if (workers == 1) process(0); else S9xRemasterLightingParallel(workers,process);
+		if (selectionFull || selectionDirty) {
+			reconstructedFloor = outdoorBackdrop && std::any_of(samples.begin(), samples.end(), [](const auto &s) { return s.scalarFloor; }) &&
+				RemasterSurfaceMesh::reconstructScalarFloor(frame.width, frame.height, frame.lightingCoordinateScale / 255.0f, samples, floorScratch);
+		}
 		for (size_t worker = 0; worker < workers; ++worker) {
 			selectedPixels += selectedCounts[worker]; updatedPixels += updatedCounts[worker];
 		}

@@ -45,7 +45,8 @@ public:
 				const bool edge=(dx || dy) && (x<halo || y<halo || x+halo>=width || y+halo>=height ||
 					sx<int(halo) || sy<int(halo) || sx+int(halo)>=int(width) || sy+int(halo)>=int(height));
 				if (inside && !edge && a.height == b.height && a.known == b.known && (a.coverage > 0) == (b.coverage > 0) &&
-					a.domain == b.domain && a.sheet == b.sheet && a.solidWall == b.solidWall && a.wallBase == b.wallBase)
+					a.domain == b.domain && a.sheet == b.sheet && a.solidWall == b.solidWall && a.wallBase == b.wallBase &&
+					a.fallbackGround == b.fallbackGround && a.floorAdjustment == b.floorAdjustment)
 					continue;
 				const unsigned x0 = x > halo ? x - halo : 0, y0 = y > halo ? y - halo : 0;
 				for (unsigned ty = y0 / tile; ty <= std::min(height - 1, y + halo) / tile; ty++)

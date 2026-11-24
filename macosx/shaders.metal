@@ -214,7 +214,7 @@ kernel void remasterBuildVisibilityBlocks(
 		uint2(block.x, block.y + occlusion.get_height()));
 }
 
-// Shading positions lie at authored surface centers. Visibility starts outside
+// Shading positions lie on the resolved mesh at pixel centers. Visibility starts outside
 // the represented face so shallow rays do not hit coplanar neighboring shells.
 // Known surfaces share this bias regardless of opacity; analytic lights keep
 // exact endpoints.
