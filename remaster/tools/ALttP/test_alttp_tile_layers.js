@@ -1,0 +1,15 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {tileLayerPixels:pixels}=require('./alttp_tile_layer_previews.js');
+const height=Array.from({length:64},(_,i)=>i-32);
+assert.deepEqual([...pixels('height',{height}).slice(0,4)],[0,0,0,255]);
+assert.deepEqual([...pixels('height',{height}).slice(-4)],[255,255,255,255]);
+assert.equal(pixels('height',{height:Array(64).fill(16)})[0],128);
+assert.deepEqual([...pixels('normal',{normal_xyz:Array(64).fill([128,128,255]).flat()}).slice(0,4)],[128,128,255,255]);
+assert.equal(pixels('occlusion',{occlusion:Array(64).fill(0)})[0],0);
+assert.equal(pixels('occlusion',{occlusion:Array(64).fill(255)})[0],255);
+assert.equal(pixels('emission',{emission_intensity:Array(64).fill(77)})[0],77);
+assert.deepEqual([...pixels('emission',{emission_rgba:Array(64).fill([200,100,0,255]).flat()}).slice(0,4)],[200,100,0,255]);
+assert.deepEqual([...pixels('emission',{emission_rgba:Array(64).fill([200,100,0,128]).flat(),emission_color_mask:Array(64).fill(0)}).slice(0,4)],[128,128,128,255]);
+assert.notEqual(pixels('height',{})[0],pixels('height',{})[4]);
+console.log('Tile layer preview pixels passed');

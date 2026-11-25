@@ -6,6 +6,12 @@ profile, and reopen Profile Controls, Area Settings and NPC Poses if they were l
 game's paused/running state is remembered. This opens the ROM normally; it does
 not create or restore an emulator save state or unsaved profile edits.
 
+Use **Refresh From File** beside the profile name in **Profile Controls** after
+your external tile semantics editor updates the loaded TOML profile. Refresh
+reopens the same file without writing to it. If you have unsaved Snes9x profile
+edits, you can cancel or discard them; if the file fails validation, the current
+profile and edits are kept.
+
 The workspace is updated when a game/profile is opened, authoring panels are
 opened/closed, and the game is paused/resumed or the app quits. A newly opened
 game starts a new workspace; its profile is recorded only after a successful

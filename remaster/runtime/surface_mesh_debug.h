@@ -57,7 +57,7 @@ inline std::vector<uint8_t> debugView(unsigned width, unsigned height,
 			{float(x+1),float(y+1),m.corners[2]}, {float(x),float(y+1),m.corners[3]}};
 		for (unsigned i = 0; i < 4; i++)
 		{
-			Vertex a = vertices[i], b = vertices[(i+1)%4], center = {x+.5f,y+.5f,s.height};
+			Vertex a = vertices[i], b = vertices[(i+1)%4], center = {x+.5f,y+.5f,s.meshHeight()};
 			const float half = m.thickness*.5f;
 			a.z += half; b.z += half; center.z += half;
 			triangle(center,a,b,color);

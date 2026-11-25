@@ -12,7 +12,7 @@ class Cache
 {
 public:
 	const std::vector<Cell> &update(unsigned width, unsigned height,
-		const std::vector<Sample> &samples, float quantum)
+		const std::vector<Sample> &samples, float quantum, int dx=0, int dy=0)
 	{
 		if (samples.size() != size_t(width) * height)
 		{
@@ -25,13 +25,28 @@ public:
 		const unsigned columns = (width + tile - 1) / tile, rows = (height + tile - 1) / tile;
 		std::vector<uint8_t> dirty(size_t(columns) * rows, 0);
 		bool full = width != width_ || height != height_ || quantum != quantum_ || samples.size() != previous_.size();
+		if(!full && (dx || dy)) {
+			shifted_.resize(cells_.size());
+			for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x) {
+				const int sx=int(x)+dx,sy=int(y)+dy;
+				if(sx>=0 && sy>=0 && sx<int(width) && sy<int(height))shifted_[size_t(y)*width+x]=cells_[size_t(sy)*width+sx];
+			}
+			cells_.swap(shifted_);
+		}
 		if (!full)
 			for (unsigned y = 0; y < height; y++) for (unsigned x = 0; x < width; x++)
 			{
 				const size_t i = size_t(y) * width + x;
-				const Sample &a = samples[i], &b = previous_[i];
-				if (a.height == b.height && a.known == b.known && (a.coverage > 0) == (b.coverage > 0) &&
-					a.domain == b.domain && a.sheet == b.sheet && a.solidWall == b.solidWall && a.wallBase == b.wallBase)
+				const int sx=int(x)+dx,sy=int(y)+dy;
+				const bool inside=sx>=0 && sy>=0 && sx<int(width) && sy<int(height);
+				const Sample &a = samples[i], &b = previous_[inside?size_t(sy)*width+sx:i];
+				// Old and new viewport boundaries alter one-sided welding even when
+				// every sample in the overlap has identical geometry.
+				const bool edge=(dx || dy) && (x<halo || y<halo || x+halo>=width || y+halo>=height ||
+					sx<int(halo) || sy<int(halo) || sx+int(halo)>=int(width) || sy+int(halo)>=int(height));
+				if (inside && !edge && a.height == b.height && a.known == b.known && (a.coverage > 0) == (b.coverage > 0) &&
+					a.domain == b.domain && a.sheet == b.sheet && a.solidWall == b.solidWall && a.wallBase == b.wallBase &&
+					a.fallbackGround == b.fallbackGround && a.scalarWall == b.scalarWall && a.scalarAdjustment == b.scalarAdjustment)
 					continue;
 				const unsigned x0 = x > halo ? x - halo : 0, y0 = y > halo ? y - halo : 0;
 				for (unsigned ty = y0 / tile; ty <= std::min(height - 1, y + halo) / tile; ty++)
@@ -70,7 +85,7 @@ private:
 	unsigned width_ = 0, height_ = 0;
 	float quantum_ = -1;
 	std::vector<Sample> previous_, patch_;
-	std::vector<Cell> cells_;
+	std::vector<Cell> cells_,shifted_;
 };
 }
 #endif

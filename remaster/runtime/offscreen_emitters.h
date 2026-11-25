@@ -49,6 +49,13 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		return a.second.hasEmission;
 	})) return d;
 	std::map<uint16_t, RemasterTileContentId> identities;
+	struct IdentityEntry { std::array<uint8_t,32> bytes; RemasterTileContentId id; };
+	// Only canonical decoded identity is retained, never emission/profile pointers.
+	// Exact VRAM bytes invalidate animation immediately, including address wrap.
+	static thread_local std::map<uint16_t,IdentityEntry> retainedIdentities;
+	if(retainedIdentities.size()>4096)retainedIdentities.clear();
+	RemasterLightingTrace::Scope identityTimer(RemasterLightingTrace::current(),RemasterLightingTrace::OffscreenIdentity);
+	RemasterLightingTrace::traffic(RemasterLightingTrace::OffscreenIdentity,16384);
 	// During same-room scrolling retain the conservative whole-room union.
 	// Missing/contradictory settled evidence likewise preserves legacy output.
 	const auto compartment=(c.submodule==0 && c.constructionPhase==0) ?
@@ -69,7 +76,15 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		auto found = identities.find(address);
 		if (found == identities.end())
 		{
+			std::array<uint8_t,32> bytes;
+			for(unsigned n=0;n<32;n++)bytes[n]=c.graphics[uint16_t(address+n)];
+			RemasterLightingTrace::traffic(RemasterLightingTrace::OffscreenIdentity,64,32);
+			auto old=retainedIdentities.find(address);
+			if(old!=retainedIdentities.end() && old->second.bytes==bytes && !std::getenv("S9X_REMASTER_DISABLE_STATIC_CPU_CACHE")) {
+				found=identities.emplace(address,old->second.id).first;
+			} else {
 			uint8_t pixels[64];
+			RemasterLightingTrace::traffic(RemasterLightingTrace::OffscreenIdentity,256,64);
 			for (int y=0; y<8; y++) for (int x=0; x<8; x++)
 			{
 				uint8_t index=0;
@@ -77,6 +92,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 				pixels[y*8+x]=index;
 			}
 			found=identities.emplace(address,RemasterTileContentId{hashTile(4,pixels),1,4}).first;
+			retainedIdentities[address]={bytes,found->second};
+			}
 		}
 		auto asset=profile.assets.find(found->second);
 		if (asset==profile.assets.end() || !asset->second.hasEmission) continue;
@@ -104,6 +121,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 		emittingCells[layer][cell]=1;
 	}
 	// This is only conservative admission, NOT representative grouping. Keep an
+	identityTimer.stop();
+	RemasterLightingTrace::Scope admissionTimer(RemasterLightingTrace::current(),RemasterLightingTrace::OffscreenAdmission);
 	// entire cardinally connected emitting footprint if any tile touches the
 	// active compartment. No reciprocal/self links or authored arrays change.
 	for(int layer=0;layer<2;layer++) {
@@ -117,6 +136,8 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 				if(next>=0 && emittingCells[layer][next] && !admittedCells[layer][next]){admittedCells[layer][next]=1;queue.push_back(next);}
 		}
 	}
+	admissionTimer.stop();
+	RemasterLightingTrace::Scope publishTimer(RemasterLightingTrace::current(),RemasterLightingTrace::OffscreenPublish);
 	for(const auto &candidate:candidates) {
 		const int layer=candidate.layer,cell=candidate.cell;
 		if(!admittedCells[layer][cell])continue;
@@ -186,6 +207,7 @@ inline RemasterRoomEmitterDiagnostics S9xRemasterAppendOffscreenRoomLights(
 					else hidden.normal={{0,0,1}};
 				}
 				frame.hiddenEmitters.push_back(hidden); d.hiddenPixels++;
+				RemasterLightingTrace::traffic(RemasterLightingTrace::OffscreenPublish,sizeof(hidden),sizeof(hidden));
 			}
 		}
 	}

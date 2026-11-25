@@ -1,5 +1,6 @@
 // Frozen pre-optimization algorithm is kept independently in the evidence closure.
-// Define REFERENCE_HEADER to run exact differential checks against that closure.
+// Define REFERENCE_HEADER to run exact differential checks against that closure
+// for domains whose connectivity policy has not changed.
 #define REMASTER_MESH_COUNT_WORK 1
 #include "../runtime/surface_mesh.h"
 #ifdef REFERENCE_HEADER
@@ -21,7 +22,10 @@ int main() {
   for(unsigned y=0;y<h;y++)for(unsigned x=0;x<w;x++) {
    auto &s=samples[y*w+x];s.known=random()%9!=0;s.coverage=float(random()%3)/2;
    s.height=iteration%2?float(int(random()%81)-40):float(x*2+y*3);
-   s.sheet=random()%5!=0;s.domain=random()%4;s.solidWall=random()%7==0;
+    s.sheet=random()%5!=0;s.domain=random()%4;s.solidWall=random()%7==0;
+#ifdef REFERENCE_HEADER
+    if(s.domain==FloorDomain)s.domain=4;
+#endif
    s.wallBase=float(int(random()%19)-9);s.fallbackGround=random()%2;
   }
  auto cells=build(w,h,samples,iteration%3?0.25f:1.f);

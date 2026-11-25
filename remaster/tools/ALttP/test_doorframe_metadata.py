@@ -17,11 +17,11 @@ KEY = 'v1:4bpp:000000000000007b'
 
 class DoorframeTests(unittest.TestCase):
     def test_strict_optional_mask(self):
-        self.assertNotIn('doorframe_mask', validate_annotation({'role': 'doorway'}))
-        self.assertEqual(validate_annotation({'role': 'doorway', 'doorframe_mask': '0' * 16})['doorframe_mask'], '0' * 16)
+        self.assertNotIn('doorframe_mask', validate_annotation({'role': 'doorway', 'normals': ['north']}))
+        self.assertEqual(validate_annotation({'role': 'doorway', 'normals': ['north'], 'doorframe_mask': '0' * 16})['doorframe_mask'], '0' * 16)
         for bad in (0, False, [], [False] * 64, '0', 'f' * 17, 'F' * 16, 'g' * 16):
             with self.assertRaises(AtlasError):
-                validate_annotation({'role': 'doorway', 'doorframe_mask': bad})
+                validate_annotation({'role': 'doorway', 'normals': ['north'], 'doorframe_mask': bad})
         with self.assertRaises(AtlasError):
             validate_annotation({'role': 'floor', 'doorframe_mask': '0' * 16})
 
@@ -40,15 +40,15 @@ class DoorframeTests(unittest.TestCase):
             store.refresh()
             annotation = store.tiles[KEY]
             self.assertEqual(annotation['doorframe_mask'], '8000000000020001')
-            store.save(KEY, {**annotation, 'note': 'HTML note edit'})
+            store.save(KEY, {**annotation, 'normals': ['north'], 'note': 'HTML note edit'})
             parsed = tomllib.loads(profile.read_text())
             self.assertEqual(parsed['assets'][0]['height'], stairs)
             self.assertEqual(parsed['assets'][0]['doorframe_mask'], annotation['doorframe_mask'])
             store.refresh()
             self.assertEqual(store.tiles[KEY]['note'], 'HTML note edit')
-            store.save(KEY, {'role': 'doorway', 'doorframe_mask': '0' * 16})
+            store.save(KEY, {'role': 'doorway', 'normals': ['north'], 'doorframe_mask': '0' * 16})
             self.assertEqual(tomllib.loads(profile.read_text())['assets'][0]['doorframe_mask'], '0' * 16)
-            store.save(KEY, {'role': 'doorway'})
+            store.save(KEY, {'role': 'doorway', 'normals': ['north']})
             self.assertEqual(tomllib.loads(profile.read_text())['assets'][0]['doorframe_mask'], '0' * 16)
             store.save(KEY, {'role': 'other'})
             self.assertNotIn('doorframe_mask', tomllib.loads(profile.read_text())['assets'][0])

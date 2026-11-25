@@ -534,12 +534,14 @@ def generate_profile(database: Path, source: Path, output: Path,
                                   'note': asset.get('tile_semantic_note', '')}
                     if asset.get('tile_semantic_corner'):
                         annotation['corner_type'] = asset['tile_semantic_corner']
+                    if 'tile_semantic_water' in asset:
+                        annotation['water'] = asset['tile_semantic_water']
                     if 'doorframe_mask' in asset:
                         annotation['doorframe_mask'] = asset['doorframe_mask']
                     for field in ('doorway_support', 'doorway_support_direction'):
                         if field in asset:
                             annotation[field] = asset[field]
-                    annotation = validate_annotation(annotation)
+                    annotation = validate_annotation(annotation, allow_incomplete=True)
                     for alias in catalog.semantic_group(key):
                         authored_semantics[alias] = annotation
             if templates:

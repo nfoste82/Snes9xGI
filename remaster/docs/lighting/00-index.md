@@ -9,6 +9,8 @@ inline paths use the repository root unless stated otherwise. Return to the
 - [Triangle Mesh Occlusion](lighting.md): Connected surfaces, finite shells, wall closure, source transport, acceleration and diagnostics.
 - [Conservative Visibility Atlas](direct_visibility_atlas.md): Exact finite-mesh rejection and packed visibility fields, independent GPU oracle and native timing evidence.
 - [Exact Direct Result Reuse](direct_result_reuse.md): Completion-gated slot-local input keys, invalidation, regression and owner-accepted median/tail tradeoff.
+- [Exact Per-Ray Visibility Cache](per_ray_visibility_cache.md): Shared queue-ordered viewport pair retention, geometry invalidation, hybrid selection, memory cap and metrics.
+- [Hybrid Direct](hybrid_direct.md): Opt-in exact strong sources and importance-sampled weak tail, profile/capture controls and quality limitations.
 - [Emission Depth and Wall Closure](../../../AIDocs/10-emission-depth-wall-closure.md): Emission authoring and historical jail/table regression evidence.
 - [Held Lamp Scene](lamp_scene.md): Lamp-free scene capture, HUD preservation, replay and recapture requirements.
 - [Offscreen Room Emitters](offscreen_emitters.md): Complete-room physical source discovery, held-lamp state and source continuity.
@@ -16,6 +18,8 @@ inline paths use the repository root unless stated otherwise. Return to the
 - [Area Lighting and Scene Settings](area_lighting.md): Room/world directional lights, per-area reflected-light boost, defaults, Area Settings and capture state.
 
 ## Performance and deferred plans
+
+- [Memory Traffic Metrics](memory_traffic_metrics.md): Opt-in logical CPU buffer traffic, footprint snapshots and accounting limitations.
 
 - [Runtime Cleanup](runtime_cleanup.md): Superseded lighting/research paths, compatibility boundaries and before/after validation policy.
 

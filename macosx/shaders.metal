@@ -214,7 +214,7 @@ kernel void remasterBuildVisibilityBlocks(
 		uint2(block.x, block.y + occlusion.get_height()));
 }
 
-// Shading positions lie at authored surface centers. Visibility starts outside
+// Shading positions lie on the resolved mesh at pixel centers. Visibility starts outside
 // the represented face so shallow rays do not hit coplanar neighboring shells.
 // Known surfaces share this bias regardless of opacity; analytic lights keep
 // exact endpoints.
@@ -1121,6 +1121,317 @@ kernel void remasterSampledDirect(
 	indirect.write(float4(0.0, 0.0, 0.0, 1.0), pixel);
 }
 
+struct PRVEntry { float visibility; uint receiverVersion, sampleVersion, frame; };
+struct PRVEndpoint { float4 point; uint4 version; };
+struct PRVSample { float4 position, endpoint, normal; uint4 version; };
+struct PRVBox { float4 low, high; };
+static bool prvSegment(float3 a,float3 b, PRVBox box) {
+    float3 d=b-a; float lo=0,hi=1;
+    for(uint k=0;k<3;k++) {
+        if(d[k]==0) {if(a[k]<box.low[k] || a[k]>box.high[k])return false;}
+        else {float x=(box.low[k]-a[k])/d[k],y=(box.high[k]-a[k])/d[k];lo=max(lo,min(x,y));hi=min(hi,max(x,y));}
+    }
+    return lo<=hi;
+}
+// SAT between convex hull of two XY boxes and an axis-aligned changed box.
+// Testing extra (non-edge) axes cannot reject an actual intersection.
+static bool prvHull(float3 al,float3 ah,float3 bl,float3 bh,PRVBox c) {
+    if(min(al.z,bl.z)>c.high.z || max(ah.z,bh.z)<c.low.z)return false;
+    float2 p[8]={al.xy,float2(ah.x,al.y),ah.xy,float2(al.x,ah.y),
+        bl.xy,float2(bh.x,bl.y),bh.xy,float2(bl.x,bh.y)};
+    if(min(al.x,bl.x)>c.high.x || max(ah.x,bh.x)<c.low.x ||
+       min(al.y,bl.y)>c.high.y || max(ah.y,bh.y)<c.low.y)return false;
+    for(uint i=0;i<4;i++)for(uint j=4;j<8;j++) {
+        float2 d=p[j]-p[i],n=float2(-d.y,d.x);
+        float low=INFINITY,high=-INFINITY;
+        for(uint k=0;k<8;k++){float v=dot(n,p[k]);low=min(low,v);high=max(high,v);}
+        float2 center=(c.low.xy+c.high.xy)*0.5, extent=(c.high.xy-c.low.xy)*0.5;
+        float middle=dot(n,center),radius=dot(abs(n),extent);
+        float pad=0.001*(abs(n.x)+abs(n.y)+1);
+        if(low>middle+radius+pad || high<middle-radius-pad)return false;
+    }
+    return true;
+}
+kernel void prvUpdateReceivers(texture2d<float,access::read> surface [[texture(0)]],
+    texture2d<float,access::read> occlusion [[texture(1)]], texture2d<float,access::read> height [[texture(2)]],
+    const device RemasterMeshCell *mesh [[buffer(0)]], device PRVEndpoint *endpoints [[buffer(1)]],
+    constant uint4 &config [[buffer(2)]],constant int4 &room [[buffer(3)]],const device uint *pixelMap [[buffer(4)]],uint2 p [[thread_position_in_grid]]) {
+    if(p.x>=surface.get_width() || p.y>=surface.get_height())return;
+    uint index=p.y*surface.get_width()+p.x; float4 s=surface.read(p);
+    float4 point=float4(remasterSurfaceRayEndpoint(p,s,occlusion,height,mesh),s.r);
+    if(room.z){point.xy+=float2(room.xy);index=pixelMap[index];if(index==0xffffffffu)return;}
+    PRVEndpoint old=endpoints[index];
+    if(config.y || any(as_type<uint4>(point)!=as_type<uint4>(old.point))) {
+        old.point=point; old.version.x++; if(old.version.x==0)old.version.x=1;
+        endpoints[index]=old;
+    }
+}
+kernel void prvUpdateSamples(const device RemasterDirectSample *samples [[buffer(0)]],
+    const device uint *columns [[buffer(1)]],device PRVSample *versions [[buffer(2)]],
+    constant uint4 &config [[buffer(3)]],constant int4 &room [[buffer(4)]],uint i [[thread_position_in_grid]]) {
+    if(i>=config.z)return;uint column=columns[i];if(column==0xffffffffu)return;PRVSample old=versions[column];RemasterDirectSample s=samples[i];
+    if(room.z){s.position.xy+=float2(room.xy);s.endpoint.xy+=float2(room.xy);}
+    if(config.y || any(as_type<uint4>(s.position)!=as_type<uint4>(old.position)) ||
+        any(as_type<uint4>(s.endpoint)!=as_type<uint4>(old.endpoint)) || any(as_type<uint4>(s.normal)!=as_type<uint4>(old.normal))) {
+        old.position=s.position;old.endpoint=s.endpoint;old.normal=s.normal;
+        old.version.x++;if(!old.version.x)old.version.x=1;versions[column]=old;
+    }
+}
+kernel void prvGroups(const device PRVEndpoint *receivers [[buffer(0)]],
+    const device RemasterDirectSample *samples [[buffer(1)]],const device PRVBox *changes [[buffer(2)]],
+    device uint *dirty [[buffer(3)]],constant uint4 &config [[buffer(4)]],constant uint2 &dims [[buffer(5)]],
+    uint2 index [[thread_position_in_grid]]) {
+    uint tilesX=(dims.x+7)/8,tilesY=(dims.y+7)/8;
+    if(index.x>=tilesX*tilesY || index.y>=config.z)return;
+    uint tile=index.x; float3 low=INFINITY,high=-INFINITY;
+    for(uint y=tile/tilesX*8;y<min(dims.y,tile/tilesX*8+8);y++)
+        for(uint x=tile%tilesX*8;x<min(dims.x,tile%tilesX*8+8);x++) {
+            float3 p=receivers[y*dims.x+x].point.xyz;low=min(low,p);high=max(high,p);
+        }
+    // The receiver box contains all exact biased endpoints, not just raster XY.
+    // One-cell XY padding covers DDA corner/rounding and origin-cell evaluation.
+    low-=float3(1,1,0.001);high+=float3(1,1,0.001);
+    RemasterDirectSample s=samples[index.y];float3 sl=s.endpoint.xyz,sh=sl;
+    // Adaptive depth moves a stratum anywhere inside the original source volume.
+    if(s.normal.w<0) {float3 delta=s.normal.xyz*(-s.normal.w);sl-=abs(delta);sh+=abs(delta);}
+    sl-=float3(1,1,0.001);sh+=float3(1,1,0.001);
+    uint touched=0;
+    for(uint c=0;c<config.w;c++)if(prvHull(low,high,sl,sh,changes[c])){touched=1;break;}
+    dirty[index.y*tilesX*tilesY+tile]=touched;
+}
+
+kernel void prvChunkGroups(const device PRVSample *samples [[buffer(0)]],const device uint *columns [[buffer(1)]],
+    const device PRVBox *changes [[buffer(2)]],device uint2 *stamps [[buffer(3)]],
+    const device int4 *chunks [[buffer(4)]],constant uint4 &config [[buffer(5)]],
+    constant uint4 &layout [[buffer(6)]],uint2 p [[thread_position_in_grid]]) {
+    if(p.x>=layout.x || p.y>=config.z)return;
+    int4 chunk=chunks[p.x];if(!chunk.w)return;uint col=columns[p.y];if(col>=layout.y)return;
+    uint at=col*layout.x+p.x;uint2 stamp=stamps[at];
+    if(config.y || stamp.x<uint(chunk.z))stamp=uint2(0,uint(chunk.z));
+    float3 a=float3(float2(chunk.xy),-1e20f),b=float3(float2(chunk.xy+8),1e20f);
+    PRVSample source=samples[col];float3 endpoint=source.endpoint.xyz;
+    float2 depth=source.normal.w<0?abs(source.normal.xy*(-source.normal.w)):float2(0);
+    float2 lo=min(a.xy-2,endpoint.xy-depth-2),hi=max(b.xy+2,endpoint.xy+depth+2);
+    uint low=0,high=config.w;
+    while(low<high){uint mid=(low+high)/2;if(changes[mid].low.w<=float(stamp.x))low=mid+1;else high=mid;}
+    for(uint i=config.w;i>low;) {
+        PRVBox c=changes[--i];
+        if(all(hi>=c.low.xy) && all(lo<=c.high.xy) &&
+            prvHull(a-float3(2,2,0),b+float3(2,2,0),endpoint-float3(depth+2,0),endpoint+float3(depth+2,0),c)) {
+            stamp.y=max(stamp.y,uint(c.low.w));break;
+        }
+    }
+    stamp.x=layout.z;stamps[at]=stamp;
+}
+
+// The prepared sample endpoint may be receiver-adapted, but only as a pure
+// function of the versioned receiver/sample geometry. Exceptional endpoints trace.
+static float remasterCachedVisibility(float3 from, float3 to, uint receiver,
+ uint sampleIndex, bool eligible, constant uint4 &config, constant uint2 &generation,
+ device PRVEntry *entries, const device PRVEndpoint *receivers,
+ const device PRVSample *samples, const device uint *columns,
+ const device PRVBox *changes, const device uint *dirty, device atomic_uint *counters,
+ const device uint *pixelMap,const device uint *births,constant int4 &room,constant uint2 &layout,
+ constant RemasterLightingUniforms &uniforms,
+ texture2d<float, access::read> occlusion, texture2d<float, access::read> height,
+ texture2d<float, access::read> surface, texture2d<float, access::read> blocks,
+ const device RemasterMeshCell *mesh)
+{
+ if (!config.x || !eligible)
+  return remasterVisibility(from,to,occlusion,height,surface,blocks,mesh);
+ uint column=columns[sampleIndex];
+ if(room.z){receiver=pixelMap[receiver];if(receiver==0xffffffffu || column==0xffffffffu)
+  return remasterVisibility(from,to,occlusion,height,surface,blocks,mesh);}
+ uint address=column*(room.z?layout.x:uniforms.width*uniforms.height)+receiver;
+ PRVEntry entry=entries[address];
+ uint rv=receivers[receiver].version.x, sv=samples[column].version.x;
+ bool valid=!config.y && entry.receiverVersion==rv && entry.sampleVersion==sv &&
+  (room.z?entry.frame>=max(uint(room.w),births[receiver/64]):(entry.frame==generation.x || entry.frame==generation.y));
+ if(room.z && valid) {
+  uint through=((const device uint2*)dirty)[column*(layout.x/64)+receiver/64].y;
+  if(entry.frame<through) {
+   float3 a=from,b=to;a.xy+=float2(room.xy);b.xy+=float2(room.xy);
+   uint low=0,high=config.w;
+   while(low<high){uint mid=(low+high)/2;if(changes[mid].low.w<=float(entry.frame))low=mid+1;else high=mid;}
+   for(uint c=low;c<config.w;c++)if(prvSegment(a,b,changes[c])){valid=false;break;}
+  }
+ }
+ if (!room.z && valid && entry.frame!=generation.x && config.w) {
+  uint tilesX=(uniforms.width+7)/8, tilesY=(uniforms.height+7)/8;
+  uint tile=(receiver/uniforms.width/8)*tilesX+(receiver%uniforms.width/8);
+  if (dirty[sampleIndex*tilesX*tilesY+tile]) {
+   for (uint c=0;c<config.w;c++) if (prvSegment(from,to,changes[c])) {valid=false;break;}
+  }
+ }
+ if (!valid) entry.visibility=remasterVisibility(from,to,occlusion,height,surface,blocks,mesh);
+ if (config.x & 256u) {
+  // Stripe atomics by receiver: diagnostics must not serialize millions of rays
+  // through one global cache-line pair. Each receiver still has one writer/batch.
+  uint stripe=(receiver&255u)*6;
+  atomic_fetch_add_explicit(counters+stripe,1u,memory_order_relaxed);
+  if (!valid) {
+   atomic_fetch_add_explicit(counters+stripe+1,1u,memory_order_relaxed);
+   uint cause=entry.receiverVersion!=rv ? 2u : entry.sampleVersion!=sv ? 3u :
+    !(entry.frame==generation.x || entry.frame==generation.y) ? 4u : 5u;
+   atomic_fetch_add_explicit(counters+stripe+cause,1u,memory_order_relaxed);
+  }
+ }
+ entry.receiverVersion=rv;entry.sampleVersion=sv;entry.frame=generation.x;
+ entries[address]=entry;
+ return entry.visibility;
+}
+
+// Expanded records match exhaustive receiver-adaptive Direct. The exact subset
+// is visibility-independent; stratified samples estimate only the weak tail.
+struct RemasterHybridConfig {
+ float tau; uint tailSamples, seed, clustered;
+ uint counts; float exactRadius; uint reserved0, reserved1;
+};
+
+static RemasterDirectSample remasterHybridSample(uint i, uint count, float3 receiver,
+ uint receiverIndex, float4 surface, bool emittingReceiver,
+ constant RemasterHybridConfig &config, constant RemasterLightingUniforms &uniforms,
+ const device uint2 *sources, const device RemasterDirectSample *samples,
+ const device RemasterEmitterPatch *patches, const device RemasterGpuLight *lights,
+ texture2d<float, access::read> emission, texture2d<float, access::read> surfaces,
+ texture2d<float, access::read> occlusion, texture2d<float, access::read> heights,
+ const device RemasterMeshCell *mesh, thread RemasterSampledSphereState &sphereState)
+{
+ if (i >= count) return remasterSampledSphere(i-count, receiver, uniforms, lights, sphereState);
+ RemasterDirectSample sample = samples[i];
+ uint2 record = sources[i];
+ if (config.clustered && emittingReceiver && record.x != 0xffffffffu)
+  sample = remasterExcludeEmitterReceiver(sample, record, receiverIndex,
+   surface, emission, surfaces, occlusion, heights, mesh, patches);
+ if (!config.clustered && record.x == receiverIndex) { sample.radiance = 0; return sample; }
+ if ((config.clustered || record.x == 0xffffffffu) && sample.normal.w < 0) {
+  float depth = -sample.normal.w;
+  uint stratum = record.y & 3u;
+  float3 axis = sample.normal.xyz * depth;
+  float3 center = sample.position.xyz - axis * (float(stratum)+0.5)/4.0 + axis*0.5;
+  float ratio = depth*depth/max(dot(center-receiver, center-receiver), 0.0001);
+  uint n = ratio < 0.000625 ? 1u : ratio < 0.0025 ? 2u : 4u;
+  if (stratum >= n) { sample.radiance = 0; return sample; }
+  float3 shift = axis*((float(stratum)+0.5)/float(n)-(float(stratum)+0.5)/4.0);
+  sample.position.xyz += shift; sample.endpoint.xyz += shift;
+  sample.radiance *= 4.0/float(n);
+ }
+ return sample;
+}
+
+kernel void remasterHybridDirect(
+ texture2d<float, access::read> source [[texture(0)]],
+ texture2d<float, access::read> occlusion [[texture(1)]],
+ texture2d<float, access::read> surfaceField [[texture(2)]],
+ texture2d<float, access::read> heightField [[texture(3)]],
+ texture2d<float, access::read> participationField [[texture(4)]],
+ texture2d<float, access::read> emissionSeed [[texture(5)]],
+ texture2d<float, access::write> direct [[texture(7)]],
+ texture2d<float, access::write> indirect [[texture(8)]],
+ texture2d<float, access::read> oppositeFacingField [[texture(9)]],
+ texture2d<float, access::read> visibilityBlocks [[texture(10)]],
+ texture2d<float, access::read> reflectanceField [[texture(11)]],
+ constant RemasterLightingUniforms &uniforms [[buffer(0)]],
+ const device uint2 *sources [[buffer(1)]], constant uint &count [[buffer(2)]],
+ const device RemasterMeshCell *mesh [[buffer(3)]],
+ const device RemasterDirectSample *samples [[buffer(4)]],
+ const device RemasterEmitterPatch *patches [[buffer(6)]],
+ const device RemasterGpuLight *sceneLights [[buffer(8)]],
+ constant RemasterHybridConfig &config [[buffer(9)]],
+ device uint4 *statistics [[buffer(10)]],
+ device PRVEntry *prvEntries [[buffer(11)]],
+ const device PRVEndpoint *prvReceivers [[buffer(12)]],
+ const device PRVSample *prvSamples [[buffer(13)]],
+ const device uint *prvColumns [[buffer(14)]],
+ const device PRVBox *prvChanges [[buffer(15)]],
+ const device uint *prvDirty [[buffer(16)]],
+ constant uint4 &prvConfig [[buffer(17)]],
+ constant uint2 &prvGeneration [[buffer(18)]],
+ device atomic_uint *prvCounters [[buffer(19)]],
+ const device uint *prvPixelMap [[buffer(20)]],const device uint *prvBirths [[buffer(21)]],
+ constant int4 &prvRoom [[buffer(22)]],constant uint2 &prvLayout [[buffer(23)]],
+ uint2 pixel [[thread_position_in_grid]])
+{
+ if (pixel.x >= uniforms.width || pixel.y >= uniforms.height) return;
+ uint index = pixel.y*uniforms.width+pixel.x;
+ if (config.counts) statistics[index] = uint4(0);
+ float2 participation = participationField.read(pixel).rg;
+ if (participation.r < 0.5 || participation.g < 0.5) {
+  direct.write(float4(0), pixel); indirect.write(float4(0,0,0,1), pixel); return;
+ }
+ float4 surface = surfaceField.read(pixel);
+ float3 receiver = float3(float2(pixel)+0.5,surface.r);
+ bool opposite = oppositeFacingField.read(pixel).r > 0.5;
+ bool emitting = any(emissionSeed.read(pixel).rgb > 0);
+ uint totalCount=count;
+ for(uint j=0;j<uniforms.lightCount;j++)
+  totalCount+=remasterSampledSphereBudget(sceneLights[j],receiver,uniforms.heightPreviewRange.w>0.5);
+ float W=0, normalization=0, tailWeight=0;
+ float3 incoming=0;
+ uint eligible=0, exact=0, tailRays=0;
+ float3 endpoint=remasterSurfaceRayEndpoint(pixel,surface,occlusion,heightField,mesh);
+ // Pass 0 gets W and the exact exhaustive normalization. Pass 1 traces E and
+ // sums T directly (no subtractive cancellation). Pass 2 samples only T.
+ for(uint pass=0;pass<3;pass++) {
+  RemasterSampledSphereState state={};
+  uint connection=0;
+  uint randomBase=config.seed ^ (pixel.x*0x9e3779b9u) ^ (pixel.y*0x85ebca6bu);
+  float target=remasterRandom(remasterHash(randomBase))*tailWeight/float(config.tailSamples);
+  float cumulative=0;
+  if(pass==2 && !(tailWeight>0)) break;
+  for(uint i=0;i<totalCount;i++) {
+   RemasterDirectSample sample=remasterHybridSample(i,count,receiver,index,surface,emitting,
+    config,uniforms,sources,samples,patches,sceneLights,emissionSeed,surfaceField,
+    occlusion,heightField,mesh,state);
+   if(all(sample.radiance.rgb<=0)) continue;
+   float factor=remasterDirectFormFactor(receiver,surface.gba,opposite,sample);
+   float power=max(sample.radiance.r,max(sample.radiance.g,sample.radiance.b));
+   float weight=factor*power;
+   if(pass==0) {
+    normalization+=factor*(sample.radiance.w>0 ? sample.radiance.w : sample.position.w==1 ? 0.25 : 1.0);
+    W+=weight; eligible+=weight>0; continue;
+   }
+   if(!(weight>0)) continue;
+   bool isExact=weight>=config.tau*W || (config.exactRadius>0 &&
+    distance(sample.position.xyz,receiver)<=config.exactRadius);
+   float multiplier=1;
+   if(pass==1) {
+    if(!isExact) {tailWeight+=weight;continue;}
+    exact++;
+   } else {
+    if(isExact) continue;
+    cumulative+=weight;
+    if(connection>=config.tailSamples || target>=cumulative) continue;
+    uint multiplicity=0;
+    while(connection<config.tailSamples && target<cumulative) {
+     multiplicity++; connection++;
+     target=(float(connection)+remasterRandom(remasterHash(randomBase ^
+      (connection*0x27d4eb2du))))*tailWeight/float(config.tailSamples);
+    }
+    multiplier=tailWeight*float(multiplicity)/(float(config.tailSamples)*weight);
+    tailRays++;
+   }
+   float3 sourceEndpoint=sample.endpoint.xyz;
+   if(sample.position.w==2.0) sourceEndpoint=remasterOmnidirectionalRayEndpoint(
+    sourceEndpoint,uint2(clamp(floor(sourceEndpoint.xy),float2(0),
+     float2(uniforms.width-1,uniforms.height-1))),receiver,heightField,mesh);
+   float visibility=config.reserved1 ? 1.0 : remasterCachedVisibility(endpoint,sourceEndpoint,index,i,
+     i<count && !emitting && sample.position.w!=2.0,prvConfig,prvGeneration,
+     prvEntries,prvReceivers,prvSamples,prvColumns,prvChanges,prvDirty,prvCounters,
+     prvPixelMap,prvBirths,prvRoom,prvLayout,
+     uniforms,occlusion,heightField,surfaceField,visibilityBlocks,mesh);
+   incoming+=sample.radiance.rgb*factor*visibility*multiplier;
+  }
+ }
+ if(normalization>0.95) incoming*=0.95/normalization;
+ float4 authored=reflectanceField.read(pixel);
+ float3 albedo=authored.a>0.5 ? saturate(authored.rgb) : remasterAlbedo(source.read(pixel).rgb);
+ albedo=remasterBoostReflectance(albedo,uniforms.reflectanceBoost);
+ direct.write(float4(albedo*incoming,1),pixel);
+ indirect.write(float4(0,0,0,1),pixel);
+ if(config.counts) statistics[index]=uint4(eligible,exact,tailRays,1);
+}
+
 // Independent of emitter budgets/batches; runs before the first indirect bounce.
 kernel void remasterDirectionalLight(
 	texture2d<float, access::read> source [[texture(0)]],
@@ -1193,7 +1504,19 @@ kernel void remasterIndirectBounce(
 	device float4 *directPartials [[buffer(5)]],
 	const device RemasterEmitterPatch *emitterPatches [[buffer(7)]],
 	const device RemasterGpuLight *sceneLights [[buffer(8)]],
-	uint3 grid [[thread_position_in_grid]])
+
+ device PRVEntry *prvEntries [[buffer(11)]],
+ const device PRVEndpoint *prvReceivers [[buffer(12)]],
+ const device PRVSample *prvSamples [[buffer(13)]],
+ const device uint *prvColumns [[buffer(14)]],
+ const device PRVBox *prvChanges [[buffer(15)]],
+ const device uint *prvDirty [[buffer(16)]],
+ constant uint4 &prvConfig [[buffer(17)]],
+ constant uint2 &prvGeneration [[buffer(18)]],
+ device atomic_uint *prvCounters [[buffer(19)]],
+ const device uint *prvPixelMap [[buffer(20)]],const device uint *prvBirths [[buffer(21)]],
+ constant int4 &prvRoom [[buffer(22)]],constant uint2 &prvLayout [[buffer(23)]],
+ uint3 grid [[thread_position_in_grid]])
 {
 	uint2 pixel = grid.xy;
 	bool batched = is_function_constant_defined(remasterBatchedDirectPass) ? remasterBatchedDirectPass : false;
@@ -1485,8 +1808,12 @@ kernel void remasterIndirectBounce(
 		}
 		if (formFactor > 0.0 && any(radiance > 0.0))
 		{
-			float visibility = remasterVisibility(receiverRayEndpoint, sourceRayEndpoint,
-				occlusion, heightField, surfaceField, visibilityBlocks, mesh);
+			float visibility = remasterCachedVisibility(receiverRayEndpoint,sourceRayEndpoint,
+                pixel.y*uniforms.width+pixel.x,sampleIndex,
+                specializedDirect && !debugSample && !emittingReceiver && preparedSample.position.w!=2.0,
+                prvConfig,prvGeneration,prvEntries,prvReceivers,prvSamples,prvColumns,
+                prvChanges,prvDirty,prvCounters,prvPixelMap,prvBirths,prvRoom,prvLayout,uniforms,
+                occlusion,heightField,surfaceField,visibilityBlocks,mesh);
 			incoming += radiance * formFactor * visibility;
 		}
 		// Hidden representatives can coexist with exact visible sources. Their
@@ -1650,7 +1977,7 @@ fragmentShader(RasterizerData in [[stage_in]], texture2d<half> colorTexture [[ t
 		const half4 notification = notificationTexture.sample(notificationSampler, in.textureCoordinate);
 		if (notification.a > 0.0h) return float4(notification);
 	}
-	
+
 	if ( videoMode == 0)
 	{
 		constexpr sampler textureSampler (mag_filter::nearest, min_filter::nearest);

@@ -12,6 +12,9 @@
 // so shading positions remain exactly on the generated surface.
 namespace RemasterSurfaceMesh
 {
+inline constexpr uint64_t FloorDomain = 1;
+inline constexpr uint64_t WallDomain = 2;
+
 #define REMASTER_MESH_BUILD_WORK 1
 #ifdef REMASTER_MESH_COUNT_WORK
 inline size_t weldRootSearches = 0;
@@ -38,6 +41,10 @@ struct Sample
 	bool solidWall = false;
 	float wallBase = 0;
 	bool fallbackGround = false;
+	bool scalarFloor = false; // flat local relief on a saved overworld placement datum
+	bool scalarWall = false; // authored wall relief on a saved overworld placement datum
+	float scalarAdjustment = 0; // lighting only; raw height still decides connectivity
+	float meshHeight() const { return height + scalarAdjustment; }
 };
 
 // Domains describe placement/object identity, not tile hashes. Floor and wall
@@ -51,14 +58,23 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 	auto valid = [&](int x, int y) { return x >= 0 && y >= 0 && x < int(width) && y < int(height); };
 	auto index = [&](int x, int y) { return size_t(y) * width + x; };
 	auto same = [&](size_t a, size_t b) {
-		return samples[a].known && samples[b].known && samples[a].coverage > 0 &&
-			samples[b].coverage > 0 && samples[a].domain != 0 && samples[a].domain == samples[b].domain &&
-			samples[a].sheet == samples[b].sheet;
+		const auto &p = samples[a], &q = samples[b];
+		if (!p.known || !q.known || p.coverage <= 0 || q.coverage <= 0 || !p.domain || p.sheet != q.sheet)
+			return false;
+		if (p.domain == q.domain) return true;
+		// Provisional flats can close a same-level floor seam, but must not
+		// supply slope/continuation evidence across a change in datum or height.
+		return p.sheet && p.height == q.height && p.wallBase == q.wallBase &&
+			((p.fallbackGround && q.domain == FloorDomain) || (q.fallbackGround && p.domain == FloorDomain));
 	};
 	std::vector<uint8_t> edges(samples.size(), 0);
 	const int dx[] = {-1, 1, 0, 0}, dy[] = {0, 0, -1, 1};
 	const unsigned opposite[] = {1, 0, 3, 2};
 	const float tolerance = std::max(0.0001f, quantum * 1.05f);
+	const float stepLimit = std::max(0.0001f, quantum * 1.5f);
+	// Quantum converts one authored height unit to mesh coordinates.
+	const float floorStepLimit = 6.0f * quantum + 0.0001f;
+	const float wallStepLimit = 3.0f * quantum + 0.0001f;
 	for (unsigned y = 0; y < height; y++)
 		for (unsigned x = 0; x < width; x++)
 		{
@@ -70,7 +86,9 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 				const size_t b = index(bx, by);
 				if (!same(a, b)) continue;
 				const float rise = samples[b].height - samples[a].height;
-				bool continuous = std::abs(rise) <= std::max(0.0001f, quantum * 1.5f);
+				bool continuous = std::abs(rise) <=
+					(samples[a].sheet && samples[a].domain == FloorDomain ? floorStepLimit :
+					 samples[a].domain == WallDomain && samples[a].scalarWall && samples[b].scalarWall ? wallStepLimit : stepLimit);
 				// Larger ramps need continuation evidence, not a height threshold
 				// that would bridge an arbitrary ledge or touching sprite pieces.
 				for (int side : {-1, 1})
@@ -99,11 +117,11 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 			Cell &cell = result[p];
 			cell.thickness = samples[p].sheet ? 0.0f : 1.0f;
 			cell.solidWall = samples[p].solidWall ? 1.0f : 0.0f;
-			cell.wallBase = samples[p].wallBase;
+			cell.wallBase = samples[p].scalarWall ? samples[p].wallBase + samples[p].scalarAdjustment : samples[p].wallBase;
 			float gradients[4] = {};
 			for (unsigned d = 0; d < 4; d++) if (edges[p] & (1 << d))
 			{
-				gradients[d] = (samples[index(int(x) + dx[d], int(y) + dy[d])].height - samples[p].height) * (dx[d] + dy[d]);
+				gradients[d] = (samples[index(int(x) + dx[d], int(y) + dy[d])].meshHeight() - samples[p].meshHeight()) * (dx[d] + dy[d]);
 			}
 			auto slope = [&](unsigned a, unsigned b) {
 				const bool hasA = edges[p] & (1 << a), hasB = edges[p] & (1 << b);
@@ -120,7 +138,7 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 			{
 				const int sx = corner == 0 || corner == 3 ? -1 : 1;
 				const int sy = corner < 2 ? -1 : 1;
-				cell.corners[corner] = samples[p].height + (gx * sx + gy * sy) * 0.5f;
+				cell.corners[corner] = samples[p].meshHeight() + (gx * sx + gy * sy) * 0.5f;
 			}
 		}
 	for (unsigned vy = 0; vy <= height; vy++)

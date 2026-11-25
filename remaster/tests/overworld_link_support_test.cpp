@@ -3,7 +3,45 @@
 #include <iostream>
 #include <cstdlib>
 static void check(bool v,const char*m){if(!v){std::cerr<<m<<'\n';std::exit(1);}}
+
+static void checkContextDependentFloorSeam()
+{
+ RemasterFrame f;f.width=16;f.height=8;f.area.id=320;
+ f.observedBgPixels[1].resize(f.width*f.height);f.tileInstances.resize(3);
+ RemasterProfile p;
+ for(unsigned i=0;i<2;++i){
+  auto &tile=f.tileInstances[i];tile.tileId={i+1,1,4};
+  tile.source=RemasterSourceType::Background;tile.sourceIndex=1;
+  tile.savedPlacementOffsetStatus=3;tile.savedPlacementOffset=tile.heightOffset=-16;
+  f.contextLocations[i+1]={320,uint16_t(117+i),298,1};
+  auto &asset=p.assets[tile.tileId];asset.tileId=tile.tileId;
+  asset.hasHeight=asset.hasTileSemantics=true;asset.tileRole=RemasterTileRole::Floor;
+  asset.tileSemanticContextDependent=i==1;
+ }
+ f.observedBgPixels[1][16+7].instanceId=1;f.observedBgPixels[1][16+7].tilePixel=15;
+ f.observedBgPixels[1][16+8].instanceId=2;f.observedBgPixels[1][16+8].tilePixel=8;
+ auto &body=f.tileInstances[2];body.source=RemasterSourceType::Object;body.sourceIndex=102;body.vramAddress=0x8000;
+ RemasterDungeonFloorContext c;c.verifiedAlttpRom=true;c.backgroundScrollX=117*8;c.backgroundScrollY=298*8;
+ c.linkY=c.backgroundScrollY+1-20;
+ for(bool named:{false,true}){
+  if(named){
+   auto &context=p.tileContexts[f.tileInstances[1].tileId]["Ground variant"];
+   context.hasHeight=true;context.height.fill(2);
+  }
+  S9xRemasterApplyProfileToFrame(p,f);
+  check(f.contextGeometry.count(2)==unsigned(named),"variant activation follows profile");
+  for(unsigned side=0;side<2;++side){
+   c.linkX=c.backgroundScrollX+7+side-8;
+   body.heightOffset=0;float base=0;
+   const int expected=-16+(named && side ? 2 : 0);
+   check(S9xRemasterApplyOverworldLinkSupport(f,c,&base) && base==expected && body.heightOffset==expected,
+    "authored floor supports Link despite context-dependent annotation, with or without alternate relief");
+  }
+ }
+}
+
 int main(int argc,char**argv){
+ checkContextDependentFloorSeam();
  RemasterFrame f;RemasterDungeonFloorContext c;c.verifiedAlttpRom=true;c.linkX=16;c.linkY=0;
  f.width=f.height=64;f.area.id=320;f.observedBgPixels[1].resize(4096);f.tileInstances.resize(3);
  auto &ground=f.tileInstances[0];ground.source=RemasterSourceType::Background;ground.sourceIndex=1;ground.savedPlacementOffsetStatus=2;ground.heightOffset=40;ground.tileId.hash=1;

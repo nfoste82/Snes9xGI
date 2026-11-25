@@ -17,7 +17,8 @@ int main() {
  C c;c.verifiedAlttpRom=c.indoors=true;c.constructedMaps=maps->data();c.graphics=gfx->data();c.dungeonTemplateData=tpl->data();
  for(int d=0;d<4;d++)for(int flip=0;flip<4;flip++) {
   const int starts[]={0x2716,0x29f0,0x2c6a,0x2e6a},off=starts[d],w=d<2?4:3,h=d<2?3:4;
-  tpl->fill(255);maps->fill(255);
+  // Unused ROM templates must not match the blank map at every origin.
+  tpl->fill(0xaa);maps->fill(255);
   auto cell=[&](int x,int y){return (10+(flip&2?h-1-y:y))*64+10+(flip&1?w-1-x:x);};
   for(int x=0;x<w;x++)for(int y=0;y<h;y++) {
    bool interior=d<2?(x==1 || x==2) && y!=(d?h-1:0):(y==1 || y==2) && x!=(d==2?0:w-1);

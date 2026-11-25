@@ -91,7 +91,7 @@ inline std::string S9xRemasterSavedPlacementDescription(const RemasterFrame &f,u
 	const auto &at=f.contextLocations.at(id); const auto &i=f.tileInstances[id-1];
 	std::ostringstream s; s<<"Saved placement: "<<(at.area==320?"Light":"Dark")<<" BG2 world tile ("<<at.x<<","<<at.y
 		<<") offset "<<(i.savedPlacementOffset>=0?"+":"")<<i.savedPlacementOffset
-		<<(i.savedPlacementOffsetStatus==2?" (explicit entry)":" (missing entry; default zero)")<<" [frame evidence; read only]";
+		<<(i.savedPlacementOffsetStatus==2?" (explicit entry)":i.savedPlacementOffsetStatus==3?" (calculated)":" (missing entry; default zero)")<<" [frame evidence; read only]";
 	return s.str();
 }
 #endif

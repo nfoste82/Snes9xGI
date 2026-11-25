@@ -41,7 +41,7 @@ int main() {
  p.overworldOffsets[a]=-32767;CHECK(!S9xRemasterEditPlacementOffsets(p,f,ids,-1,true,error));CHECK(p.overworldOffsets[b]==32767);
  p=original;CHECK(pick(24,true)==5);CHECK(ids.size()==4 && types.size()==2);
  const auto sparse=p;CHECK(!p.overworldOffsets.count(f.contextLocations[5]));
- CHECK(S9xRemasterEditPlacementOffsets(p,f,ids,0,false,error));CHECK(!p.overworldOffsets.count(f.contextLocations[5]));
+ CHECK(S9xRemasterEditPlacementOffsets(p,f,ids,0,false,error));CHECK(p.overworldOffsets.at(f.contextLocations[5])==0);
  std::string undo;std::vector<RemasterProfileDiagnostic>d;CHECK(S9xRemasterSerializeProfile(sparse,undo,d));
  CHECK(S9xRemasterParseProfile(undo,p,d));CHECK(!p.overworldOffsets.count(f.contextLocations[5]));CHECK(S9xRemasterPlacementMapsEqual(p.overworldOffsets,sparse.overworldOffsets));
  auto disk=sparse;disk.overworldOffsets[other]=-73;auto edited=sparse;

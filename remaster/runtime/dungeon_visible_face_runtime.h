@@ -40,6 +40,15 @@ struct RemasterVisibleFaceSolvedCell {
 	RemasterVisualClaimStatus status=RemasterVisualClaimStatus::Unsupported;
 	bool frame=false;
 };
+// Bounded, value-owned scratch for one current room. No frame/profile pointers
+// survive a call. Reused capacities avoid frame-sized allocation/zeroing churn.
+struct RemasterVisibleFaceScratch {
+	std::array<std::array<uint64_t,4096>,2> exposed={},sheets={};
+	std::array<std::array<int,4096>,2> bases={};
+	std::array<std::array<uint32_t,4096>,2> checked={};
+	std::array<std::array<bool,4096>,2> matches={};
+	std::vector<RemasterFramePixel> selected,visible;
+};
 struct RemasterVisibleFaceSolutionCache {
 	// One entry, no per-room growth. All arrays are value owned. Exposure is
 	// compared after the already-required current raster/source validation.
@@ -72,7 +81,11 @@ struct RemasterVisibleFaceTemplateCache {
 	std::array<std::array<RemasterVisibleFaceCandidate,4096>,2> candidates;
 	size_t modelBuilds=0,modelHits=0;
 	std::unique_ptr<RemasterVisibleFaceSolutionCache> solved;
+	std::unique_ptr<RemasterVisibleFaceScratch> scratch;
 	size_t preparationHits=0,preparationMisses=0,graphBuilds=0,oobBuilds=0,solutionAllocations=0;
+	bool staticRoomValid=false;
+	uint64_t staticProfile=0;
+	std::array<uint8_t,8192> staticCollision={};
 #ifdef REMASTER_WALL_BAND_DIAGNOSTICS
 	// Last complete solve, diagnostic only (never reused as input/ownership).
 	struct CellResult { int base=INT_MIN,owner=-1,plane=-1; uint8_t status=0; int claimRoot=-1; };
@@ -162,10 +175,11 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	const RemasterDungeonFloorContext::Placement *bg1,
 	const RemasterDungeonFloorContext::Placement *bg2,
 	const RemasterDungeonHeightMap &map1,const RemasterDungeonHeightMap &map2,
-	RemasterVisibleFaceTemplateCache *cache=nullptr)
+	RemasterVisibleFaceTemplateCache *cache=nullptr, uint64_t profileGeneration=0)
 {
 	using namespace S9xRemasterVisibleFace;
 	using Surface=RemasterDungeonFloorContext::Surface;
+	if(std::getenv("S9X_REMASTER_DISABLE_STATIC_CPU_CACHE"))cache=nullptr;
 	const bool currentStairs=c.module==7 && (c.submodule==8 || c.submodule==16) && c.constructionPhase<=1;
 	if(!c.verifiedAlttpRom || !c.indoors || (c.submodule && !currentStairs) || c.collisionMode ||
 		!c.constructedMaps || !c.collisionAttributes || !c.dungeonTemplateData ||
@@ -173,33 +187,52 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		map1.roomIndex!=c.roomIndex || map2.roomIndex!=c.roomIndex ||
 		frame.scenePixels.size()!=frame.mainPixels.size() || !frame.width)return;
 	const RemasterDungeonFloorContext::Placement *tiles[]={bg1,bg2};
+	const bool staticRoom=cache && S9xRemasterStaticRoomEnabled() && !c.submodule && c.module==7;
+	const auto buildStart=RemasterLightingTrace::now();
+	const bool staticHit=staticRoom && cache->staticRoomValid && cache->solved && cache->solved->valid &&
+		cache->solved->room==c.roomIndex && cache->solved->romIdentity==c.romIdentity && cache->staticProfile==profileGeneration &&
+		!std::memcmp(cache->words[0].data(),c.constructedMaps+8192,8192) &&
+		!std::memcmp(cache->words[1].data(),c.constructedMaps,8192) &&
+		!std::memcmp(cache->staticCollision.data(),c.collisionAttributes,8192);
+	if(!staticRoom)if(cache)cache->staticRoomValid=false;
 	RemasterLightingTrace::Scope recognitionTimer(RemasterLightingTrace::current(),RemasterLightingTrace::Recognition);
 	const RemasterDungeonHeightMap *maps[]={&map1,&map2};
-	auto wordsStorage=std::make_unique<std::array<std::array<uint16_t,4096>,2>>();auto &words=*wordsStorage;
-	for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
-		int at=(bg?0:8192)+2*i;words[bg][i]=c.constructedMaps[at]|c.constructedMaps[at+1]<<8;
+	RemasterLightingTrace::Scope mapTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleMap);
+	auto wordsStorage=cache?nullptr:std::make_unique<std::array<std::array<uint16_t,4096>,2>>();
+	auto &words=cache?cache->words:*wordsStorage;
+	bool wordsChanged=false;
+	if(!staticHit)for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
+		int at=(bg?0:8192)+2*i;const uint16_t word=c.constructedMaps[at]|c.constructedMaps[at+1]<<8;
+		if(words[bg][i]!=word){words[bg][i]=word;wordsChanged=true;}
 	}
+	mapTimer.stop();
+	RemasterLightingTrace::traffic(RemasterLightingTrace::VisibleMap,16384+sizeof(words),wordsChanged?sizeof(words):0);
+	RemasterLightingTrace::Scope templateTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleTemplates);
 	// The first scan discovers candidates only. No owner is fabricated from an
 	// artwork match. A second scan below uses the independently derived owner.
-	const bool templatesChanged=cache && (!cache->valid || cache->words!=words || std::memcmp(cache->rom.data(),c.dungeonTemplateData,12876));
+	const bool templatesChanged=cache && (!cache->valid || wordsChanged || std::memcmp(cache->rom.data(),c.dungeonTemplateData,12876));
 	if(templatesChanged) {
 		cache->modelValid=false;
-		cache->words=words;std::copy_n(c.dungeonTemplateData,12876,cache->rom.begin());
+		std::copy_n(c.dungeonTemplateData,12876,cache->rom.begin());
 		cache->sections=collectRoomSections(words[0].data(),words[1].data(),c.dungeonTemplateData,12876,
 			[](int,const TemplateSection &,const std::array<int,6>&){return TemplateSection::Equivalence{};});cache->valid=true;
 	}
-	auto sections=cache?cache->sections:collectRoomSections(words[0].data(),words[1].data(),c.dungeonTemplateData,12876,
+	decltype(cache->sections) uncachedSections;
+	if(!cache)uncachedSections=collectRoomSections(words[0].data(),words[1].data(),c.dungeonTemplateData,12876,
 		[](int,const TemplateSection &,const std::array<int,6>&){return TemplateSection::Equivalence{};});
+	const auto &sections=cache?cache->sections:uncachedSections;
+	templateTimer.stop();
+	RemasterLightingTrace::Scope reuseTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleReuse);
 	// Exact local dependency comparison; no profile digest and no camera key.
 	// Producer hash/word changes already force template rescan above; hash-only
 	// source edits with equal local relief do not change these candidate slopes.
-	bool reuse=cache && cache->modelValid;
+	bool reuse=cache && cache->modelValid && (!staticRoom || staticHit);
 	if(cache && !cache->solved){cache->solved=std::make_unique<RemasterVisibleFaceSolutionCache>();++cache->solutionAllocations;}
 	auto *saved=cache?cache->solved.get():nullptr;
-	bool solutionReuse=saved && saved->valid && !templatesChanged && saved->room==c.roomIndex && saved->romIdentity==c.romIdentity;
+	bool solutionReuse=staticRoom?staticHit:saved && saved->valid && !templatesChanged && saved->room==c.roomIndex && saved->romIdentity==c.romIdentity;
 	// This extends, rather than adds, the required local-source scan. Actor
 	// plane is deliberately absent: BOTH physical planes are compared by value.
-	for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
+	if(!staticHit)for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
 		const auto &t=tiles[bg][i];
 		const RemasterVisibleFaceLocalInput now{t.height,t.surface,t.hasHeight,t.hflip,t.vflip,t.stairSourceAmbiguous};
 		if(reuse && !(cache->local[bg][i]==now))reuse=false;
@@ -213,11 +246,18 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 				support.collision[p]=c.collisionAttributes[p*4096+i];
 			}
 			const auto &old=saved->placements[bg][i];
-			if(solutionReuse && (!old.sameGeometry(t) || old.tileHash!=t.tileHash || old.stairSourceAmbiguous!=t.stairSourceAmbiguous ||
-				!(saved->support[bg][i]==support)))solutionReuse=false;
-			saved->placements[bg][i]=t;saved->support[bg][i]=support;
+			const bool placementChanged=!saved->valid || !old.sameGeometry(t) || old.tileHash!=t.tileHash || old.stairSourceAmbiguous!=t.stairSourceAmbiguous;
+			const bool supportChanged=!saved->valid || !(saved->support[bg][i]==support);
+			if(placementChanged || supportChanged)solutionReuse=false;
+			if(placementChanged)saved->placements[bg][i]=t;
+			if(supportChanged)saved->support[bg][i]=support;
 		}
 	}
+	reuseTimer.stop();
+	RemasterLightingTrace::traffic(RemasterLightingTrace::VisibleReuse,
+		8192*sizeof(RemasterDungeonFloorContext::Placement)+8192*sizeof(RemasterVisibleFaceSupportInput)+
+		8192*sizeof(RemasterVisibleFaceLocalInput)+32768);
+	RemasterLightingTrace::Scope slopeTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleSlopes);
 	auto candidateStorage=cache?nullptr:std::make_unique<RemasterVisibleFaceWorkspace>();
 	auto &candidates=cache?cache->candidates:candidateStorage->candidates;
 	if(!reuse) {
@@ -268,20 +308,31 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		if(reuse)trace->candidateHits++;else trace->candidateBuilds++;
 	}
 	// Exact selected source and transformed local source at every observed pixel.
+	slopeTimer.stop();
 	recognitionTimer.stop();
-	RemasterFrameHeightResolver resolver(frame);
-	auto exposureStorage=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();auto &exposed=*exposureStorage;
-	auto exposureBaseStorage=std::make_unique<std::array<std::array<int,4096>,2>>();auto &exposureBase=*exposureBaseStorage;
+	RemasterLightingTrace::Scope exposureTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleExposure);
+	auto resolverStorage=staticRoom?nullptr:std::make_unique<RemasterFrameHeightResolver>(frame);
+	if(cache && !cache->scratch)cache->scratch=std::make_unique<RemasterVisibleFaceScratch>();
+	auto scratchStorage=cache?nullptr:std::make_unique<RemasterVisibleFaceScratch>();
+	auto &scratch=cache?*cache->scratch:*scratchStorage;
+	auto &exposed=scratch.exposed;for(auto &a:exposed)a.fill(0);
+	auto &exposureBase=scratch.bases;
 	// Source equality is placement/occurrence-local, not pixel-local. Recheck
 	// once for each actual occurrence of a cell this invocation. Nothing survives
 	// the frame: profile, graphics, context layers, exposure and support changes
 	// cannot reuse a prior visual datum.
-	auto checkedStorage=std::make_unique<std::array<std::array<uint32_t,4096>,2>>();auto &checked=*checkedStorage;
-	auto matchesStorage=std::make_unique<std::array<std::array<bool,4096>,2>>();auto &matches=*matchesStorage;
+	auto &checked=scratch.checked;for(auto &a:checked)a.fill(0);
+	auto &matches=scratch.matches;
 	for(auto &a:exposureBase)a.fill(INT_MIN);
-	std::vector<RemasterFramePixel> selected(frame.mainPixels.size());
-	for(size_t at=0;at<selected.size();at++) {
-		const auto choice=resolver.selectHeight(frame,at,true);
+	auto &selected=scratch.selected;if(!staticRoom)selected.assign(frame.mainPixels.size(),{});
+	RemasterLightingTrace::traffic(RemasterLightingTrace::VisibleExposure,
+		(frame.mainPixels.size()+frame.subPixels.size()+frame.scenePixels.size())*sizeof(RemasterFramePixel),
+		selected.size()*sizeof(RemasterFramePixel)+sizeof(scratch.exposed)+sizeof(scratch.bases)+sizeof(scratch.checked));
+	if(RemasterLightingTrace::memoryEnabled())if(auto *trace=RemasterLightingTrace::current())trace->cpuCacheBytes+=
+		cache?sizeof(*cache)+sizeof(RemasterVisibleFaceSolutionCache)+sizeof(scratch)+
+		scratch.selected.capacity()*sizeof(RemasterFramePixel)+scratch.visible.capacity()*sizeof(RemasterFramePixel):0;
+	if(!staticRoom)for(size_t at=0;at<selected.size();at++) {
+		const auto choice=resolverStorage->selectHeight(frame,at,true);
 		const auto px=choice.donors[size_t(RemasterMetadataChannel::Height)];
 		if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
 		const auto &inst=frame.tileInstances[px.instanceId-1];
@@ -289,7 +340,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 		const int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,bg=inst.sourceIndex;
 		const auto &t=tiles[bg][cell]; const auto word=words[bg][cell];
 		if(checked[bg][cell]!=px.instanceId) {
-			checked[bg][cell]=px.instanceId;const auto &effective=resolver.effective[px.instanceId-1];
+			checked[bg][cell]=px.instanceId;const auto &effective=resolverStorage->effective[px.instanceId-1];
 			matches[bg][cell]=inst.tileId.hash==t.tileHash && inst.hFlip==t.hflip && inst.vFlip==t.vflip &&
 				inst.tileNumber==(word&1023) && inst.palette==((word>>10)&7) && effective.hasHeight && *effective.height==t.height;
 		}
@@ -301,10 +352,10 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	const bool hasPlateaus=std::any_of(bg1,bg1+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;}) ||
 		std::any_of(bg2,bg2+4096,[](const auto &t){return t.surface==Surface::OutOfBounds;});
 	const auto plateauSources=hasPlateaus?S9xRemasterVisibleFaceSources(frame):std::vector<RemasterVisibleFaceSource>{};
-	std::vector<RemasterFramePixel> visible(hasPlateaus?selected.size():0);
-	auto sheetExposure=std::make_unique<std::array<std::array<uint64_t,4096>,2>>();
+	auto &visible=scratch.visible;visible.resize(hasPlateaus?selected.size():0);
+	auto *sheetExposure=&scratch.sheets;for(auto &a:*sheetExposure)a.fill(0);
 	for(size_t at=0;at<visible.size();at++) {
-		const auto px=visible[at]=S9xRemasterSelectVisibleOccurrence(frame,at,true,resolver.alttp);
+		const auto px=visible[at]=S9xRemasterSelectVisibleOccurrence(frame,at,true,staticRoom?true:resolverStorage->alttp);
 		if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
 		const auto &inst=frame.tileInstances[px.instanceId-1];if(inst.source!=RemasterSourceType::Background || inst.sourceIndex>1)continue;
 		int x=(c.backgroundScrollX+at%frame.width)&511,y=(c.backgroundScrollY+at/frame.width)&511,cell=y/8*64+x/8,bg=inst.sourceIndex;
@@ -316,7 +367,17 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 			px.tilePixel!=((inst.vFlip?7-y%8:y%8)*8+(inst.hFlip?7-x%8:x%8)))continue;
 		(*sheetExposure)[bg][cell]|=UINT64_C(1)<<((y%8)*8+x%8);
 	}
-	solutionReuse=solutionReuse && saved->exposed==exposed && saved->exposureBase==exposureBase && saved->sheets==*sheetExposure;
+	if(staticRoom) {
+		// Complete-room authored surfaces are evidence, not a pretend viewport.
+		// Occupied owner/base and conflict checks below are still mandatory.
+		for(int bg=0;bg<2;bg++)for(int i=0;i<4096;i++) {
+			exposed[bg][i]=tiles[bg][i].hasHeight?UINT64_MAX:0;
+			exposureBase[bg][i]=maps[bg]->offsets[i];
+			(*sheetExposure)[bg][i]=tiles[bg][i].surface==Surface::OutOfBounds && !tiles[bg][i].stairSourceAmbiguous?UINT64_MAX:0;
+		}
+	} else solutionReuse=solutionReuse && saved->exposed==exposed && saved->exposureBase==exposureBase && saved->sheets==*sheetExposure;
+	exposureTimer.stop();
+	RemasterLightingTrace::Scope graphTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleGraph);
 	auto &solvedCells=saved?saved->cells:candidateStorage->cells;
 	if(solutionReuse) {++cache->preparationHits;} else {
 	if(cache){++cache->preparationMisses;++cache->graphBuilds;++cache->oobBuilds;}
@@ -385,7 +446,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 			for(int p=0;p<2;p++) {
 				const auto &d=maps[other]->roomDiagnostics->cells[p*4096+j];
 				const int owner=maps[other]->occupiedFloorOwners[p][j],base=maps[other]->planeOffsets[p][j];
-				if(owner<0 || base==255 || (exposed[other][j] && exposureBase[other][j]!=base) || c.collisionAttributes[p*4096+j]!=0 || d.wall || d.heightConflict || !d.planeObserved ||
+				if(owner<0 || base==255 || (!staticRoom && exposed[other][j] && exposureBase[other][j]!=base) || c.collisionAttributes[p*4096+j]!=0 || d.wall || d.heightConflict || (!staticRoom && !d.planeObserved) ||
 					d.floorId!=owner || d.floorBase!=base)continue;
 				int floor=INT_MIN;bool flat=true;
 				for(int k=0;k<8;k++) {
@@ -585,6 +646,14 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	}
 	if(saved){saved->exposed=exposed;saved->exposureBase=exposureBase;saved->sheets=*sheetExposure;saved->room=c.roomIndex;saved->romIdentity=c.romIdentity;saved->valid=true;}
 	} // graph preparation/solve/traversal miss; hits project current occurrences below
+	graphTimer.stop();
+	if(staticRoom && !staticHit) {
+		cache->staticRoomValid=true;cache->staticProfile=profileGeneration;
+		std::copy_n(c.collisionAttributes,8192,cache->staticCollision.begin());
+		std::fprintf(stderr,"STATIC_ROOM rebuild room=%u solve_ms=%.3f\n",unsigned(c.roomIndex),
+			(RemasterLightingTrace::now()-buildStart)*1000.0);
+	}
+	RemasterLightingTrace::Scope publishTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisiblePublish);
 	// Change only the actual scene occurrence selected by the shared policy.
 	// Clone per placement/base; never mutate physical map arrays or stock pixels.
 	// Hashing changes lookup only: insertion/clone IDs still follow the exact
@@ -595,6 +664,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 	// Different occurrences evict safely; no source pointers survive clone growth.
 	for(auto &a:checked)a.fill(0);
 	auto annotate=[&](std::vector<RemasterFramePixel> &raster,bool scene) {
+	RemasterLightingTrace::traffic(RemasterLightingTrace::VisiblePublish,raster.size()*sizeof(RemasterFramePixel),raster.size()*sizeof(uint32_t));
 	for(size_t at=0;at<raster.size();at++) {
 		const auto px=raster[at];if(!px.instanceId || px.instanceId>frame.tileInstances.size() || px.tilePixel>=64)continue;
 		const auto &inst=frame.tileInstances[px.instanceId-1];int bg=inst.sourceIndex;
@@ -632,13 +702,14 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 				if(physical!=INT_MIN && physical!=a.base)physicalConflict=true;physical=a.base;
 			}
 		}
-		const auto &choice=plateau?visible[at]:selected[at];
+		const auto choice=staticRoom?px:plateau?visible[at]:selected[at];
 		const bool selectedScene=scene && choice.instanceId==px.instanceId && choice.tilePixel==px.tilePixel;
 		const bool publish=selectedScene && status==RemasterVisualClaimStatus::Solved && !physicalConflict && inst.heightOffset==physical &&
 			!inst.hasPlacementHeight && !frame.contextGeometry.count(px.instanceId);
 		const int base=publish?solved.base:inst.heightOffset;
 		const RemasterVisibleFaceCloneKey key{px.instanceId,cell,base,publish};auto it=copies.find(key);
 		if(it==copies.end()){
+			RemasterLightingTrace::Scope cloneTimer(RemasterLightingTrace::current(),RemasterLightingTrace::VisibleClone);
 			auto copy=inst;copy.heightOffset=base;copy.visualClaim={status,mask,cell,solved.component,publish};
 			if(plateau && publish) {
 				const auto &m=plateauSources[px.instanceId-1];
@@ -652,6 +723,7 @@ inline void S9xRemasterApplyVisibleDungeonFaces(RemasterFrame &frame,
 			auto location=frame.contextLocations.find(px.instanceId);
 			if(location!=frame.contextLocations.end())frame.contextLocations.emplace(uint32_t(frame.tileInstances.size()+1),location->second);
 			frame.tileInstances.push_back(copy);it=copies.emplace(key,uint32_t(frame.tileInstances.size())).first;
+			RemasterLightingTrace::traffic(RemasterLightingTrace::VisibleClone,sizeof(copy),sizeof(copy));
 		}
 		raster[at].instanceId=it->second;
 	}

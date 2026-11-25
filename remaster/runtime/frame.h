@@ -43,7 +43,7 @@ struct RemasterDungeonStageTimer {
 };
 #endif
 
-static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 43;
+static const uint32_t REMASTER_FRAME_SCHEMA_VERSION = 45;
 
 struct RemasterFramePixel
 {
@@ -163,6 +163,7 @@ struct RemasterVisualClaim
 
 struct RemasterFrameTileInstance
 {
+	uint32_t shiftPlacementId = 0; // private runtime-only stable static-room placement
 	RemasterTileContentId tileId;
 	RemasterSourceType source = RemasterSourceType::Backdrop;
 	uint32_t ruleLine = 0;
@@ -173,7 +174,7 @@ struct RemasterFrameTileInstance
 	uint8_t ppuPriority = 0;
 	int32_t heightOffset = 0; // signed placement datum, added to signed int16 local relief
 	// Saved world-coordinate DATA, never composed height. 0 unsupported/legacy,
-	// 1 absent entry (default zero), 2 explicit entry (including authored zero).
+	// 1 default zero, 2 explicit entry (including authored zero), 3 calculated.
 	int32_t savedPlacementOffset = 0;
 	RemasterTerrainOffset terrainOffset;
 	uint8_t savedPlacementOffsetStatus = 0;
@@ -322,6 +323,10 @@ struct RemasterFrame
 	// mistaken for fully projected lighting/capture geometry. Not serialized;
 	// packets read from disk have the complete-capture contract by default.
 	bool fullGeometry = true;
+	// Private shift-fields prototype: exact producer scroll, never inferred from pixels.
+	bool shiftFieldsValid = false;
+	std::array<int,2> shiftScrollX{}, shiftScrollY{};
+	uint32_t shiftMode = 0;
 	uint32_t schemaVersion = REMASTER_FRAME_SCHEMA_VERSION;
 	uint32_t width = 0;
 	uint32_t height = 0;
@@ -336,6 +341,7 @@ struct RemasterFrame
 	uint8_t heightPreviewMultiplier = 8;
 	uint8_t samplesPerFrame = 1;
 	uint8_t representativeEmitters = 0;
+	RemasterHybridDirectSettings hybridDirect;
 	bool legacySampleAccumulation = true; // v12+ wire evidence only; rendering never reads this.
 	std::vector<uint16_t> originalRgb555;
 	std::vector<RemasterFramePixel> mainPixels;
@@ -767,6 +773,8 @@ inline void S9xRemasterLocateContextTiles(RemasterFrame &frame, const std::array
 	const std::array<int,4> *lineY = nullptr, size_t lineCount = 0)
 {
 	frame.contextLocations.clear();
+    for(const auto *r:{&frame.mainPixels,&frame.subPixels,&frame.scenePixels,&frame.observedBgPixels[0],&frame.observedBgPixels[1],&frame.observedBgPixels[2],&frame.observedBgPixels[3]})
+        RemasterLightingTrace::traffic(RemasterLightingTrace::ContextLocations,r->size()*sizeof(RemasterFramePixel));
 	if (!frame.area.valid()) return;
 	// Instance IDs are dense and invocation-local. Check every observation, but
 	// defer ordered publication until all buffers have had a chance to conflict.
@@ -3951,6 +3959,13 @@ struct RemasterDungeonProjectionCache
 	void invalidate() { for(auto &c:cells)c.reset(); regions.reset(); ++invalidations; }
 };
 
+// Private owner play-test prototype. Never enabled for the overworld.
+inline bool S9xRemasterStaticRoomEnabled()
+{
+	const char *value=std::getenv("S9X_REMASTER_STATIC_ROOM");
+	return !value || std::strcmp(value,"0")!=0;
+}
+
 inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	const RemasterDungeonFloorContext &context, const RemasterDungeonHeightMap &map,
 	const RemasterDungeonHeightMap *sourceRoomMap = nullptr,
@@ -3962,7 +3977,11 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 #endif
 	if (map.roomIndex != context.roomIndex)
 		return;
+	RemasterLightingTrace::Scope inputsTimer(RemasterLightingTrace::current(),RemasterLightingTrace::ApplyInputs);
 	const size_t originalCount = frame.tileInstances.size();
+	RemasterLightingTrace::traffic(RemasterLightingTrace::ApplyInputs,
+		originalCount*sizeof(RemasterFrameTileInstance)+frame.assetMetadata.size()*sizeof(RemasterFrameAssetMetadata)+sizeof(map.offsets),
+		originalCount*(sizeof(int32_t)*2+sizeof(uint8_t))+sizeof(map.offsets));
 	auto currentPlacementMatches=[&](const RemasterFrameTileInstance &instance,size_t cell) {
 		if(context.retainedOutgoingMaps && context.retainedOutgoingRoom==context.roomIndex) {
 			const size_t at=(backgroundIndex?0:8192)+cell*2;
@@ -4005,6 +4024,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 				instanceMetadata[instanceId] = &metadata;
 				break;
 			}
+	inputsTimer.stop();
+	RemasterLightingTrace::Scope legacyTimer(RemasterLightingTrace::current(),RemasterLightingTrace::ApplyLegacy);
 	auto observeWalls = [&] (const std::vector<RemasterFramePixel> &pixels) {
 		if (pixels.size() != static_cast<size_t>(frame.width) * frame.height)
 			return;
@@ -4376,6 +4397,8 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 	// Retain exact per-pixel decisions for this invocation only (including door
 	// masks/source-room ownership), not a camera/animation-sensitive scene cache.
 	using PixelPlacement = RemasterDungeonProjectionCache::Decision;
+	legacyTimer.stop();
+	RemasterLightingTrace::Scope publishTimer(RemasterLightingTrace::current(),RemasterLightingTrace::ApplyPublish);
 	// Invocation-local spatial memo, never retained between frames/events. Ordinary
 	// placement selection depends on instance + room cell, not tilePixel. Door
 	// frame/opening compensation does depend on canonical tilePixel and must stay
@@ -4395,6 +4418,7 @@ inline void S9xRemasterApplyDungeonHeightMap (RemasterFrame &frame,
 		std::map<std::tuple<uint32_t, int32_t, uint8_t, int32_t>, uint32_t> &copies) {
 		if (pixels.size() != static_cast<size_t>(frame.width) * frame.height)
 			return;
+		RemasterLightingTrace::traffic(RemasterLightingTrace::ApplyPublish,pixels.size()*sizeof(RemasterFramePixel),pixels.size()*sizeof(uint32_t));
 		auto &decisions=pixelPlacements[&pixels];
 #ifndef ALTTP_TEST_REFERENCE_PLACEMENT_SELECTION
 		if(!assign && !directProjection)decisions.resize(pixels.size());
@@ -5043,6 +5067,7 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 	frame.heightPreviewMultiplier = profile.heightPreviewMultiplier;
 	frame.samplesPerFrame = profile.samplesPerFrame;
 	frame.representativeEmitters = static_cast<uint8_t>(areaSettings.representativeEmitters);
+	frame.hybridDirect = profile.hybridDirect;
 	frame.offscreenRepresentativeEmitters = areaSettings.offscreenRepresentativeEmitters;
 	frame.legacySampleAccumulation = profile.legacySampleAccumulation;
 
@@ -5091,11 +5116,8 @@ inline void S9xRemasterApplyProfileToFrame (const RemasterProfile &profile, Rema
 		metadata.emissionDepth = source.emissionDepth;
 		metadata.emissionOmnidirectional = source.emissionOmnidirectional;
 		metadata.combineEmitters = source.combineEmitters;
-		metadata.tileRole = source.tileSemanticContextDependent ? RemasterTileRole::Unknown : source.tileRole;
-		// Door authoring is preserved even when contextual use is unresolved. It is
-		// not consumed by placement solving or lighting geometry.
-		if (source.tileRole == RemasterTileRole::Doorway || source.tileRole == RemasterTileRole::Door ||
-			source.tileRole == RemasterTileRole::OutOfBounds) metadata.tileRole = source.tileRole;
+		// Named tile contexts can replace local geometry, not the asset's role.
+		metadata.tileRole = source.tileRole;
 		metadata.doorframeMask = source.doorframeMask;
 		metadata.hasDoorframeMask = source.hasDoorframeMask;
 		metadata.doorwaySupport = source.doorwaySupport;
@@ -5504,6 +5526,7 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 	uint32_t instanceCount = 0;
 	uint32_t lightCount = 0;
 	uint8_t sampleAccumulation = 1;
+	uint8_t hybridEnabled = 0;
 	uint8_t retiredEmitterPatchSize = 1; // v22+ wire slot; no longer affects lighting.
 	if (!input.ReadU32(result.schemaVersion) || result.schemaVersion < 1 ||
 		result.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION ||
@@ -5520,12 +5543,16 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		(result.schemaVersion >= 17 && !input.ReadFloat(result.reflectanceBoost)) ||
 		(result.schemaVersion >= 22 && !input.ReadU8(retiredEmitterPatchSize)) ||
 		(result.schemaVersion >= 23 && !input.ReadU8(result.representativeEmitters)) ||
+		(result.schemaVersion >= 44 && (!input.ReadU8(hybridEnabled) || !input.ReadFloat(result.hybridDirect.cutoff) ||
+			!input.ReadU8(result.hybridDirect.tailSamples))) ||
 		!input.ReadU32(assetCount) ||
 		(result.schemaVersion >= 13 && !input.ReadU32(artworkColorCount)) ||
 		(result.schemaVersion >= 2 && !input.ReadU32(groupCount)) ||
 		(result.schemaVersion >= 3 && !input.ReadU32(metadataCount)) || !input.ReadU32(materialCount) ||
 		!input.ReadU32(instanceCount) || !input.ReadU32(lightCount))
 		return false;
+	result.hybridDirect.enabled = hybridEnabled != 0;
+	if (hybridEnabled > 1 || !S9xRemasterValidHybridDirect(result.hybridDirect)) return false;
 	if (result.representativeEmitters > 8 || retiredEmitterPatchSize < 1 || retiredEmitterPatchSize > 5 || !std::isfinite(result.lightingCoordinateScale) || result.lightingCoordinateScale <= 0.0f)
 		return false;
 	if (result.indirectBounceCount > 16)
@@ -5842,10 +5869,10 @@ inline bool S9xDeserializeRemasterFrame (const std::vector<uint8_t> &bytes, Rema
 		}
 		if(result.schemaVersion>=41) {
 			uint32_t bits;
-			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>2 || !input.ReadU32(bits))return false;
+			if(!input.ReadU8(instance.savedPlacementOffsetStatus) || instance.savedPlacementOffsetStatus>(result.schemaVersion>=45?3:2) || !input.ReadU32(bits))return false;
 			std::memcpy(&instance.savedPlacementOffset,&bits,sizeof(bits));
 			if(instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
-				(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+				(instance.savedPlacementOffsetStatus<2 && instance.savedPlacementOffset!=0))return false;
 		}
 	}
 	result.lights.resize(lightCount);
@@ -6000,7 +6027,8 @@ inline bool S9xReadRemasterFrame (const std::string &path, RemasterFrame &frame)
 
 // ALTTP's outdoor color-zero backdrop is visible ground between transparent
 // foliage pixels. It has no decoded tile to author or select. Keep this a
-// provisional zero-base surface, never authored object/terrain coverage.
+// provisional surface, never authored object/terrain coverage. Lighting can
+// recover a signed placement base separately from same-cell BG2 evidence.
 inline bool S9xRemasterFrameBackdropGroundAt (
 	const RemasterFrame &frame, size_t offset, bool useScene = false)
 {
@@ -6293,7 +6321,7 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	if(!frame.fullGeometry)return false;
 	// v40 emission remains available for frozen compatibility oracles/export.
 	// It cannot claim the new saved-scalar evidence; normal captures use v41.
-	if ((frame.schemaVersion != REMASTER_FRAME_SCHEMA_VERSION && frame.schemaVersion != 40 && frame.schemaVersion != 41 && frame.schemaVersion != 42) ||
+	if ((frame.schemaVersion < 40 || frame.schemaVersion > REMASTER_FRAME_SCHEMA_VERSION) ||
 		frame.width == 0 || frame.height == 0 ||
 		frame.width > UINT32_MAX / frame.height)
 		return false;
@@ -6390,6 +6418,12 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 	RemasterFrameSerialization::U8(bytes, 1); // Retired v22+ patch-size slot, fixed to per-pixel.
 	if (frame.representativeEmitters > 8) return false;
 	RemasterFrameSerialization::U8(bytes, frame.representativeEmitters);
+	if (frame.schemaVersion >= 44) {
+		if (!S9xRemasterValidHybridDirect(frame.hybridDirect)) return false;
+		RemasterFrameSerialization::U8(bytes, frame.hybridDirect.enabled);
+		RemasterFrameSerialization::Float(bytes, frame.hybridDirect.cutoff);
+		RemasterFrameSerialization::U8(bytes, frame.hybridDirect.tailSamples);
+	}
 	if (!RemasterFrameSerialization::Size(bytes, frame.assets.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.artworkColors.size()) ||
 		!RemasterFrameSerialization::Size(bytes, frame.assetGroups.size()) ||
@@ -6563,8 +6597,8 @@ inline bool S9xSerializeRemasterFrame (const RemasterFrame &frame, std::vector<u
 			if(t.hasPixelNormals)for(float n:t.pixelNormals)RemasterFrameSerialization::Float(bytes,n);
 		}
 		if(frame.schemaVersion>=41) {
-		if(instance.savedPlacementOffsetStatus>2 || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
-			(instance.savedPlacementOffsetStatus!=2 && instance.savedPlacementOffset!=0))return false;
+		if(instance.savedPlacementOffsetStatus>(frame.schemaVersion>=45?3:2) || instance.savedPlacementOffset < -32767 || instance.savedPlacementOffset > 32767 ||
+			(instance.savedPlacementOffsetStatus<2 && instance.savedPlacementOffset!=0))return false;
 		RemasterFrameSerialization::U8(bytes,instance.savedPlacementOffsetStatus);
 		RemasterFrameSerialization::U32(bytes,static_cast<uint32_t>(instance.savedPlacementOffset));
 		}

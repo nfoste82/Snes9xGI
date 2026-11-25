@@ -2,8 +2,8 @@
 
 Schema38 adds optional additive per-pixel terrain heights and support-normal
 rotation; see [terrain offsets](overworld_terrain_offsets.md). The scalar remains
-one value per placement. New native saves omit identity zeros; the explicit-zero
-editing/save descriptions below document the older schema37 tooling.
+one value per placement. Explicit authored zeros survive profile saves and override
+calculated heights.
 
 Opt-in profile schema 37. This is an experimental static placement mode, not an
 automatic geometry solver or approval of the castle/world's geometry.
@@ -24,7 +24,10 @@ All five record keys are required. Duplicate coordinates, unknown keys/worlds,
 arrays, out-of-range values and unsupported schema versions fail parsing. Maximum
 1,048,576 entries; 16-bit pixel coordinate domain (tile 0..8191). Background 0/1
 can be stored independently, but only BG2 has a verified USA live world transform.
-No external paths/references. Missing entries are exactly zero in both worlds.
+For enabled profiles, the optional sibling `<profile>.calculated-heights.bin`
+supplies generated BG2 bases for the editor's 512×512 cell grid in each world.
+Authored bases take precedence, then a saved calculated base, then zero. Reload
+the profile to pick up sidecar changes. See the [editor workflow](../../tools/ALttP/README.md).
 No identity guard is implemented: expected words/hashes in proposal JSON are
 diagnostic base-ROM metadata, not runtime rejection checks. Map replacement at a
 saved coordinate continues to use that coordinate's origin.
@@ -73,7 +76,8 @@ zero-based world tile XY, signed saved scalar and explicit-entry/default-zero
 status for the selected occurrence. It does not add a brush or change any asset
 editing/save controls. Native scene controls have no GI-view selector; use View.
 
-Frame schema41 adds a bounded 5-byte saved scalar/status to each occurrence,
+Frame schema41 adds a bounded 5-byte saved scalar/status to each occurrence
+(schema45 adds the calculated source status),
 separate from composed `heightOffset`, with existing coordinate identity in
 `contextLocations`. New recordings retain it through their ordinary embedded
 packet serializer. Frames through40 default to unavailable, even in current-profile
@@ -116,7 +120,7 @@ show a blank **Mixed** field. **−1/+1** increments/decrements each selected
 coordinate's own current scalar; typing a signed integer and **Return/Enter**
 sets all selected coordinates to that value. Bounds −32767…32767 are strict:
 malformed text or one overflowing member rejects the entire transaction. Writing
-zero creates an explicit zero entry; missing entries read as default zero.
+zero creates an explicit zero entry; missing entries use calculated or default zero.
 
 No pixel selection/brush is active in this category. The lower tile preview shows
 the representative tile's authored local height; upper shows that local height
@@ -140,7 +144,7 @@ is disabled or the profile target mismatches, exposing unavailable/purple rather
 than an available zero. Independent non-placement datums remain intact. Verified
 packet coordinate provenance is retained in memory for explicit re-enable; old
 captures never acquire eligibility from coordinates alone. Enabled sparse missing
-entries remain available default zero. Recorded Evidence is never rewritten.
+entries use a calculated base when present or default to zero. Recorded Evidence is never rewritten.
 
 Each batch is one Undo transaction and one runtime publication, updates current
 profile preview immediately without stepping emulation, and marks the loaded

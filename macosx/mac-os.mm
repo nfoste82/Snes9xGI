@@ -774,6 +774,7 @@ static std::string remasterObstacleFocusedGroup;
 static NSPanel			*remasterInspectorPanel;
 static NSPanel			*remasterProfileSettingsPanel;
 static NSTextField		*remasterLoadedProfileLabel;
+static NSButton			*remasterRefreshProfileButton;
 static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
@@ -797,6 +798,9 @@ static NSSlider			*remasterSamplesSlider;
 static NSSlider *remasterRepresentativeSlider;
 static NSTextField *remasterRepresentativeInput;
 static NSButton *remasterRepresentativeEnabled;
+static NSButton *remasterHybridEnabled;
+static NSSlider *remasterHybridCutoffSlider, *remasterHybridTailSlider;
+static NSTextField *remasterHybridCutoffInput, *remasterHybridTailInput;
 static NSSlider *remasterOffscreenRepresentativeSlider, *remasterAreaOffscreenRepresentativeSlider;
 static NSTextField *remasterOffscreenRepresentativeInput, *remasterAreaOffscreenRepresentativeInput;
 static NSButton *remasterOffscreenRepresentativeEnabled;
@@ -4727,7 +4731,9 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)readRemasterNpcLibrary:(NSURL *)url;
 - (void)stopRemasterNpcPlayback;
 - (void)configureRemasterNpcAnimationForPart:(NSUInteger)partIndex;
-- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL;
+- (NSString *)loadRemasterProfile:(NSURL *)fileURL refreshing:(BOOL)refreshing;
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL refreshing:(BOOL)refreshing;
+- (void)refreshRemasterProfileFromFile:(id)sender;
 - (BOOL)hasRemasterDebugLightContext;
 - (void)showRemasterDebugLight;
 - (void)refreshRemasterDebugLightControls;
@@ -5555,6 +5561,12 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	}
 	benchmarkReport[@"connections"] = @(benchmarkSceneSettings.samplesPerFrame);
 	benchmarkReport[@"representative_emitters"] = @(benchmarkSceneSettings.representativeEmitters);
+	benchmarkReport[@"hybrid_direct"] = @(benchmarkSceneSettings.hybridDirect.enabled);
+	benchmarkReport[@"hybrid_direct_cutoff"] = @(benchmarkSceneSettings.hybridDirect.cutoff);
+	benchmarkReport[@"hybrid_direct_tail_samples"] = @(benchmarkSceneSettings.hybridDirect.tailSamples);
+	benchmarkReport[@"hybrid_direct_override"] = @(getenv("S9X_REMASTER_HYBRID_DIRECT") ?: "");
+	benchmarkReport[@"hybrid_direct_cutoff_override"] = @(getenv("S9X_REMASTER_HYBRID_TAU") ?: "");
+	benchmarkReport[@"hybrid_direct_tail_samples_override"] = @(getenv("S9X_REMASTER_HYBRID_TAIL_SAMPLES") ?: "");
 	benchmarkReport[@"offscreen_representative_emitters"] = @(benchmarkSceneSettings.offscreenRepresentativeEmitters);
 	benchmarkReport[@"audio_muted"] = @YES;
 	benchmarkReport[@"warmup_frames"] = @(benchmarkWarmupFrames);
@@ -7858,17 +7870,17 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterOffsetInput.enabled=remasterOffsetMinus.enabled=remasterOffsetPlus.enabled=ok;
 	remasterOffsetClear.enabled=ok;
 	remasterOffsetClear.title=RemasterNormalOffsetCategory()?@"Remove Normal Offsets":@"Remove Height Offsets";
-	remasterOffsetClear.toolTip=RemasterNormalOffsetCategory()?@"Remove uniform and per-pixel normal rotations from all selected coordinates; keep heights.":@"Remove scalar and per-pixel height offsets from all selected coordinates; keep normals and local relief.";
+	remasterOffsetClear.toolTip=RemasterNormalOffsetCategory()?@"Remove uniform and per-pixel normal rotations from all selected coordinates; keep heights.":@"Remove authored scalar and per-pixel height offsets; fall back to calculated bases or zero. Keep normals and local relief.";
 	remasterCopyLayerButton.enabled=ok && targets.count(remasterReplayFrame.contextLocations.count(remasterHeightInstanceId)?remasterReplayFrame.contextLocations.at(remasterHeightInstanceId):RemasterContextLocation{})!=0;
 	remasterPasteLayerButton.enabled=ok && RemasterClipboardAvailable(remasterLayerSelector.indexOfSelectedItem);
 	bool first=true,mixed=false;int value=0;size_t explicitEntries=0;
-	for(const auto &at:targets){auto e=remasterEditingProfile.overworldOffsets.find(at);int v=e==remasterEditingProfile.overworldOffsets.end()?0:e->second;explicitEntries+=e!=remasterEditingProfile.overworldOffsets.end();if(first){value=v;first=false;}else mixed|=value!=v;}
+	for(const auto &at:targets){const auto offset=S9xRemasterResolveOverworldOffset(remasterEditingProfile,at);const int v=offset.value;explicitEntries+=offset.status==2;if(first){value=v;first=false;}else mixed|=value!=v;}
 	remasterOffsetInput.stringValue=ok && !mixed?[NSString stringWithFormat:@"%d",value]:@"";
 	remasterOffsetInput.placeholderString=mixed?@"Mixed":@"Unavailable";
 	remasterOffsetHeightMode.hidden=RemasterNormalOffsetCategory();
 	if(RemasterPixelHeightOffset()) {
 		const unsigned pixel=unsigned(remasterSelectedTilePixel);bool firstPixel=true,pixelMixed=false;float h=0;
-		for(const auto &at:targets){auto t=remasterEditingProfile.overworldTerrain.find(at);auto s=remasterEditingProfile.overworldOffsets.find(at);float v=(s==remasterEditingProfile.overworldOffsets.end()?0:s->second)+(t!=remasterEditingProfile.overworldTerrain.end()&&t->second.hasHeight?t->second.height[pixel]:0);if(firstPixel){h=v;firstPixel=false;}else pixelMixed|=h!=v;}
+		for(const auto &at:targets){auto t=remasterEditingProfile.overworldTerrain.find(at);float v=S9xRemasterResolveOverworldOffset(remasterEditingProfile,at).value+(t!=remasterEditingProfile.overworldTerrain.end()&&t->second.hasHeight?t->second.height[pixel]:0);if(firstPixel){h=v;firstPixel=false;}else pixelMixed|=h!=v;}
 		remasterOffsetInput.enabled=remasterOffsetMinus.enabled=remasterOffsetPlus.enabled=ok&&remasterTilePixelSelected;
 		remasterOffsetInput.stringValue=ok&&remasterTilePixelSelected&&!pixelMixed?[NSString stringWithFormat:@"%.7g",h]:@"";
 		remasterOffsetInput.placeholderString=pixelMixed?@"Mixed":@"Select pixel";
@@ -7887,7 +7899,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		return;
 	}
 	NSString *identity=S9xRemasterSavedPlacementApplicable(remasterReplayFrame,remasterHeightInstanceId)?@(S9xRemasterSavedPlacementDescription(remasterReplayFrame,remasterHeightInstanceId).c_str()):@"Choose a supported representative placement";
-	remasterOffsetStatus.stringValue=ok?[NSString stringWithFormat:@"%lu selected visible BG2 locations (%lu explicit; missing = 0).%@ %@\n%@\nRepresentative only: lower = authored local; upper = local + scalar. Fixed −128…+128; purple missing local height.\nCommand-click adds/removes %@. −1/+1 each independently; Return/Enter sets all. Save Profile persists loaded copy; no autosave.",targets.size(),explicitEntries,mixed?@" Mixed values.":@"",remasterOffsetLocations?@"Exact locations.":[NSString stringWithFormat:@"%lu tile types; current scene only.",remasterOffsetTypes.size()],identity,remasterOffsetLocations?@"locations":@"types"]:@(error.c_str());
+	remasterOffsetStatus.stringValue=ok?[NSString stringWithFormat:@"%lu selected visible BG2 locations (%lu authored; otherwise calculated or zero).%@ %@\n%@\nRepresentative only: lower = authored local; upper = local + scalar. Fixed −128…+128; purple missing local height.\nCommand-click adds/removes %@. −1/+1 each independently; Return/Enter sets all. Save Profile persists loaded copy; no autosave.",targets.size(),explicitEntries,mixed?@" Mixed values.":@"",remasterOffsetLocations?@"Exact locations.":[NSString stringWithFormat:@"%lu tile types; current scene only.",remasterOffsetTypes.size()],identity,remasterOffsetLocations?@"locations":@"types"]:@(error.c_str());
 }
 
 - (void)editRemasterPlacementOffset:(id)sender
@@ -8285,7 +8297,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	std::string before,current,error;std::vector<RemasterProfileDiagnostic>d;
 	if(!S9xRemasterSerializeProfile(remasterEditingProfile,before,d))return;
 	const RemasterPlacementLayer layer=clear?RemasterPlacementLayer{}:remasterClipboardPlacementLayer;
-	if(!S9xRemasterPastePlacementLayer(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,layer,RemasterNormalOffsetCategory(),error)){remasterOffsetStatus.stringValue=@(error.c_str());NSBeep();return;}
+	if(!S9xRemasterPastePlacementLayer(remasterEditingProfile,remasterReplayFrame,remasterOffsetSelection,layer,RemasterNormalOffsetCategory(),error,clear)){remasterOffsetStatus.stringValue=@(error.c_str());NSBeep();return;}
 	if(!S9xRemasterSerializeProfile(remasterEditingProfile,current,d) || current==before)return;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:) object:@(before.c_str())];
 	[remasterUndoManager setActionName:clear?@"Remove Placement Offsets":@"Paste Placement Offset Layer"];
@@ -10061,6 +10073,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)controlTextDidChange:(NSNotification *)notification
 {
 	if (notification.object == remasterOffscreenRepresentativeInput) { [self changeRemasterOffscreenRepresentativeEmitters:notification.object]; return; }
+	if (notification.object == remasterHybridCutoffInput || notification.object == remasterHybridTailInput) { [self changeRemasterHybridDirect:notification.object]; return; }
 	if (notification.object == remasterAreaOriginalInput || notification.object == remasterAreaRepresentativeInput || notification.object == remasterAreaOffscreenRepresentativeInput || notification.object == remasterAreaReflectanceInput ||
 		notification.object == remasterAreaBrightness || notification.object == remasterAreaDirection[0] ||
 		notification.object == remasterAreaDirection[1] || notification.object == remasterAreaDirection[2])
@@ -10603,16 +10616,17 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	NSData *diskBytes = [NSData dataWithContentsOfURL:remasterEditingProfileURL];
 	const bool rebasing = ![diskBytes isEqualToData:remasterProfileDiskSnapshot] || !remasterPendingProfileConflicts.empty();
 	RemasterProfileMergeResult merged;
+	RemasterProfileMergePlan mergePlan;
+	std::string savedText;
 	bool ready = false, keepPending = false;
 	if (!diskBytes || !remasterProfileDiskSnapshot)
 		diagnostics = {{0, "Unable to read the current profile or its loaded baseline. Reload the profile before saving."}};
 	else
 	{
-		RemasterProfile base, disk;
 		const std::string baseText(static_cast<const char *>(remasterProfileDiskSnapshot.bytes), remasterProfileDiskSnapshot.length);
 		const std::string diskText(static_cast<const char *>(diskBytes.bytes), diskBytes.length);
-		ready = S9xRemasterParseProfile(baseText, base, diagnostics) && S9xRemasterParseProfile(diskText, disk, diagnostics) &&
-			S9xRemasterMergeProfiles(base, remasterEditingProfile, disk, remasterPendingProfileConflicts, false, merged, diagnostics, true);
+		ready = S9xRemasterPrepareProfileSave(baseText, diskText, remasterEditingProfile,
+			remasterPendingProfileConflicts, false, merged, savedText, diagnostics, &mergePlan);
 		if (ready && !merged.conflicts.empty())
 		{
 			std::ostringstream details;
@@ -10634,11 +10648,10 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 			if (choice == NSAlertThirdButtonReturn) return NO;
 			keepPending = choice == NSAlertSecondButtonReturn;
 		}
-		if (ready)
-			ready = S9xRemasterMergeProfiles(base, remasterEditingProfile, disk, remasterPendingProfileConflicts, !keepPending, merged, diagnostics);
+		if (ready && rebasing)
+			ready = S9xRemasterFinishProfileMerge(mergePlan, !keepPending, merged, diagnostics) &&
+				S9xRemasterSerializeProfile(merged.saved, savedText, diagnostics, false);
 	}
-	std::string savedText;
-	if (ready) ready = S9xRemasterSerializeProfile(merged.saved, savedText, diagnostics);
 	// A dialog may stay open while another writer changes the file. Never use
 	// its old disk version after that happens; the next Save recomputes the merge.
 	if (ready && ![diskBytes isEqualToData:[NSData dataWithContentsOfURL:remasterEditingProfileURL]])
@@ -10646,9 +10659,10 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		ready = false;
 		diagnostics = {{0, "The profile changed again while saving. Your session edits are intact; click Save Profile again to merge the latest version."}};
 	}
-	if (ready && S9xRemasterWriteProfile(merged.saved, remasterEditingProfileURL.path.UTF8String, diagnostics))
+	if (ready && S9xRemasterWriteValidatedProfileText(savedText, remasterEditingProfileURL.path.UTF8String, diagnostics))
 	{
 		remasterProfileDiskSnapshot = [NSData dataWithBytes:savedText.data() length:savedText.size()];
+		merged.saved.calculatedOverworldHeights = merged.session.calculatedOverworldHeights = remasterEditingProfile.calculatedOverworldHeights;
 		remasterEditingProfile = std::move(merged.session);
 		remasterPendingProfileConflicts = keepPending ? merged.conflicts : std::set<std::string>{};
 		RegisterRemasterSemanticProfile();
@@ -10657,9 +10671,20 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterSavedAreaLights = merged.saved.areaLights;
 		remasterSavedAreaSceneSettings = merged.saved.areaSceneSettings;
 		RemasterRecording::Global().Revision(merged.saved);
-		std::string currentText;
-		S9xRemasterSerializeProfile(remasterEditingProfile, currentText, diagnostics, false);
-		UpdateRemasterEditingProfileDirty(currentText);
+		if (keepPending && !merged.conflicts.empty())
+		{
+			std::string currentText;
+			S9xRemasterSerializeProfile(remasterEditingProfile, currentText, diagnostics, false);
+			UpdateRemasterEditingProfileDirty(currentText);
+		}
+		else
+		{
+			// Saved and session data are identical; do not round-trip the entire
+			// profile again just to rediscover that the session is clean.
+			remasterMetadataNeedsSync = true;
+			[remasterNpcPoseView setNeedsDisplay:YES];
+			remasterNonSceneDirty = remasterEditingProfileDirty = false;
+		}
 		remasterEditingProfileDirty |= !remasterPendingProfileConflicts.empty();
 		remasterAreaNeedsRefresh = true;
 		[self refreshRemasterAreaSettings];
@@ -10699,6 +10724,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		return;
 	[remasterUndoManager registerUndoWithTarget:self selector:@selector(restoreRemasterProfileFromText:)
 		object:[NSString stringWithUTF8String:current.c_str()]];
+	restored.calculatedOverworldHeights = remasterEditingProfile.calculatedOverworldHeights;
 	remasterEditingProfile = std::move(restored);
 	UpdateRemasterEditingProfileDirty(std::string(text.UTF8String));
 	remasterAreaNeedsRefresh = true;
@@ -10766,6 +10792,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (!S9xRemasterParseProfile(remasterSavedProfileText, restored, diagnostics))
 		return NO;
+	restored.calculatedOverworldHeights = remasterEditingProfile.calculatedOverworldHeights;
 	remasterEditingProfile = std::move(restored);
 	remasterNonSceneDirty = false;
 	remasterPendingProfileConflicts.clear();
@@ -10778,6 +10805,21 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (NSUndoManager *)windowWillReturnUndoManager:(NSWindow *)window
 {
 	return window == remasterInspectorPanel || window == remasterProfileSettingsPanel || window == remasterAreaPanel ? remasterUndoManager : nil;
+}
+
+- (void)refreshRemasterProfileFromFile:(id)sender
+{
+	NSURL *fileURL = remasterEditingProfileURL;
+	if (!remasterEditingProfileLoaded || !fileURL.isFileURL ||
+		![remasterProfileSettingsPanel makeFirstResponder:nil]) return;
+	NSString *error = [self loadRemasterProfile:fileURL refreshing:YES];
+	if (error.length)
+	{
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Unable to Refresh Remaster Profile";
+		alert.informativeText = error;
+		[alert runModal];
+	}
 }
 
 - (void)showRemasterProfileSettings
@@ -11073,13 +11115,20 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterLinkLampBrightnessInput.target = self;
 		remasterLinkLampBrightnessInput.action = @selector(changeRemasterLinkLampBrightness:);
 		[content addSubview:remasterLinkLampBrightnessInput];
-		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1116, 390, 24)];
+		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1116, 244, 24)];
 		remasterLoadedProfileLabel.editable = NO;
 		remasterLoadedProfileLabel.selectable = YES;
 		remasterLoadedProfileLabel.bezeled = NO;
 		remasterLoadedProfileLabel.drawsBackground = NO;
 		remasterLoadedProfileLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 		[content addSubview:remasterLoadedProfileLabel];
+		remasterRefreshProfileButton = [[NSButton alloc] initWithFrame:NSMakeRect(269, 1116, 141, 30)];
+		remasterRefreshProfileButton.title = @"Refresh From File";
+		remasterRefreshProfileButton.bezelStyle = NSBezelStyleRounded;
+		remasterRefreshProfileButton.target = self;
+		remasterRefreshProfileButton.action = @selector(refreshRemasterProfileFromFile:);
+		remasterRefreshProfileButton.toolTip = @"Reload the current profile from disk to pick up changes made in another editor.";
+		[content addSubview:remasterRefreshProfileButton];
 		// Insert hidden-source quality directly below visible representatives.
 		[content setFrameSize:NSMakeSize(430, 1278)];
 		for (NSView *view in [content.subviews copy]) if (view.frame.origin.y >= 602) {
@@ -11102,6 +11151,41 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterOffscreenRepresentativeInput.delegate = self;
 		remasterOffscreenRepresentativeInput.target = self; remasterOffscreenRepresentativeInput.action = @selector(changeRemasterOffscreenRepresentativeEmitters:);
 		[content addSubview:remasterOffscreenRepresentativeInput];
+		// Add the opt-in Direct estimator below the source-quality controls.
+		for (NSView *view in [content.subviews copy]) if (view.frame.origin.y >= 602) {
+			NSRect rect = view.frame; rect.origin.y += 170; view.frame = rect;
+		}
+		[content setFrameSize:NSMakeSize(430, 1448)];
+		remasterHybridEnabled = [[NSButton alloc] initWithFrame:NSMakeRect(20, 758, 390, 24)];
+		remasterHybridEnabled.buttonType = NSButtonTypeSwitch;
+		remasterHybridEnabled.title = @"Hybrid Direct (off = exact)";
+		remasterHybridEnabled.toolTip = @"Trace strong lights exactly and sample weaker lights. Stable sampling may still change shadows; no temporal denoising.";
+		remasterHybridEnabled.target = self; remasterHybridEnabled.action = @selector(changeRemasterHybridDirect:);
+		[content addSubview:remasterHybridEnabled];
+		NSTextField *cutoffTitle = [NSTextField labelWithString:@"Exact cutoff (% of receiver’s unoccluded weight)"];
+		cutoffTitle.frame = NSMakeRect(20, 728, 390, 24); [content addSubview:cutoffTitle];
+		remasterHybridCutoffSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 700, 300, 24)];
+		remasterHybridCutoffSlider.minValue = 0.5; remasterHybridCutoffSlider.maxValue = 10;
+		remasterHybridCutoffSlider.numberOfTickMarks = 20; remasterHybridCutoffSlider.allowsTickMarkValuesOnly = YES;
+		remasterHybridCutoffSlider.continuous = NO;
+		remasterHybridCutoffSlider.target = self; remasterHybridCutoffSlider.action = @selector(changeRemasterHybridDirect:);
+		[content addSubview:remasterHybridCutoffSlider];
+		remasterHybridCutoffInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 700, 60, 24)];
+		remasterHybridCutoffInput.delegate = self;
+		remasterHybridCutoffInput.target = self; remasterHybridCutoffInput.action = @selector(changeRemasterHybridDirect:);
+		[content addSubview:remasterHybridCutoffInput];
+		NSTextField *tailTitle = [NSTextField labelWithString:@"Rays for weaker lights (1–32)"];
+		tailTitle.frame = NSMakeRect(20, 668, 390, 24); [content addSubview:tailTitle];
+		remasterHybridTailSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, 640, 300, 24)];
+		remasterHybridTailSlider.minValue = 1; remasterHybridTailSlider.maxValue = 32;
+		remasterHybridTailSlider.numberOfTickMarks = 32; remasterHybridTailSlider.allowsTickMarkValuesOnly = YES;
+		remasterHybridTailSlider.continuous = NO;
+		remasterHybridTailSlider.target = self; remasterHybridTailSlider.action = @selector(changeRemasterHybridDirect:);
+		[content addSubview:remasterHybridTailSlider];
+		remasterHybridTailInput = [[NSTextField alloc] initWithFrame:NSMakeRect(335, 640, 60, 24)];
+		remasterHybridTailInput.delegate = self;
+		remasterHybridTailInput.target = self; remasterHybridTailInput.action = @selector(changeRemasterHybridDirect:);
+		[content addSubview:remasterHybridTailInput];
 		S9xProfileControlsInstallScrollView(remasterProfileSettingsPanel, content);
 		// Saved sizes describe a viewport, never the document height. The panel's
 		// setFrame override clamps even obsolete/offscreen workspace placements.
@@ -11114,6 +11198,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterLoadedProfileLabel.stringValue = [@"Profile: " stringByAppendingString:
 		remasterEditingProfileURL.lastPathComponent ?: @"(unknown)"];
 	remasterLoadedProfileLabel.toolTip = remasterEditingProfileURL.path;
+	remasterRefreshProfileButton.enabled = remasterEditingProfileURL.isFileURL;
 	remasterBounceSlider.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.lightingCoordinateScale];
@@ -11789,6 +11874,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (void)refreshRemasterRepresentativeControls
 {
+	[self refreshRemasterHybridControls];
 	[self refreshRemasterOffscreenRepresentativeControls];
 	const uint8_t count = remasterEditingProfile.representativeEmitters;
 	remasterRepresentativeEnabled.state = count ? NSControlStateValueOn : NSControlStateValueOff;
@@ -11809,6 +11895,43 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	if (count == before.representativeEmitters) return;
 	remasterEditingProfile.schemaVersion = std::max<uint32_t>(16, remasterEditingProfile.schemaVersion);
 	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Representative Emitters"];
+}
+
+- (void)refreshRemasterHybridControls
+{
+	const auto &settings = remasterEditingProfile.hybridDirect;
+	remasterHybridEnabled.state = settings.enabled ? NSControlStateValueOn : NSControlStateValueOff;
+	remasterHybridCutoffSlider.doubleValue = settings.cutoff * 100.0;
+	remasterHybridCutoffInput.stringValue = [NSString stringWithFormat:@"%.3g",settings.cutoff * 100.0];
+	remasterHybridTailSlider.integerValue = remasterHybridTailInput.integerValue = settings.tailSamples;
+	remasterHybridCutoffSlider.enabled = remasterHybridCutoffInput.enabled = settings.enabled;
+	remasterHybridTailSlider.enabled = remasterHybridTailInput.enabled = settings.enabled;
+}
+
+- (void)changeRemasterHybridDirect:(id)sender
+{
+	if (!remasterEditingProfileLoaded) return;
+	const auto before = S9xRemasterGetSceneSettings(remasterEditingProfile);
+	auto settings = before.hybridDirect;
+	settings.enabled = remasterHybridEnabled.state == NSControlStateValueOn;
+	if (sender == remasterHybridEnabled && settings.enabled && !before.hybridDirect.enabled && before.schemaVersion < 41)
+		settings = RemasterHybridDirectSettings{true,0.02f,8};
+	else {
+		if (sender == remasterHybridCutoffSlider) remasterHybridCutoffInput.doubleValue = remasterHybridCutoffSlider.doubleValue;
+		if (sender == remasterHybridTailSlider) remasterHybridTailInput.integerValue = remasterHybridTailSlider.integerValue;
+		float percent = 0; uint32_t rays = 0;
+		if (!RemasterProfileParsing::ParseFloat(remasterHybridCutoffInput.stringValue.UTF8String,percent) ||
+			!RemasterProfileParsing::ParseUnsigned(remasterHybridTailInput.stringValue.UTF8String,rays) ||
+			!std::isfinite(percent) || percent < 0.5f || percent > 10 || rays < 1 || rays > 32) {
+			NSBeep(); [self refreshRemasterHybridControls]; return;
+		}
+		settings.cutoff = percent / 100.0f; settings.tailSamples = uint8_t(rays);
+	}
+	if (settings == before.hybridDirect) return;
+	remasterEditingProfile.hybridDirect = settings;
+	remasterEditingProfile.schemaVersion = std::max<uint32_t>(41,remasterEditingProfile.schemaVersion);
+	[self refreshRemasterHybridControls];
+	[self finishRemasterSceneSettingsChangeFrom:[NSData dataWithBytes:&before length:sizeof(before)] actionName:@"Change Hybrid Direct"];
 }
 
 - (void)refreshRemasterOffscreenRepresentativeControls
@@ -11940,9 +12063,14 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL
 {
+	return [self loadRemasterProfile:fileURL refreshing:NO];
+}
+
+- (NSString *)loadRemasterProfile:(NSURL *)fileURL refreshing:(BOOL)refreshing
+{
 	try
 	{
-		return [self loadRemasterProfileChecked:fileURL];
+		return [self loadRemasterProfileChecked:fileURL refreshing:refreshing];
 	}
 	catch (const std::bad_alloc &)
 	{
@@ -11954,12 +12082,15 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	}
 }
 
-- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL refreshing:(BOOL)refreshing
 {
 	// Saving can replace fileURL itself. Resolve pending edits before reading so
 	// reloading the current file cannot activate a pre-save snapshot.
-	if (remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
+	if (!refreshing && remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
 		return @"";
+	NSData *diskSnapshot = refreshing ? [NSData dataWithContentsOfURL:fileURL] : nil;
+	if (refreshing && !diskSnapshot)
+		return @"The profile could not be read. The current profile was not replaced.";
 	RemasterProfile profile;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (!S9xRemasterLoadProfile(fileURL.path.UTF8String, profile, diagnostics))
@@ -12031,10 +12162,24 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	std::string savedProfileText;
 	if (!S9xRemasterSerializeProfile(profile, savedProfileText, diagnostics, false))
 		return @"The remaster profile contains metadata that cannot be saved. Correct its asset metadata and try again.";
+	if (refreshing && remasterEditingProfileDirty)
+	{
+		// Do not invoke the ordinary discard helper: it mutates the editor
+		// immediately, and saving here could overwrite the external changes.
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Reload the remaster profile from disk?";
+		alert.informativeText = @"Refreshing will replace your unsaved Snes9x profile edits with the contents of the file.";
+		[alert addButtonWithTitle:@"Cancel"];
+		[alert addButtonWithTitle:@"Discard Edits and Refresh"];
+		if ([alert runModal] != NSAlertSecondButtonReturn) return @"";
+	}
+	NSData *currentDiskBytes = [NSData dataWithContentsOfURL:fileURL];
+	if (refreshing && ![diskSnapshot isEqualToData:currentDiskBytes])
+		return @"The profile changed on disk during refresh. Try refreshing again.";
 
 	remasterEditingProfile = std::move(profile);
 	remasterEditingProfileURL = fileURL;
-	remasterProfileDiskSnapshot = [NSData dataWithContentsOfURL:fileURL];
+	remasterProfileDiskSnapshot = currentDiskBytes;
 	remasterPendingProfileConflicts.clear();
 	remasterEditingProfileLoaded = true;
 	remasterMetadataNeedsSync = true;
@@ -12080,6 +12225,9 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		[NSString stringWithFormat:@"Profile Controls — Geometry Review (%lu rooms)",
 			static_cast<unsigned long>(reviewMapCount)] : @"Profile Controls";
 	if (remasterNpcPanel.visible) [self changeRemasterNpcPose:nil];
+	if (refreshing && running && pauseEmulation && !remasterFramePresenting && !remasterNpcInspectorActive)
+		remasterDebugLightRedraw.store(0x80000000u | (remasterLightingEnabled ? 0x40000000u : 0) |
+			(static_cast<uint32_t>(S9xRemasterGetDebugMode()) << 16) | (static_cast<uint32_t>(remasterLightingView) + 1));
 	return nil;
 }
 

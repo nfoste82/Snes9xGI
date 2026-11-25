@@ -29,7 +29,7 @@ inline void classify(Sample &sample, RemasterSourceType source, unsigned sourceI
 	sample.solidWall = !object && wall;
 	// OAM slots are frame-local identities; never weld unrelated sprites or BG.
 	sample.domain = plateau ? (uint64_t(4) << 48) | instanceId : object ? (uint64_t(1) << 48) | (uint64_t(sourceIndex) + 1) :
-		wall ? 2 : floor ? 1 : surfaceClass == RemasterSurfaceClass::Unclassified ? 10 + sourceIndex :
+		wall ? WallDomain : floor ? FloorDomain : surfaceClass == RemasterSurfaceClass::Unclassified ? 10 + sourceIndex :
 		(uint64_t(2) << 48) | instanceId;
 }
 }

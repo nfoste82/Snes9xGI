@@ -23,6 +23,8 @@ KINDS = {'many_lights', 'movable', 'movement', 'transition', 'stairs_round_trip'
          'stairs_traversal', 'indoor_scroll', 'overworld_exit'}
 IDENTITY = ('gpu', 'os', 'rom_file_sha256', 'state_sha256', 'profile_sha256',
             'presentation', 'representative_emitters', 'offscreen_representative_emitters',
+            'hybrid_direct', 'hybrid_direct_cutoff', 'hybrid_direct_tail_samples',
+            'hybrid_direct_override', 'hybrid_direct_cutoff_override', 'hybrid_direct_tail_samples_override',
             'connections', 'measurement_frames', 'warmup_frames', 'route',
             'window_width', 'window_height', 'stage_counters_disabled',
             'lighting_coordinate_scale', 'reflectance_boost', 'original_scene_contribution',

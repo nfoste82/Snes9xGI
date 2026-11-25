@@ -972,6 +972,18 @@ void S9xEndScreenRefresh (void)
 				dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors ? worldLineX.data() : nullptr,
 				dungeonFloor.verifiedAlttpRom && !dungeonFloor.indoors ? worldLineY.data() : nullptr,
 				std::min<unsigned>(240,IPPU.RenderedScreenHeight));
+			{
+				auto &f=S9xRemasterState().completedFrame;
+				f.shiftFieldsValid=dungeonFloor.verifiedAlttpRom && dungeonFloor.indoors && dungeonFloor.module==7 &&
+					!dungeonFloor.submodule && PPU.BGMode==1 && !IPPU.PseudoHires && !IPPU.Interlace;
+				f.shiftMode=PPU.BGMode;
+				for(unsigned bg=0;bg<2;++bg) {
+					f.shiftScrollX[bg]=LineData[0].BG[bg].HOffset;
+					f.shiftScrollY[bg]=LineData[0].BG[bg].VOffset;
+					for(unsigned y=1;y<IPPU.RenderedScreenHeight && y<240;++y)
+						if(LineData[y].BG[bg].HOffset!=f.shiftScrollX[bg] || LineData[y].BG[bg].VOffset!=f.shiftScrollY[bg]) f.shiftFieldsValid=false;
+				}
+			}
 			if (IPPU.ColorsChanged)
 			{
 				uint32 saved = PPU.CGDATA[0];

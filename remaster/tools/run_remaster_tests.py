@@ -40,6 +40,10 @@ QUICK = (
     ("paused_obstacle", "EndFrame paused handoff, retained support, effective pixels and exact bulk Z refresh"),
 )
 FULL_EXTRA = (
+    ("profile_save", "Validated unchanged-disk fast save, external merges and retained conflict retry"),
+    ("profile_water", "Floor water flag profile preservation, default and role validation"),
+    ("lighting_parallel", "Eight-worker disjoint field update versus frozen serial oracle, emission-only and sparse dirty states"),
+    ("hybrid_direct_settings", "Opt-in hybrid profile/frame roundtrip, old defaults, strict ranges and scene-settings undo"),
     ("retired_sample_accumulation", "Retired profile key and strict byte-preserving capture compatibility"),
     ("retired_emitter_patch", "Retired profile key/wire slot and hidden-source power compatibility"),
     ("capture_path", "Portable unique capture names, sidecar collision and no overwrite"),
@@ -55,6 +59,8 @@ FULL_EXTRA = (
 	("placement_offset_debug", "Saved scalar-only signed view, default/unsupported isolation and frame transport"),
 	("overworld_offsets", "Strict scalar schema, independent world lookup, native save merge and production EndFrame"),
 	("surface_mesh", "Independent ramp, domain, silhouette and incremental/full mesh geometry oracles"),
+	("backdrop_ground", "ALTTP transparent ground with exact signed BG2 cell datum, cache invalidation and same-level welding"),
+	("scalar_floor_ramp", "Tile-wide floor/wall datum interpolation, preserved wall relief and hard ledges, cached mesh parity"),
 	("surface_mesh_build_work", "Exact connected vertex welding and bounded generic root searches; frozen differential optional"),
 	("held_lamp_hud_lookup", "Shared production indexed HUD and scene-color parity, first-match duplicates and malformed owners"),
 	("dungeon_emitter_compartment", "Validated full/half/quarter source membership, fail-open legacy evidence and production EndFrame intra-room continuity"),
@@ -212,7 +218,14 @@ def test_specs(args):
         specs.append(dict(name="metal_lighting", source="macosx/remaster-lighting-test.mm",
                           description="Production shaders, synthetic GPU transport/visibility comparisons",
                           flags=["-fobjc-arc", "-framework", "Foundation", "-framework", "Metal"],
-                          arguments=[], kind="metal"))
+                           arguments=[], kind="metal"))
+        specs.append(dict(name="metal_per_ray_visibility", source="remaster/tests/per_ray_visibility_metal_test.mm",
+                          description="Shared queue-ordered exact visibility cache, cap, kill switch and lifecycle resets",
+                          flags=["-O2", "-fobjc-arc", "-D__MACOSX__", "-DHAVE_STDINT_H", "-I.", "-Imacosx",
+                                 "-Iapu", "-Ifilter", "-Iapu/bapu", "-Imacosx/snes9x framework",
+                                 "-ffunction-sections", "-fdata-sections", "-Wl,-dead_strip",
+                                 "-framework", "Cocoa", "-framework", "Metal", "-framework", "MetalKit",
+                                 "-framework", "QuartzCore", "-framework", "Carbon"], arguments=[], kind="metal"))
     return specs
 
 
@@ -228,8 +241,9 @@ def source_snapshot(spec):
     if spec["arguments"]:
         paths.add(ROOT / PROFILE)
     if spec["kind"] == "metal":
-        if spec["name"] in ("metal_lighting_slots", "metal_placement_offset_renderer", "metal_direct_reuse"):
+        if spec["name"] in ("metal_lighting_slots", "metal_placement_offset_renderer", "metal_direct_reuse", "metal_per_ray_visibility"):
             paths.add(ROOT / "macosx/mac-render.mm")
+            paths.add(ROOT / "macosx/remaster-per-ray-cache.h")
             paths.add(ROOT / "remaster/tools/lighting_critical_path_probe.mm")
         paths.add(ROOT / "macosx/shaders.metal")
         paths.add(ROOT / "macosx/remaster-debug-pixels-test.h")
