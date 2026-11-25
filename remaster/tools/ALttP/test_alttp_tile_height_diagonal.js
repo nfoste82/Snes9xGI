@@ -173,19 +173,32 @@ for(const axis of ['north','east'])for(const facing of [[1,1],[1,-1],[-1,1],[-1,
 }
 // User's 1/2/1 cardinal wall produces identical placement heights from either
 // end, in all orientations and after placement flips.
-for(const normal of ['north','south','east','west'])for(const flips of [0,1,2,3]) {
+for(const normal of ['north','south','east','west'])for(const flips of [0,1,2,3])for(const world of ['light','dark']) {
     const horizontal=['east','west'].includes(normal),w=horizontal?5:1,h=horizontal?1:5;
     const grid=new ArrayBuffer(w*h*8),view=new DataView(grid);
     const tiles=[{annotation:{role:'floor'},weight:1},...[1,2,1].map(weight=>({annotation:{role:'wall',normals:[normal]},weight}))];
     for(let i=1;i<=3;i++){view.setUint32(i*8,i,true);view.setUint8(i*8+7,flips);}
     const positive=horizontal ? (normal==='west')!==(!!(flips&1)) : (normal==='north')!==(!!(flips&2));
     const low=positive?0:4,high=4-low;
-    function calc(index,height){return calculateHeights({world:'light',mode:'manual',bounds:{x0:0,y0:0,width:w,height:h},grid,tiles,
-        reference:{world:'light',x:horizontal?index:0,y:horizontal?0:index,height}});}
-    const up=calc(low,0),down=calc(high,4);
-    assert.deepEqual([...up.heights],positive?[0,1,3,4,4]:[4,4,3,1,0]);
+    const scale=2;
+    function calc(index,height){return calculateHeights({world,mode:'manual',bounds:{x0:0,y0:0,width:w,height:h},grid,tiles,
+        reference:{world,x:horizontal?index:0,y:horizontal?0:index,height}});}
+    const up=calc(low,-7),down=calc(high,-7+4*scale);
+    const expected=[0,1,3,4,4].map(delta=>-7+delta*scale);
+    assert.deepEqual([...up.heights],positive?expected:expected.reverse());
     assert.deepEqual(down.heights,up.heights);
     assert.equal(up.conflicts.some(Boolean),false);assert.equal(down.conflicts.some(Boolean),false);
+}
+// When a path reaches authored ground, use the saved height verbatim and
+// continue from it with new-scale deltas. Explicit zero overrides count too.
+for (const authored of [0, -16]) {
+    const grid = new ArrayBuffer(5*8), view = new DataView(grid);
+    view.setUint32(8, 1, true); view.setUint32(24, 2, true);
+    const result = calculateHeights({world:'light',mode:'manual',bounds:{x0:40,y0:230,width:5,height:1},grid,
+        tiles:[{annotation:{role:'floor'}}, {annotation:{role:'wall',normals:['west']}},
+            {annotation:{role:'wall',normals:['east']},weight:4}],
+        reference:{world:'light',x:40,y:230,height:3},authoredHeights:[{x:42,y:230,height:authored}]});
+    assert.deepEqual([...result.heights],[3,19,authored,authored,authored-8]);
 }
 function run(w,h,ref,placements=[],world='light') {
     const grid=new ArrayBuffer(w*h*8), view=new DataView(grid);
@@ -301,7 +314,7 @@ for(const [nw,sw] of [[[1,1],[1,-1]],[[-1,-1],[-1,1]]]) {
 // have no horizontal contribution. Placement flips still transform facing.
 for(const [normal,rise] of [['east',1],['west',-1],['north',0],['south',0]]) {
     for(const flips of [0,1]) {
-        const expected=rise===0 ? 0 : rise*.5*(flips ? -1 : 1);
+        const expected=rise===0 ? 0 : rise*(flips ? -1 : 1);
         const west=run(3,1,[2,0],[[1,0,normal,.5,flips]]);
         const east=run(3,1,[0,0],[[1,0,normal,.5,flips]]);
         assert.equal(west.heights[1],Math.max(0,expected));
@@ -313,7 +326,7 @@ for(const [normal,rise] of [['east',1],['west',-1],['north',0],['south',0]]) {
 // Local (17,472) shape: westward and northward arrivals from zero floor now
 // agree at the weight-.5 SE wall; no perpendicular turn at that wall.
 const corner=run(3,3,[2,2],[[1,1,'south_east',.5]]);
-assert.equal(corner.heights[4],.5);
+assert.equal(corner.heights[4],1);
 assert.equal(corner.conflicts[4],0);
 assert(corner.acceptedArrivals[4]&4); // From E.
 // Earlier diagonal assignment can now suppress the optional perpendicular
@@ -346,28 +359,28 @@ for(const normal of ['north_east','north_west','south_east','south_west']) {
     for(const flips of [0,1,2,3])for(const sign of [1,-1]) {
         const facing=crossingFacing({role:'wall',normals:[normal]},flips);
         const r=run(3,3,[1,sign>0?2:0],[[1,1,normal,.5,flips]]);
-        assert.equal(r.heights[4],Math.max(0,sign*facing[1]*.5));
+        assert.equal(r.heights[4],Math.max(0,sign*facing[1]));
     }
 }
-// Cardinal faces apply the authored weight once (including explicitly doubled
-// saved weights), in both directions and after vertical placement flips.
+// Cardinal faces apply the scaled saved weight once in either direction,
+// including after vertical placement flips.
 // Neither direction charges the wall a second time when leaving it.
 for(const [normal,northDelta] of [['north',-1],['south',1],['east',0],['west',0]]) {
     for(const sign of [1,-1])for(const weight of [.5,1,2])for(const flips of [0,2]) {
         const r=run(1,3,[0,sign>0?2:0],[[0,1,normal,weight,flips]]);
-        const expected=northDelta===0?0:sign*northDelta*weight*(flips ? -1 : 1);
+        const expected=northDelta===0?0:sign*northDelta*weight*2*(flips ? -1 : 1);
         assert.equal(r.heights[1],Math.max(0,expected));
         assert.equal(r.heights[sign>0?0:2],expected);
     }
 }
 // (47,502) local shape: flipped NE (=NW) wall agrees for incoming NW/W/N.
 const southCorner=run(3,3,[0,0],[[1,1,'north_east',1,1]]);
-assert.equal(southCorner.heights[4],1);
+assert.equal(southCorner.heights[4],2);
 assert.equal(southCorner.conflicts[4],0);
 // Adjacent cardinal north wall is still reachable from floor, but direct entry
 // from the diagonal corner is now intentionally blocked.
 const cardinalCorner=run(4,3,[0,0],[[1,1,'north_east',1,1],[2,1,'north',1]]);
-assert.equal(cardinalCorner.heights[6],1);
+assert.equal(cardinalCorner.heights[6],2);
 assert.equal(cardinalCorner.conflicts[6],0);
 assert.equal(cardinalCorner.acceptedArrivals[6]&64,0);
 assert(cardinalCorner.stopReasons[5]&32);

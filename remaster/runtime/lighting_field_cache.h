@@ -648,6 +648,8 @@ struct RemasterLightingFieldCache
 			const auto scalar = outdoorBackdrop ? scalarPlacements[pixel.instanceId-1] : 0;
 			samples[i].scalarFloor = scalar == 2 && samples[i].domain == RemasterSurfaceMesh::FloorDomain;
 			samples[i].scalarWall = scalar && samples[i].solidWall && samples[i].domain == RemasterSurfaceMesh::WallDomain;
+			samples[i].doubledPlacementScale = outdoorBackdrop && instance.source == RemasterSourceType::Background &&
+				instance.sourceIndex == 1 && instance.savedPlacementOffsetStatus >= 2 && instance.heightOffset == instance.savedPlacementOffset;
 		}
 		};
 		if (workers == 1) process(0); else S9xRemasterLightingParallel(workers,process);

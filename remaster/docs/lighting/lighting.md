@@ -412,9 +412,10 @@ Whole-actor grouping requires a ROM-specific object-to-OAM mapping.
 
 Connectivity requires known heights, nonzero opacity, matching domains, and
 compatible height continuation. Floor sheets connect across steps of up to six
-authored height units. Structural overworld wall sheets with saved BG2 placement
-datums on both sides connect across steps of up to three units. Other surfaces
-retain the smaller quantized step allowance.
+height units, or twelve when both samples use saved overworld BG2 placements in
+either world. Structural overworld wall sheets with saved BG2 datums on both
+sides connect across steps of up to six units. Other surfaces retain the smaller
+quantized step allowance.
 Larger ramps need matching continuation evidence. Abrupt ledges beyond the step
 allowance remain hard boundaries. Corner
 vertices weld within cardinally connected local regions; diagonal-only contacts
@@ -424,9 +425,9 @@ Monotone slope reconstruction preserves linear ramps without inventing raised
 ridges where a flat plateau meets a descending edge.
 
 ALTTP overworld BG2 floors with saved scalar placements and explicitly flat
-local relief reconstruct a lighting-only ramp for rises of up to three height
-units. The tile-wide filter spreads the rise across eight source pixels rather
-than concentrating it at the welded seam. It does not borrow through unknown,
+local relief reconstruct a lighting-only ramp for rises of up to six height
+units in either world. The tile-wide filter spreads the rise across eight
+source pixels rather than concentrating it at the welded seam. It does not borrow through unknown,
 transparent, non-floor, or explicitly height-modeled terrain samples, or across
 larger rises. The reconstructed centers feed the mesh, visibility, and Height
 debug view together; raw heights, saved placement offsets, and actor support
@@ -434,8 +435,8 @@ are unchanged.
 
 Eligible overworld walls use the same filter on the placement datum only, not
 on the authored wall relief. A changing datum blends only if the raw top and
-datum both differ by at most three units and the local relief matches within
-one quantization unit. Other small top steps can weld at the seam without
+datum both differ by at most six units and the local relief
+matches within one quantization unit. Other small top steps can weld at the seam without
 spreading a change in relief across the tiles. Wall closure follows the blended
 datum. Walls with missing placement evidence or explicit terrain height do not
 receive this treatment.

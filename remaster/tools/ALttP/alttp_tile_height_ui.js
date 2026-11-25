@@ -142,14 +142,14 @@ if (typeof document !== 'undefined') (() => {
        <details id="heightHelp"><summary style="cursor:pointer">Help &amp; details</summary>
        <div style="height:180px;overflow:auto;padding:6px 0">
        <div id="heightAnchorInfo" class="hint"></div><div id="heightBounds" class="hint"></div>
-        <div class="hint">Experimental diagonal-propagation-v37-1 · both worlds · explicit reference required in view.
+        <div class="hint">Experimental diagonal-propagation-v37-3 · both worlds · explicit reference required in view.
         Authored BG2 placement offsets are absolute traversal heights: incoming heights reset to the authored value, then propagation continues. Only reached tiles reset; offsets do not launch independent seeds. A saved zero is an explicit reset. Remove offset restores automatic traversal.
          Saved offsets use native profile units (no scaling). Per-tile bases drive traversal; per-pixel terrain is independent additive detail and never blocks scalar propagation. Saving an offset enables the native authored-overworld-offsets mode.
           Adjust by adds a signed integer to each selected location's own scalar base and saves the result as an authored offset. Authored bases take precedence over calculated values; stale/conflicting numeric values and display-default zero are accepted just like baking. Missing scalar bases or unrepresentable results reject the whole adjustment. Per-pixel detail is preserved, not baked into the base.
       Outward directional wavefront; non-wall tiles launch perpendicular traversals toward unassigned neighbors.
        All walls and wall corners continue their crossing without launching perpendicular traversals; outward branching resumes on non-wall tiles.
        Travel along cardinal wall faces is straight-only: E/W on N/S-facing walls, N/S on E/W-facing walls. Branching resumes after leaving those faces.
-       Climbing adds the destination wall's saved weight on entry; descending subtracts the source wall's saved weight on exit. This applies to cardinal and diagonal walls in all directions.
+        Climbing adds the destination wall's height contribution on entry; descending subtracts the source wall's on exit. Cardinal and diagonal walls use 2× the saved weight in both worlds. Authored bases and the reference height are used as entered.
        Direct cardinal-wall ↔ diagonal-wall transitions stop before transferring height; floor entry/exit remains allowed.
       Magenta cross = reference; cyan dashed box = calculated bounds. Outside calculated bounds is unknown/transparent.
          Magenta/dark-purple checker = NO HEIGHT; orange = conflicting arrival (first height retained).
@@ -764,8 +764,9 @@ if (typeof document !== 'undefined') (() => {
             fy += d === 'south' ? 1 : d === 'north' ? -1 : 0;
         }
         const wall = ['wall', 'wall_corner', 'door', 'doorway'].includes(tile?.annotation?.role), w = weight(tile);
-        const n = wall ? (fy > 0 ? 1 : fy < 0 ? -1 : 0) * w : 0;
-        const e = wall ? (fx > 0 ? -1 : fx < 0 ? 1 : 0) * w : 0;
+        const scale = 2, contribution = w * scale;
+        const n = wall ? (fy > 0 ? 1 : fy < 0 ? -1 : 0) * contribution : 0;
+        const e = wall ? (fx > 0 ? -1 : fx < 0 ? 1 : 0) * contribution : 0;
         const s = result?.stats;
         const inBounds = result?.world === worldName && x >= s.x0 && x < s.x0 + s.width && y >= s.y0 && y < s.y0 + s.height;
         const i = inBounds ? (y - s.y0) * s.width + x - s.x0 : -1;
@@ -780,7 +781,7 @@ if (typeof document !== 'undefined') (() => {
             diagnostics = ` · processed directions: ${directions.join('/') || 'none'} · stops here: ${reasons.join(', ') || 'none recorded (an unset tile may never have been reached)'}`;
             diagnostics += ` · arrivals FROM: first ${heightArrivalLabels(result.firstArrival[i])}; agreeing ${heightArrivalLabels(result.acceptedArrivals[i] & ~result.firstArrival[i])}; conflicting ${heightArrivalLabels(result.conflictArrivals[i])}`;
         }
-        el('heightPlacement').textContent = `Selected placement: weight ${w} · cardinal-axis ΔN ${n} · ΔE ${e} (diagonal crossings use one signed weight) · raw height ${raw}${actual}${diagnostics}${resultGeneration !== generation ? ' (STALE/not calculated)' : ''}`;
+        el('heightPlacement').textContent = `Selected placement: weight ${w} × ${scale} · cardinal-axis ΔN ${n} · ΔE ${e} (diagonal crossings use one signed contribution) · raw height ${raw}${actual}${diagnostics}${resultGeneration !== generation ? ' (STALE/not calculated)' : ''}`;
     }
     function drawTraversal(c) {
         if (!el('worldHeightArrows').checked) return;
@@ -997,7 +998,7 @@ if (typeof document !== 'undefined') (() => {
                 compact.setUint32(offset, ids.get(key), true); compact.setUint8(offset + 7, cell.flips);
             }
             setPhase('Starting height worker');
-            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-1-wall-fill-tangent6');
+            worker = new Worker('/height-worker.js?v=diagonal-propagation-v37-3');
             worker.onmessage = async event => {
                 if (requestID !== runID) return;
                 try {
@@ -1006,7 +1007,7 @@ if (typeof document !== 'undefined') (() => {
                 worker.terminate(); worker = null;
                 if (data.error) throw Error(data.error);
                 setPhase('Worker finished — verifying saved inputs');
-                if (data.stats?.version !== 'diagonal-propagation-v37-1' || !data.assigned || !data.conflicts ||
+                if (data.stats?.version !== 'diagonal-propagation-v37-3' || !data.assigned || !data.conflicts ||
                     data.traceFormat !== 'incoming-neighbors-v1' || data.firstArrival?.length !== data.heights?.length ||
                     data.acceptedArrivals?.length !== data.heights?.length || data.conflictArrivals?.length !== data.heights?.length ||
                     data.processed?.length !== data.heights?.length || data.stopReasons?.length !== data.heights?.length ||

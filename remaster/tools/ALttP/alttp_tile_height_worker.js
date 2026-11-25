@@ -1,7 +1,7 @@
-/* diagonal-propagation-v37-1: editor experiment, not validated runtime geometry.
+/* diagonal-propagation-v37-3: editor experiment, not validated runtime geometry.
  * CommonJS export is only for portable tests; browser runs this in a Worker. */
 'use strict';
-const HEIGHT_VERSION = 'diagonal-propagation-v37-1';
+const HEIGHT_VERSION = 'diagonal-propagation-v37-3';
 const WALL_ROLES = ['wall', 'wall_corner', 'door', 'doorway'];
 // Source offsets relative to destination, clockwise from N. These are actual
 // neighboring coordinates, NOT logical traversal headings through a detour.
@@ -294,6 +294,8 @@ function calculateHeights(input, progress = () => {}) {
     const north = new Float64Array(width * height), east = new Float64Array(width * height);
     const anchor = new Uint8Array(width * height);
     const cells = [];
+    // Authored overrides and the manual reference are already in height units.
+    const deltaScale = 2;
     const authoredHeights = new Map();
     for (const entry of input.authoredHeights || []) {
         if (!Number.isInteger(entry.x) || !Number.isInteger(entry.y) || !Number.isFinite(entry.height))
@@ -310,7 +312,8 @@ function calculateHeights(input, progress = () => {}) {
         if (!a || a.role === 'unknown') unknownRoles++;
         if (a?.context_dependent) contextDependent++;
         if (WALL_ROLES.includes(a?.role) && !(a.normals || []).length) missingFacings++;
-        [north[i], east[i]] = heightDeltas(a, grid.getUint8(offset + 7), tile?.weight ?? 8);
+        const weight = (tile?.weight ?? 8) * deltaScale;
+        [north[i], east[i]] = heightDeltas(a, grid.getUint8(offset + 7), weight);
         const wall = WALL_ROLES.includes(a?.role);
         const facing = crossingFacing(a, grid.getUint8(offset + 7));
         const knownRole = ['floor', ...WALL_ROLES, 'obstacle', 'other'].includes(a?.role);
@@ -323,7 +326,7 @@ function calculateHeights(input, progress = () => {}) {
         const straightAxes = wall && knownNormals ?
             (a.normals.every(n => n === 'north' || n === 'south') ? 1 :
                 a.normals.every(n => n === 'east' || n === 'west') ? 2 : 0) : 0;
-        cells.push({north: north[i], east: east[i], facing, weight: tile?.weight ?? 8,
+        cells.push({north: north[i], east: east[i], facing, weight,
             tileId:grid.getUint32(offset,true),diagonal:isDiagonal(a),
             straightAxes, wall, authoredHeight: authoredHeights.get(`${x+x0}:${y+y0}`),
             resolved: !!tile && knownRole && (!wall || !!knownNormals && (!isDiagonal(a) || !!facing))});

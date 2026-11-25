@@ -5,8 +5,60 @@
 
 using namespace RemasterSurfaceMesh;
 
+static void testOverworldPlacementLimits()
+{
+	RemasterFrame f;
+	f.width = 2; f.height = 1;
+	f.profileRomSha256 = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb";
+	f.mainPixels.resize(2); f.subPixels.resize(2);
+	RemasterFrameAssetMetadata m;
+	m.tileId = {123, 1, 4}; m.hasHeight = true;
+	for (unsigned i = 0; i < 2; ++i) {
+		RemasterFrameTileInstance t;
+		t.tileId = m.tileId; t.source = RemasterSourceType::Background; t.sourceIndex = 1;
+		t.savedPlacementOffsetStatus = i ? 3 : 2; // mixed calculated and authored
+		f.tileInstances.push_back(t);
+		f.mainPixels[i] = {uint32_t(RemasterSourceType::Background) << 24, i + 1, 0};
+	}
+	RemasterLightingFieldCache fields;
+	Cache mesh;
+	for (bool wall : {false, true}) {
+		m.tileRole = wall ? RemasterTileRole::Wall : RemasterTileRole::Floor;
+		m.height.fill(wall ? 10 : 0);
+		f.assetMetadata = {m};
+		const int limit = wall ? 6 : 12;
+		for (int rise : {limit, -limit, limit + 1, -limit - 1, 6, 7}) {
+			f.tileInstances[1].heightOffset = f.tileInstances[1].savedPlacementOffset = rise;
+			for (uint32_t area : {321u, 320u, 0u, 320u}) {
+				f.area.id = area;
+				fields.update(f, false);
+				const auto &cells = mesh.update(f.width, f.height, fields.samples, f.lightingCoordinateScale / 255.0f);
+				const bool overworld = area == 320 || area == 321;
+				assert(fields.samples[0].doubledPlacementScale == overworld);
+				assert(fields.samples[1].doubledPlacementScale == overworld);
+				assert(fields.height[2] == S9xRemasterSignedHeightField(rise, m.height[0]));
+				assert((cells[0].corners[1] == cells[1].corners[0]) ==
+					(std::abs(rise) <= (overworld ? limit : wall ? 1 : 6)));
+				assert(fields.reconstructedSlopes == (overworld && std::abs(rise) <= 6));
+				if (wall) assert(std::abs(fields.samples[1].meshHeight() - cells[1].wallBase -
+					10 * f.lightingCoordinateScale / 255.0f) < 0.0001f);
+			}
+		}
+	}
+	// No expanded allowance if one endpoint lacks saved placement evidence.
+	m.tileRole = RemasterTileRole::Floor; m.height.fill(0); f.assetMetadata = {m};
+	f.tileInstances[1].heightOffset = 12;
+	f.tileInstances[1].savedPlacementOffset = 0;
+	f.tileInstances[1].savedPlacementOffsetStatus = 0;
+	fields.update(f, false);
+	assert(fields.samples[0].doubledPlacementScale && !fields.samples[1].doubledPlacementScale);
+	const auto &cells = mesh.update(f.width, f.height, fields.samples, f.lightingCoordinateScale / 255.0f);
+	assert(cells[0].corners[1] != cells[1].corners[0]);
+}
+
 int main()
 {
+	testOverworldPlacementLimits();
 	constexpr unsigned w = 24, h = 48;
 	std::vector<Sample> samples(w*h), flat;
 	std::vector<float> scratch;

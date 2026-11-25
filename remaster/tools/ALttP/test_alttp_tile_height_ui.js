@@ -213,8 +213,8 @@ async function main() {
     floor.annotation = {role:'wall',normals:['south_east']}; config.weights.bg = .5;
     context.update(); context.drawWorld();
     await run(); await workers.at(-1).finish();
-    assert.match(element('heightPlacement').textContent, /weight 0.5.*cardinal-axis ΔN 0.5 · ΔE -0.5/);
-    assert.match(element('heightPlacement').textContent, /diagonal crossings use one signed weight/);
+    assert.match(element('heightPlacement').textContent, /weight 0\.5 × 2 · cardinal-axis ΔN 1 · ΔE -1/);
+    assert.match(element('heightPlacement').textContent, /diagonal crossings use one signed contribution/);
     floor.annotation = {role:'unknown'};
     context.worldCell = {x:100,y:200}; context.update();
     await run(); await workers.at(-1).finish();

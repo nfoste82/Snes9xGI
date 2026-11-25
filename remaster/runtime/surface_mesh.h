@@ -43,9 +43,15 @@ struct Sample
 	bool fallbackGround = false;
 	bool scalarFloor = false; // flat local relief on a saved overworld placement datum
 	bool scalarWall = false; // authored wall relief on a saved overworld placement datum
+	bool doubledPlacementScale = false; // overworld BG2 with a saved placement datum
 	float scalarAdjustment = 0; // lighting only; raw height still decides connectivity
 	float meshHeight() const { return height + scalarAdjustment; }
 };
+
+inline float placementStepLimit(float units, float quantum, bool doubled)
+{
+	return (doubled ? 2.0f * units : units) * quantum + 0.0001f;
+}
 
 // Domains describe placement/object identity, not tile hashes. Floor and wall
 // domains span draw records. Object domains must never join a background domain.
@@ -73,8 +79,8 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 	const float tolerance = std::max(0.0001f, quantum * 1.05f);
 	const float stepLimit = std::max(0.0001f, quantum * 1.5f);
 	// Quantum converts one authored height unit to mesh coordinates.
-	const float floorStepLimit = 6.0f * quantum + 0.0001f;
-	const float wallStepLimit = 3.0f * quantum + 0.0001f;
+	const float floorStepLimit[] = {placementStepLimit(6, quantum, false), placementStepLimit(6, quantum, true)};
+	const float wallStepLimit[] = {placementStepLimit(3, quantum, false), placementStepLimit(3, quantum, true)};
 	for (unsigned y = 0; y < height; y++)
 		for (unsigned x = 0; x < width; x++)
 		{
@@ -86,9 +92,10 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 				const size_t b = index(bx, by);
 				if (!same(a, b)) continue;
 				const float rise = samples[b].height - samples[a].height;
+				const bool doubled = samples[a].doubledPlacementScale && samples[b].doubledPlacementScale;
 				bool continuous = std::abs(rise) <=
-					(samples[a].sheet && samples[a].domain == FloorDomain ? floorStepLimit :
-					 samples[a].domain == WallDomain && samples[a].scalarWall && samples[b].scalarWall ? wallStepLimit : stepLimit);
+					(samples[a].sheet && samples[a].domain == FloorDomain ? floorStepLimit[doubled] :
+					 samples[a].domain == WallDomain && samples[a].scalarWall && samples[b].scalarWall ? wallStepLimit[doubled] : stepLimit);
 				// Larger ramps need continuation evidence, not a height threshold
 				// that would bridge an arbitrary ledge or touching sprite pieces.
 				for (int side : {-1, 1})

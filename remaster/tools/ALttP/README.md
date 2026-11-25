@@ -92,6 +92,10 @@ With a profile selected, a successful integer calculation also saves a separate
 only inside that rectangle and world; it does not edit authored offsets or use
 previous calculations as traversal seeds. Reopening the editor restores the
 combined map automatically. Traversal arrows still require a fresh calculation.
+After upgrading to the 2× overworld scale, recalculate each area you want to
+update. Existing saved results are not rescaled or cleared automatically. Use the
+approved authored offsets with the new calculation, and enter the reference
+height in the new units if the reference cell does not have an authored base.
 Fractional or out-of-range results remain preview-only rather than being rounded.
 Conflicts retain the displayed first arrival, not a claim of validated geometry.
 Unreached cells stay marked in the editor but supply no calculated base in-game.
@@ -314,10 +318,13 @@ whether uniform or nonuniform.
 Removing a scalar does not remove independent terrain offsets. Reload after edits
 in Snes9x; stale profile revisions reject writes and calculation results.
 
-`diagonal-propagation-v37-1` replaces count/skip with paths crossing explicit diagonal
-faces. Cardinal and diagonal walls apply **one saved weight**: climbing adds the
-destination wall's weight on entry; descending subtracts the source wall's weight
-on exit. Doors and doorways participate as cardinal walls, including saved weights,
+`diagonal-propagation-v37-3` uses paths crossing explicit diagonal faces.
+Cardinal and diagonal walls apply **one signed contribution**: 2× the saved
+weight in both worlds. Climbing adds the destination wall's
+contribution on entry; descending subtracts the source wall's on exit. Saved
+weights, authored overrides (including the Castle and Kakariko exceptions),
+and the entered reference height are not multiplied. Doors and doorways
+participate as cardinal walls, including saved weights,
 placement flips, no perpendicular launches, and cardinal/diagonal boundary stops.
 They expose exactly one N/E/S/W facing in the editor (no diagonals or multiple
 selection). Changing/saving either role requires that facing. Older entries with

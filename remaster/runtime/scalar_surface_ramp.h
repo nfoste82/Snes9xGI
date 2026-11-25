@@ -15,7 +15,7 @@ inline bool reconstructScalarSurfaces(unsigned width, unsigned height, float qua
 	std::vector<Sample> &samples, std::vector<float> &horizontal)
 {
 	if (samples.size() != size_t(width) * height || !width || !height) return false;
-	const float limit = 3.0f * quantum + 0.0001f;
+	const float limits[] = {placementStepLimit(3, quantum, false), placementStepLimit(3, quantum, true)};
 	auto eligible = [](const Sample &s) {
 		return s.known && s.coverage > 0 && s.sheet &&
 			((s.scalarFloor && s.domain == FloorDomain) || (s.scalarWall && s.domain == WallDomain));
@@ -24,6 +24,7 @@ inline bool reconstructScalarSurfaces(unsigned width, unsigned height, float qua
 	auto canBlend = [&](size_t p, size_t q) {
 		const auto &a = samples[p], &b = samples[q];
 		if (!eligible(b) || a.domain != b.domain) return false;
+		const float limit = limits[a.doubledPlacementScale && b.doubledPlacementScale];
 		const float rise = b.height - a.height;
 		if (!a.scalarWall) return std::abs(rise) <= limit;
 		const float baseRise = b.wallBase - a.wallBase;

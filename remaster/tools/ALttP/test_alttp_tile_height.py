@@ -225,7 +225,7 @@ const legacy={world:'light',mode:'legacy-sand',bounds:{x0:0,y0:256,width:256,hei
 const out=calculate(legacy);
 assert.equal(out.stats.anchors,1); assert.equal(out.stats.seededColumns,1);
 assert.equal(out.stats.y0,256); assert.equal(out.stats.width,256);
-assert.equal(out.heights[(499-256)*256+100],.5);
+ assert.equal(out.heights[(499-256)*256+100],1);
 assert.equal(out.heights[(500-256)*256+100],0);
 assert.equal(out.stats.computed + out.stats.missing,65536);
 assert.throws(()=>calculate({...legacy,world:'dark'}),/Light World only/);
@@ -242,7 +242,7 @@ const light=calculate(manual);
 assert.equal(JSON.stringify(manual),inputJSON);
 assert.equal(Buffer.from(small).toString('hex'),inputBytes);
 assert.deepEqual([...light.heights],Array(9).fill(10.25));
-assert.equal(light.stats.version,'diagonal-propagation-v37-1');
+ assert.equal(light.stats.version,'diagonal-propagation-v37-3');
 assert.deepEqual(light.bounds,bounds); assert.equal(light.stats.computed,9);
 assert.equal(light.stats.anchors,1); assert.equal(light.reference.height,10.25);
 const dark=calculate({...manual,world:'dark',reference:{...manual.reference,world:'dark'}});
