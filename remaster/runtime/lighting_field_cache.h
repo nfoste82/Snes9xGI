@@ -5,7 +5,7 @@
 #include "held_lamp.h"
 #include "surface_mesh_material.h"
 #include "backdrop_ground.h"
-#include "scalar_floor_ramp.h"
+#include "scalar_surface_ramp.h"
 #include <map>
 #include "lighting_parallel.h"
 
@@ -30,8 +30,8 @@ struct RemasterLightingFieldCache
 	size_t selectedPixels = 0;
 	size_t resolvedInstances = 0;
 	int shiftX = 0, shiftY = 0;
-	bool reconstructedFloor = false;
-	std::vector<float> floorScratch;
+	bool reconstructedSlopes = false;
+	std::vector<float> slopeScratch;
 	struct Identity { uint64_t a=0,b=0; bool operator==(const Identity &o) const {return a==o.a && b==o.b;} };
 	static bool shiftEnabled() {const char *v=std::getenv("S9X_REMASTER_SHIFT_FIELDS");return !v || std::strcmp(v,"0");}
 #ifdef REMASTER_FIELD_COUNT_WORK
@@ -353,16 +353,17 @@ struct RemasterLightingFieldCache
 		const RemasterHeldLampHudLookup hudLookup(frame);
 		const bool outdoorBackdrop = alttp && (frame.area.id == 320 || frame.area.id == 321);
 		const RemasterBackdropGroundBases backdropBases(frame, alttp);
-		std::vector<uint8_t> scalarFloors;
+		// 1 = authored local relief on a saved datum; 2 = also locally flat.
+		std::vector<uint8_t> scalarPlacements;
 		if (outdoorBackdrop) {
-			scalarFloors.resize(frame.tileInstances.size());
-			for (size_t i = 0; i < scalarFloors.size(); ++i) {
+			scalarPlacements.resize(frame.tileInstances.size());
+			for (size_t i = 0; i < scalarPlacements.size(); ++i) {
 				const auto &tile = frame.tileInstances[i];
 				const auto *m = instanceMetadata[i];
-				scalarFloors[i] = tile.source == RemasterSourceType::Background && tile.sourceIndex == 1 &&
+				if (tile.source == RemasterSourceType::Background && tile.sourceIndex == 1 &&
 					tile.savedPlacementOffsetStatus >= 2 && tile.heightOffset == tile.savedPlacementOffset &&
-					!tile.terrainOffset.hasHeight && m && m->hasHeight &&
-					std::all_of(m->height.begin(), m->height.end(), [](int16_t h) { return h == 0; });
+					!tile.terrainOffset.hasHeight && m && m->hasHeight)
+					scalarPlacements[i] = std::all_of(m->height.begin(), m->height.end(), [](int16_t h) { return h == 0; }) ? 2 : 1;
 			}
 		}
 		// Fingerprint the full resolved occurrence dependency once, not per pixel.
@@ -644,13 +645,15 @@ struct RemasterLightingFieldCache
 			}
 			samples[i].height = surface[i*4]; samples[i].known = height[i*2+1] != 0 && (participation[i*2] != 0 || worldBehindHud);
 			samples[i].coverage = occlusion[i*2]/255.0f;
-			samples[i].scalarFloor = outdoorBackdrop && samples[i].domain == RemasterSurfaceMesh::FloorDomain && scalarFloors[pixel.instanceId-1];
+			const auto scalar = outdoorBackdrop ? scalarPlacements[pixel.instanceId-1] : 0;
+			samples[i].scalarFloor = scalar == 2 && samples[i].domain == RemasterSurfaceMesh::FloorDomain;
+			samples[i].scalarWall = scalar && samples[i].solidWall && samples[i].domain == RemasterSurfaceMesh::WallDomain;
 		}
 		};
 		if (workers == 1) process(0); else S9xRemasterLightingParallel(workers,process);
 		if (selectionFull || selectionDirty) {
-			reconstructedFloor = outdoorBackdrop && std::any_of(samples.begin(), samples.end(), [](const auto &s) { return s.scalarFloor; }) &&
-				RemasterSurfaceMesh::reconstructScalarFloor(frame.width, frame.height, frame.lightingCoordinateScale / 255.0f, samples, floorScratch);
+			reconstructedSlopes = outdoorBackdrop && std::any_of(samples.begin(), samples.end(), [](const auto &s) { return s.scalarFloor || s.scalarWall; }) &&
+				RemasterSurfaceMesh::reconstructScalarSurfaces(frame.width, frame.height, frame.lightingCoordinateScale / 255.0f, samples, slopeScratch);
 		}
 		for (size_t worker = 0; worker < workers; ++worker) {
 			selectedPixels += selectedCounts[worker]; updatedPixels += updatedCounts[worker];

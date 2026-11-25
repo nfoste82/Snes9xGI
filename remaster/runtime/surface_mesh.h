@@ -13,6 +13,7 @@
 namespace RemasterSurfaceMesh
 {
 inline constexpr uint64_t FloorDomain = 1;
+inline constexpr uint64_t WallDomain = 2;
 
 #define REMASTER_MESH_BUILD_WORK 1
 #ifdef REMASTER_MESH_COUNT_WORK
@@ -41,8 +42,9 @@ struct Sample
 	float wallBase = 0;
 	bool fallbackGround = false;
 	bool scalarFloor = false; // flat local relief on a saved overworld placement datum
-	float floorAdjustment = 0; // lighting only; raw height still decides connectivity
-	float meshHeight() const { return height + floorAdjustment; }
+	bool scalarWall = false; // authored wall relief on a saved overworld placement datum
+	float scalarAdjustment = 0; // lighting only; raw height still decides connectivity
+	float meshHeight() const { return height + scalarAdjustment; }
 };
 
 // Domains describe placement/object identity, not tile hashes. Floor and wall
@@ -72,6 +74,7 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 	const float stepLimit = std::max(0.0001f, quantum * 1.5f);
 	// Quantum converts one authored height unit to mesh coordinates.
 	const float floorStepLimit = 6.0f * quantum + 0.0001f;
+	const float wallStepLimit = 3.0f * quantum + 0.0001f;
 	for (unsigned y = 0; y < height; y++)
 		for (unsigned x = 0; x < width; x++)
 		{
@@ -84,7 +87,8 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 				if (!same(a, b)) continue;
 				const float rise = samples[b].height - samples[a].height;
 				bool continuous = std::abs(rise) <=
-					(samples[a].sheet && samples[a].domain == FloorDomain ? floorStepLimit : stepLimit);
+					(samples[a].sheet && samples[a].domain == FloorDomain ? floorStepLimit :
+					 samples[a].domain == WallDomain && samples[a].scalarWall && samples[b].scalarWall ? wallStepLimit : stepLimit);
 				// Larger ramps need continuation evidence, not a height threshold
 				// that would bridge an arbitrary ledge or touching sprite pieces.
 				for (int side : {-1, 1})
@@ -113,7 +117,7 @@ inline std::vector<Cell> build(unsigned width, unsigned height,
 			Cell &cell = result[p];
 			cell.thickness = samples[p].sheet ? 0.0f : 1.0f;
 			cell.solidWall = samples[p].solidWall ? 1.0f : 0.0f;
-			cell.wallBase = samples[p].wallBase;
+			cell.wallBase = samples[p].scalarWall ? samples[p].wallBase + samples[p].scalarAdjustment : samples[p].wallBase;
 			float gradients[4] = {};
 			for (unsigned d = 0; d < 4; d++) if (edges[p] & (1 << d))
 			{

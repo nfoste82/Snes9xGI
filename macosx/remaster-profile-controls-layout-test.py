@@ -231,6 +231,24 @@ int main() { @autoreleasepool {
         _, _, _, panel_height = frame("content")
         self.assertLessEqual(label_y + label_height, panel_height - 12)
 
+    def test_refresh_sits_to_the_right_of_the_profile_name(self):
+        x, y, width, height = frame("remasterLoadedProfileLabel")
+        bx, by, bw, bh = frame("remasterRefreshProfileButton")
+        self.assertGreaterEqual(bx, x + width + 5)
+        self.assertEqual(by, y)
+        self.assertGreaterEqual(bh, height)
+        self.assertLessEqual(bx + bw, 410)
+        self.assertIn('@"Refresh From File"', SECTION)
+        self.assertIn('@selector(refreshRemasterProfileFromFile:)', SECTION)
+
+    def test_refresh_validates_before_replacing_pending_edits(self):
+        loader = SOURCE.split("- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL refreshing:(BOOL)refreshing\n", 1)[1].split("- (void)setVideoMode:", 1)[0]
+        commit = loader.index("remasterEditingProfile = std::move(profile);")
+        self.assertIn("if (!refreshing && remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])", loader)
+        for guard in ("S9xRemasterLoadProfile", "profile.romSha256 != romHash", "S9xRemasterSerializeProfile",
+                      "NSAlertSecondButtonReturn", "[diskSnapshot isEqualToData:currentDiskBytes]"):
+            self.assertLess(loader.index(guard), commit)
+
     def test_metrics_text_stays_below_checkbox(self):
         _, text_y, _, text_height = frame("remasterMetricsText")
         _, checkbox_y, _, _ = frame("remasterMetricsButton")

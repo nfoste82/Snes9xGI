@@ -786,10 +786,10 @@ bool DrawRemasterFrame (const RemasterFrame &frame, RemasterDebugMode debugMode,
 		}
 		meshCopyTimer.stop();
 		RemasterLightingTrace::Scope normalsTimer(&trace,RemasterLightingTrace::Normals);
-		if (fieldCache.reconstructedFloor) {
+		if (fieldCache.reconstructedSlopes) {
 			reconstructedHeightField = heightField;
 			for (size_t i = 0; i < mesh.size(); ++i)
-				if (meshSamples[i].floorAdjustment != 0)
+				if (meshSamples[i].scalarAdjustment != 0)
 					reconstructedHeightField[i*2] = meshSamples[i].meshHeight() / frame.lightingCoordinateScale;
 			renderHeightField = reconstructedHeightField.data();
 		}

@@ -774,6 +774,7 @@ static std::string remasterObstacleFocusedGroup;
 static NSPanel			*remasterInspectorPanel;
 static NSPanel			*remasterProfileSettingsPanel;
 static NSTextField		*remasterLoadedProfileLabel;
+static NSButton			*remasterRefreshProfileButton;
 static NSSlider			*remasterBounceSlider;
 static NSTextField		*remasterBounceInput;
 static NSTextField		*remasterBounceDescription;
@@ -4730,7 +4731,9 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 - (void)readRemasterNpcLibrary:(NSURL *)url;
 - (void)stopRemasterNpcPlayback;
 - (void)configureRemasterNpcAnimationForPart:(NSUInteger)partIndex;
-- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL;
+- (NSString *)loadRemasterProfile:(NSURL *)fileURL refreshing:(BOOL)refreshing;
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL refreshing:(BOOL)refreshing;
+- (void)refreshRemasterProfileFromFile:(id)sender;
 - (BOOL)hasRemasterDebugLightContext;
 - (void)showRemasterDebugLight;
 - (void)refreshRemasterDebugLightControls;
@@ -10804,6 +10807,21 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	return window == remasterInspectorPanel || window == remasterProfileSettingsPanel || window == remasterAreaPanel ? remasterUndoManager : nil;
 }
 
+- (void)refreshRemasterProfileFromFile:(id)sender
+{
+	NSURL *fileURL = remasterEditingProfileURL;
+	if (!remasterEditingProfileLoaded || !fileURL.isFileURL ||
+		![remasterProfileSettingsPanel makeFirstResponder:nil]) return;
+	NSString *error = [self loadRemasterProfile:fileURL refreshing:YES];
+	if (error.length)
+	{
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Unable to Refresh Remaster Profile";
+		alert.informativeText = error;
+		[alert runModal];
+	}
+}
+
 - (void)showRemasterProfileSettings
 {
 	if (!remasterEditingProfileLoaded)
@@ -11097,13 +11115,20 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		remasterLinkLampBrightnessInput.target = self;
 		remasterLinkLampBrightnessInput.action = @selector(changeRemasterLinkLampBrightness:);
 		[content addSubview:remasterLinkLampBrightnessInput];
-		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1116, 390, 24)];
+		remasterLoadedProfileLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 1116, 244, 24)];
 		remasterLoadedProfileLabel.editable = NO;
 		remasterLoadedProfileLabel.selectable = YES;
 		remasterLoadedProfileLabel.bezeled = NO;
 		remasterLoadedProfileLabel.drawsBackground = NO;
 		remasterLoadedProfileLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 		[content addSubview:remasterLoadedProfileLabel];
+		remasterRefreshProfileButton = [[NSButton alloc] initWithFrame:NSMakeRect(269, 1116, 141, 30)];
+		remasterRefreshProfileButton.title = @"Refresh From File";
+		remasterRefreshProfileButton.bezelStyle = NSBezelStyleRounded;
+		remasterRefreshProfileButton.target = self;
+		remasterRefreshProfileButton.action = @selector(refreshRemasterProfileFromFile:);
+		remasterRefreshProfileButton.toolTip = @"Reload the current profile from disk to pick up changes made in another editor.";
+		[content addSubview:remasterRefreshProfileButton];
 		// Insert hidden-source quality directly below visible representatives.
 		[content setFrameSize:NSMakeSize(430, 1278)];
 		for (NSView *view in [content.subviews copy]) if (view.frame.origin.y >= 602) {
@@ -11173,6 +11198,7 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	remasterLoadedProfileLabel.stringValue = [@"Profile: " stringByAppendingString:
 		remasterEditingProfileURL.lastPathComponent ?: @"(unknown)"];
 	remasterLoadedProfileLabel.toolTip = remasterEditingProfileURL.path;
+	remasterRefreshProfileButton.enabled = remasterEditingProfileURL.isFileURL;
 	remasterBounceSlider.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterBounceInput.integerValue = remasterEditingProfile.indirectBounceCount;
 	remasterHeightScaleInput.stringValue = [NSString stringWithFormat:@"%.6g", remasterEditingProfile.lightingCoordinateScale];
@@ -12037,9 +12063,14 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 
 - (NSString *)loadRemasterProfile:(NSURL *)fileURL
 {
+	return [self loadRemasterProfile:fileURL refreshing:NO];
+}
+
+- (NSString *)loadRemasterProfile:(NSURL *)fileURL refreshing:(BOOL)refreshing
+{
 	try
 	{
-		return [self loadRemasterProfileChecked:fileURL];
+		return [self loadRemasterProfileChecked:fileURL refreshing:refreshing];
 	}
 	catch (const std::bad_alloc &)
 	{
@@ -12051,12 +12082,15 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	}
 }
 
-- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL
+- (NSString *)loadRemasterProfileChecked:(NSURL *)fileURL refreshing:(BOOL)refreshing
 {
 	// Saving can replace fileURL itself. Resolve pending edits before reading so
 	// reloading the current file cannot activate a pre-save snapshot.
-	if (remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
+	if (!refreshing && remasterEditingProfileLoaded && ![self confirmDiscardingRemasterChanges])
 		return @"";
+	NSData *diskSnapshot = refreshing ? [NSData dataWithContentsOfURL:fileURL] : nil;
+	if (refreshing && !diskSnapshot)
+		return @"The profile could not be read. The current profile was not replaced.";
 	RemasterProfile profile;
 	std::vector<RemasterProfileDiagnostic> diagnostics;
 	if (!S9xRemasterLoadProfile(fileURL.path.UTF8String, profile, diagnostics))
@@ -12128,10 +12162,24 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 	std::string savedProfileText;
 	if (!S9xRemasterSerializeProfile(profile, savedProfileText, diagnostics, false))
 		return @"The remaster profile contains metadata that cannot be saved. Correct its asset metadata and try again.";
+	if (refreshing && remasterEditingProfileDirty)
+	{
+		// Do not invoke the ordinary discard helper: it mutates the editor
+		// immediately, and saving here could overwrite the external changes.
+		NSAlert *alert = [NSAlert new];
+		alert.messageText = @"Reload the remaster profile from disk?";
+		alert.informativeText = @"Refreshing will replace your unsaved Snes9x profile edits with the contents of the file.";
+		[alert addButtonWithTitle:@"Cancel"];
+		[alert addButtonWithTitle:@"Discard Edits and Refresh"];
+		if ([alert runModal] != NSAlertSecondButtonReturn) return @"";
+	}
+	NSData *currentDiskBytes = [NSData dataWithContentsOfURL:fileURL];
+	if (refreshing && ![diskSnapshot isEqualToData:currentDiskBytes])
+		return @"The profile changed on disk during refresh. Try refreshing again.";
 
 	remasterEditingProfile = std::move(profile);
 	remasterEditingProfileURL = fileURL;
-	remasterProfileDiskSnapshot = [NSData dataWithContentsOfURL:fileURL];
+	remasterProfileDiskSnapshot = currentDiskBytes;
 	remasterPendingProfileConflicts.clear();
 	remasterEditingProfileLoaded = true;
 	remasterMetadataNeedsSync = true;
@@ -12177,6 +12225,9 @@ static NSScrollView *S9xProfileControlsInstallScrollView(NSPanel *panel, NSView 
 		[NSString stringWithFormat:@"Profile Controls — Geometry Review (%lu rooms)",
 			static_cast<unsigned long>(reviewMapCount)] : @"Profile Controls";
 	if (remasterNpcPanel.visible) [self changeRemasterNpcPose:nil];
+	if (refreshing && running && pauseEmulation && !remasterFramePresenting && !remasterNpcInspectorActive)
+		remasterDebugLightRedraw.store(0x80000000u | (remasterLightingEnabled ? 0x40000000u : 0) |
+			(static_cast<uint32_t>(S9xRemasterGetDebugMode()) << 16) | (static_cast<uint32_t>(remasterLightingView) + 1));
 	return nil;
 }
 

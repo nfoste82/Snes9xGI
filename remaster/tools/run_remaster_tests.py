@@ -60,7 +60,7 @@ FULL_EXTRA = (
 	("overworld_offsets", "Strict scalar schema, independent world lookup, native save merge and production EndFrame"),
 	("surface_mesh", "Independent ramp, domain, silhouette and incremental/full mesh geometry oracles"),
 	("backdrop_ground", "ALTTP transparent ground with exact signed BG2 cell datum, cache invalidation and same-level welding"),
-	("scalar_floor_ramp", "Tile-wide floor interpolation, hard ledge and unknown boundaries, raw height preservation and cached mesh parity"),
+	("scalar_floor_ramp", "Tile-wide floor/wall datum interpolation, preserved wall relief and hard ledges, cached mesh parity"),
 	("surface_mesh_build_work", "Exact connected vertex welding and bounded generic root searches; frozen differential optional"),
 	("held_lamp_hud_lookup", "Shared production indexed HUD and scene-color parity, first-match duplicates and malformed owners"),
 	("dungeon_emitter_compartment", "Validated full/half/quarter source membership, fail-open legacy evidence and production EndFrame intra-room continuity"),

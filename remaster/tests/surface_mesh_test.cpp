@@ -64,7 +64,7 @@ int main()
 	{
 		// A pair has no third sample to supply ramp-continuation evidence.
 		const float scale = 200.0f;
-		auto joins = [&](RemasterSourceType source, RemasterSurfaceClass surface, int rise) {
+		auto joins = [&](RemasterSourceType source, RemasterSurfaceClass surface, int rise, bool savedWall = false) {
 			std::vector<Sample> pair(2);
 			for (unsigned i = 0; i < pair.size(); ++i)
 			{
@@ -72,6 +72,7 @@ int main()
 				pair[i].coverage = 1;
 				pair[i].height = float(i ? -128 + rise : -128) / 255.0f * scale;
 				classify(pair[i], source, 1, surface, "", i + 1);
+				pair[i].scalarWall = savedWall;
 			}
 			const auto cells = build(2, 1, pair, scale / 255.0f);
 			return near(cells[0].corners[1], cells[1].corners[0]) &&
@@ -82,6 +83,9 @@ int main()
 			check("floor step of six authored units welds", joins(RemasterSourceType::Background, RemasterSurfaceClass::Floor, direction * 6));
 			check("floor step of seven authored units stays separate", !joins(RemasterSourceType::Background, RemasterSurfaceClass::Floor, direction * 7));
 			check("wall step does not inherit floor allowance", !joins(RemasterSourceType::Background, RemasterSurfaceClass::WallFace, direction * 6));
+			check("saved wall step of three welds", joins(RemasterSourceType::Background, RemasterSurfaceClass::WallFace, direction * 3, true));
+			check("saved wall step of four stays separate", !joins(RemasterSourceType::Background, RemasterSurfaceClass::WallFace, direction * 4, true));
+			check("legacy wall keeps original allowance", !joins(RemasterSourceType::Background, RemasterSurfaceClass::WallFace, direction * 3));
 			check("sprite step does not inherit floor allowance", !joins(RemasterSourceType::Object, RemasterSurfaceClass::Floor, direction * 6));
 		}
 	}

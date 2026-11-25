@@ -412,7 +412,9 @@ Whole-actor grouping requires a ROM-specific object-to-OAM mapping.
 
 Connectivity requires known heights, nonzero opacity, matching domains, and
 compatible height continuation. Floor sheets connect across steps of up to six
-authored height units; other domains retain the smaller quantized step allowance.
+authored height units. Structural overworld wall sheets with saved BG2 placement
+datums on both sides connect across steps of up to three units. Other surfaces
+retain the smaller quantized step allowance.
 Larger ramps need matching continuation evidence. Abrupt ledges beyond the step
 allowance remain hard boundaries. Corner
 vertices weld within cardinally connected local regions; diagonal-only contacts
@@ -429,6 +431,14 @@ transparent, non-floor, or explicitly height-modeled terrain samples, or across
 larger rises. The reconstructed centers feed the mesh, visibility, and Height
 debug view together; raw heights, saved placement offsets, and actor support
 are unchanged.
+
+Eligible overworld walls use the same filter on the placement datum only, not
+on the authored wall relief. A changing datum blends only if the raw top and
+datum both differ by at most three units and the local relief matches within
+one quantization unit. Other small top steps can weld at the seam without
+spreading a change in relief across the tiles. Wall closure follows the blended
+datum. Walls with missing placement evidence or explicit terrain height do not
+receive this treatment.
 
 Structural wall faces/tops close their sides down to the placement floor base
 (`heightOffset × coordinateScale / 255`). The visible smooth ramp stays unchanged
